@@ -1,0 +1,1609 @@
+import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
+import * as turf from '@turf/turf';
+import ms from 'milsymbol';
+import { interpolateKeyframes, interpolatePath } from './keyframe-interpolation';
+import {
+  buildAttackArrow, buildStraightArrow, buildDoubleArrow, buildGatheringPlace,
+} from './military-plots';
+import type {
+  MapElement, PointElement, MovingPointElement, LineElement,
+  PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
+  GatheringElement, MilitarySymbolElement, ConnectorElement,
+  CustomIconElement, FlagElement, CustomSymbol
+} from '../types';
+
+// ========== 自定义符号注册表 ==========
+
+let customSymbolsRegistry: CustomSymbol[] = [];
+export function setCustomSymbols(list: CustomSymbol[]): void {
+  customSymbolsRegistry = list || [];
+}
+export function getCustomSymbols(): CustomSymbol[] {
+  return customSymbolsRegistry;
+}
+
+// ========== 主渲染函数 ==========
+
+export interface RenderOpts {
+  customSymbols?: CustomSymbol[];
+}
+
+// 记录每个 map 上已被渲染的元素 ID 与类型签名（类型切换时需整体重建图层）
+const renderedByMap = new WeakMap<maplibregl.Map, Set<string>>();
+const renderedTypeByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
+// 箭头图标已注册颜色（元素 id → 颜色），颜色变化需重注册
+const renderedHeadColorByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
+
+export function removeElementLayers(map: maplibregl.Map, elementId: string): void {
+  const style = map.getStyle();
+  if (!style?.layers) return;
+  const prefixRe = new RegExp(`^(${elementId}|[a-z]+-${elementId}|[a-z]+-[a-z]+-${elementId})-`);
+  const idRe = new RegExp(`(${elementId})$`);
+  for (const layer of style.layers) {
+    const id = layer.id;
+    if (id.includes(elementId) && id !== elementId) {
+      try { map.removeLayer(id); } catch { /* 顺序问题，忽略 */ }
+    }
+  }
+  // 移除相关 source
+  const sources = (style as any).sources;
+  if (sources) {
+    for (const sid of Object.keys(sources)) {
+      if (sid.includes(elementId) || idRe.test(sid) || prefixRe.test(sid)) {
+        try { map.removeSource(sid); } catch { /* */ }
+      }
+    }
+  }
+}
+
+
+export function renderElements(
+  map: maplibregl.Map,
+  elements: MapElement[],
+  frame: number,
+  _fps: number
+): void {
+  const currentIds = new Set(elements.map((e) => e.id));
+  const rendered = renderedByMap.get(map) || new Set<string>();
+
+  // 清理：当前不存在的元素，删除其图层
+  for (const id of rendered) {
+    if (!currentIds.has(id)) {
+      removeElementLayers(map, id);
+    }
+  }
+
+  // 清理：元素 ID 未变但类型切换（如 直线→燕尾箭头），旧类型图层需整体重建
+  const prevMeta = renderedTypeByMap.get(map) || new Map<string, string>();
+  for (const el of elements) {
+    const sig = prevMeta.get(el.id);
+    if (sig && sig !== el.type) {
+      removeElementLayers(map, el.id);
+    }
+  }
+  renderedByMap.set(map, currentIds);
+  const nextMeta = new Map<string, string>();
+  for (const el of elements) nextMeta.set(el.id, el.type);
+  renderedTypeByMap.set(map, nextMeta);
+
+  for (const element of elements) {
+    if (!isVisible(element, frame)) continue;
+
+    switch (element.type) {
+      case 'point': renderPoint(map, element, frame); break;
+      case 'moving_point': renderMovingPoint(map, element, frame); break;
+      case 'line': renderLine(map, element, frame); break;
+      case 'polygon': renderPolygon(map, element, frame); break;
+      case 'arrow': renderArrow(map, element, frame); break;
+      case 'double_arrow': renderDoubleArrow(map, element, frame); break;
+      case 'encirclement': renderEncirclement(map, element, frame); break;
+      case 'gathering': renderGathering(map, element, frame); break;
+      case 'military_symbol': renderMilitarySymbol(map, element); break;
+      case 'connector': renderConnector(map, element); break;
+      case 'custom_icon': renderCustomIcon(map, element); break;
+      case 'flag': renderFlag(map, element); break;
+    }
+  }
+}
+
+// ========== 可见性判断 ==========
+
+function isVisible(element: MapElement, frame: number): boolean {
+  return element.visible && frame >= element.startFrame && frame <= element.endFrame;
+}
+
+function getOpacity(el: MapElement, frame: number): number {
+  return el.style?.opacity ? (interpolateKeyframes(el.style.opacity, frame) as number) : 1;
+}
+
+/** 计算进度类关键帧（绘制/路径/箭头） */
+function getProgress(kfs: { frame: number; value: number }[] | undefined, frame: number): number {
+  if (!kfs || kfs.length === 0) return 1;
+  return interpolateKeyframes(kfs, frame) as number;
+}
+
+// ========== 高亮辅助 ==========
+
+// ========== 渲染：固定点 ==========
+
+const pointIconPending = new Set<string>();
+/** canvas 形状图缓存：id -> ImageData（跨地图复用） */
+const shapeImageCache = new Map<string, ImageData>();
+
+function getCached(key: string, make: () => ImageData): ImageData {
+  let d = shapeImageCache.get(key);
+  if (!d) { d = make(); shapeImageCache.set(key, d); }
+  return d;
+}
+
+/** 水滴定位针（MAP PIN） */
+function makePinImageData(color: string): ImageData {
+  const canvas = document.createElement('canvas');
+  canvas.width = 48; canvas.height = 48;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(24, 18, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(11, 26);
+  ctx.lineTo(24, 46);
+  ctx.lineTo(37, 26);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath();
+  ctx.arc(24, 18, 5, 0, Math.PI * 2);
+  ctx.fill();
+  return ctx.getImageData(0, 0, 48, 48);
+}
+
+/** 白边圆点（DOT）：与 Pin 同走位图 symbol 渲染，支持贴地/旋转 */
+function makeDotImageData(color: string): ImageData {
+  const canvas = document.createElement('canvas');
+  canvas.width = 24; canvas.height = 24;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = color;
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(12, 12, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  return ctx.getImageData(0, 0, 24, 24);
+}
+
+/** 线末端三角箭头图标：像素作图中轴指向右侧，以 viewport 对齐呈现（不受 zoom/投影影响） */
+function makeTriangleImage(color: string, size: number): ImageData {
+  const pad = 2;
+  const w = Math.max(4, Math.ceil(size + pad * 2));
+  const h = Math.max(4, Math.ceil(size + pad * 2));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(w - pad, h / 2);          // 右顶点（指向方向）
+  ctx.lineTo(pad, pad);                // 左上
+  ctx.lineTo(pad, h - pad);            // 左下
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  return ctx.getImageData(0, 0, w, h);
+}
+
+/** 气泡（BUBBLE 带尾 / 普通 label 无尾）：背景可透明，尺寸随字号/边距自适应 */
+function makeBubbleImageData(
+  text: string, bg: string, fg: string,
+  fontSize = 13, radius = 8, padding = 8, tail = true
+): ImageData {
+  const canvas = document.createElement('canvas');
+  const ctx0 = canvas.getContext('2d')!;
+  const font = `bold ${fontSize}px "Microsoft YaHei", sans-serif`;
+  ctx0.font = font;
+  const tw = Math.ceil(ctx0.measureText(text || ' ').width);
+  const tailH = tail ? 8 : 3;
+  const w = Math.max(fontSize * 2.4, Math.ceil(tw + padding * 2));
+  const h = Math.ceil(fontSize + padding * 2 + tailH);
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  const transparent = bg === 'transparent' || /rgba\([^)]*,\s*0\)\s*$/.test(bg);
+  const bh = h - tailH;
+  const rr = Math.min(radius, bh / 2);
+  if (!transparent) {
+    ctx.fillStyle = bg;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(rr, 1);
+    ctx.lineTo(w - rr, 1);
+    ctx.arcTo(w - 1, 1, w - 1, rr, rr);
+    ctx.lineTo(w - 1, bh - rr);
+    ctx.arcTo(w - 1, bh, w - rr, bh, rr);
+    if (tail) {
+      ctx.lineTo(w / 2 + 6, bh);
+      ctx.lineTo(w / 2, h - 1);
+      ctx.lineTo(w / 2 - 6, bh);
+    } else {
+      ctx.lineTo(rr, bh);
+    }
+    ctx.arcTo(1, bh, 1, bh - rr, rr);
+    ctx.lineTo(1, rr);
+    ctx.arcTo(1, 1, rr, 1, rr);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  // 文字
+  ctx.font = font;
+  ctx.fillStyle = fg;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text || '', w / 2, (bh + 1) / 2 + 1);
+  return ctx.getImageData(0, 0, w, h);
+}
+
+/** Emoji 彩色位图（文本层会丢色，用 canvas 位图保证彩色） */
+function makeEmojiImageData(char: string): ImageData {
+  const canvas = document.createElement('canvas');
+  canvas.width = 48; canvas.height = 48;
+  const ctx = canvas.getContext('2d')!;
+  ctx.font = '38px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(char || '📍', 24, 26);
+  return ctx.getImageData(0, 0, 48, 48);
+}
+
+function ensureShapeImage(map: maplibregl.Map, imageId: string, data: ImageData) {
+  if (map.hasImage(imageId)) return;
+  try {
+    map.addImage(imageId, data, { pixelRatio: 1 });
+    map.triggerRepaint();
+  } catch { /* */ }
+}
+
+function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) {
+  const sourceId = `point-${element.id}`;
+  const layerId = `point-layer-${element.id}`;
+  const labelLayerId = `point-label-${element.id}`;
+  const iconImageId = `point-icon-${element.id}`;
+  const hasIcon = !!element.iconUrl;
+  const shape = element.shape || 'circle';
+  const isTextPin = shape === 'text';
+  const useShapeImg = shape === 'pin' || shape === 'bubble' || shape === 'circle';
+  const isEmoji = shape === 'emoji';
+  const circleVisible = !hasIcon && !isTextPin && !useShapeImg && !isEmoji;
+  const labelHidden = element.label?.text === '';
+  const hasLabel = (!!element.label?.text || isTextPin) && !labelHidden && shape !== 'bubble';
+  // text 钉固定居中：忽略历史存量里可能残留的 bottom 等位置
+  const labelPos = isTextPin ? 'center' : (element.label?.position || 'bottom');
+  const emojiChar = element.emoji || '📍';
+  const emojiImgId = 'pt-emoji-' + Array.from(emojiChar).map((c) => c.codePointAt(0)!.toString(16)).join('-');
+  const scale = element.scale ?? 1;
+
+  // 形状图（水滴/气泡/emoji）缓存 id
+  const pinColor = element.color || '#FF4444';
+  const bubbleBg = element.label?.bgColor || '#111111';
+  const bubbleFg = element.label?.color || '#FFFFFF';
+  const bubbleText = element.label?.text || element.name || '';
+  const shapeImgId = shape === 'pin'
+    ? `pt-pin-${pinColor.replace('#', '')}`
+    : shape === 'circle'
+    ? `pt-dot-${pinColor.replace('#', '')}`
+    : `pt-bub-${hashStr(bubbleText + bubbleBg + bubbleFg + scale)}`;
+
+  // 形状图数据就绪（懒生成）
+  if (map.isStyleLoaded()) {
+    if (shape === 'pin') ensureShapeImage(map, shapeImgId, getCached(`pin-${pinColor}`, () => makePinImageData(pinColor)));
+    else if (shape === 'circle') ensureShapeImage(map, shapeImgId, getCached(`dot-${pinColor}`, () => makeDotImageData(pinColor)));
+    else if (shape === 'bubble') ensureShapeImage(map, shapeImgId, getCached(`bub-${hashStr(bubbleText + bubbleBg + bubbleFg + scale)}`, () => makeBubbleImageData(bubbleText, bubbleBg, bubbleFg, 13 * scale, element.label?.bgRadius ?? 6, element.label?.bgPadding ?? 8, true)));
+    else if (isEmoji) ensureShapeImage(map, emojiImgId, getCached(emojiImgId, () => makeEmojiImageData(emojiChar)));
+  }
+
+  // 点标签背景图（LABEL）：无尾标签位图，默认透明背景；BUBBLE 才有尾巴
+  const labelText = element.label?.text || element.name || '';
+  const labelBg = element.label?.bgColor || 'rgba(0,0,0,0)';
+  const labelFg = element.label?.color || '#FFFFFF';
+  const labelSize = 13 * scale;
+  const labelImgId = `pt-lbl-${hashStr(labelText + labelBg + labelFg + labelSize + (element.label?.bgRadius ?? 6) + (element.label?.bgPadding ?? 6) + shape)}`;
+  // 防遮挡偏移：label 根据位置避开水滴/圆点本体
+  const labelOffsetPx = getLabelPixelOffset(shape, labelPos, scale);
+  // ORIENTATION：faceCam=始终面向摄像机（默认）；flat=贴地 + 地图空间旋转
+  const flat = element.orientation === 'flat';
+  const pitchAlign = flat ? 'map' as const : 'viewport' as const;
+  const rotAlign = flat ? 'map' as const : 'viewport' as const;
+  const iconRotate = flat ? (element.rotation || 0) : 0;
+
+  const opacity = getOpacity(element, frame);
+  const geojson = turf.featureCollection([turf.point(element.coordinates, { name: element.label?.text || element.name, emoji: emojiChar })]);
+
+  if (map.getSource(sourceId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    // 更新 circle 可见性
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, 'visibility', circleVisible ? 'visible' : 'none');
+      map.setPaintProperty(layerId, 'circle-opacity', opacity);
+      map.setPaintProperty(layerId, 'circle-color', element.color || '#FF4444');
+      map.setPaintProperty(layerId, 'circle-radius', 8 * scale);
+    }
+    // 形状图 / emoji 层可见性 + 图像引用/缩放/朝向刷新
+    if (map.getLayer(`${layerId}-shape`)) {
+      map.setLayoutProperty(`${layerId}-shape`, 'visibility', useShapeImg && !(shape === 'bubble' && labelHidden) ? 'visible' : 'none');
+      if (useShapeImg) {
+        map.setLayoutProperty(`${layerId}-shape`, 'icon-image', shapeImgId);
+        map.setLayoutProperty(`${layerId}-shape`, 'icon-anchor', shape === 'circle' ? 'center' : 'bottom');
+        map.setLayoutProperty(`${layerId}-shape`, 'icon-size', scale);
+        map.setLayoutProperty(`${layerId}-shape`, 'icon-pitch-alignment', pitchAlign);
+        map.setLayoutProperty(`${layerId}-shape`, 'icon-rotation-alignment', rotAlign);
+        map.setLayoutProperty(`${layerId}-shape`, 'icon-rotate', iconRotate);
+      }
+    }
+    if (map.getLayer(`${layerId}-emoji`)) {
+      map.setLayoutProperty(`${layerId}-emoji`, 'visibility', isEmoji ? 'visible' : 'none');
+      if (isEmoji) {
+        map.setLayoutProperty(`${layerId}-emoji`, 'icon-image', emojiImgId);
+        map.setLayoutProperty(`${layerId}-emoji`, 'icon-size', scale);
+        map.setLayoutProperty(`${layerId}-emoji`, 'icon-pitch-alignment', pitchAlign);
+        map.setLayoutProperty(`${layerId}-emoji`, 'icon-rotation-alignment', rotAlign);
+        map.setLayoutProperty(`${layerId}-emoji`, 'icon-rotate', iconRotate);
+      }
+    }
+    // LABEL：无尾标签位图（默认透明背景 + 防遮挡偏移）
+    if (map.getLayer(labelLayerId)) {
+      map.setLayoutProperty(labelLayerId, 'visibility', hasLabel ? 'visible' : 'none');
+      if (hasLabel) {
+        if (!map.hasImage(labelImgId)) ensureShapeImage(map, labelImgId, getCached(labelImgId, () => makeBubbleImageData(labelText, labelBg, labelFg, labelSize, element.label?.bgRadius ?? 6, element.label?.bgPadding ?? 6, false)));
+        map.setLayoutProperty(labelLayerId, 'icon-image', labelImgId);
+        map.setLayoutProperty(labelLayerId, 'icon-anchor', getIconAnchor(labelPos) as any);
+        map.setLayoutProperty(labelLayerId, 'icon-offset', labelOffsetPx as any);
+        map.setLayoutProperty(labelLayerId, 'icon-pitch-alignment', pitchAlign);
+        map.setLayoutProperty(labelLayerId, 'icon-rotation-alignment', rotAlign);
+        map.setLayoutProperty(labelLayerId, 'icon-rotate', iconRotate);
+        map.setPaintProperty(labelLayerId, 'icon-opacity', opacity);
+      }
+    }
+    // 更新 icon symbol 可见性
+    if (map.getLayer(`${layerId}-icon`)) {
+      map.setLayoutProperty(`${layerId}-icon`, 'visibility', hasIcon ? 'visible' : 'none');
+      if (hasIcon) {
+        map.setLayoutProperty(`${layerId}-icon`, 'icon-image', iconImageId);
+        map.setLayoutProperty(`${layerId}-icon`, 'icon-size', (element.iconSize || 24) / 64);
+      }
+    }
+    // 更新 label（气泡位图：可见性 + 图像/锚点/缩放/透明度同步）
+    if (map.getLayer(labelLayerId)) {
+      map.setLayoutProperty(labelLayerId, 'visibility', hasLabel ? 'visible' : 'none');
+      if (hasLabel) {
+        if (!map.hasImage(labelImgId)) ensureShapeImage(map, labelImgId, getCached(labelImgId, () => makeBubbleImageData(labelText, labelBg, labelFg, labelSize, element.label?.bgRadius ?? 6, element.label?.bgPadding ?? 6, false)));
+        map.setLayoutProperty(labelLayerId, 'icon-image', labelImgId);
+        map.setLayoutProperty(labelLayerId, 'icon-anchor', getIconAnchor(labelPos) as any);
+        map.setPaintProperty(labelLayerId, 'icon-opacity', opacity);
+      }
+    }
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+
+    // 圆形标记（无 icon 时显示）
+    map.addLayer({
+      id: layerId, type: 'circle', source: sourceId,
+      paint: {
+        'circle-radius': 8 * scale,
+        'circle-color': element.color || '#FF4444',
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#FFFFFF',
+        'circle-opacity': opacity,
+      },
+      layout: { visibility: circleVisible ? 'visible' : 'none' },
+    });
+
+    // 形状图（水滴/气泡）与 emoji 层
+    map.addLayer({
+      id: `${layerId}-shape`, type: 'symbol', source: sourceId,
+      layout: {
+        'icon-image': shapeImgId,
+        'icon-anchor': shape === 'circle' ? 'center' : 'bottom',
+        'icon-allow-overlap': true,
+        'icon-size': scale,
+        'visibility': useShapeImg && !(shape === 'bubble' && labelHidden) ? 'visible' : 'none',
+      },
+    });
+    map.addLayer({
+      id: `${layerId}-emoji`, type: 'symbol', source: sourceId,
+      layout: {
+        'icon-image': emojiImgId,
+        'icon-allow-overlap': true,
+        'icon-size': scale,
+        'visibility': isEmoji ? 'visible' : 'none',
+      },
+      paint: { 'icon-opacity': opacity },
+    });
+
+    // LABEL：无尾标签位图层（默认透明背景 + 防遮挡偏移）
+    if (hasLabel) {
+      ensureShapeImage(map, labelImgId, getCached(labelImgId, () => makeBubbleImageData(labelText, labelBg, labelFg, labelSize, element.label?.bgRadius ?? 6, element.label?.bgPadding ?? 6, false)));
+    }
+    map.addLayer({
+      id: labelLayerId, type: 'symbol', source: sourceId,
+      layout: {
+        'icon-image': labelImgId,
+        'icon-anchor': getIconAnchor(labelPos) as any,
+        'icon-offset': labelOffsetPx as any,
+        'icon-allow-overlap': true,
+        'icon-size': 1,
+        'visibility': hasLabel ? 'visible' : 'none',
+      },
+      paint: { 'icon-opacity': opacity },
+    });
+  }
+
+  // 加载自定义图片
+  if (hasIcon && element.iconUrl) {
+    ensurePointIcon(map, iconImageId, element.iconUrl);
+  }
+
+}
+
+
+/** label 位图锚点（与文字位置语义相反：label 在点上方 → 图片锚点在底部） */
+function getIconAnchor(position: string): string {
+  switch (position) {
+    case 'top': return 'bottom';
+    case 'bottom': return 'top';
+    case 'left': return 'right';
+    case 'right': return 'left';
+    case 'center': return 'center';
+    default: return 'top';
+  }
+}
+
+/** label 像素偏移：避开水滴针/圆点本体，避免盖住图形 */
+function getLabelPixelOffset(shape: string, pos: string, scale: number): [number, number] {
+  const g = 6;
+  const dotR = (shape === 'circle' ? 9.5 : 8) * scale;
+  // emoji 位图 48px（icon-size=scale），避让半径按其实际尺寸
+  const r = shape === 'emoji' ? 24 * scale : dotR;
+  const pinH = 44 * scale;
+  if (shape === 'pin') {
+    switch (pos) {
+      case 'top': return [0, -(pinH + g)];
+      case 'bottom': return [0, g];
+      case 'left': return [-(12 * scale + g), 0];
+      case 'right': return [12 * scale + g, 0];
+      default: return [0, 0];
+    }
+  }
+  switch (pos) {
+    case 'top': return [0, -(r + g)];
+    case 'bottom': return [0, r + g];
+    case 'left': return [-(r + g), 0];
+    case 'right': return [r + g, 0];
+    case 'center': return [0, 0];
+    default: return [0, r + g];
+  }
+}
+
+function ensurePointIcon(map: maplibregl.Map, imageId: string, url: string) {
+  if (map.hasImage(imageId) || pointIconPending.has(imageId)) return;
+  pointIconPending.add(imageId);
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    pointIconPending.delete(imageId);
+    if (map.hasImage(imageId)) return;
+    try {
+      const maxDim = 64;
+      const scale = maxDim / Math.max(img.width, img.height);
+      const w = Math.max(2, Math.round(img.width * scale));
+      const h = Math.max(2, Math.round(img.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, w, h);
+      const data = ctx.getImageData(0, 0, w, h);
+      map.addImage(imageId, data, { pixelRatio: 1 });
+      map.triggerRepaint();
+    } catch { /* 跨域等失败 */ }
+  };
+  img.onerror = () => pointIconPending.delete(imageId);
+  img.src = url;
+}
+
+// ========== 渲染：移动点 ==========
+
+function renderMovingPoint(map: maplibregl.Map, element: MovingPointElement, frame: number) {
+  const progress = getProgress(element.pathProgress, frame);
+  const currentPos = interpolatePath(element.path, progress);
+
+  const guideSourceId = `moving-guide-${element.id}`;
+  const guideLayerId = `moving-guide-layer-${element.id}`;
+  const pathLine = turf.lineString(element.path);
+
+  // 全程路径虚线引导（便于编辑观察）
+  if (map.getSource(guideSourceId)) {
+    (map.getSource(guideSourceId) as GeoJSONSource).setData(turf.featureCollection([pathLine]));
+  } else {
+    map.addSource(guideSourceId, { type: 'geojson', data: turf.featureCollection([pathLine]) });
+    map.addLayer({
+      id: guideLayerId, type: 'line', source: guideSourceId,
+      paint: {
+        'line-color': element.color || '#FF6600',
+        'line-width': 2,
+        'line-dasharray': [2, 2],
+        'line-opacity': 0.5,
+      },
+    });
+  }
+
+  const sourceId = `moving-${element.id}`;
+  const layerId = `moving-layer-${element.id}`;
+  const geojson = turf.featureCollection([turf.point(currentPos, { name: element.name })]);
+
+  if (map.getSource(sourceId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: layerId, type: 'circle', source: sourceId,
+      paint: {
+        'circle-radius': 9,
+        'circle-color': element.color || '#FF6600',
+        'circle-stroke-width': 3,
+        'circle-stroke-color': '#FFFFFF',
+      },
+    });
+  }
+}
+
+// ========== 线（直线 / 贝塞尔） ==========
+
+/** 计算线的实际几何（含贝塞尔/大圆弧展开），供渲染与选中高亮共用 */
+export function lineEffectiveCoordinates(element: LineElement): [number, number][] {
+  if (element.lineType === 'bezier' && element.coordinates.length >= 2) {
+    try {
+      const spline = turf.bezierSpline(turf.lineString(element.coordinates), { resolution: 8000, sharpness: 0.6 });
+      return spline.geometry.coordinates as [number, number][];
+    } catch {
+      return element.coordinates;
+    }
+  }
+  if (element.lineType === 'arc' && element.coordinates.length >= 2) {
+    // 大圆弧：相邻顶点两两按地球大圆展开（适合洲际航线）
+    const pts = element.coordinates;
+    const out: [number, number][] = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      if (Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9) continue;
+      try {
+        const gc = turf.greatCircle(a as [number, number], b as [number, number], { npoints: 72 });
+        const cs = gc.geometry.coordinates as [number, number][];
+        if (out.length === 0) out.push(...cs);
+        else out.push(...cs.slice(1));
+      } catch {
+        if (i === 0) out.push(a);
+      }
+    }
+    out.push(pts[pts.length - 1]);
+    return out.length > 1 ? out : element.coordinates;
+  }
+  return element.coordinates;
+}
+
+function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
+  const sourceId = `line-${element.id}`;
+  const layerId = `line-layer-${element.id}`;
+  const hitLayerId = `line-hit-${element.id}`;
+
+  const progress = getProgress(element.drawProgress, frame);
+  const effective = lineEffectiveCoordinates(element);
+
+  let data: any;
+  if (progress >= 1) {
+    data = turf.featureCollection([turf.lineString(effective)]);
+  } else {
+    const full = turf.lineString(effective);
+    const totalLength = turf.length(full);
+    const sliced = turf.lineSliceAlong(full, 0, totalLength * Math.max(0.001, progress));
+    data = turf.featureCollection([sliced]);
+  }
+
+  if (map.getSource(sourceId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(data);
+    if (map.getLayer(layerId)) {
+      map.setPaintProperty(layerId, 'line-color', element.lineColor || '#FF0000');
+      map.setPaintProperty(layerId, 'line-width', element.lineWidth || 3);
+      if (element.lineDashArray) {
+        map.setPaintProperty(layerId, 'line-dasharray', element.lineDashArray);
+      } else {
+        try { map.setPaintProperty(layerId, 'line-dasharray', undefined); } catch { /* 重置失败忽略 */ }
+      }
+    }
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data });
+    // 点击热区层：宽透明线，提升选中命中率
+    map.addLayer({
+      id: hitLayerId, type: 'line', source: sourceId,
+      paint: {
+        'line-color': element.lineColor || '#FF0000',
+        'line-width': Math.max(12, (element.lineWidth || 3) + 8),
+        'line-opacity': 0,
+      },
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+    });
+    // 可见线层
+    map.addLayer({
+      id: layerId, type: 'line', source: sourceId,
+      paint: {
+        'line-color': element.lineColor || '#FF0000',
+        'line-width': element.lineWidth || 3,
+        ...(element.lineDashArray ? { 'line-dasharray': element.lineDashArray } : {}),
+      },
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+    });
+  }
+
+  // 方向箭头（示意）：线末端小三角，随线色；SVG 图标按像素固定尺寸渲染，与 zoom 无关
+  const headSrcId = `line-head-src-${element.id}`;
+  const headLayerId = `line-head-${element.id}`;
+  const showHead = !!element.lineArrow && progress >= 1 && effective.length >= 2;
+  (window as any).__hl = { lineArrow: !!element.lineArrow, progress, effLen: effective.length, showHead };
+  if (showHead) {
+    const tipLL = effective[effective.length - 1] as [number, number];
+    const prevLL = effective[effective.length - 2] as [number, number];
+    const a = map.project(prevLL);
+    const b = map.project(tipLL);
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len; dy /= len;
+    // 像素角度：project 已含 bearing/投影，viewport 对齐直接用屏幕角
+    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    const size = (element.lineWidth || 3) * 12;
+    const color = element.lineColor || '#FF0000';
+    const headImgId = `line-head-img-${element.id}`;
+    try {
+      const colorMap = renderedHeadColorByMap.get(map) || new Map<string, string>();
+      if (!map.hasImage(headImgId) || colorMap.get(element.id) !== color) {
+        if (map.hasImage(headImgId)) map.removeImage(headImgId);
+        map.addImage(headImgId, makeTriangleImage(color, size));
+        colorMap.set(element.id, color);
+        renderedHeadColorByMap.set(map, colorMap);
+      }
+      const headData = turf.featureCollection([turf.point(tipLL, { rot: angleDeg })]);
+      if (map.getSource(headSrcId)) {
+        (map.getSource(headSrcId) as GeoJSONSource).setData(headData);
+        if (map.getLayer(headLayerId)) {
+          map.setLayoutProperty(headLayerId, 'icon-rotate', ['get', 'rot'] as any);
+          map.setLayoutProperty(headLayerId, 'visibility', 'visible');
+        }
+      } else {
+        map.addSource(headSrcId, { type: 'geojson', data: headData } as any);
+        map.addLayer({
+          id: headLayerId, type: 'symbol', source: headSrcId,
+          layout: {
+            'icon-image': headImgId,
+            'icon-size': 1,
+            'icon-rotate': ['get', 'rot'],
+            'icon-rotation-alignment': 'viewport',
+            'icon-anchor': 'center',
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+          },
+        });
+        if (map.getLayer(headLayerId)) map.moveLayer(headLayerId);
+      }
+    } catch { /* style 未就绪或图标未加载 */ }
+  } else if (map.getLayer(headLayerId)) {
+    map.setLayoutProperty(headLayerId, 'visibility', 'none');
+  }
+
+  // 线中点文案
+  const labelSourceId = `linelabel-src-${element.id}`;
+  const labelBgId = `linelabel-bg-${element.id}`;
+  const labelLayerId = `linelabel-${element.id}`;
+  const hasLabel = !!element.label?.text;
+
+  if (hasLabel) {
+    // 取有效几何的中点
+    const effective = lineEffectiveCoordinates(element);
+    const midCoord = getLineMidpoint(effective);
+    const labelData = turf.featureCollection([turf.point(midCoord, { text: element.label!.text })]);
+
+    if (map.getSource(labelSourceId)) {
+      (map.getSource(labelSourceId) as GeoJSONSource).setData(labelData);
+      // LABEL STYLE 实时同步
+      if (map.getLayer(labelBgId)) {
+        const L = element.label!;
+        map.setLayoutProperty(labelBgId, 'text-size', L.fontSize || 12);
+        map.setPaintProperty(labelBgId, 'text-color', L.color || '#FFFFFF');
+        map.setPaintProperty(labelBgId, 'text-halo-color', L.bgColor || 'rgba(0,0,0,0.7)');
+        map.setPaintProperty(labelBgId, 'text-halo-width', L.bgPadding ?? 3);
+        map.setPaintProperty(labelBgId, 'text-halo-blur', L.bgRadius ?? 2);
+      }
+      if (map.getLayer(labelLayerId)) {
+        const L = element.label!;
+        map.setLayoutProperty(labelLayerId, 'text-size', L.fontSize || 12);
+        map.setPaintProperty(labelLayerId, 'text-color', L.color || '#FFFFFF');
+      }
+    } else {
+      map.addSource(labelSourceId, { type: 'geojson', data: labelData });
+    }
+
+    if (!map.getLayer(labelBgId)) {
+      map.addLayer({
+        id: labelBgId, type: 'symbol', source: labelSourceId,
+        layout: {
+          'text-field': ['get', 'text'],
+          'text-size': element.label?.fontSize || 12,
+          'text-anchor': 'center',
+          'text-offset': [0, 0],
+        },
+        paint: {
+          'text-color': element.label?.color || '#FFFFFF',
+          'text-halo-color': element.label?.bgColor || 'rgba(0,0,0,0.7)',
+          'text-halo-width': element.label?.bgPadding ?? 3,
+          'text-halo-blur': element.label?.bgRadius ?? 2,
+        },
+      });
+    }
+    if (!map.getLayer(labelLayerId)) {
+      map.addLayer({
+        id: labelLayerId, type: 'symbol', source: labelSourceId,
+        layout: {
+          'text-field': ['get', 'text'],
+          'text-size': element.label?.fontSize || 12,
+          'text-anchor': 'center',
+  
+        },
+        paint: {
+          'text-color': element.label?.color || '#FFFFFF',
+        },
+      });
+    }
+  } else {
+    // 无 label 时清理
+    if (map.getLayer(labelBgId)) map.removeLayer(labelBgId);
+    if (map.getLayer(labelLayerId)) map.removeLayer(labelLayerId);
+    if (map.getSource(labelSourceId)) map.removeSource(labelSourceId);
+  }
+
+  // 行军路线流动光点（多颗错位滚动）
+  const dots = Math.max(1, element.routeEffect?.dotCount ?? 1);
+  if ((element.routeEffect?.enabled || (element.flowSpeed && element.flowSpeed > 0)) && dots > 0) {
+    const frameStep = element.routeEffect?.frameStep || element.flowSpeed || 10;
+    const basePhase = (Math.floor(frame / frameStep) % 1000) / 1000;
+    for (let i = 0; i < dots; i++) {
+      const offset = i / dots;
+      const idx = Math.floor((basePhase + offset) * effective.length) % effective.length;
+      const spotCoord = effective[idx];
+      const spotSourceId = `linespot-${element.id}-${i}`;
+      const spotLayerId = `linespot-layer-${element.id}-${i}`;
+      const spotData = turf.featureCollection([turf.point(spotCoord)]);
+      if (map.getSource(spotSourceId)) {
+        (map.getSource(spotSourceId) as GeoJSONSource).setData(spotData);
+      } else {
+        map.addSource(spotSourceId, { type: 'geojson', data: spotData });
+        map.addLayer({
+          id: spotLayerId, type: 'circle', source: spotSourceId,
+          paint: {
+            'circle-radius': element.routeEffect?.spotWidth || 6,
+            'circle-color': element.routeEffect?.spotColor || '#FFE066',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#FFFFFF',
+          },
+        });
+      }
+    }
+  }
+}
+
+/** 将屏幕像素宽度转换为当前缩放/纬度下的经纬度偏移量（用于箭头等需要恒定屏幕尺寸的几何） */
+export function pixelsToDegrees(pixels: number, zoom: number, lat: number): number {
+  const latRad = (lat * Math.PI) / 180;
+  const metersPerPx = (40075016.686 * Math.cos(latRad)) / (256 * Math.pow(2, zoom));
+  return (pixels * metersPerPx) / 111319.49079327358;
+}
+
+// ========== 渲染：面 ==========
+
+function renderPolygon(map: maplibregl.Map, element: PolygonElement, frame: number) {
+  const sourceId = `polygon-${element.id}`;
+  const fillLayerId = `polygon-fill-layer-${element.id}`;
+  const strokeLayerId = `polygon-stroke-layer-${element.id}`;
+
+  let coordinates = element.coordinates;
+  if (element.morphKeyframes && element.morphKeyframes.length > 0) {
+    coordinates = interpolateMorph(element.morphKeyframes, frame);
+  }
+
+  const geojson = turf.featureCollection([turf.polygon(coordinates)]);
+
+  if (map.getSource(sourceId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    if (map.getLayer(fillLayerId)) {
+      map.setPaintProperty(fillLayerId, 'fill-color', element.fillColor || '#FF0000');
+      map.setPaintProperty(fillLayerId, 'fill-opacity', element.fillOpacity ?? 0.3);
+    }
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: fillLayerId, type: 'fill', source: sourceId,
+      paint: { 'fill-color': element.fillColor || '#FF0000', 'fill-opacity': element.fillOpacity ?? 0.3 },
+    });
+    map.addLayer({
+      id: strokeLayerId, type: 'line', source: sourceId,
+      paint: { 'line-color': element.strokeColor || '#FF0000', 'line-width': element.strokeWidth || 2 },
+    });
+  }
+}
+
+// ========== 渲染：军事箭头（燕尾） ==========
+
+/**
+ * 生成军标箭头多边形。
+ * 局部坐标系：from 为原点，x 轴指向 to；y 为垂直方向。燕尾在尾部内凹。
+ * 返回单环（旧式）或多个环（钳形/弯弓）。渲染层按需包成 MultiPolygon。
+ */
+export function buildArrowGeometry(
+  from: [number, number],
+  to: [number, number],
+  width: number,
+  arrowType: 'swallowtail' | 'simple' | 'block' | 'pincer' | 'curved' | 'curved-simple' | 'attack' | 'straight',
+  path?: [number, number][]
+): [number, number][][] {
+  // 钳形：两条燕尾相对中心
+  if (arrowType === 'pincer') {
+    return buildPincerGeometry(from, to, width);
+  }
+  // 弯曲燕尾：沿贝塞尔曲线采样构造条带
+  if (arrowType === 'curved' && path && path.length >= 2) {
+    return buildCurvedSwallowtail(path, width);
+  }
+  // 弯曲普通行军箭头：无燕尾切口、平尾
+  if (arrowType === 'curved-simple' && path && path.length >= 2) {
+    return buildCurvedSwallowtailWithOpts(path, width, { simpleTail: true });
+  }
+  // 进攻箭头（AttackArrow）：用 plot_ol 标准算法，path 为控制点
+  if (arrowType === 'attack' && path && path.length >= 2) {
+    return [buildAttackArrow(path) as [number, number][]];
+  }
+  // 直线箭头（StraightArrow）：两点
+  if (arrowType === 'straight') {
+    return [buildStraightArrow([from, to]) as [number, number][]];
+  }
+
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const L = Math.hypot(dx, dy);
+  if (L === 0) return [[from, to, from]];
+
+  const ux = dx / L, uy = dy / L;
+  const px = -uy, py = ux;
+  const P = (a: number, b: number): [number, number] =>
+    [from[0] + ux * a + px * b, from[1] + uy * a + py * b];
+
+  const u = width;
+  let hl = Math.min(u * 2.4, L * 0.42);
+  const hw = u * 1.15;
+  const sw = u * 0.42;
+  let fl = Math.min(u * 1.7, L * 0.35);
+  const fw = u * 1.05;
+  const nd = u * 0.85;
+
+  const shrink = Math.min(1, L / (u * 5));
+  const HW = hw * shrink, SW = sw * shrink, FW = fw * shrink;
+
+  if (arrowType === 'simple') {
+    return [[
+      P(L - hl, -HW), P(L, 0), P(L - hl, HW),
+      P(L - hl, SW), P(0, SW), P(0, -SW), P(L - hl, -SW),
+    ]];
+  }
+  if (arrowType === 'block') {
+    return [[P(L - hl, -hw), P(L, 0), P(L - hl, hw)]];
+  }
+  // swallowtail
+  return [[
+    P(L, 0),
+    P(L - hl, HW),
+    P(L - hl, SW),
+    P(-fl, FW),
+    P(-fl + nd, 0),
+    P(-fl, -FW),
+    P(L - hl, -SW),
+    P(L - hl, -HW),
+  ]];
+}
+
+/** 钳形（pincer）：两条燕尾箭头从两侧向 `to`（目标）收敛。 */
+function buildPincerGeometry(
+  from: [number, number],
+  to: [number, number],
+  width: number
+): [number, number][][] {
+  // 来向：from→to；两条箭杆在来向两侧，尾部离 to 一定远处，尖端指向 to
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const L = Math.hypot(dx, dy) || 1;
+  const px = -dy / L, py = dx / L;     // 垂直方向
+
+  const u = width;
+  const gap = Math.max(u * 0.5, L * 0.05);   // 两箭离中轴的间距
+  const back = Math.min(u * 2.2, L * 0.25);  // 尾部落点相对 to 的轴向回退
+
+  // 上/下箭杆的"尾基点"（从 to 横移 gap、纵移 back）
+  const tipTo = [to[0], to[1]] as [number, number];
+  const upBase: [number, number] = [
+    to[0] - px * gap - (dx / L) * back,
+    to[1] - py * gap - (dy / L) * back,
+  ];
+  const downBase: [number, number] = [
+    to[0] + px * gap - (dx / L) * back,
+    to[1] + py * gap - (dy / L) * back,
+  ];
+
+  const upArrow = swallowtail(upBase, tipTo, width);
+  const downArrow = swallowtail(downBase, tipTo, width);
+  return [upArrow, downArrow];
+}
+
+/** 从 base 指向 tip 的单条燕尾箭头（复用直线箭头的几何逻辑） */
+function swallowtail(base: [number, number], tip: [number, number], width: number): [number, number][] {
+  return buildArrowGeometry(base, tip, width, 'swallowtail')[0];
+}
+
+/**
+ * 弯曲燕尾箭头：沿贝塞尔曲线采样生成左右条带 + 头部箭头 + 尾部燕尾。
+ * coords 为控制点；先用 turf.bezierSpline 拟合，再等弧长采样。
+ */
+function buildCurvedSwallowtail(coords: [number, number][], width: number): [number, number][][] {
+  return buildCurvedSwallowtailWithOpts(coords, width);
+}
+
+function buildCurvedSwallowtailWithOpts(
+  coords: [number, number][],
+  width: number,
+  opts?: { simpleTail?: boolean }
+): [number, number][][] {
+  if (coords.length < 2) return [];
+  const spline = turf.bezierSpline(turf.lineString(coords), { resolution: 6000, sharpness: 0.6 });
+  const pts = spline.geometry.coordinates as [number, number][];
+  if (pts.length < 2) return [];
+
+  const u = width;
+  const half = u * 0.5;            // 杆半宽
+  const hw = u * 1.2;             // 头半宽
+  const hl = u * 2.4;             // 头长（沿切向）
+  const fl = u * 1.7;             // 燕尾长
+  const fw = u * 1.1;             // 燕尾半宽
+  const fn = u * 0.9;             // 燕尾内凹深度
+
+  // 等弧长采样（含起点 0 与终点 1）
+  const line = turf.lineString(pts);
+  const total = turf.length(line);
+  const segCount = 32;
+  const samples: [number, number][] = [];
+  for (let i = 0; i <= segCount; i++) {
+    const d = (i / segCount) * total;
+    const pt = turf.along(line, Math.min(d, total));
+    samples.push(pt.geometry.coordinates as [number, number]);
+  }
+
+  // 切线：中间点用前后差分，端点用端点差分
+  const tangent = (i: number): [number, number] => {
+    const a = samples[Math.max(0, i - 1)];
+    const b = samples[Math.min(samples.length - 1, i + 1)];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy) || 1;
+    return [dx / len, dy / len];
+  };
+  const normal = (t: [number, number]): [number, number] => [-t[1], t[0]];
+
+  // 左右杆沿曲线
+  const leftEdge: [number, number][] = [];
+  const rightEdge: [number, number][] = [];
+  for (let i = 0; i < samples.length; i++) {
+    const t = tangent(i);
+    const n = normal(t);
+    leftEdge.push([samples[i][0] + n[0] * half, samples[i][1] + n[1] * half]);
+    rightEdge.push([samples[i][0] - n[0] * half, samples[i][1] - n[1] * half]);
+  }
+
+  // 尾部（起点）燕尾：沿起点切线反向 → 两条尾羽 + 内凹点
+  const head = samples[samples.length - 1];
+  const tHead = tangent(samples.length - 1);
+  const nHead = normal(tHead);
+  const headTip: [number, number] = [head[0] + tHead[0] * hl, head[1] + tHead[1] * hl];
+  const headBL: [number, number] = [head[0] + nHead[0] * hw, head[1] + nHead[1] * hw];
+  const headBR: [number, number] = [head[0] - nHead[0] * hw, head[1] - nHead[1] * hw];
+
+  const tail = samples[0];
+  const tTail = tangent(0);          // 起点切线（指向曲线前进方向）
+  const nTail = normal(tTail);
+  const tailOuterL: [number, number] = [tail[0] - tTail[0] * fl + nTail[0] * fw, tail[1] - tTail[1] * fl + nTail[1] * fw];
+  const tailOuterR: [number, number] = [tail[0] - tTail[0] * fl - nTail[0] * fw, tail[1] - tTail[1] * fl - nTail[1] * fw];
+  const tailNotch: [number, number] = [tail[0] - tTail[0] * fl + tTail[0] * fn, tail[1] - tTail[1] * fl + tTail[1] * fn];
+
+  // 多边形：右侧杆（正向）→ 头尖 → 左侧杆（反向）→ 尾部（燕尾切口 或 平起点）
+  const polygon: [number, number][] = opts?.simpleTail
+    ? [
+        rightEdge[0],
+        ...rightEdge.slice(1),
+        headBR,
+        headTip,
+        headBL,
+        ...leftEdge.slice().reverse(),
+      ]
+    : [
+        rightEdge[0],
+        ...rightEdge.slice(1),
+        headBR,
+        headTip,
+        headBL,
+        ...leftEdge.slice().reverse(),
+        tailOuterL,
+        tailNotch,
+        tailOuterR,
+      ];
+
+  return [polygon];
+}
+
+function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) {
+  const sourceId = `arrow-${element.id}`;
+  const layerId = `arrow-layer-${element.id}`;
+  const strokeLayerId = `arrow-stroke-layer-${element.id}`;
+
+  const progress = getProgress(element.progress, frame);
+  const curTo: [number, number] = [
+    element.from[0] + (element.to[0] - element.from[0]) * progress,
+    element.from[1] + (element.to[1] - element.from[1]) * progress,
+  ];
+
+  // 固定地理宽度：用绘制时的 drawZoom 换算，箭头在地图中尺寸固定，随 zoom 缩放
+  const lat = (element.from[1] + curTo[1]) / 2;
+  const geoWidth = typeof element.drawZoom === 'number'
+    ? pixelsToDegrees(element.width, element.drawZoom, lat)
+    : element.width / 111;
+
+  const rings = buildArrowGeometry(element.from, curTo, geoWidth, element.arrowType, element.path);
+  // 转成 MultiPolygon：每个 ring 是一个 polygon
+  const polys = rings.map((ring) => turf.polygon([[...ring, ring[0]]]));
+  const geojson = turf.featureCollection(polys);
+
+  if (map.getSource(sourceId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: layerId, type: 'fill', source: sourceId,
+      paint: { 'fill-color': element.color || '#E23B3B', 'fill-opacity': 0.92 },
+    });
+    map.addLayer({
+      id: strokeLayerId, type: 'line', source: sourceId,
+      paint: { 'line-color': '#7A1010', 'line-width': 1.2, 'line-opacity': 0.8 },
+    });
+  }
+}
+
+// ========== 渲染：双箭头（钳形攻势） ==========
+
+function renderDoubleArrow(map: maplibregl.Map, element: DoubleArrowElement, frame: number) {
+  const sourceId = `darrow-${element.id}`;
+  const layerId = `darrow-layer-${element.id}`;
+  const strokeLayerId = `darrow-stroke-layer-${element.id}`;
+
+  if (element.points.length < 4) return;
+
+  const progress = getProgress(element.progress, frame);
+  // 用完整控制点生成
+  const ring = buildDoubleArrow(element.points.map((p) => p as number[]));
+  if (ring.length < 3) return;
+  if (progress < 1) {
+    // 渐进绘制：按点比例截断
+    const sliced = ring.slice(0, Math.max(3, Math.ceil(ring.length * progress)));
+    const geojsonN = turf.featureCollection([turf.polygon([[...sliced, sliced[0]]])]);
+    (map.getSource(sourceId) as GeoJSONSource)?.setData(geojsonN);
+    return;
+  }
+  const geojson = turf.featureCollection([turf.polygon([[...ring, ring[0]]])]);
+
+  if (map.getSource(sourceId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: layerId, type: 'fill', source: sourceId,
+      paint: { 'fill-color': element.color || '#E23B3B', 'fill-opacity': 0.92 },
+    });
+    map.addLayer({
+      id: strokeLayerId, type: 'line', source: sourceId,
+      paint: { 'line-color': '#7A1010', 'line-width': 1.2, 'line-opacity': 0.8 },
+    });
+  }
+}
+
+// ========== 渲染：包围圈 ==========
+
+function circleRing(center: [number, number], radiusKm: number, segments = 72): [number, number][] {
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    const dx = (radiusKm / 111) * Math.cos(a);
+    const dy = (radiusKm / 111) * Math.sin(a);
+    pts.push([center[0] + dx, center[1] + dy]);
+  }
+  return pts;
+}
+
+function renderEncirclement(map: maplibregl.Map, element: EncirclementElement, _frame: number) {
+  const sourceId = `encirclement-${element.id}`;
+  const fillLayerId = `encirclement-fill-layer-${element.id}`;
+  const layerId = `encirclement-layer-${element.id}`;
+
+  const ring = circleRing(element.center, element.radius);
+  const geojson = turf.featureCollection([turf.polygon([[...ring, ring[0]]])]);
+
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: fillLayerId, type: 'fill', source: sourceId,
+      paint: { 'fill-color': element.strokeColor || '#D33030', 'fill-opacity': 0.08 },
+    });
+    map.addLayer({
+      id: layerId, type: 'line', source: sourceId,
+      paint: { 'line-color': element.strokeColor || '#D33030', 'line-width': 3.5, 'line-dasharray': [4, 2.5] },
+    });
+  } else {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+  }
+}
+
+// ========== 渲染：集结点 ==========
+
+function renderGathering(map: maplibregl.Map, element: GatheringElement, frame: number) {
+  const sourceId = `gathering-${element.id}`;
+  const layerId = `gathering-layer-${element.id}`;
+  const strokeLayerId = `gathering-stroke-layer-${element.id}`;
+
+  // 用 plot_ol GatheringPlace 算法：以 center 为基、radius 为尺寸生成平滑曲边集结地
+  const c = element.center;
+  const rDeg = element.radius / 111;
+  let scaleR = rDeg;
+  if (element.pulseAnimation) {
+    const phase = (frame % 50) / 50;
+    scaleR = rDeg * (0.96 + 0.06 * Math.sin(phase * Math.PI * 2));
+  }
+
+  // 三个控制点：左、上、右，构成集结地的骨架
+  const p0: [number, number] = [c[0] - scaleR * 1.1, c[1]];
+  const p1: [number, number] = [c[0], c[1] + scaleR * 1.5];
+  const p2: [number, number] = [c[0] + scaleR * 1.1, c[1]];
+  const ring = buildGatheringPlace([p0, p1, p2] as any) as [number, number][];
+  const closed: [number, number][] = ring.length > 0 ? [...ring, ring[0]] : [];
+
+  const geojson = turf.featureCollection([
+    turf.polygon([closed], { part: 'gather' }),
+  ]);
+
+  if (map.getSource(sourceId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    if (map.getLayer(layerId)) {
+      map.setPaintProperty(layerId, 'line-color', element.color || '#FF6600');
+    }
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: layerId, type: 'fill', source: sourceId,
+      paint: { 'fill-color': element.color || '#FF6600', 'fill-opacity': 0.15 },
+    });
+    map.addLayer({
+      id: strokeLayerId, type: 'line', source: sourceId,
+      paint: { 'line-color': element.color || '#FF6600', 'line-width': 3, 'line-dasharray': [8, 3], 'line-opacity': 0.9 },
+    });
+  }
+}
+
+// ========== 渲染：军事符号（milsymbol APP-6） ==========
+
+const milIconPending = new Set<string>();
+
+function renderMilitarySymbol(map: maplibregl.Map, element: MilitarySymbolElement) {
+  const sourceId = `mil-${element.id}`;
+  const iconId = `mil-icon-${element.sidc}`;
+  const layerId = `mil-layer-${element.id}`;
+  const labelLayerId = `mil-label-${element.id}`;
+
+  const geojson = turf.featureCollection([
+    turf.point(element.coordinates, { name: element.label || element.name }),
+  ]);
+
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: layerId, type: 'symbol', source: sourceId,
+      layout: {
+        'icon-image': iconId,
+        'icon-size': (element.symbolSize || 32) / 64,
+        'icon-rotate': element.rotation || 0,
+        'icon-allow-overlap': true,
+      },
+    });
+    map.addLayer({
+      id: labelLayerId, type: 'symbol', source: sourceId,
+      layout: {
+        'text-field': ['get', 'name'],
+        'text-size': 12,
+        'text-anchor': 'top',
+        'text-offset': [0, 1.2],
+        'text-max-width': 8,
+      },
+      paint: { 'text-color': '#FFF', 'text-halo-color': '#000', 'text-halo-width': 2 },
+    });
+  } else {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+  }
+
+  ensureMilIcon(map, iconId, element.sidc);
+}
+
+function ensureMilIcon(map: maplibregl.Map, iconId: string, sidc: string) {
+  if (map.hasImage(iconId) || milIconPending.has(iconId)) return;
+  milIconPending.add(iconId);
+  try {
+    const sym = new ms.Symbol(sidc, { size: 64, fill: true });
+    const url = sym.toDataURL();
+    const img = new Image();
+    img.onload = () => {
+      milIconPending.delete(iconId);
+      if (!map.hasImage(iconId)) {
+        try { map.addImage(iconId, img as any, { pixelRatio: 1 }); } catch { /* */ }
+      }
+      map.triggerRepaint();
+    };
+    img.onerror = () => milIconPending.delete(iconId);
+    img.src = url;
+  } catch {
+    milIconPending.delete(iconId);
+  }
+}
+
+// ========== 渲染：连线 ==========
+
+// 依赖注入：connector 坐标解析
+let connectorCoordResolver: ((element: ConnectorElement) => [number, number][] | null) | null = null;
+export function setConnectorCoordResolver(resolver: ((element: ConnectorElement) => [number, number][] | null) | null): void {
+  connectorCoordResolver = resolver;
+}
+
+function renderConnector(map: maplibregl.Map, element: ConnectorElement) {
+  const coords = connectorCoordResolver?.(element);
+  const sourceId = `connector-${element.id}`;
+  const layerId = `connector-layer-${element.id}`;
+  if (!coords) {
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+    if (map.getSource(sourceId)) map.removeSource(sourceId);
+    return;
+  }
+
+  const geojson = turf.featureCollection([turf.lineString(coords)]);
+  if (map.getSource(sourceId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: layerId, type: 'line', source: sourceId,
+      paint: {
+        'line-color': element.lineColor || '#FF8800',
+        'line-width': element.lineWidth || 2,
+        ...(element.animated ? { 'line-dasharray': [4, 4] } : {}),
+      },
+    });
+  }
+
+  if (element.arrowhead && !map.getLayer(`connector-arrow-layer-${element.id}`)) {
+    const arrowSrc = `connector-arrow-${element.id}`;
+    map.addSource(arrowSrc, { type: 'geojson', data: turf.featureCollection([turf.point(coords[coords.length - 1])]) });
+    map.addLayer({
+      id: `connector-arrow-layer-${element.id}`, type: 'symbol', source: arrowSrc,
+      layout: { 'text-field': '▶', 'text-size': 11, 'text-rotate': 90 },
+      paint: { 'text-color': element.lineColor || '#FF8800' },
+    });
+  }
+}
+
+// ========== 渲染：自定义图标（上传图片） ==========
+
+const customIconPending = new Set<string>();
+
+function renderCustomIcon(map: maplibregl.Map, element: CustomIconElement) {
+  const sourceId = `customicon-${element.id}`;
+  const layerId = `customicon-layer-${element.id}`;
+  const symbol = customSymbolsRegistry.find((s) => s.id === element.symbolId);
+  const colorKey = (element.color || '#FFFFFF').replace('#', '');
+  const imageId = `cust-icon-${element.symbolId}-${colorKey}`;
+
+  const geojson = turf.featureCollection([turf.point(element.coordinates)]);
+
+  const flat = element.orientation === 'flat';
+  const rotAlign = flat ? 'map' as const : 'viewport' as const;
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: layerId, type: 'symbol', source: sourceId,
+      layout: {
+        'icon-image': imageId,
+        'icon-size': (element.size || 32) / 64,
+        'icon-rotate': element.rotation || 0,
+        'icon-rotation-alignment': rotAlign,
+        'icon-pitch-alignment': rotAlign,
+        'icon-allow-overlap': true,
+      },
+    });
+  } else if (map.getLayer(layerId)) {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    map.setLayoutProperty(layerId, 'icon-image', imageId);
+    map.setLayoutProperty(layerId, 'icon-size', (element.size || 32) / 64);
+    map.setLayoutProperty(layerId, 'icon-rotate', element.rotation || 0);
+    map.setLayoutProperty(layerId, 'icon-rotation-alignment', rotAlign);
+    map.setLayoutProperty(layerId, 'icon-pitch-alignment', rotAlign);
+  }
+
+  if (symbol?.url) ensureImageIcon(map, imageId, symbol.url, element.size || 32, element.color);
+}
+
+function ensureImageIcon(map: maplibregl.Map, imageId: string, url: string, _size: number, color?: string) {
+  if (map.hasImage(imageId) || customIconPending.has(imageId)) return;
+  customIconPending.add(imageId);
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    customIconPending.delete(imageId);
+    if (map.hasImage(imageId)) return;
+    try {
+      const scale = 64 / Math.max(img.width, img.height);
+      const w = Math.max(2, Math.round(img.width * scale));
+      const h = Math.max(2, Math.round(img.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, w, h);
+      // 图标着色：乘法混合（白色=原图，选色后白色区域染色、深色细节保留）
+      const tint = (color || '#FFFFFF').toUpperCase();
+      if (tint !== '#FFFFFF') {
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.fillStyle = tint;
+        ctx.fillRect(0, 0, w, h);
+        ctx.globalCompositeOperation = 'destination-in';
+        ctx.drawImage(img, 0, 0, w, h); // 恢复原 alpha
+      }
+      const data = ctx.getImageData(0, 0, w, h);
+      map.addImage(imageId, data, { pixelRatio: 1 });
+      map.triggerRepaint();
+    } catch { /* 跨域等失败 */ }
+  };
+  img.onerror = () => customIconPending.delete(imageId);
+  img.src = url;
+}
+
+/** 计算线的中点坐标 */
+function getLineMidpoint(coords: [number, number][]): [number, number] {
+  if (coords.length === 0) return [0, 0];
+  if (coords.length === 1) return coords[0];
+  const line = turf.lineString(coords);
+  const len = turf.length(line);
+  const mid = turf.along(line, len / 2);
+  return mid.geometry.coordinates as [number, number];
+}
+
+// ========== 渲染：旗帜（canvas 动态生成） ==========
+
+const flagIconCache = new Map<string, boolean>();
+
+interface FlagStyle {
+  text: string;
+  flagColor: string;
+  textColor: string;
+  fontSize: number;
+  flagWidth: number;
+  scale: number;
+}
+
+function flagIconId(s: FlagStyle): string {
+  return `flag-${s.flagWidth}-${s.fontSize}-${hashStr(s.text)}-${s.flagColor.replace('#', '')}-${s.textColor.replace('#', '')}`;
+}
+
+function hashStr(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return Math.abs(h).toString(36);
+}
+
+function makeFlagImageData(s: FlagStyle): ImageData | null {
+  const dpr = 2;
+  const fw = s.flagWidth;
+  const fh = Math.max(18, Math.round(fw * 0.62));
+  const poleW = 3 * dpr;
+  const padT = 4 * dpr;
+  const poleH = fh + 10 * dpr;
+  const cw = Math.ceil((fw + poleW + 10 * dpr));
+  const chh = Math.ceil(poleH + padT + 4 * dpr);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = cw; canvas.height = chh;
+  const ctx = canvas.getContext('2d')!;
+
+  // 旗杆
+  ctx.fillStyle = '#4A4A4A';
+  ctx.fillRect(padT, padT, poleW, poleH);
+
+  // 旗面（右侧微切角增加动感）
+  const fx = padT + poleW;
+  const fy = padT;
+  ctx.fillStyle = s.flagColor;
+  ctx.beginPath();
+  ctx.moveTo(fx, fy);
+  ctx.lineTo(fx + fw, fy);
+  ctx.lineTo(fx + fw - 4 * dpr, fy + fh / 2);
+  ctx.lineTo(fx + fw, fy + fh);
+  ctx.lineTo(fx, fy + fh);
+  ctx.closePath();
+  ctx.fill();
+
+  // 描边
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = 1 * dpr;
+  ctx.stroke();
+
+  // 文字
+  if (s.text) {
+    let fs = s.fontSize * (s.scale || 1) * dpr;
+    ctx.font = `bold ${fs}px "Microsoft YaHei", sans-serif`;
+    const maxW = (fw - 8 * dpr);
+    while (fs > 8 * dpr && ctx.measureText(s.text).width > maxW) {
+      fs -= 1 * dpr;
+      ctx.font = `bold ${fs}px "Microsoft YaHei", sans-serif`;
+    }
+    ctx.fillStyle = s.textColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur = 2 * dpr;
+    const tx = fx + fw / 2;
+    const ty = fy + fh / 2;
+    ctx.fillText(s.text, tx, ty);
+    ctx.shadowBlur = 0;
+  }
+
+  return ctx.getImageData(0, 0, cw, chh);
+}
+
+function renderFlag(map: maplibregl.Map, element: FlagElement) {
+  const sourceId = `flag-${element.id}`;
+  const scale = element.scale ?? 1;
+  const style: FlagStyle = {
+    text: element.text || '',
+    flagColor: element.flagColor || '#E23B3B',
+    textColor: element.textColor || '#FFFFFF',
+    fontSize: element.fontSize || 28,
+    flagWidth: Math.max(36, Math.round((element.flagWidth || 72) * scale)),
+    scale,
+  };
+  const imageId = flagIconId(style);
+  const layerId = `flag-layer-${element.id}`;
+
+  const geojson = turf.featureCollection([
+    turf.point(element.coordinates, { name: element.text || element.name }),
+  ]);
+
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.addLayer({
+      id: layerId, type: 'symbol', source: sourceId,
+      layout: {
+        'icon-image': imageId,
+        'icon-size': 0.5,
+        'icon-anchor': 'center',
+        'icon-allow-overlap': true,
+      },
+    });
+  } else {
+    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, 'icon-image', imageId);
+    }
+  }
+
+  if (!map.hasImage(imageId) && !flagIconCache.has(imageId)) {
+    flagIconCache.set(imageId, true);
+    const data = makeFlagImageData(style);
+    if (data) {
+      try {
+        map.addImage(imageId, data, { pixelRatio: 2 });
+        map.triggerRepaint();
+      } catch { /* */ }
+    }
+  }
+}
+
+// ========== 选中高亮几何构建（供 EditableMap 使用） ==========
+
+export function buildSelectionFeature(element: MapElement): any | null {
+  switch (element.type) {
+    case 'point':
+    case 'military_symbol':
+    case 'custom_icon':
+    case 'flag':
+      return turf.point((element as any).coordinates);
+    case 'moving_point':
+      return turf.lineString(element.path);
+    case 'line':
+      return turf.lineString(lineEffectiveCoordinates(element));
+    case 'polygon':
+      return turf.polygon(element.coordinates);
+    case 'encirclement':
+      return turf.polygon([[...circleRing(element.center, element.radius), circleRing(element.center, element.radius)[0]]]);
+    case 'gathering': {
+      const c = element.center;
+      const rDeg = element.radius / 111;
+      const p0: [number, number] = [c[0] - rDeg * 1.1, c[1]];
+      const p1: [number, number] = [c[0], c[1] + rDeg * 1.5];
+      const p2: [number, number] = [c[0] + rDeg * 1.1, c[1]];
+      const ring = buildGatheringPlace([p0, p1, p2] as any) as [number, number][];
+      const closed: [number, number][] = ring.length > 0 ? [...ring, ring[0]] : [];
+      return turf.polygon([closed]);
+    }
+    case 'arrow': {
+      const lat = (element.from[1] + element.to[1]) / 2;
+      const w = typeof element.drawZoom === 'number'
+        ? pixelsToDegrees(element.width, element.drawZoom, lat)
+        : element.width / 111;
+      return turf.feature({
+        type: 'MultiPolygon',
+        coordinates: buildArrowGeometry(element.from, element.to, w, element.arrowType, element.path)
+          .map((r) => [[...r, r[0]]]),
+      } as any);
+    }
+    case 'double_arrow':
+      return turf.feature({
+        type: 'Polygon',
+        coordinates: [[...buildDoubleArrow(element.points as any), buildDoubleArrow(element.points as any)[0]]],
+      } as any);
+    default:
+      return null;
+  }
+}
+
+// ========== 辅助 ==========
+
+function interpolateMorph(
+  morphKeyframes: { frame: number; coordinates: [number, number][][] }[],
+  frame: number
+): [number, number][][] {
+  if (morphKeyframes.length === 0) return [];
+  if (morphKeyframes.length === 1) return morphKeyframes[0].coordinates;
+
+  let prev = morphKeyframes[0];
+  let next = morphKeyframes[morphKeyframes.length - 1];
+
+  for (let i = 0; i < morphKeyframes.length - 1; i++) {
+    if (frame >= morphKeyframes[i].frame && frame <= morphKeyframes[i + 1].frame) {
+      prev = morphKeyframes[i];
+      next = morphKeyframes[i + 1];
+      break;
+    }
+  }
+
+  const range = next.frame - prev.frame;
+  const t = range === 0 ? 0 : (frame - prev.frame) / range;
+
+  return prev.coordinates.map((ring, i) =>
+    ring.map((coord, j) => {
+      const nc = next.coordinates[i]?.[j] || coord;
+      return [coord[0] + (nc[0] - coord[0]) * t, coord[1] + (nc[1] - coord[1]) * t] as [number, number];
+    })
+  );
+}

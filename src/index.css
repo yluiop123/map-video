@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Mapimator Studio 对齐：stone 深色主题（默认深色，无浅色） */
+@layer base {
+  :root {
+    --background: 20 14.3% 4.3%;          /* #0c0a09 stone-950 */
+    --foreground: 60 9.1% 97.8%;          /* #fafaf9 stone-50 */
+    --card: 24 9.8% 10%;                  /* #1c1917 stone-900 */
+    --card-foreground: 60 9.1% 97.8%;
+    --popover: 24 9.8% 10%;
+    --popover-foreground: 60 9.1% 97.8%;
+    --primary: 60 4.8% 95.9%;             /* #e7e5e4 stone-200 */
+    --primary-foreground: 24 9.8% 10%;
+    --secondary: 12 6.5% 15.1%;           /* #292524 stone-800 */
+    --secondary-foreground: 60 9.1% 97.8%;
+    --muted: 12 6.5% 15.1%;
+    --muted-foreground: 25 5.3% 44.7%;    /* #a6a09b stone-400 */
+    --accent: 12 6.5% 15.1%;
+    --accent-foreground: 60 9.1% 97.8%;
+    --destructive: 358.5 100% 69.6%;      /* #ff6568 */
+    --destructive-foreground: 60 9.1% 97.8%;
+    --border: 30 5% 17%;                  /* 白 10% 叠深底的等效实色 */
+    --input: 30 5% 19%;                   /* 白 15% 等效实色 */
+    --ring: 25 5.3% 45.1%;                /* #79716b stone-500 */
+    --radius: 0.625rem;                   /* 10px，Mapimator 同款 */
+    /* 品牌强调色（选中态蓝色，对应参考站 View 卡片/链接蓝） */
+    --brand: 217 91% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Geist', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* 深色细滚动条（对齐参考站） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(0 0% 100% / 0.2) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: hsl(0 0% 100% / 0.18);
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: hsl(0 0% 100% / 0.3);
+}
+
+@layer components {
+  /* 深色输入框：bg 白4.5% + border 白15%，r8px（Mapimator 同款） */
+  .input {
+    @apply w-full px-2.5 py-1.5 text-sm rounded-md border bg-white/[0.045] text-foreground placeholder:text-muted-foreground;
+  }
+
+  .input:focus {
+    @apply outline-none ring-1 ring-ring;
+  }
+
+  /* 深色下拉框：实色底（半透明会让原生选项列表白底配浅字不可读）+ 自定义箭头 */
+  select.input {
+    @apply pr-7;
+    background-color: hsl(12 6.5% 15.1%);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a6a09b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+  }
+
+  select.input option {
+    background-color: #1c1917;
+    color: #fafaf9;
+  }
+
+  .input-color {
+    @apply w-full h-8 border rounded-md cursor-pointer bg-transparent;
+  }
+
+  .btn {
+    @apply px-3 py-1 text-sm rounded-md font-medium hover:opacity-90;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-primary-foreground;
+  }
+
+  .btn-outline {
+    @apply border border-white/15 rounded-md text-foreground hover:bg-accent;
+  }
+}
