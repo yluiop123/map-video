@@ -241,3 +241,51 @@ export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled
     </div>
   );
 }
+
+/**
+ * 数字输入框（文本受控 + 失焦/回车提交）。
+ * 修复受控 number 输入框"输不进"问题：编辑期间只更新本地字符串，
+ * 提交时才解析并回调；光标位置始终保留。
+ */
+export function NumberInput({ value, onCommit, className, step, min, max, title, disabled, style }: {
+  value: number | string;
+  onCommit: (v: number) => void;
+  className?: string;
+  step?: number | string;
+  min?: number | string;
+  max?: number | string;
+  title?: string;
+  disabled?: boolean;
+  style?: React.CSSProperties;
+}) {
+  const [txt, setTxt] = useState<string>(String(value));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setTxt(String(value));
+  }, [value, focused]);
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={txt}
+      onChange={(e) => setTxt(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        const v = parseFloat(txt);
+        if (!Number.isNaN(v)) onCommit(v);
+        else setTxt(String(value));
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+      }}
+      className={className ?? 'input'}
+      step={step}
+      min={min}
+      max={max}
+      title={title}
+      disabled={disabled}
+      style={style}
+    />
+  );
+}

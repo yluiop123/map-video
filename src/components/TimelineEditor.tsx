@@ -73,6 +73,59 @@ export function TimelineEditor() {
   }, [isPlaying, fps, chapterEnd]);
 
   const localFrame = Math.max(0, Math.min(chapterDur, currentFrame - chapterStart));
+
+  // 播放头完全落在某视角的镜头动画区间（移动段）才选中该视角；否则取消选中
+  useEffect(() => {
+    // 正在编辑元素时，播放头移动不打断元素面板
+    if (useEditorStore.getState().panelMode === 'element') return;
+    const kfs = chapter.camera;
+    const clear = () => {
+      if (useEditorStore.getState().selectedKeyframeIdx !== null) {
+        useEditorStore.getState().selectKeyframe(null);
+      }
+    };
+    if (!kfs || kfs.length === 0) { clear(); return; }
+    const arr = [...kfs].sort((a, b) => a.frame - b.frame);
+    // 起点视角（第 1 个）：帧在它之前或它本身 → 选中（回本段开头/第 0 秒可选中）
+    if (currentFrame <= arr[0].frame) {
+      if (useEditorStore.getState().selectedKeyframeIdx !== 0) selectKeyframe(0);
+      return;
+    }
+    // 只有一个视角：后续帧都属于它
+    if (arr.length === 1) {
+      if (useEditorStore.getState().selectedKeyframeIdx !== 0) selectKeyframe(0);
+      return;
+    }
+    // 命中：帧落在某个视角的区间
+    // 固定视角 = 移动动画区间 [kf.frame - moveDuration, kf.frame]
+    // 跟随视角 = 跟随起止 [startFrame, endFrame]
+    // 环绕视角 = 开始 + 环绕时长 [frame, frame + duration*fps]
+    let hit: number | null = null;
+    for (let i = 1; i < arr.length; i++) {
+      const prev = arr[i - 1];
+      const kf = arr[i];
+      let start: number;
+      let end: number;
+      if (kf.followRoute) {
+        start = kf.followRoute.startFrame ?? kf.frame;
+        end = kf.followRoute.endFrame ?? kf.frame;
+      } else if (kf.orbit) {
+        start = kf.frame;
+        end = kf.frame + Math.round((kf.orbit.duration ?? 2) * fps);
+      } else {
+        const gap = Math.max(0, kf.frame - prev.frame);
+        const move = typeof kf.moveDuration === 'number' ? Math.min(kf.moveDuration, gap) : Math.min(2 * fps, gap);
+        start = kf.frame - move;
+        end = kf.frame;
+      }
+      if (currentFrame >= start && currentFrame <= end) { hit = i; break; }
+    }
+    if (hit === null) { clear(); return; }
+    if (useEditorStore.getState().selectedKeyframeIdx !== hit) {
+      selectKeyframe(hit);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFrame, chapter.camera]);
   const localSeconds = localFrame / fps;
   const chapterSeconds = chapterDur / fps;
 
@@ -186,22 +239,37 @@ export function TimelineEditor() {
             const kfs: CameraKeyframe[] = [...(chapter.camera || [])].sort((a, b) => a.frame - b.frame);
             return kfs.map((kf, i) => {
               const prevFrame = i > 0 ? kfs[i - 1].frame : chapterStart;
+              const follow = !!kf.followRoute;
+              const orbit = !!kf.orbit;
               const moveFrames = i === 0
                 ? 0
                 : Math.max(1, typeof kf.moveDuration === 'number'
                     ? Math.min(kf.moveDuration, kf.frame - prevFrame)
-                    : kf.frame - prevFrame);
-              const start = i === 0 ? kf.frame : kf.frame - moveFrames;
+                    : Math.min(2 * fps, kf.frame - prevFrame));
+              // 跟随视角：块 = 跟随的起止时间；环绕视角：块 = 开始时间 + 环绕时长；否则 = 移动段
+              let start: number;
+              let end: number;
+              if (follow) {
+                const fr = kf.followRoute!;
+                start = Math.max(chapterStart, fr.startFrame ?? kf.frame);
+                end = Math.max(start, Math.min(chapterEnd, fr.endFrame ?? kf.frame));
+              } else if (orbit) {
+                start = Math.max(chapterStart, kf.frame);
+                end = Math.max(start, Math.min(chapterEnd, kf.frame + Math.round((kf.orbit?.duration ?? 2) * fps)));
+              } else {
+                start = i === 0 ? kf.frame : kf.frame - moveFrames;
+                end = i === 0 ? kf.frame : kf.frame;
+              }
               const left = (Math.max(0, start - chapterStart) / chapterDur) * 100;
-              const width = i === 0 ? 0 : (moveFrames / chapterDur) * 100;
+              const width = Math.max(0.8, ((end - start) / chapterDur) * 100);
               const active = selectedKeyframeIdx === i;
-              const moveSec = (moveFrames / fps).toFixed(1);
+              const moveSec = ((end - start) / fps).toFixed(1);
 
               if (i === 0) {
                 return (
                   <button
                     key={`kf0-${kf.frame}`}
-                    onClick={() => selectKeyframe(0)}
+                    onClick={() => { selectKeyframe(0); setCurrentFrame(kf.frame); }}
                     className={`absolute top-1 h-6 w-3 -translate-x-1/2 rounded-sm z-10 ${
                       active ? 'bg-brand ring-2 ring-brand/40' : 'bg-brand/60 hover:bg-brand/80'
                     }`}
@@ -213,12 +281,16 @@ export function TimelineEditor() {
               return (
                 <button
                   key={`kf-${kf.frame}-${i}`}
-                  onClick={() => selectKeyframe(i)}
+                  onClick={() => { selectKeyframe(i); setCurrentFrame(start); }}
                   className={`absolute top-1 h-6 rounded-md z-10 overflow-hidden border ${
                     active ? 'bg-brand ring-2 ring-brand/40 border-brand' : 'bg-brand/50 hover:bg-brand/70 border-brand/60'
                   }`}
-                  style={{ left: `${left}%`, width: `${Math.max(0.8, width)}%` }}
-                  title={`视角${i + 1} · 移动 ${moveSec}s · 到达 t=${((kf.frame - chapterStart) / fps).toFixed(1)}s`}
+                  style={{ left: `${left}%`, width: `${width}%` }}
+                  title={follow
+                    ? `跟随视角${i + 1} · 跟随 ${moveSec}s · ${((start - chapterStart) / fps).toFixed(1)}s → ${((end - chapterStart) / fps).toFixed(1)}s`
+                    : orbit
+                      ? `环绕视角${i + 1} · 开始 ${((start - chapterStart) / fps).toFixed(1)}s · 持续 ${moveSec}s`
+                      : `视角${i + 1} · 移动 ${moveSec}s · 到达 t=${((kf.frame - chapterStart) / fps).toFixed(1)}s`}
                 >
                   <span className="block h-full w-full text-[10px] leading-6 text-white text-left pl-1 truncate">
                     {i + 1}

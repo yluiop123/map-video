@@ -100,6 +100,46 @@ export interface MapElementBase {
   endFrame: number;
   style: ElementStyle;
   zIndex?: number;
+  /** 来源分类：区分形状工具绘制（multi=多点/two=两点/special=特殊）与路线工具绘制（route）。
+   * 属性面板据此选择对应设置面板；无标记时按语义回退。 */
+  shapeCategory?: 'multi' | 'two' | 'special' | 'route';
+  /** 动画效果：grow=普通增长(默认) / move=路线移动 / fill=填充 */
+  animEffect?: 'grow' | 'move' | 'fill';
+  /** 显示移动图标（标记点沿路径移动） */
+  showIcon?: boolean;
+  /** 移动标记样式（复用标记 Pin 的 dot/pin/emoji/bubble/text/flag/自定义图标） */
+  moveIcon?: {
+    shape?: 'dot' | 'pin' | 'emoji' | 'bubble' | 'text' | 'flag' | 'image';
+    color?: string;
+    emoji?: string;
+    scale?: number;
+    labelText?: string;
+    labelColor?: string;
+    labelBg?: string;
+    labelSize?: number;
+    labelPadding?: number;
+    labelRadius?: number;
+    labelPos?: string;
+    /** 旗帜文字 */
+    flagText?: string;
+    flagColor?: string;
+    /** 自定义图标 symbolId */
+    symbolId?: string;
+    /** 朝向：faceCam=面向镜头(默认)；flat=贴地 */
+    orientation?: 'faceCam' | 'flat';
+    /** flat 贴地时的旋转角 */
+    rotation?: number;
+    /** 是否显示标签（文字/气泡/点旁的标记标签） */
+    showLabel?: boolean;
+  };
+  /** 移动图标动画起始帧（图标从路径起点出发） */
+  moveStartFrame?: number;
+  /** 移动图标动画结束帧（图标到达终点） */
+  moveEndFrame?: number;
+  /** 均匀移动：true=全程匀速；false=各路径点自定义到达时间 */
+  uniformMove?: boolean;
+  /** 非均匀移动时每个路径点（含首点）的到达帧 */
+  pointTimes?: number[];
 }
 
 export interface PointElement extends MapElementBase {
@@ -151,6 +191,19 @@ export interface LineElement extends MapElementBase {
   };
   /** 自动变化的线：循环流动的虚线段（行军蚁效果） */
   flowSpeed?: number;          // 0 = 关闭；>0 启用，每 N 帧相位前进一步
+  /** 无样式路线：预览/导出不显示线条本身（仅显示移动图标） */
+  plainPath?: boolean;
+  /** 战线装饰（钢铁雄心防线风格）：主线一侧的短梳齿 */
+  frontStyle?: {
+    /** 齿长度（px，屏幕像素） */
+    toothLength?: number;
+    /** 齿间距（px，屏幕像素） */
+    toothGap?: number;
+    /** 齿偏角（度，相对主线法向；0=垂直） */
+    toothAngle?: number;
+    /** 齿朝向哪一侧：1=顺时针侧（右），-1=逆时针侧（左） */
+    side?: 1 | -1;
+  };
   /** 线中点文案 */
   label?: LabelConfig;
 }
@@ -166,12 +219,16 @@ export interface PolygonElement extends MapElementBase {
   /** 战线/占领区推进动画：从一侧到另一侧 */
   fillProgress?: Keyframe<number>[];
   fillGradient?: { enabled: boolean; fromColor: string; toColor: string };
-  /** 形状种类（Shape Settings 切换用）：普通多边形 / 矩形 / 圆 */
-  shapeKind?: 'poly' | 'rect' | 'circle';
+  /** 形状种类（Shape Settings 切换用）：普通多边形 / 矩形 / 圆 / 五角星 */
+  shapeKind?: 'poly' | 'rect' | 'circle' | 'star';
   /** shapeKind==='circle' 时的可编辑参数 */
   circleMeta?: { center: [number, number]; radius: number };
   /** shapeKind==='rect' 时的对角点 */
   rectMeta?: { c1: [number, number]; c2: [number, number] };
+  /** shapeKind==='star' 时的参数 */
+  starMeta?: { center: [number, number]; radius: number };
+  /** 旋转角（绕中心，度；与矩形/五角星配合；圆对称不受影响） */
+  rotation?: number;
 }
 
 export interface ArrowElement extends MapElementBase {
@@ -210,6 +267,8 @@ export interface GatheringElement extends MapElementBase {
   radius: number;
   color: string;
   pulseAnimation?: boolean;
+  /** 旋转角（度，绕中心） */
+  rotation?: number;
 }
 
 export interface MilitarySymbolElement extends MapElementBase {
@@ -331,6 +390,25 @@ export interface CameraKeyframe {
   easing?: EasingType;
   /** 进入本视角的镜头移动持续帧数；未设置=从上一视角立即开始移动（旧行为） */
   moveDuration?: number;
+  /** 视角类型：fixed=固定(默认) / follow=跟随 / orbit=环绕 */
+  cameraType?: 'fixed' | 'follow' | 'orbit';
+  /** 跟随视角：center 动态跟随路线元素上的动画进度点（坐标动态） */
+  followRoute?: {
+    routeElementId: string;
+    /** 跟随路线方向：开启后按路线切线自动计算视角朝向（默认开） */
+    followDirection?: boolean;
+    /** 跟随动画开始帧（默认=路线显示开始时间） */
+    startFrame?: number;
+    /** 跟随动画结束帧（默认=路线显示结束时间） */
+    endFrame?: number;
+  };
+  /** 环绕视角：相机绕中心点旋转（bearing 随时间变化） */
+  orbit?: {
+    /** 旋转速度（度/秒） */
+    speed?: number;
+    /** 环绕时长（秒） */
+    duration?: number;
+  };
 }
 
 // ========== 转场类型 ==========

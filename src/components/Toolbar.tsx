@@ -36,9 +36,62 @@ const TOOLS: ModeItem[] = [
 
 const ROUTE_MODES: InteractionMode[] = ['add_line', 'add_bezier', 'add_line_arc', 'add_arrow', 'add_curved', 'add_pincer'];
 
+/** 形状工具的模式（«形状»按钮高亮判定） */
+const SHAPE_MODES: InteractionMode[] = [
+  'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow',
+  'add_shape_front_line', 'add_shape_front_curve',
+  'add_shape_march', 'add_shape_circle', 'add_shape_star', 'add_special_swallow',
+  'add_polygon', 'add_rect', 'add_gathering', 'add_pincer',
+];
+
+/** 形状分类菜单数据 */
+interface ShapeItem {
+  mode: InteractionMode;
+  zh: string;
+  en: string;
+  glyph: string;
+  hint?: string;
+}
+const SHAPE_GROUPS: { zh: string; en: string; items: ShapeItem[] }[] = [
+  {
+    zh: '多点绘制', en: 'Multi-point',
+    items: [
+      { mode: 'add_shape_line', zh: '直线', en: 'Straight Line', glyph: '─' },
+      { mode: 'add_shape_bezier', zh: '曲线', en: 'Curve', glyph: '〰' },
+      { mode: 'add_shape_line_arrow', zh: '带箭头直线', en: 'Arrow Line', glyph: '──▶' },
+      { mode: 'add_shape_bezier_arrow', zh: '带箭头曲线', en: 'Arrow Curve', glyph: '➤' },
+      { mode: 'add_shape_front_line', zh: '直线战线', en: 'Front Line', glyph: '▮─' },
+      { mode: 'add_shape_front_curve', zh: '弯曲战线', en: 'Curved Front', glyph: 'ㅤ〰' },
+      { mode: 'add_shape_march', zh: '行军箭头', en: 'March Arrow', glyph: '⚔️' },
+      { mode: 'add_polygon', zh: '多边形', en: 'Polygon', glyph: '⬛' },
+    ],
+  },
+  {
+    zh: '两点绘制', en: 'Two-point',
+    items: [
+      { mode: 'add_shape_circle', zh: '圆', en: 'Circle', glyph: '◯', hint: '不可旋转' },
+      { mode: 'add_rect', zh: '矩形', en: 'Rectangle', glyph: '▭', hint: '可旋转' },
+      { mode: 'add_gathering', zh: '集结点', en: 'Gathering', glyph: '⚙', hint: '可旋转' },
+      { mode: 'add_shape_star', zh: '五角星', en: 'Star', glyph: '⭐', hint: '可旋转' },
+    ],
+  },
+  {
+    zh: '特殊图形', en: 'Special',
+    items: [
+      { mode: 'add_special_swallow', zh: '自定义燕尾箭头', en: 'Custom Swallowtail', glyph: '🪶', hint: 'attack+燕尾' },
+      { mode: 'add_attack', zh: '自定义箭头', en: 'Custom Arrow', glyph: '➹', hint: 'bent attack' },
+      { mode: 'add_pincer', zh: '钳形', en: 'Pincer', glyph: '🩹', hint: '4点自动合成' },
+    ],
+  },
+];
+
 /** 工具当前是否激活（用于高亮） */
 function toolActive(t: ModeItem, mode: InteractionMode): boolean {
-  if (t.mode) return t.mode === mode || (t.label === 'Route' && ROUTE_MODES.includes(mode));
+  if (t.mode) {
+    if (t.label === 'Route') return ROUTE_MODES.includes(mode);
+    if (t.label === 'Shape') return SHAPE_MODES.includes(mode);
+    return t.mode === mode;
+  }
   if (t.label === 'Pin') return mode === 'add_point' || mode === 'add_flag';
   if (t.label === 'Text') return mode === 'add_text';
   if (t.label === 'Image') return mode === 'add_custom';
@@ -162,12 +215,13 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
   );
 }
 
-/** 地图上方浮动工具条：选择 + 六大扁平工具 */
+/** 地图上方浮动工具条：选择 + 五大扁平工具（形状点击展开分类菜单） */
 export function FloatingTools() {
   const mode = useInteractionStore((s) => s.mode);
   const setMode = useInteractionStore((s) => s.setMode);
   const lang = useEditorStore((s) => s.lang);
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
+  const [shapeOpen, setShapeOpen] = useState(false);
 
   const item = 'h-8 px-2.5 flex items-center gap-1.5 rounded-full text-xs font-medium transition-colors shrink-0';
 
@@ -182,7 +236,8 @@ export function FloatingTools() {
               if (tool.action === 'regionPicker') setRegionPickerOpen(true);
               else if (tool.action === 'place-pin') { useInteractionStore.getState().requestPlace('pin'); setMode('select'); }
               else if (tool.action === 'place-image') { useInteractionStore.getState().requestPlace('image'); setMode('select'); }
-              else if (tool.mode) setMode(tool.mode);
+              else if (tool.mode === 'add_polygon') setShapeOpen((v) => !v);
+              else if (tool.mode) { setShapeOpen(false); setMode(tool.mode); }
             }}
             className={`${item} ${toolActive(tool, mode) ? 'bg-white/15 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'}`}
           >
@@ -191,6 +246,47 @@ export function FloatingTools() {
           </button>
         ))}
       </div>
+
+      {/* 形状分类菜单（展开在工具条下方） */}
+      {shapeOpen && (
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[460px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+          {SHAPE_GROUPS.map((g) => (
+            <div key={g.zh}>
+              <div className="flex items-center gap-2 mb-1.5">
+                <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-orange-300/90 bg-orange-500/10 rounded">
+                  {lang === 'en' ? g.en : g.zh}
+                </div>
+                <div className="flex-1 h-px bg-white/[0.08]" />
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {g.items.map((s) => (
+                  <button
+                    key={s.mode}
+                    title={s.hint ? `${lang === 'en' ? s.en : s.zh}（${s.hint}）` : (lang === 'en' ? s.en : s.zh)}
+                    onClick={() => { setShapeOpen(false); setMode(s.mode); }}
+                    className={`flex flex-col items-center gap-1 py-2 px-1 rounded-lg border transition-colors ${
+                      mode === s.mode
+                        ? 'bg-brand/25 border-brand/60 text-foreground shadow-inner'
+                        : 'bg-white/[0.04] border-white/[0.09] text-foreground/85 hover:bg-white/10 hover:border-white/25'
+                    }`}
+                  >
+                    <span className="text-lg leading-none drop-shadow-sm">{s.glyph}</span>
+                    <span className="text-[10.5px] leading-tight font-medium text-center">
+                      {lang === 'en' ? s.en : s.zh}
+                    </span>
+                    {s.hint && (
+                      <span className="text-[9px] leading-tight text-muted-foreground/80 text-center">{s.hint}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
+            {lang === 'en' ? 'Click map to draw; multi-point dblclick to finish; right-click/Esc cancel. Shapes: drag vertices, rotate in panel.' : '点击地图绘制；多点图形双击完成，右键/Esc 取消。形状可拖拽顶点编辑，矩形/集结点/五角星可旋转。'}
+          </p>
+        </div>
+      )}
 
       {regionPickerOpen && <RegionPickerDialog onClose={() => setRegionPickerOpen(false)} />}
     </>

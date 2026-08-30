@@ -6,7 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import * as turf from '@turf/turf';
 import {
   renderElements, setCustomSymbols,
-  buildArrowGeometry, buildSelectionFeature, pixelsToDegrees,
+  buildArrowGeometry, buildSelectionFeature, pixelsToDegrees, rotatePt, resolveFollowCam, resolveOrbitCam,
 } from '../lib/map-renderer';
 import { buildDoubleArrow, buildGatheringPlace } from '../lib/military-plots';
 import { interpolateCamera, getEasing, interpolateKeyframes, interpolatePath } from '../lib/keyframe-interpolation';
@@ -28,8 +28,8 @@ interface EditableMapProps {
   currentFrame: number;
 }
 
-const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering'];
-const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line', 'add_moving_bezier']);
+const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve'];
+const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line', 'add_moving_bezier', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_front_line', 'add_shape_front_curve']);
 
 export function EditableMap({ project, chapter, currentFrame }: EditableMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -162,8 +162,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       el = {
         id: generateId(), type: 'point', name: '标记点', visible: true, locked: false,
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
-        coordinates: lngLat, color: '#FF4444', iconSize: 10,
-        label: { text: '标记点', fontSize: 13, color: '#000000', position: 'bottom', bgColor: '#FFFFFF', bgPadding: 6, bgRadius: 6 },
+        coordinates: lngLat, color: '#FF4444', iconSize: 10, shape: 'pin',
+        label: { text: '标记点', fontSize: 13, color: '#000000', position: 'top', bgColor: '#FFFFFF', bgPadding: 6, bgRadius: 6 },
       } as PointElement;
     } else if (kind === 'image') {
       const first = project.customSymbols[0];
@@ -220,9 +220,22 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const map = mapRef.current;
     if (!map) return;
     if (chapter.camera && chapter.camera.length > 0) {
-      const cam = interpolateCamera(chapter.camera, currentFrame, project.globalConfig.defaultFPS);
+      const kfs = [...chapter.camera].sort((a, b) => a.frame - b.frame);
+      const fps = project.globalConfig.defaultFPS;
+      const cam = interpolateCamera(chapter.camera, currentFrame, fps);
+      // 跟随视角：center 动态跟随选中路线的动画进度点，bearing 按切线方向
+      let jump = { center: cam.center, zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 };
+      const kfIdx = resolveKfIndex(kfs, currentFrame, fps);
+      const kf = kfIdx >= 0 ? kfs[Math.min(kfIdx, kfs.length - 1)] : undefined;
+      if (kf?.followRoute) {
+        const fc = resolveFollowCam(chapter.elements, kf, currentFrame);
+        if (fc) jump = fc;
+      } else if (kf?.orbit) {
+        const oc = resolveOrbitCam(kf, currentFrame, fps);
+        if (oc) jump = oc;
+      }
       try {
-        map.jumpTo({ center: cam.center, zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 });
+        map.jumpTo(jump);
       } catch { /* 相机尚未可用 */ }
     }
   }, [currentFrame, chapter.camera]);
@@ -307,9 +320,9 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const anchorLat = (points[0]?.[1] ?? cursor?.[1] ?? 35);
     const arrowWidth = pixelsToDegrees(ARROW_PX, map.getZoom(), anchorLat);
 
-    if ((mode === 'add_line' || mode === 'add_bezier') && cursor) {
+    if ((mode === 'add_line' || mode === 'add_bezier' || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_front_line' || mode === 'add_shape_front_curve') && cursor) {
       const coords = [...points, cursor];
-      const eff = mode === 'add_bezier' ? approxBezier(coords) : coords;
+      const eff = (mode === 'add_bezier' || mode === 'add_shape_bezier' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_front_curve') ? approxBezier(coords) : coords;
       if (eff.length >= 2) fc.push(turf.lineString(eff));
     } else if (mode === 'add_moving_line') {
       const coords = cursor ? [...points, cursor] : points;
@@ -322,15 +335,41 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         fc.push(turf.lineString(eff));
       } else if (cursor) fc.push(turf.point(cursor));
     } else if (mode === 'add_curved' && (points.length > 0 || cursor)) {
-      const previewPts = cursor && points.length > 0 ? [...points, cursor] : points;
-      if (previewPts.length >= 2) {
-        const rings = buildArrowGeometry(previewPts[0], previewPts[previewPts.length - 1], arrowWidth, 'curved', previewPts);
+      const basePts = points.length >= 2 ? points : (cursor && points.length === 1 ? [...points, cursor] : points);
+      if (basePts.length >= 2) {
+        const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved', basePts);
+        rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
+      }
+    } else if (mode === 'add_shape_march' && (points.length > 0 || cursor)) {
+      // 行军箭头（curved-simple）：方向以最后两个已采集点为准，避免悬停鼠标回勾
+      const basePts = points.length >= 2
+        ? points
+        : (cursor && points.length === 1 ? [...points, cursor] : points);
+      if (basePts.length >= 2) {
+        const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved-simple', basePts);
+        rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
+      }
+    } else if (mode === 'add_shape_swallowtail' && (points.length > 0 || cursor)) {
+      // 燕尾箭头（curved）：方向以最后两个已采集点为准
+      const basePts = points.length >= 2
+        ? points
+        : (cursor && points.length === 1 ? [...points, cursor] : points);
+      if (basePts.length >= 2) {
+        const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved', basePts);
+        rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
+      }
+    } else if (mode === 'add_special_swallow' && (points.length > 0 || cursor)) {
+      // 自定义燕尾箭头（attack 算法，尾部燕尾）：跟随鼠标实时预览
+      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
+      if (basePts.length >= 2) {
+        const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'attack', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
     } else if (mode === 'add_attack' && (points.length > 0 || cursor)) {
-      const previewPts = cursor && points.length > 0 ? [...points, cursor] : points;
-      if (previewPts.length >= 2) {
-        const rings = buildArrowGeometry(previewPts[0], previewPts[previewPts.length - 1], arrowWidth, 'attack', previewPts);
+      // 自定义箭头（attack）：跟随鼠标实时预览
+      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
+      if (basePts.length >= 2) {
+        const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'attack', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
     } else if (mode === 'add_polygon' && cursor) {
@@ -368,6 +407,14 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       const p2: [number, number] = [c[0] + rDeg * 1.1, c[1]];
       const shape = buildGatheringPlace([p0, p1, p2] as any) as [number, number][];
       if (shape.length >= 3) fc.push(turf.polygon([[...shape, shape[0]]]));
+      fc.push(turf.point(points[0]));
+    } else if ((mode === 'add_shape_circle' || mode === 'add_shape_star') && points.length >= 1 && cursor) {
+      // 圆 / 五角星：第1点=圆心,移动调半径
+      const r = Math.max(0.5, turf.distance(points[0], cursor, { units: 'kilometers' }));
+      const ring = mode === 'add_shape_circle'
+        ? circleCoords(points[0], r)
+        : polyStarCoords(points[0], r);
+      fc.push(turf.lineString([...ring, ring[0]]));
       fc.push(turf.point(points[0]));
     }
 
@@ -482,6 +529,9 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
           startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
           coordinates: [ring],
           fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
+          shapeKind: 'rect',
+          rectMeta: { c1: [x1, y1], c2: [x2, y2] },
+          shapeCategory: 'two',
         } as PolygonElement);
         resetDraw();
       }
@@ -500,6 +550,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
           points: pts.slice(0, 4) as [number, number][],
           color: '#E23B3B',
           progress: [{ frame: chapter.startFrame, value: 1 }],
+          shapeCategory: 'special',
         } as DoubleArrowElement);
         resetDraw();
       }
@@ -512,7 +563,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       updatePreview();
       return;
     }
-    if (mode === 'add_encirclement' || mode === 'add_gathering') {
+    if (mode === 'add_encirclement' || mode === 'add_gathering' || mode === 'add_shape_circle' || mode === 'add_shape_star') {
       if (d.points.length === 0) {
         d.points = [lngLat];
         d.phase = 'radius';
@@ -526,12 +577,33 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
             startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
             center: d.points[0], radius, fillColor: '#D33030', strokeColor: '#D33030',
           } as EncirclementElement);
-        } else {
+        } else if (mode === 'add_gathering') {
           createElementAndSelect({
             id: generateId(), type: 'gathering', name: '集结点', visible: true, locked: false,
             startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
             center: d.points[0], radius, color: '#FF6600', pulseAnimation: true,
+            shapeCategory: 'two',
           } as GatheringElement);
+        } else if (mode === 'add_shape_circle') {
+          createElementAndSelect({
+            id: generateId(), type: 'polygon', name: '圆', visible: true, locked: false,
+            startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+            coordinates: [circleCoords(d.points[0], radius)],
+            fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
+            shapeKind: 'circle',
+            circleMeta: { center: d.points[0], radius },
+            shapeCategory: 'two',
+          } as PolygonElement);
+        } else {
+          createElementAndSelect({
+            id: generateId(), type: 'polygon', name: '五角星', visible: true, locked: false,
+            startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+            coordinates: [polyStarCoords(d.points[0], radius)],
+            fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
+            shapeKind: 'star',
+            starMeta: { center: d.points[0], radius },
+            shapeCategory: 'two',
+          } as PolygonElement);
         }
         resetDraw();
       }
@@ -539,7 +611,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     }
 
     // —— 移动路径 / 线 / 贝塞尔 / 大圆弧 / 面：采点，双击或回车完成 ——
-    if (mode === 'add_moving_line' || mode === 'add_moving_bezier' || mode === 'add_line' || mode === 'add_bezier' || mode === 'add_line_arc' || mode === 'add_polygon') {
+    if (mode === 'add_moving_line' || mode === 'add_moving_bezier' || mode === 'add_line' || mode === 'add_bezier' || mode === 'add_line_arc' || mode === 'add_polygon' || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_march' || mode === 'add_shape_swallowtail' || mode === 'add_special_swallow' || mode === 'add_shape_front_line' || mode === 'add_shape_front_curve') {
       d.points.push(lngLat);
       d.cursor = lngLat;
       updatePreview();
@@ -575,15 +647,17 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         points: pts as [number, number][],
         color: '#E23B3B',
         progress: [{ frame: chapter.startFrame, value: 1 }],
+        shapeCategory: 'special',
       } as DoubleArrowElement);
     } else if (mode === 'add_attack') {
       if (pts.length < 2) return;
       createElementAndSelect({
-        id: generateId(), type: 'arrow', name: '进攻箭头', visible: true, locked: false,
+        id: generateId(), type: 'arrow', name: '自定义箭头', visible: true, locked: false,
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
-        from: pts[0], to: pts[pts.length - 1], arrowType: 'attack', path: pts,
+        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
         progress: [{ frame: chapter.startFrame, value: 1 }], drawZoom: map.getZoom(),
+        shapeCategory: 'special',
       } as ArrowElement);
     } else if (mode === 'add_moving_line') {
       if (pts.length < 2) return;
@@ -612,37 +686,104 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         coordinates: pts,
         drawProgress: [{ frame: chapter.startFrame, value: 1 }],
-        lineWidth: 3, lineColor: '#2277FF', lineType: 'arc',
+        lineWidth: 8, lineColor: '#2277FF', lineType: 'arc',
       } as LineElement);
-    } else if (mode === 'add_line' || mode === 'add_bezier') {
+    } else if (mode === 'add_line' || mode === 'add_bezier' || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow') {
       if (pts.length < 2) return;
+      const shape = mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow';
+      const bez = mode === 'add_bezier' || mode === 'add_shape_bezier' || mode === 'add_shape_bezier_arrow';
+      const arrow = mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow';
       createElementAndSelect({
         id: generateId(), type: 'line',
-        name: mode === 'add_bezier' ? '曲线' : '路线',
+        name: arrow ? (bez ? '带箭头曲线' : '带箭头直线') : bez ? '曲线' : (shape ? '直线' : '路线'),
+        visible: true, locked: false,
+        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        coordinates: pts,
+        drawProgress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
+        moveStartFrame: chapter.startFrame,
+        moveEndFrame: chapter.endFrame,
+        animEffect: 'grow',
+        showIcon: !shape,
+        uniformMove: true,
+        lineWidth: 8, lineColor: '#FF4444',
+        ...(bez ? { lineType: 'bezier' as const } : {}),
+        ...(arrow ? { lineArrow: true } : {}),
+        ...(shape ? { shapeCategory: 'multi' as const } : {}),
+      } as LineElement);
+    } else if (mode === 'add_shape_march') {
+      if (pts.length < 2) return;
+      createElementAndSelect({
+        id: generateId(), type: 'arrow', name: '行军箭头', visible: true, locked: false,
+        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved-simple', path: pts,
+        width: 15, color: '#E23B3B',
+        progress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
+        moveStartFrame: chapter.startFrame, moveEndFrame: chapter.endFrame,
+        showIcon: true, uniformMove: true, animEffect: 'move' as const,
+        drawZoom: map.getZoom(),
+        shapeCategory: 'multi',
+      } as ArrowElement);
+    } else if (mode === 'add_shape_swallowtail') {
+      if (pts.length < 2) return;
+      createElementAndSelect({
+        id: generateId(), type: 'arrow', name: '燕尾箭头', visible: true, locked: false,
+        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
+        width: 15, color: '#E23B3B',
+        progress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
+        moveStartFrame: chapter.startFrame, moveEndFrame: chapter.endFrame,
+        showIcon: true, uniformMove: true, animEffect: 'move' as const,
+        drawZoom: map.getZoom(),
+        shapeCategory: 'multi',
+      } as ArrowElement);
+    } else if (mode === 'add_special_swallow') {
+      if (pts.length < 2) return;
+      createElementAndSelect({
+        id: generateId(), type: 'arrow', name: '自定义燕尾箭头', visible: true, locked: false,
+        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
+        width: 15, color: '#E23B3B',
+        progress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
+        moveStartFrame: chapter.startFrame, moveEndFrame: chapter.endFrame,
+        showIcon: true, uniformMove: true, animEffect: 'move' as const,
+        drawZoom: map.getZoom(),
+        shapeCategory: 'special',
+      } as ArrowElement);
+    } else if (mode === 'add_shape_front_line' || mode === 'add_shape_front_curve') {
+      if (pts.length < 2) return;
+      const curved = mode === 'add_shape_front_curve';
+      createElementAndSelect({
+        id: generateId(), type: 'line',
+        name: curved ? '弯曲战线' : '直线战线',
         visible: true, locked: false,
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         coordinates: pts,
         drawProgress: [{ frame: chapter.startFrame, value: 1 }],
-        lineWidth: 3, lineColor: '#FF4444',
-        ...(mode === 'add_bezier' ? { lineType: 'bezier' as const } : {}),
+        lineWidth: 8, lineColor: '#FF6600',
+        lineType: curved ? ('bezier' as const) : ('straight' as const),
+        frontStyle: { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 },
+        shapeCategory: 'multi',
       } as LineElement);
     } else if (mode === 'add_polygon') {
       if (pts.length < 3) return;
       pts = [...pts, pts[0]];
       createElementAndSelect({
-        id: generateId(), type: 'polygon', name: '区域', visible: true, locked: false,
+        id: generateId(), type: 'polygon', name: '多边形', visible: true, locked: false,
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         coordinates: [pts],
         fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
+        shapeKind: 'poly',
+        shapeCategory: 'multi',
       } as PolygonElement);
     } else if (mode === 'add_curved') {
       if (pts.length < 2) return;
       createElementAndSelect({
         id: generateId(), type: 'arrow', name: '弯曲箭头', visible: true, locked: false,
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
-        from: pts[0], to: pts[pts.length - 1], arrowType: 'curved', path: pts,
+        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
         width: 15, color: '#E23B3B',
         progress: [{ frame: chapter.startFrame, value: 1 }], drawZoom: map.getZoom(),
+        shapeCategory: 'special',
       } as ArrowElement);
     }
 
@@ -698,12 +839,13 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const editPath = selEl ? routePathOf(selEl) : null;
 
     // 添加点模式：命中已有顶点 → 退出添加模式转顶点拖拽（任意关键点都可编辑）；
-    // 命中空白地图 → 在带路径的选中路线末尾追加（可连续追加）。
+    // 命中空白地图 → 在带路径的选中路线末尾追加（可连续追加，仅路线类）。
+    const APPENDABLE = new Set(['line', 'moving_point', 'arrow', 'double_arrow']);
     if (rEdit === 'add') {
       const vAdd = hitRouteVertex(map, e.point, ch.elements, selId);
       if (vAdd) {
         useEditorStore.getState().setRouteEdit('none');
-      } else if (editPath) {
+      } else if (editPath && APPENDABLE.has((selEl as MapElement).type)) {
         const c = editPath.map((p2) => [p2[0], p2[1]] as [number, number]);
         const last = c[c.length - 1];
         const np: [number, number] = [e.lngLat.lng, e.lngLat.lat];
@@ -789,18 +931,14 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     // 顶点拖拽：只更新被拖动的路径点（起点/终点/中间点）
     if (drag.vertex !== undefined) {
       const el = chapter.elements.find((x) => x.id === drag.elementId);
-      const path = el ? routePathOf(el) : null;
-      if (!el || !path || drag.vertex >= path.length) return;
-      const bbox = containerRef.current?.getBoundingClientRect();
-      if (!bbox) return;
-      const lngLat = map.unproject([e.clientX - bbox.left, e.clientY - bbox.top]);
-      const c = path.map((p) => [p[0], p[1]] as [number, number]);
-      c[drag.vertex] = [lngLat.lng, lngLat.lat];
-      const field = el.type === 'moving_point' || el.type === 'arrow' ? 'path'
-        : el.type === 'double_arrow' ? 'points' : 'coordinates';
-      useProjectStore.getState().updateElement(chapter.id, drag.elementId, { [field]: c } as Partial<MapElement>);
-      drag.x = e.clientX;
-      drag.y = e.clientY;
+      if (!el) return;
+      const bb = containerRef.current?.getBoundingClientRect();
+      if (!bb) return;
+      const changed = patchElementVertex(el, drag.vertex, e.clientX, e.clientY, bb, map, chapter.id);
+      if (changed) {
+        drag.x = e.clientX;
+        drag.y = e.clientY;
+      }
       return;
     }
 
@@ -896,6 +1034,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (!el) return;
     // 路线类元素不做线状高亮，顶点标识已足够
     if (el.type === 'line' || el.type === 'moving_point' || el.type === 'arrow' || el.type === 'double_arrow') return;
+    if (el.type === 'polygon' || el.type === 'encirclement' || el.type === 'gathering') return;
 
     const feature = buildSelectionFeature(el);
     if (!feature) return;
@@ -1029,39 +1168,56 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     return kfs.length - 1;
   };
 
-  /** Update View：把当前地图视角写入"播放头所在视角"（不再新增） */
+  /** Update View：镜头流有选中视角 → 更新该视角；无选中 → 新增视角 */
   const handleUpdateView = useCallback(() => {
     const st = useProjectStore.getState();
     if (!st.project) return;
     const ch = st.project.chapters.find((c) => c.id === chapter.id) || chapter;
     const cam = useEditorStore.getState().currentCamera;
-    const frame = Math.max(ch.startFrame, Math.round(useEditorStore.getState().currentFrame));
+    const fps = st.project.globalConfig.defaultFPS;
+    let frame = Math.max(ch.startFrame, Math.round(useEditorStore.getState().currentFrame));
     const kfs = [...(ch.camera || [])].sort((a, b) => a.frame - b.frame);
+    const selIdx = useEditorStore.getState().selectedKeyframeIdx;
 
-    if (kfs.length === 0) {
-      // 无关键帧时创建第一个
-      const kf: CameraKeyframe = {
+    // 无镜头流 / 未选中视角 → 新增视角
+    if (kfs.length === 0 || selIdx === null) {
+      while (kfs.some((k) => Math.abs(k.frame - frame) < 1)) frame += fps;
+      // 前一个视角：所有 frame < 新 frame 的视角中最大者（中间插入时不能用最后一个视角）
+      const prevKfs = kfs.filter((k) => k.frame < frame);
+      const prevF = prevKfs.length ? prevKfs[prevKfs.length - 1].frame : ch.startFrame;
+      const newKf: CameraKeyframe = {
         frame, center: [cam.center[0], cam.center[1]], zoom: cam.zoom,
         pitch: cam.pitch || 0, bearing: cam.bearing || 0, easing: 'easeInOut',
+        moveDuration: Math.min(2 * fps, Math.max(0, frame - prevF)),
       };
-      st.setChapterCamera(ch.id, [kf]);
-      useEditorStore.getState().selectKeyframe(0);
+      const next = [...kfs, newKf].sort((a, b) => a.frame - b.frame);
+      st.setChapterCamera(ch.id, next);
+      useEditorStore.getState().selectKeyframe(next.findIndex((k) => k.frame === frame));
+      useEditorStore.getState().setCurrentFrame(frame);
       setViewSaved(true);
       setTimeout(() => setViewSaved(false), 1200);
       return;
     }
 
-    const fps = st.project.globalConfig.defaultFPS;const idx = resolveKfIndex(kfs, frame, fps);
-    const target = kfs[Math.max(0, idx)];
-    kfs[Math.max(0, idx)] = {
+    // 有选中视角 → 更新它
+    const target = kfs[Math.min(selIdx, kfs.length - 1)];
+    const isOrbit = target.cameraType === 'orbit' || !!target.orbit;
+    const isFollow = target.cameraType === 'follow' || !!target.followRoute;
+    kfs[Math.min(selIdx, kfs.length - 1)] = {
       ...target,
-      center: [cam.center[0], cam.center[1]],
-      zoom: cam.zoom,
-      pitch: cam.pitch || 0,
-      bearing: cam.bearing || 0,
+      // 环绕视角：保留环绕中心与环绕配置，只更新俯仰/缩放
+      ...(isOrbit ? { center: target.center, zoom: cam.zoom, pitch: cam.pitch || 0 } : {}),
+      ...(isFollow ? { center: target.center, zoom: cam.zoom, pitch: cam.pitch || 0 } : {}),
+      ...(!isOrbit && !isFollow
+        ? { center: [cam.center[0], cam.center[1]], zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 }
+        : {}),
     };
     st.setChapterCamera(ch.id, kfs);
-    useEditorStore.getState().selectKeyframe(Math.max(0, idx));
+    useEditorStore.getState().selectKeyframe(Math.min(selIdx, kfs.length - 1));
+    // 播放头吸附到该视角的到达帧：镜头插值 effect 会精确返回刚保存的画面，
+    // 避免飞行窗口内播放头继续插值、把刚保存的视角拽回旧位置。
+    const tgtFrame = kfs[Math.min(selIdx, kfs.length - 1)].frame;
+    useEditorStore.getState().setCurrentFrame(tgtFrame);
     setViewSaved(true);
     setTimeout(() => setViewSaved(false), 1200);
   }, [chapter]);
@@ -1085,6 +1241,87 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     );
   }, [chapter]);
 
+  /** 添加跟随视角：center 动态跟随选中路线的动画进度点 */
+  const handleFollowView = useCallback(() => {
+    const st = useProjectStore.getState();
+    if (!st.project) return;
+    const ch = st.project.chapters.find((c) => c.id === chapter.id) || chapter;
+    const selId = useEditorStore.getState().selectedElementId;
+    if (!selId) { void confirm({ message: '请先在地图上选中一条路线，再添加跟随视角', confirmText: '知道了', danger: false }); return; }
+    const route = ch.elements.find((e) => e.id === selId);
+    if (!route || (route.type !== 'line' && route.type !== 'moving_point' && route.type !== 'arrow')) {
+      void confirm({ message: '请选中一条路线（直线/曲线/箭头）来跟随', confirmText: '知道了', danger: false });
+      return;
+    }
+    const startF = route.startFrame;
+    const endF = route.endFrame;
+    // 校验：现有视角 frame 是否落在该路线的显示时间区间内
+    const kfs = [...(ch.camera || [])].sort((a, b) => a.frame - b.frame);
+    const conflict = kfs.find((k) => k.frame >= startF && k.frame <= endF);
+    if (conflict) {
+      void confirm({ message: `现有视角（t=${((conflict.frame - ch.startFrame) / st.project.globalConfig.defaultFPS).toFixed(1)}s）落在该路线的显示时间区间内，无法添加跟随视角`, confirmText: '知道了', danger: true });
+      return;
+    }
+    const cam = useEditorStore.getState().currentCamera;
+    const fps = st.project.globalConfig.defaultFPS;
+    // 跟随视角帧 = 路线显示开始（保证不与区间内现有视角冲突）
+    const frame = Math.max(ch.startFrame, startF);
+    const newKf: CameraKeyframe = {
+      frame,
+      center: [cam.center[0], cam.center[1]] as [number, number],
+      zoom: cam.zoom,
+      pitch: cam.pitch || 0,
+      bearing: cam.bearing || 0,
+      easing: 'easeInOut',
+      moveDuration: Math.min(2 * fps, Math.max(0, frame - (kfs.length ? kfs[kfs.length - 1].frame : ch.startFrame))),
+      cameraType: 'follow' as const,
+      followRoute: { routeElementId: route.id, followDirection: true, startFrame: startF, endFrame: endF },
+    };
+    const next = [...kfs, newKf].sort((a, b) => a.frame - b.frame);
+    st.setChapterCamera(ch.id, next);
+    useEditorStore.getState().selectKeyframe(next.findIndex((k) => k === newKf));
+    // 点击「跟随」不跳转播放头/视角（视角保持当前地图画面，播放时才跟随）
+    setViewSaved(true);
+    setTimeout(() => setViewSaved(false), 1200);
+  }, [chapter, confirm]);
+
+  /** 添加环绕视角：相机绕当前中心点旋转（bearing 随时间变化） */
+  const handleOrbitView = useCallback(() => {
+    const st = useProjectStore.getState();
+    if (!st.project) return;
+    const ch = st.project.chapters.find((c) => c.id === chapter.id) || chapter;
+    const cam = useEditorStore.getState().currentCamera;
+    const fps = st.project.globalConfig.defaultFPS;
+    const frame = Math.max(ch.startFrame, Math.round(useEditorStore.getState().currentFrame));
+    // 环绕时长默认 2 秒
+    const orbitDur = 2;
+    const kfs = [...(ch.camera || [])].sort((a, b) => a.frame - b.frame);
+    const spanStart = frame;
+    const spanEnd = frame + orbitDur * fps;
+    // 校验：与其他视角时间是否重叠（frame 落在 [spanStart, spanEnd]）
+    const conflict = kfs.find((k) => k.frame >= spanStart && k.frame <= spanEnd);
+    if (conflict) {
+      void confirm({ message: `环绕视角时长 ${orbitDur}s，与现有视角（t=${((conflict.frame - ch.startFrame) / fps).toFixed(1)}s）时间重叠，无法添加`, confirmText: '知道了', danger: true });
+      return;
+    }
+    const newKf: CameraKeyframe = {
+      frame,
+      center: [cam.center[0], cam.center[1]] as [number, number],
+      zoom: cam.zoom,
+      pitch: cam.pitch || 0,
+      bearing: cam.bearing || 0,
+      easing: 'easeInOut',
+      cameraType: 'orbit',
+      orbit: { speed: 45, duration: orbitDur },
+    };
+    const next = [...kfs, newKf].sort((a, b) => a.frame - b.frame);
+    st.setChapterCamera(ch.id, next);
+    useEditorStore.getState().selectKeyframe(next.findIndex((k) => k === newKf));
+    useEditorStore.getState().setCurrentFrame(frame);
+    setViewSaved(true);
+    setTimeout(() => setViewSaved(false), 1200);
+  }, [chapter, confirm]);
+
   return (
     <div className="relative w-full h-full">
       <div ref={containerRef} className="w-full h-full" style={{ cursor: getCursor() }} />
@@ -1101,6 +1338,22 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
           >
             <Camera size={14} className="text-muted-foreground" />
             更新视角
+          </button>
+          <button
+            onClick={handleFollowView}
+            className="h-8 px-3 flex items-center gap-1.5 rounded-full text-xs font-medium text-foreground/85 hover:bg-white/10 transition-colors"
+            title="添加跟随视角：center 跟随选中路线的动画进度"
+          >
+            <Camera size={14} className="text-muted-foreground" />
+            跟随
+          </button>
+          <button
+            onClick={handleOrbitView}
+            className="h-8 px-3 flex items-center gap-1.5 rounded-full text-xs font-medium text-foreground/85 hover:bg-white/10 transition-colors"
+            title="添加环绕视角：相机绕当前中心点旋转"
+          >
+            <Camera size={14} className="text-muted-foreground" />
+            环绕视角
           </button>
           <button
             onClick={handlePreviewKf}
@@ -1163,6 +1416,17 @@ function modeHint(mode: string): string {
     case 'add_pincer': return '单击加控制点(4个) · 自动生成双箭头钳形攻势 · Esc取消';
     case 'add_encirclement': return '第1击定圆心 → 移动调半径 → 第2击确认';
     case 'add_gathering': return '第1击定中心 → 移动调半径 → 第2击确认';
+    case 'add_shape_line': return '单击加点 · 双击完成(标注直线) · Esc取消';
+    case 'add_shape_bezier': return '单击加控制点(≥2) · 双击完成曲线 · Esc取消';
+    case 'add_shape_line_arrow': return '单击加点 · 双击完成带箭头直线 · Esc取消';
+    case 'add_shape_bezier_arrow': return '单击加控制点(≥2) · 双击完成带箭头曲线 · Esc取消';
+    case 'add_shape_march': return '单击加控制点(≥2) · 双击完成行军箭头 · Esc取消';
+    case 'add_shape_swallowtail': return '单击加控制点(≥2) · 双击完成燕尾箭头 · Esc取消';
+    case 'add_shape_circle': return '第1击定圆心 → 移动调半径 → 第2击确认（不可旋转）';
+    case 'add_shape_star': return '第1击定中心 → 移动调半径 → 第2击确认五角星';
+    case 'add_special_swallow': return '单击加控制点(≥2) · 双击完成自定义燕尾箭头 · Esc取消';
+    case 'add_shape_front_line': return '单击加点 · 双击完成直线战线（一侧梳齿） · Esc取消';
+    case 'add_shape_front_curve': return '单击加控制点(≥2) · 双击完成弯曲战线（一侧梳齿） · Esc取消';
     default: return '';
   }
 }
@@ -1199,6 +1463,7 @@ function getStyleUrl(project: MapVideoProject, chapter: Chapter): any {
 }
 
 /** 路线类元素的可编辑路径点（line/moving_point/arrow/double_arrow） */
+/** 路线类元素的可编辑路径点（line/moving_point/arrow/double_arrow/polygon等形状） */
 function routePathOf(el: MapElement): [number, number][] | null {
   if (el.type === 'line') return (el.coordinates?.length ?? 0) >= 2 ? el.coordinates : null;
   if (el.type === 'moving_point') return (el.path?.length ?? 0) >= 2 ? el.path : null;
@@ -1207,7 +1472,137 @@ function routePathOf(el: MapElement): [number, number][] | null {
     return el.from && el.to ? [el.from, el.to] : null;
   }
   if (el.type === 'double_arrow') return (el.points?.length ?? 0) >= 2 ? el.points : null;
+  if (el.type === 'polygon') {
+    // 形状：rect=对角点（随 rotation 显示在旋转后位置）；circle/star=中心+半径顶点；poly=顶点（去闭合点）
+    if (el.shapeKind === 'rect' && el.rectMeta) {
+      const cx = (el.rectMeta.c1[0] + el.rectMeta.c2[0]) / 2;
+      const cy = (el.rectMeta.c1[1] + el.rectMeta.c2[1]) / 2;
+      return [
+        rotatePt(el.rectMeta.c1, [cx, cy], el.rotation || 0),
+        rotatePt(el.rectMeta.c2, [cx, cy], el.rotation || 0),
+      ];
+    }
+    if (el.shapeKind === 'circle' && el.circleMeta) {
+      return [el.circleMeta.center, circleRadiusHandle(el.circleMeta.center, el.circleMeta.radius, el.rotation || 0)];
+    }
+    if (el.shapeKind === 'star' && el.starMeta) {
+      return [el.starMeta.center, starRadiusHandle(el.starMeta.center, el.starMeta.radius, el.rotation || 0)];
+    }
+    const ring = el.coordinates[0];
+    if (!ring || ring.length < 3) return null;
+    const closeGap = Math.abs(ring[0][0] - ring[ring.length - 1][0]) < 1e-9 && Math.abs(ring[0][1] - ring[ring.length - 1][1]) < 1e-9;
+    return closeGap ? ring.slice(0, -1) : ring;
+  }
+  if (el.type === 'gathering') {
+    return [el.center, circleRadiusHandle(el.center, el.radius, el.rotation || 0)];
+  }
+  if (el.type === 'encirclement') {
+    return [el.center, circleRadiusHandle(el.center, el.radius)];
+  }
   return null;
+}
+
+/** 圆/集结点等的半径手柄点（中心方向 rotatePt([r/111,0], rot)，即旋转后的东向点） */
+function circleRadiusHandle(center: [number, number], radiusKm: number, rotDeg = 0): [number, number] {
+  return rotatePt([center[0] + radiusKm / 111, center[1]], center, rotDeg);
+}
+
+/** 五角星半径手柄点：旋转后的第一个外顶点（星形渲染的首个外顶点角度 = -90°） */
+function starRadiusHandle(center: [number, number], radiusKm: number, rotDeg = 0): [number, number] {
+  return rotatePt([center[0], center[1] - radiusKm / 111], center, rotDeg);
+}
+
+/** 顶点拖拽写回：按元素类型更新对应字段；返回是否已写。bbox=地图容器盒。 */
+function patchElementVertex(el: MapElement, idx: number, clientX: number, clientY: number, bbox: DOMRect, map: maplibregl.Map, chapterId: string): boolean {
+  const lngLat = map.unproject([clientX - bbox.left, clientY - bbox.top]);
+  const pt: [number, number] = [lngLat.lng, lngLat.lat];
+
+  if (el.type === 'moving_point' || el.type === 'arrow') {
+    const path = el.path && el.path.length >= 2 ? el.path : (el.type === 'arrow' && el.from ? [el.from, el.to!] : null);
+    if (!path || idx >= path.length) return false;
+    const c = path.map((p) => [p[0], p[1]] as [number, number]);
+    c[idx] = pt;
+    useProjectStore.getState().updateElement(chapterId, el.id, { path: c } as Partial<MapElement>);
+    return true;
+  }
+  if (el.type === 'double_arrow') {
+    if (idx >= el.points.length) return false;
+    const c = el.points.map((p) => [p[0], p[1]] as [number, number]);
+    c[idx] = pt;
+    useProjectStore.getState().updateElement(chapterId, el.id, { points: c } as Partial<MapElement>);
+    return true;
+  }
+  if (el.type === 'line') {
+    if (idx >= el.coordinates.length) return false;
+    const c = el.coordinates.map((p) => [p[0], p[1]] as [number, number]);
+    c[idx] = pt;
+    useProjectStore.getState().updateElement(chapterId, el.id, { coordinates: c } as Partial<MapElement>);
+    return true;
+  }
+  if (el.type === 'polygon') {
+    if (el.shapeKind === 'rect' && el.rectMeta) {
+      if (idx > 1) return false;
+      // 手柄是旋转后的显示位置：逆旋转回来再写对角点，保持 rotation 不变
+      const rot = el.rotation || 0;
+      const cx = (el.rectMeta.c1[0] + el.rectMeta.c2[0]) / 2;
+      const cy = (el.rectMeta.c1[1] + el.rectMeta.c2[1]) / 2;
+      const invPt = rotatePt(pt, [cx, cy], -rot);
+      const c1 = idx === 0 ? invPt : el.rectMeta.c1;
+      const c2 = idx === 1 ? invPt : el.rectMeta.c2;
+      useProjectStore.getState().updateElement(chapterId, el.id, {
+        rectMeta: { c1, c2 },
+        coordinates: [shapeRectRing(c1, c2)],
+      } as Partial<MapElement>);
+      return true;
+    }
+    if ((el.shapeKind === 'circle' && el.circleMeta) || (el.shapeKind === 'star' && el.starMeta)) {
+      const meta = el.shapeKind === 'circle' ? el.circleMeta! : el.starMeta!;
+      if (idx === 0) {
+        const patch = el.shapeKind === 'circle'
+          ? { circleMeta: { ...meta, center: pt } as PolygonElement['circleMeta'], coordinates: [circleCoords(pt, meta.radius)] }
+          : { starMeta: { ...meta, center: pt } as PolygonElement['starMeta'], coordinates: [polyStarCoords(pt, meta.radius)] };
+        useProjectStore.getState().updateElement(chapterId, el.id, patch as Partial<MapElement>);
+        return true;
+      }
+      if (idx === 1) {
+        const rkm = Math.max(0.5, turf.distance(meta.center, pt, { units: 'kilometers' }));
+        const patch = el.shapeKind === 'circle'
+          ? { circleMeta: { ...meta, radius: rkm } as PolygonElement['circleMeta'], coordinates: [circleCoords(meta.center, rkm)] }
+          : { starMeta: { ...meta, radius: rkm } as PolygonElement['starMeta'], coordinates: [polyStarCoords(meta.center, rkm)] };
+        useProjectStore.getState().updateElement(chapterId, el.id, patch as Partial<MapElement>);
+        return true;
+      }
+      return false;
+    }
+    // 普通多边形：仅当是合环比率映射（poly）
+    const ring = el.coordinates[0];
+    if (!ring || idx >= ring.length - (ring.length > 2 && Math.abs(ring[0][0] - ring[ring.length - 1][0]) < 1e-9 ? 1 : 0)) return false;
+    const c = ring.map((p) => [p[0], p[1]] as [number, number]);
+    c[idx] = pt;
+    if (c.length > 2 && Math.abs(c[0][0] - c[c.length - 1][0]) < 1e-9 && Math.abs(c[0][1] - c[c.length - 1][1]) < 1e-9) {
+      c[c.length - 1] = c[0];
+    }
+    useProjectStore.getState().updateElement(chapterId, el.id, { coordinates: [c] } as Partial<MapElement>);
+    return true;
+  }
+  if (el.type === 'gathering') {
+    const rkm = idx === 0 ? el.radius : Math.max(0.5, turf.distance(el.center, pt, { units: 'kilometers' }));
+    const center = idx === 0 ? pt : el.center;
+    useProjectStore.getState().updateElement(chapterId, el.id, { center, radius: rkm } as Partial<MapElement>);
+    return true;
+  }
+  if (el.type === 'encirclement') {
+    const rkm = idx === 0 ? el.radius : Math.max(0.5, turf.distance(el.center, pt, { units: 'kilometers' }));
+    const center = idx === 0 ? pt : el.center;
+    useProjectStore.getState().updateElement(chapterId, el.id, { center, radius: rkm } as Partial<MapElement>);
+    return true;
+  }
+  return false;
+}
+
+/** 矩形环（对角点，逆时针闭环） */
+function shapeRectRing(c1: [number, number], c2: [number, number]): [number, number][] {
+  return [[c1[0], c1[1]], [c2[0], c1[1]], [c2[0], c2[1]], [c1[0], c2[1]], [c1[0], c1[1]]];
 }
 
 /** 命中检测：屏幕 25px 内最近的路线顶点 */
@@ -1292,6 +1687,31 @@ function moveElementTo(chapter: Chapter, elementId: string, lngLat: [number, num
     useProjectStore.getState().updateElement(chapter.id, elementId, { coordinates: lngLat });
   } else if (el.type === 'moving_point') {
     useProjectStore.getState().updateElement(chapter.id, elementId, { path: [lngLat, ...el.path.slice(1)] });
+  } else if (el.type === 'polygon') {
+    // 整体拖动：遍历所有环移动
+    const base = routePathOf(el);
+    if (!base || base.length === 0) return;
+    const dx = lngLat[0] - base[0][0];
+    const dy = lngLat[1] - base[0][1];
+    const rings = el.coordinates.map((ring) => ring.map((p) => [p[0] + dx, p[1] + dy] as [number, number]));
+    const meta: Partial<MapElement> = { coordinates: rings };
+    if (el.shapeKind === 'circle' && el.circleMeta) {
+      meta.circleMeta = { center: [el.circleMeta.center[0] + dx, el.circleMeta.center[1] + dy], radius: el.circleMeta.radius };
+    } else if (el.shapeKind === 'star' && el.starMeta) {
+      meta.starMeta = { center: [el.starMeta.center[0] + dx, el.starMeta.center[1] + dy], radius: el.starMeta.radius };
+    } else if (el.shapeKind === 'rect' && el.rectMeta) {
+      meta.rectMeta = {
+        c1: [el.rectMeta.c1[0] + dx, el.rectMeta.c1[1] + dy],
+        c2: [el.rectMeta.c2[0] + dx, el.rectMeta.c2[1] + dy],
+      };
+    }
+    useProjectStore.getState().updateElement(chapter.id, elementId, meta);
+  } else if (el.type === 'gathering' || el.type === 'encirclement') {
+    const dx = lngLat[0] - el.center[0];
+    const dy = lngLat[1] - el.center[1];
+    useProjectStore.getState().updateElement(chapter.id, elementId, {
+      center: [el.center[0] + dx, el.center[1] + dy],
+    } as Partial<MapElement>);
   }
 }
 
@@ -1320,6 +1740,20 @@ function circleCoords(center: [number, number], radiusKm: number): [number, numb
       center[1] + (radiusKm / 111) * Math.sin(a),
     ]);
   }
+  return pts;
+}
+
+/** 五角星外轮廓（outer 半径=radiusKm，inner=0.4×radiusKm），逆时针，闭合环 */
+function polyStarCoords(center: [number, number], radiusKm: number): [number, number][] {
+  const pts: [number, number][] = [];
+  const outer = radiusKm / 111;
+  const inner = outer * 0.4;
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? outer : inner;
+    const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+    pts.push([center[0] + r * Math.cos(a), center[1] + r * Math.sin(a)]);
+  }
+  pts.push([pts[0][0], pts[0][1]]);
   return pts;
 }
 

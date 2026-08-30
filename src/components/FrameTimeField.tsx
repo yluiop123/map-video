@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
-import { frameToSeconds, secondsToFrame, round2 } from '../lib/time';
+import { frameToSeconds, secondsToFrame } from '../lib/time';
+import { NumberInput } from './ui/primitives';
 
 interface FrameTimeFieldProps {
   value: number;
@@ -14,7 +15,7 @@ interface FrameTimeFieldProps {
 
 /**
  * 以「秒」为单位的输入框，内部仍换算为帧。
- * step 默认为 1/fps，保证输入与帧对齐，尽量减少显示抖动。
+ * 编辑期间展示原始文本，失焦/回车提交，避免输入过程被回写打断。
  */
 export function FrameTimeField({
   value,
@@ -28,13 +29,12 @@ export function FrameTimeField({
 }: FrameTimeFieldProps) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4, ...style }}>
-      <input
-        type="number"
-        min={min}
-        step={Math.max(0.01, 1 / fps)}
-        value={round2(frameToSeconds(value, fps))}
-        onChange={(e) => onFrameChange(secondsToFrame(parseFloat(e.target.value) || 0, fps))}
+      <NumberInput
+        value={frameToSeconds(value, fps)}
+        onCommit={(v) => onFrameChange(secondsToFrame(Math.max(min, v || 0), fps))}
         className={className ?? 'input'}
+        min={min}
+        step={1 / fps}
         title={title}
         style={{ flex: 1, minWidth: 0 }}
       />

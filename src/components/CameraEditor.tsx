@@ -23,6 +23,7 @@ export function CameraEditor({ chapter }: { chapter: Chapter }) {
       pitch: currentCamera.pitch || 0,
       bearing: currentCamera.bearing || 0,
       easing: 'linear',
+      moveDuration: Math.min(2 * fps, Math.max(0, frame - (camera.length ? camera[camera.length - 1].frame : chapter.startFrame))),
     };
     // 若该帧已有关键帧，则更新它；否则追加
     const exists = camera.some((kf) => Math.abs(kf.frame - frame) < 0.5);

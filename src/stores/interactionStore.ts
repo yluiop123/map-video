@@ -17,6 +17,18 @@ export type InteractionMode =
   | 'add_polygon'      // 区域
   | 'add_rect'         // 矩形（两点拖定）
   | 'add_region'       // 行政区一键高亮（点选国家边界）
+  // 形状（工具条「形状」菜单分类，绘制后按类型入库）
+  | 'add_shape_line'          // 直线（标注）
+  | 'add_shape_bezier'        // 曲线（标注）
+  | 'add_shape_line_arrow'    // 带箭头直线
+  | 'add_shape_bezier_arrow'  // 带箭头曲线
+  | 'add_shape_march'         // 行军箭头（多点，curved-simple）
+  | 'add_shape_swallowtail'   // 燕尾箭头（多点，路线燕尾绘制方式 curved）
+  | 'add_shape_circle'        // 圆（两点：圆心→半径）
+  | 'add_shape_star'          // 五角星（两点：圆心→外接半径）
+  | 'add_special_swallow'     // 燕尾箭头（特殊图形：多点采集，curved 燕尾造型）
+  | 'add_shape_front_line'    // 直线战线（多点采点，主线直连 + 一侧梳齿）
+  | 'add_shape_front_curve'   // 弯曲战线（多点采点，主线贝塞尔 + 一侧梳齿）
   // 军事
   | 'add_arrow'        // 直线箭头
   | 'add_curved'       // 弯曲燕尾箭头（沿贝塞尔曲线）

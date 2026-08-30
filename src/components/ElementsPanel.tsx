@@ -68,7 +68,7 @@ export function ElementsPanel() {
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         coordinates: track.coords,
         drawProgress: [{ frame: chapter.startFrame, value: 1 }],
-        lineWidth: 3, lineColor: '#FF6600',
+        lineWidth: 8, lineColor: '#FF6600',
       };
       addElement(chapter.id, el);
     } catch (err) {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AbsoluteFill, useDelayRender, useVideoConfig, useCurrentFrame } from 'remotion';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { renderElements, setCustomSymbols } from '../lib/map-renderer';
+import { renderElements, setCustomSymbols, resolveFollowCam, resolveOrbitCam } from '../lib/map-renderer';
 import { interpolateCamera } from '../lib/keyframe-interpolation';
 import type { Chapter, MapVideoProject } from '../types';
 
@@ -65,12 +65,25 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
 
     if (chapter.camera && chapter.camera.length > 0) {
       const cam = interpolateCamera(chapter.camera, frame, fps);
-      map.jumpTo({
-        center: cam.center,
-        zoom: cam.zoom,
-        pitch: cam.pitch || 0,
-        bearing: cam.bearing || 0,
-      });
+      let jc = { center: cam.center, zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 };
+      const kfs = [...chapter.camera].sort((a, b) => a.frame - b.frame);
+      let kfIdx = kfs.length - 1;
+      for (let i = 0; i < kfs.length - 1; i++) {
+        const next = kfs[i + 1];
+        const gap = Math.max(0, next.frame - kfs[i].frame);
+        const move = typeof next.moveDuration === 'number' ? Math.min(next.moveDuration, gap) : Math.min(2 * fps, gap);
+        if (frame < next.frame - move) { kfIdx = i; break; }
+        if (frame <= next.frame) { kfIdx = i + 1; break; }
+      }
+      const kf = kfs[Math.min(kfIdx, kfs.length - 1)];
+      if (kf?.followRoute) {
+        const fc = resolveFollowCam(chapter.elements, kf, frame);
+        if (fc) jc = fc;
+      } else if (kf?.orbit) {
+        const oc = resolveOrbitCam(kf, frame, fps);
+        if (oc) jc = oc;
+      }
+      map.jumpTo(jc);
     }
 
     renderElements(map, chapter.elements, frame, fps);
