@@ -24,7 +24,7 @@ npm run build   # tsc -b && vite build
 ```
 
 - 无测试框架。回归验证靠：`npx tsc -b` + `npm run build` + `tools/*.mjs` 自动化（需本机 Chrome 开 `--remote-debugging-port=9222`，临时 profile：`C:\Users\23659\AppData\Local\Temp\opencode\mv-studio-profile`，配合 `playwright-core`）。
-- `tools/` 下脚本为一次性诊断工具，读文件头注释即可用；`pw-page.mjs` 是标签页复用助手（避免每次开新标签）。
+- `tools/` 下脚本为自动化回归（test-* / verify-*），读文件头注释即可用；`pw-page.mjs` 是标签页复用助手（避免每次开新标签）。
 
 ## 4. 目录结构（src/）
 
@@ -77,7 +77,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 5. **数据默认值**：moveDuration 默认 2s；label.bgColor 默认透明；仅 BUBBLE 样式带尾巴；TEXT 无位置项（强制 center）；缩放/尺寸走 `scale`，不要再加固定像素字段。
 6. **操作不自动保存**：仅 💾/新建/导入写 IndexedDB；导出视频不落盘（用户明确要求，防中途状态覆盖）。
 7. **双端一致**：改渲染/相机逻辑必须同时检查编辑器 `EditableMap` 与导出端 `compositions/MapScene`。导出端相机已传 fps。
-8. **PowerShell 内联 node -e 处理中文/复杂引号会碎**：批量改文件一律写 `tools/*.cjs` 用 fs+utf8。
+ 8. **PowerShell 内联 node -e 处理中文/复杂引号会碎**：批量改文件一律写一次性 `.cjs` 脚本用 fs+utf8（用完即删）。
 9. **pincer(钳形) 与 double_arrow**：预览与最终必须同用 `buildDoubleArrow`；不要用 buildArrowGeometry 的 pincer 分支做预览。
 11. **镜头插值 effect 的依赖必须是 `chapter.camera`（数组引用）而非 `chapter`**：任何元素属性修改都会重建 chapter 对象，若依赖 chapter 会在每次改样式/改属性时触发 `jumpTo`，把用户手动平移的地图拽回关键帧位置。
 10. **地图事件 vs 播放循环**：`map.on('move')` 会 60fps 触发 `setCurrentCamera`→全订阅组件重渲染，属预期；不要在 move 回调里做重活。
