@@ -41,6 +41,7 @@ const SHAPE_MODES: InteractionMode[] = [
   'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow',
   'add_shape_front_line', 'add_shape_front_curve',
   'add_shape_march', 'add_shape_circle', 'add_shape_star', 'add_special_swallow',
+  'add_shape_swallowtail', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend',
   'add_polygon', 'add_rect', 'add_gathering', 'add_pincer',
 ];
 
@@ -63,7 +64,11 @@ const SHAPE_GROUPS: { zh: string; en: string; items: ShapeItem[] }[] = [
       { mode: 'add_shape_front_line', zh: '直线战线', en: 'Front Line', glyph: '▮─' },
       { mode: 'add_shape_front_curve', zh: '弯曲战线', en: 'Curved Front', glyph: 'ㅤ〰' },
       { mode: 'add_shape_march', zh: '行军箭头', en: 'March Arrow', glyph: '⚔️' },
+      { mode: 'add_shape_swallowtail', zh: '燕尾箭头', en: 'Swallowtail', glyph: '🪶' },
       { mode: 'add_polygon', zh: '多边形', en: 'Polygon', glyph: '⬛' },
+      { mode: 'add_shape_poly_curve', zh: '曲线多边', en: 'Curved Poly', glyph: '🌀' },
+      { mode: 'add_shape_poly_defend', zh: '直线防御圈', en: 'Straight Defense', glyph: '▮⬛' },
+      { mode: 'add_shape_poly_curve_defend', zh: '曲线防御圈', en: 'Curved Defense', glyph: '🌀⬛' },
     ],
   },
   {

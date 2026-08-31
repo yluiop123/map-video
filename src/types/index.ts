@@ -227,6 +227,19 @@ export interface PolygonElement extends MapElementBase {
   rectMeta?: { c1: [number, number]; c2: [number, number] };
   /** shapeKind==='star' 时的参数 */
   starMeta?: { center: [number, number]; radius: number };
+  /** 曲线多边：多边形各边曲线化（闭合贝塞尔拟合） */
+  polyCurve?: boolean;
+  /** 防御圈锯齿（钢铁雄心防线风格，环绕一圈）：存在即有锯齿 */
+  defenseStyle?: {
+    /** 齿长度（px，屏幕像素） */
+    toothLength?: number;
+    /** 齿间距（px，屏幕像素） */
+    toothGap?: number;
+    /** 齿偏角（度，相对边法向；0=垂直） */
+    toothAngle?: number;
+    /** 齿朝向哪一侧:1=顺时针侧(右)，-1=逆时针侧(左) */
+    side?: 1 | -1;
+  };
   /** 旋转角（绕中心，度；与矩形/五角星配合；圆对称不受影响） */
   rotation?: number;
 }
@@ -240,6 +253,8 @@ export interface ArrowElement extends MapElementBase {
   arrowType: 'swallowtail' | 'simple' | 'block' | 'pincer' | 'curved' | 'curved-simple' | 'attack' | 'straight';
   width: number;
   color: string;
+  /** 箭头填充透明度（0–1），仅燕尾/行军等面状箭头生效 */
+  fillOpacity?: number;
   progress: Keyframe<number>[];
   /** 绘制完成时的缩放级别，用于换算固定地理宽度的箭头（地图固定，随缩放变大变小） */
   drawZoom?: number;

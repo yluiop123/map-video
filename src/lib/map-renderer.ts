@@ -34,6 +34,44 @@ const renderedTypeByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
 // 箭头图标已注册颜色（元素 id → 颜色），颜色变化需重注册
 const renderedHeadColorByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
 
+// ========== 防御圈锯齿：屏幕像素级，须随相机变化重算 ==========
+// 锯齿是按当前相机用 map.project/unproject 在屏幕像素上采样生成的，
+// 只锚定在元素变化（而非相机）时重算会导致：创建后相机跳帧 / 手动平移缩放时
+// 锯齿停留在上次投影，表现为"不显示"或"跟随有问题"。
+type DefendJob = {
+  srcId: string;
+  layerId: string;
+  ring: [number, number][];
+  toothLen: number;
+  toothGap: number;
+  side: 1 | -1;
+  tiltRad: number;
+};
+const defendJobsByMap = new WeakMap<maplibregl.Map, Map<string, DefendJob>>();
+const defendMoveBound = new WeakSet<maplibregl.Map>();
+
+function clearDefendJob(map: maplibregl.Map, elementId: string): void {
+  defendJobsByMap.get(map)?.delete(elementId);
+}
+
+/** 相机变化（move/rotate/zoom）会同时改变屏幕投影，一次性为 map 挂锯齿重算监听 */
+function ensureDefendRecompute(map: maplibregl.Map): void {
+  if (defendMoveBound.has(map)) return;
+  defendMoveBound.add(map);
+  const tick = () => {
+    const jobs = defendJobsByMap.get(map);
+    if (!jobs) return;
+    for (const j of jobs.values()) {
+      try {
+        const teeth = buildToothedTeeth(map, j.ring, j.toothLen, j.toothGap, j.side, j.tiltRad);
+        const fc = turf.featureCollection(teeth.map((l) => turf.lineString(l)));
+        if (map.getSource(j.srcId)) (map.getSource(j.srcId) as GeoJSONSource).setData(fc);
+      } catch { /* style 未就绪 */ }
+    }
+  };
+  map.on('move', tick);
+}
+
 export function removeElementLayers(map: maplibregl.Map, elementId: string): void {
   const style = map.getStyle();
   if (!style?.layers) return;
@@ -54,6 +92,7 @@ export function removeElementLayers(map: maplibregl.Map, elementId: string): voi
       }
     }
   }
+  clearDefendJob(map, elementId);
 }
 
 /** 隐藏元素的所有图层（显示时间之外时调用，避免图层残留） */
@@ -629,16 +668,20 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const layerId = `line-layer-${element.id}`;
   const hitLayerId = `line-hit-${element.id}`;
 
-  // 动画区间：显式 moveStartFrame/moveEndFrame 优先，否则用显示时间（startFrame/endFrame）
-  const animStart = element.moveStartFrame ?? element.startFrame;
-  const animEnd = element.moveEndFrame ?? element.endFrame;
+  // 动画区间：路线线(shapeCategory='route')的显式 moveStartFrame/moveEndFrame 优先；
+  // 形状线(shapeCategory='multi')直接完整显示，不套用 grow/fill/move 动画（与「一致显示」一致）
+  const isShapeLine = element.shapeCategory === 'multi' || element.shapeCategory === 'special';
+  const animStart = (!isShapeLine && element.moveStartFrame !== undefined) ? element.moveStartFrame : element.startFrame;
+  const animEnd = (!isShapeLine && element.moveEndFrame !== undefined) ? element.moveEndFrame : element.endFrame;
   const anim = element.animEffect || 'grow';
   const isGrowOrFill = anim === 'grow' || anim === 'fill';
   // 非均匀移动：线增长与标记同步（按各点到达帧映射路径比例；首点=绘制开始，末点=完成）
   const nonUniform = element.uniformMove === false && element.pointTimes && element.pointTimes.length >= 2;
-  let progress = isGrowOrFill
-    ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
-    : getProgress(element.drawProgress, frame);
+  let progress = isShapeLine
+    ? 1
+    : isGrowOrFill
+      ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
+      : getProgress(element.drawProgress, frame);
   if (nonUniform) {
     progress = nonUniformRatio(element, frame);
   }
@@ -1068,6 +1111,8 @@ function renderPolygon(map: maplibregl.Map, element: PolygonElement, frame: numb
   const sourceId = `polygon-${element.id}`;
   const fillLayerId = `polygon-fill-layer-${element.id}`;
   const strokeLayerId = `polygon-stroke-layer-${element.id}`;
+  const defendSrcId = `polygon-defend-src-${element.id}`;
+  const defendLayerId = `polygon-defend-${element.id}`;
 
   let coordinates = element.coordinates;
   if (element.morphKeyframes && element.morphKeyframes.length > 0) {
@@ -1079,23 +1124,119 @@ function renderPolygon(map: maplibregl.Map, element: PolygonElement, frame: numb
 
   const geojson = turf.featureCollection([turf.polygon(coordinates)]);
 
-  if (map.getSource(sourceId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
-    if (map.getLayer(fillLayerId)) {
-      map.setPaintProperty(fillLayerId, 'fill-color', element.fillColor || '#FF0000');
-      map.setPaintProperty(fillLayerId, 'fill-opacity', element.fillOpacity ?? 0.3);
-    }
-  } else {
+  // 幂等：source 与 layer 分开检查；每次 setData 后恢复 visibility（避免被 hideElementLayers 设置 none 后不复活）
+  if (!map.getSource(sourceId)) {
     map.addSource(sourceId, { type: 'geojson', data: geojson });
+  }
+  if (!map.getLayer(fillLayerId)) {
     map.addLayer({
       id: fillLayerId, type: 'fill', source: sourceId,
       paint: { 'fill-color': element.fillColor || '#FF0000', 'fill-opacity': element.fillOpacity ?? 0.3 },
     });
+  }
+  if (!map.getLayer(strokeLayerId)) {
     map.addLayer({
       id: strokeLayerId, type: 'line', source: sourceId,
       paint: { 'line-color': element.strokeColor || '#FF0000', 'line-width': element.strokeWidth || 2 },
     });
   }
+  (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+  map.setPaintProperty(fillLayerId, 'fill-color', element.fillColor || '#FF0000');
+  map.setPaintProperty(fillLayerId, 'fill-opacity', element.fillOpacity ?? 0.3);
+  map.setPaintProperty(strokeLayerId, 'line-color', element.strokeColor || '#FF0000');
+  map.setPaintProperty(strokeLayerId, 'line-width', element.strokeWidth || 2);
+  map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
+  map.setLayoutProperty(strokeLayerId, 'visibility', 'visible');
+
+  // 防御圈锯齿（环绕一圈，类似战线梳齿，但闭合）
+  const haveDefend = !!element.defenseStyle;
+  if (haveDefend) {
+    const ds = element.defenseStyle!;
+    // 「大小」= strokeWidth：作为整体缩放系数驱动边框与锯齿（与直线战线一致，默认 8px → 100% → 缩放 1）
+    const sizeScale = (element.strokeWidth || 8) / 8;
+    const toothLen = (ds.toothLength ?? 14) * sizeScale;
+    const toothGap = (ds.toothGap ?? 24) * sizeScale;
+    const side = ds.side ?? 1;
+    const tilt = ((ds.toothAngle ?? 0) * Math.PI) / 180;
+    const ring = coordinates[0];
+    const teeth = buildToothedTeeth(map, ring, toothLen, toothGap, side, tilt);
+    const fc = turf.featureCollection(teeth.map((l) => turf.lineString(l)));
+    try {
+      // 幂等：source 与 layer 分开检查，避免 addLayer 抛错后 source 在而 layer 缺失导致永远不显示
+      if (!map.getSource(defendSrcId)) {
+        map.addSource(defendSrcId, { type: 'geojson', data: fc } as any);
+      }
+      if (!map.getLayer(defendLayerId)) {
+        map.addLayer({
+          id: defendLayerId, type: 'line', source: defendSrcId,
+          paint: { 'line-color': element.strokeColor || '#FF0000', 'line-width': Math.max(2, (element.strokeWidth || 8) * 0.6) },
+          layout: { 'line-cap': 'round' },
+        });
+      }
+      (map.getSource(defendSrcId) as GeoJSONSource).setData(fc);
+      map.setPaintProperty(defendLayerId, 'line-color', element.strokeColor || '#FF0000');
+      map.setPaintProperty(defendLayerId, 'line-width', Math.max(2, (element.strokeWidth || 8) * 0.6));
+      map.setLayoutProperty(defendLayerId, 'visibility', 'visible');
+    } catch { /* style 未就绪 */ }
+    // 注册到相机重算表：地图平移/缩放/旋转时锯齿随环重新投影，避免锚定旧相机
+    const jobs = defendJobsByMap.get(map) || defendJobsByMap.set(map, new Map()).get(map)!;
+    jobs.set(element.id, { srcId: defendSrcId, layerId: defendLayerId, ring, toothLen, toothGap, side, tiltRad: tilt });
+    ensureDefendRecompute(map);
+  } else if (map.getLayer(defendLayerId)) {
+    try { map.removeLayer(defendLayerId); } catch { /* */ }
+    try { if (map.getSource(defendSrcId)) map.removeSource(defendSrcId); } catch { /* */ }
+    clearDefendJob(map, element.id);
+  }
+}
+
+/** 沿封闭环生成防御圈锯齿线段（屏幕像素级等距采样，法向偏移一圈） */
+function buildToothedTeeth(
+  map: maplibregl.Map, ring: [number, number][], toothLen: number, toothGap: number,
+  side: 1 | -1, tiltRad: number,
+): [number, number][][] {
+  // 首尾相同 = 环已闭合，需遍历回到起点的最后一段；首尾不同 = 开放线只采样 n-1 段
+  const closed = ring.length > 1 && Math.abs(ring[0][0] - ring[ring.length - 1][0]) < 1e-9 && Math.abs(ring[0][1] - ring[ring.length - 1][1]) < 1e-9;
+  const proj = ring.map((c) => map.project(c));
+  const lines: [number, number][][] = [];
+  const n = proj.length;
+  if (n < 2) return lines;
+  // 环质心（屏幕像素）：用于判定"外侧"，保证 side=1 恒朝外、-1 恒朝内，
+  // 不随绘制时的缠绕方向（顺时针/逆时针）而反转。
+  let cx = 0, cy = 0;
+  for (const p of proj) { cx += p.x; cy += p.y; }
+  cx /= n; cy /= n;
+  // 逐边采样（含闭合时回到起点的边）
+  let acc = 0;
+  let prev = proj[0] as any;
+  for (let i = 1; i <= (closed ? n : n - 1); i++) {
+    const cur = proj[i % n] as any;
+    let seg = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+    if (seg <= 0) continue;
+    const ux = (cur.x - prev.x) / seg, uy = (cur.y - prev.y) / seg;
+    const nx = -uy, ny = ux; // 法向（右=顺时针）
+    const ang = Math.cos(tiltRad), sine = Math.sin(tiltRad);
+    while (seg > 0 && acc + seg >= toothGap) {
+      const t = (toothGap - acc) / seg;
+      const bx = prev.x + (cur.x - prev.x) * t;
+      const by = prev.y + (cur.y - prev.y) * t;
+      // 以质心判向：默认法向若指向环内则取反，得到"朝外"单位法向
+      let px = nx, py = ny;
+      if ((bx - cx) * nx + (by - cy) * ny < 0) { px = -nx; py = -ny; }
+      const dirX = px * side * ang - ux * side * sine;
+      const dirY = py * side * ang - uy * side * sine;
+      const ex = bx + dirX * toothLen;
+      const ey = by + dirY * toothLen;
+      const ll1 = map.unproject([bx, by]);
+      const ll2 = map.unproject([ex, ey]);
+      lines.push([[ll1.lng, ll1.lat], [ll2.lng, ll2.lat]]);
+      seg -= (toothGap - acc);
+      prev = { x: bx, y: by };
+      acc = 0;
+    }
+    acc += seg;
+    prev = cur;
+  }
+  return lines;
 }
 
 // ========== 渲染：军事箭头（燕尾） ==========
@@ -1328,10 +1469,13 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   const animEnd = (element as any).moveEndFrame ?? element.endFrame;
   const animEff = (element as any).animEffect;
   const isGrowFill = animEff === 'grow' || animEff === 'fill';
+  const isShapeArrow = element.shapeCategory === 'multi' || element.shapeCategory === 'special';
   const nonUniform = (element as any).uniformMove === false && (element as any).pointTimes && (element as any).pointTimes.length >= 2;
-  const progress = isGrowFill
-    ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
-    : getProgress(element.progress, frame);
+  const progress = isShapeArrow
+    ? 1
+    : isGrowFill
+      ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
+      : getProgress(element.progress, frame);
   // 非均匀移动：箭头增长与标记同步
   const growProgress = nonUniform && isGrowFill
     ? nonUniformRatio(element as any, frame)
@@ -1371,18 +1515,25 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   const polys = rings.map((ring) => turf.polygon([[...ring, ring[0]]]));
   const geojson = turf.featureCollection(polys);
 
+  const fillColor = element.color || '#E23B3B';
+  const fillOpacity = element.fillOpacity ?? 0.92;
   if (map.getSource(sourceId)) {
     (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
-    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'visible');
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, 'visibility', 'visible');
+      map.setPaintProperty(layerId, 'fill-color', fillColor);
+      map.setPaintProperty(layerId, 'fill-opacity', fillOpacity);
+    }
+    if (map.getLayer(strokeLayerId)) map.setPaintProperty(strokeLayerId, 'line-color', fillColor);
   } else {
     map.addSource(sourceId, { type: 'geojson', data: geojson });
     map.addLayer({
       id: layerId, type: 'fill', source: sourceId,
-      paint: { 'fill-color': element.color || '#E23B3B', 'fill-opacity': 0.92 },
+      paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity },
     });
     map.addLayer({
       id: strokeLayerId, type: 'line', source: sourceId,
-      paint: { 'line-color': '#7A1010', 'line-width': 1.2, 'line-opacity': 0.8 },
+      paint: { 'line-color': fillColor, 'line-width': 1.2, 'line-opacity': 0.8 },
     });
   }
 
@@ -1396,12 +1547,15 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     try {
       if (map.getSource(fillSrcId)) {
         (map.getSource(fillSrcId) as GeoJSONSource).setData(fullGeojson);
-        if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
+        if (map.getLayer(fillLayerId)) {
+          map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
+          map.setPaintProperty(fillLayerId, 'fill-color', fillColor);
+        }
       } else {
         map.addSource(fillSrcId, { type: 'geojson', data: fullGeojson } as any);
         map.addLayer({
           id: fillLayerId, type: 'fill', source: fillSrcId,
-          paint: { 'fill-color': element.color || '#E23B3B', 'fill-opacity': 0.3 },
+          paint: { 'fill-color': fillColor, 'fill-opacity': 0.3 },
         });
       }
     } catch { /* style 未就绪 */ }
@@ -1601,7 +1755,29 @@ function compileShapeCoordinates(element: PolygonElement): [number, number][][] 
   if (element.shapeKind === 'star' && element.starMeta) {
     return [starRing(element.starMeta.center, element.starMeta.radius, element.rotation || 0)];
   }
+  // 曲线多边：对闭合环做贝塞尔拟合（边曲线化）
+  if (element.polyCurve) {
+    const rings = element.coordinates.map((ring) => smoothClosedRing(ring));
+    return rings.length ? rings : element.coordinates;
+  }
   return element.coordinates;
+}
+
+/** 闭合环曲线化：对闭环贝塞尔拟合后统一采样（首尾保持同点） */
+function smoothClosedRing(ring: [number, number][]): [number, number][] {
+  if (!ring || ring.length < 3) return ring;
+  // 保证闭环：若首尾不一致则补尾
+  let pts = ring;
+  if (pts[0][0] !== pts[pts.length - 1][0] || pts[0][1] !== pts[pts.length - 1][1]) {
+    pts = [...pts, pts[0]];
+  }
+  try {
+    const spline = turf.bezierSpline(turf.lineString(pts), { resolution: 4000, sharpness: 0.6 });
+    const cs = spline.geometry.coordinates as [number, number][];
+    return cs.length >= 3 ? cs : ring;
+  } catch {
+    return ring;
+  }
 }
 
 /** 点绕 center 旋转 deg 度（平面近似） */

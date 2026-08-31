@@ -28,7 +28,9 @@ interface EditableMapProps {
   currentFrame: number;
 }
 
-const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve'];
+const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend'];
+
+const POLY_DRAW_MODES = new Set(['add_polygon', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend']);
 const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line', 'add_moving_bezier', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_front_line', 'add_shape_front_curve']);
 
 export function EditableMap({ project, chapter, currentFrame }: EditableMapProps) {
@@ -397,9 +399,20 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'attack', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
-    } else if (mode === 'add_polygon' && cursor) {
+    } else if (POLY_DRAW_MODES.has(mode as any) && cursor) {
       const coords = [...points, cursor];
-      fc.push(turf.lineString([...coords, coords[0]]));
+      // 曲线多边：预览已闭合的曲线环（拟合），默认给直线边预览
+      if (mode === 'add_shape_poly_curve' || mode === 'add_shape_poly_curve_defend') {
+        if (coords.length >= 3) {
+          const closed = [...coords, coords[0]];
+          const smooth = approxBezier(closed);
+          fc.push(turf.lineString(smooth));
+        } else {
+          fc.push(turf.lineString([...coords, coords[0]]));
+        }
+      } else {
+        fc.push(turf.lineString([...coords, coords[0]]));
+      }
     } else if (mode === 'add_arrow' && points.length >= 1 && cursor) {
       const rings = buildArrowGeometry(points[0], cursor, arrowWidth, 'swallowtail');
       rings.forEach((ring) => fc.push(turf.polygon([[...ring, ring[0]]])));
@@ -636,7 +649,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     }
 
     // —— 移动路径 / 线 / 贝塞尔 / 大圆弧 / 面：采点，双击或回车完成 ——
-    if (mode === 'add_moving_line' || mode === 'add_moving_bezier' || mode === 'add_line' || mode === 'add_bezier' || mode === 'add_line_arc' || mode === 'add_polygon' || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_march' || mode === 'add_shape_swallowtail' || mode === 'add_special_swallow' || mode === 'add_shape_front_line' || mode === 'add_shape_front_curve') {
+    if (mode === 'add_moving_line' || mode === 'add_moving_bezier' || mode === 'add_line' || mode === 'add_bezier' || mode === 'add_line_arc' || POLY_DRAW_MODES.has(mode as any) || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_march' || mode === 'add_shape_swallowtail' || mode === 'add_special_swallow' || mode === 'add_shape_front_line' || mode === 'add_shape_front_curve') {
       d.points.push(lngLat);
       d.cursor = lngLat;
       updatePreview();
@@ -724,10 +737,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         visible: true, locked: false,
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         coordinates: pts,
-        drawProgress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
-        moveStartFrame: chapter.startFrame,
-        moveEndFrame: chapter.endFrame,
-        animEffect: 'grow',
+        drawProgress: [{ frame: chapter.startFrame, value: 1 }],
         showIcon: !shape,
         uniformMove: true,
         lineWidth: 8, lineColor: '#FF4444',
@@ -742,9 +752,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved-simple', path: pts,
         width: 15, color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
-        moveStartFrame: chapter.startFrame, moveEndFrame: chapter.endFrame,
-        showIcon: true, uniformMove: true, animEffect: 'move' as const,
+        progress: [{ frame: chapter.startFrame, value: 1 }],
+        showIcon: true, uniformMove: true,
         drawZoom: map.getZoom(),
         shapeCategory: 'multi',
       } as ArrowElement);
@@ -755,9 +764,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
         width: 15, color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
-        moveStartFrame: chapter.startFrame, moveEndFrame: chapter.endFrame,
-        showIcon: true, uniformMove: true, animEffect: 'move' as const,
+        progress: [{ frame: chapter.startFrame, value: 1 }],
+        showIcon: true, uniformMove: true,
         drawZoom: map.getZoom(),
         shapeCategory: 'multi',
       } as ArrowElement);
@@ -768,9 +776,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
-        moveStartFrame: chapter.startFrame, moveEndFrame: chapter.endFrame,
-        showIcon: true, uniformMove: true, animEffect: 'move' as const,
+        progress: [{ frame: chapter.startFrame, value: 1 }],
+        showIcon: true, uniformMove: true,
         drawZoom: map.getZoom(),
         shapeCategory: 'special',
       } as ArrowElement);
@@ -789,15 +796,21 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         frontStyle: { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 },
         shapeCategory: 'multi',
       } as LineElement);
-    } else if (mode === 'add_polygon') {
+    } else if (POLY_DRAW_MODES.has(mode as any)) {
       if (pts.length < 3) return;
       pts = [...pts, pts[0]];
+      const curve = mode === 'add_shape_poly_curve' || mode === 'add_shape_poly_curve_defend';
+      const defend = mode === 'add_shape_poly_defend' || mode === 'add_shape_poly_curve_defend';
       createElementAndSelect({
-        id: generateId(), type: 'polygon', name: '多边形', visible: true, locked: false,
+        id: generateId(), type: 'polygon',
+        name: curve ? (defend ? '曲线防御圈' : '曲线多边') : (defend ? '直线防御圈' : '多边形'),
+        visible: true, locked: false,
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         coordinates: [pts],
-        fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
+        fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: defend ? 8 : 2,
         shapeKind: 'poly',
+        polyCurve: curve || undefined,
+        defenseStyle: defend ? { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 } : undefined,
         shapeCategory: 'multi',
       } as PolygonElement);
     } else if (mode === 'add_curved') {
@@ -1447,6 +1460,9 @@ function modeHint(mode: string): string {
     case 'add_shape_bezier_arrow': return '单击加控制点(≥2) · 双击完成带箭头曲线 · Esc取消';
     case 'add_shape_march': return '单击加控制点(≥2) · 双击完成行军箭头 · Esc取消';
     case 'add_shape_swallowtail': return '单击加控制点(≥2) · 双击完成燕尾箭头 · Esc取消';
+    case 'add_shape_poly_curve': return '单击加顶点(≥3) · 双击完成曲线多边(边曲线化) · Esc取消';
+    case 'add_shape_poly_defend': return '单击加顶点(≥3) · 双击完成直线防御圈(锯齿) · Esc取消';
+    case 'add_shape_poly_curve_defend': return '单击加顶点(≥3) · 双击完成曲线防御圈(曲线+锯齿) · Esc取消';
     case 'add_shape_circle': return '第1击定圆心 → 移动调半径 → 第2击确认（不可旋转）';
     case 'add_shape_star': return '第1击定中心 → 移动调半径 → 第2击确认五角星';
     case 'add_special_swallow': return '单击加控制点(≥2) · 双击完成自定义燕尾箭头 · Esc取消';
@@ -1601,12 +1617,14 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
     }
     // 普通多边形：仅当是合环比率映射（poly）
     const ring = el.coordinates[0];
-    if (!ring || idx >= ring.length - (ring.length > 2 && Math.abs(ring[0][0] - ring[ring.length - 1][0]) < 1e-9 ? 1 : 0)) return false;
+    if (!ring || ring.length < 3) return false;
+    const closed = Math.abs(ring[0][0] - ring[ring.length - 1][0]) < 1e-9 && Math.abs(ring[0][1] - ring[ring.length - 1][1]) < 1e-9;
+    if (idx >= ring.length - (closed ? 1 : 0)) return false;
     const c = ring.map((p) => [p[0], p[1]] as [number, number]);
     c[idx] = pt;
-    if (c.length > 2 && Math.abs(c[0][0] - c[c.length - 1][0]) < 1e-9 && Math.abs(c[0][1] - c[c.length - 1][1]) < 1e-9) {
-      c[c.length - 1] = c[0];
-    }
+    // 闭合环的末尾闭合点与首点本就是同一几何点：拖起点(idx 0)时若不同步改它，
+    // 闭合点会残留在原位置，导致图形不随动（直线）或 smoothClosedRing 追加首点多出一条边（曲线）。
+    if (closed) c[c.length - 1] = c[0];
     useProjectStore.getState().updateElement(chapterId, el.id, { coordinates: [c] } as Partial<MapElement>);
     return true;
   }

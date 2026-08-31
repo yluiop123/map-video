@@ -29,6 +29,9 @@ export type InteractionMode =
   | 'add_special_swallow'     // 燕尾箭头（特殊图形：多点采集，curved 燕尾造型）
   | 'add_shape_front_line'    // 直线战线（多点采点，主线直连 + 一侧梳齿）
   | 'add_shape_front_curve'   // 弯曲战线（多点采点，主线贝塞尔 + 一侧梳齿）
+  | 'add_shape_poly_curve'       // 曲线多边（多点采点闭合，边曲线化）
+  | 'add_shape_poly_defend'      // 直线防御圈（闭合多边形 + 锯齿一圈）
+  | 'add_shape_poly_curve_defend'// 曲线防御圈（闭合曲线多边形 + 锯齿一圈）
   // 军事
   | 'add_arrow'        // 直线箭头
   | 'add_curved'       // 弯曲燕尾箭头（沿贝塞尔曲线）

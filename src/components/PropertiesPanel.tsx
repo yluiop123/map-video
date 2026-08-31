@@ -464,7 +464,16 @@ function DisplayTimeToggle({ element, patch, project }: {
         checked={on}
         label={t('自定义显示时间', 'Custom display time')}
         onChange={(v) => {
-          if (!v) patch({ startFrame: ch.startFrame, endFrame: ch.endFrame });
+          if (v) {
+            // 开启：写入默认自定义区间（章节中段 25%~75%），使 on 立即生效，用户随后微调
+            const span = Math.max(1, ch.endFrame - ch.startFrame);
+            patch({
+              startFrame: ch.startFrame + Math.round(span * 0.25),
+              endFrame: ch.startFrame + Math.round(span * 0.75),
+            });
+          } else {
+            patch({ startFrame: ch.startFrame, endFrame: ch.endFrame });
+          }
         }}
       />
       {on && (
@@ -520,6 +529,29 @@ function SizeSlider({ value, base = 8, minPct = 15, maxPct = 400, step = 5, onCh
         <span className="text-[11px] font-medium text-foreground/90">{displayPct}%</span>
         <span className="text-[10px] text-muted-foreground">{maxPct}%</span>
       </div>
+    </div>
+  );
+}
+
+const rangeCls = `w-full appearance-none h-4 bg-transparent
+  [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full
+  [&::-webkit-slider-runnable-track]:bg-white/10
+  [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5
+  [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-brand
+  [&::-webkit-slider-thumb]:-mt-[5px] [&::-webkit-slider-thumb]:shadow-[0_0_0_3px_rgba(0,0,0,0.35)]
+  [&::-webkit-slider-thumb]:hover:bg-brand/90
+  focus:outline-none`;
+
+/** 绝对值滑杆（数值随标签显示），用于边框宽度/防御圈齿参/填充透明度等 */
+function RangeInput({ value, min, max, step = 1, suffix = '', onChange }: {
+  value: number; min: number; max: number; step?: number; suffix?: string; onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className={`${rangeCls} flex-1`} />
+      <span className="text-[11px] font-medium text-foreground/90 w-10 text-right shrink-0">{value}{suffix}</span>
     </div>
   );
 }
@@ -1051,7 +1083,7 @@ function RotationField({ value, onChange }: { value: number; onChange: (deg: num
 
 // ========== 形状面板：多点绘制 ==========
 
-type MultiPointStyle = 'line' | 'bezier' | 'line-arrow' | 'bezier-arrow' | 'swallowtail' | 'march' | 'poly' | 'front-line' | 'front-curve';
+type MultiPointStyle = 'line' | 'bezier' | 'line-arrow' | 'bezier-arrow' | 'swallowtail' | 'march' | 'poly' | 'poly-curve' | 'poly-defend' | 'poly-curve-defend' | 'front-line' | 'front-curve';
 
 /** 从任意元素提取点串（去闭合点） */
 function shapeCoords(el: MapElement): [number, number][] {
@@ -1097,7 +1129,10 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
       : element.type === 'arrow'
         ? ((element as ArrowElement).arrowType === 'curved-simple' ? 'march'
           : ((element as ArrowElement).arrowType === 'curved' ? 'swallowtail' : 'line'))
-        : element.type === 'polygon' ? 'poly'
+        : element.type === 'polygon'
+          ? ((element as PolygonElement).defenseStyle
+            ? ((element as PolygonElement).polyCurve ? 'poly-curve-defend' : 'poly-defend')
+            : ((element as PolygonElement).polyCurve ? 'poly-curve' : 'poly'))
           : 'line';
 
   const setStyle = (s: MultiPointStyle) => {
@@ -1143,11 +1178,15 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
         shapeCategory: 'multi',
       } as Partial<MapElement>);
     } else {
-      // poly（多边形）
+      // poly / poly-curve / poly-defend / poly-curve-defend（多边形类，均为闭合环 + 可选曲线边/锯齿）
       const ring = pts.length >= 3 ? [...pts.map((p) => [p[0], p[1]] as [number, number]), pts[0]] : pts;
+      const isCurve = s === 'poly-curve' || s === 'poly-curve-defend';
+      const isDefend = s === 'poly-defend' || s === 'poly-curve-defend';
       patch({
         type: 'polygon', coordinates: [ring], shapeKind: 'poly',
-        fillColor: colorOf, fillOpacity: 0.25, strokeColor: colorOf, strokeWidth: 2,
+        polyCurve: isCurve || undefined,
+        defenseStyle: isDefend ? { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 } : undefined,
+        fillColor: colorOf, fillOpacity: 0.25, strokeColor: colorOf, strokeWidth: isDefend ? 8 : 2,
         circleMeta: undefined, rectMeta: undefined, starMeta: undefined,
         shapeCategory: 'multi',
       } as Partial<MapElement>);
@@ -1171,77 +1210,108 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
             { value: 'swallowtail', label: t('🪶 燕尾箭头', '🪶 Swallowtail') },
             { value: 'march', label: t('⚔️ 行军箭头', '⚔️ March Arrow') },
             { value: 'poly', label: '⬛ 多边形' },
+            { value: 'poly-curve', label: '🌀 曲线多边' },
+            { value: 'poly-defend', label: t('▮⬛ 直线防御圈', '▮⬛ Straight Defense') },
+            { value: 'poly-curve-defend', label: t('🌀⬛ 曲线防御圈', '🌀⬛ Curved Defense') },
           ]}
           onChange={setStyle}
         />
       </Section>
 
       {element.type !== 'polygon' && (
-        <Section title={t('笔触', 'Stroke')}>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label={t('大小', 'Size')}>
-              <SizeSlider base={element.type === 'arrow' ? 15 : 8} value={widthOf} onChange={(v) => {
-                if (element.type === 'line') patch({ lineWidth: v });
-                else if (element.type === 'arrow') patch({ width: v } as Partial<MapElement>);
-              }} />
+        <>
+          <Field label={t('大小', 'Size')}>
+            <SizeSlider base={element.type === 'arrow' ? 15 : 8} value={widthOf} onChange={(v) => {
+              if (element.type === 'line') patch({ lineWidth: v });
+              else if (element.type === 'arrow') patch({ width: v } as Partial<MapElement>);
+            }} />
+          </Field>
+          <Field label={t('颜色', 'Color')}>
+            <ColorPicker value={colorOf} onChange={(c) => {
+              if (element.type === 'line') patch({ lineColor: c });
+              else patch({ color: c } as Partial<MapElement>);
+            }} />
+          </Field>
+          {element.type === 'arrow' && (
+            <Field label={t('填充透明度', 'Fill Opacity')}>
+              <RangeInput value={(element as ArrowElement).fillOpacity ?? 0.92} min={0.1} max={1} step={0.05}
+                onChange={(v) => patch({ fillOpacity: v } as Partial<MapElement>)} />
             </Field>
-            <Field label={t('颜色', 'Color')}>
-              <ColorPicker value={colorOf} onChange={(c) => {
-                if (element.type === 'line') patch({ lineColor: c });
-                else patch({ color: c } as Partial<MapElement>);
-              }} />
-            </Field>
-          </div>
-        </Section>
+          )}
+        </>
       )}
 
       {element.type === 'line' && (element as LineElement).frontStyle && (
         <Section title={t('战线参数', 'Front Style')}>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label={t('齿长', 'Tooth Length')}>
-              <input type="number" min="4" max="60" className="input" value={(element as LineElement).frontStyle!.toothLength ?? 14}
-                onChange={(e) => patch({ frontStyle: { ...(element as LineElement).frontStyle!, toothLength: parseInt(e.target.value) || 14 } } as Partial<MapElement>)} />
-            </Field>
-            <Field label={t('齿距', 'Tooth Gap')}>
-              <input type="number" min="8" max="120" className="input" value={(element as LineElement).frontStyle!.toothGap ?? 24}
-                onChange={(e) => patch({ frontStyle: { ...(element as LineElement).frontStyle!, toothGap: parseInt(e.target.value) || 24 } } as Partial<MapElement>)} />
-            </Field>
-            <Field label={t('偏角', 'Tooth Angle')}>
-              <input type="number" min="-60" max="60" className="input" value={(element as LineElement).frontStyle!.toothAngle ?? 0}
-                onChange={(e) => patch({ frontStyle: { ...(element as LineElement).frontStyle!, toothAngle: parseInt(e.target.value) || 0 } } as Partial<MapElement>)} />
-            </Field>
-            <Field label={t('梳齿朝向', 'Tooth Side')}>
-              <OptionBlocks<'1' | '-1'>
-                value={String((element as LineElement).frontStyle!.side ?? 1) as '1' | '-1'}
-                onChange={(v) => patch({ frontStyle: { ...(element as LineElement).frontStyle!, side: v === '1' ? 1 : -1 } } as Partial<MapElement>)}
-                options={[
-                  { value: '1', label: t('→ 右', '→ Right') },
-                  { value: '-1', label: t('← 左', '← Left') },
-                ]}
-              />
-            </Field>
-          </div>
+          <Field label={t('齿长', 'Tooth Length')}>
+            <RangeInput value={(element as LineElement).frontStyle!.toothLength ?? 14} min={4} max={60} step={1} suffix="px"
+              onChange={(v) => patch({ frontStyle: { ...(element as LineElement).frontStyle!, toothLength: v } } as Partial<MapElement>)} />
+          </Field>
+          <Field label={t('齿距', 'Tooth Gap')}>
+            <RangeInput value={(element as LineElement).frontStyle!.toothGap ?? 24} min={8} max={120} step={1} suffix="px"
+              onChange={(v) => patch({ frontStyle: { ...(element as LineElement).frontStyle!, toothGap: v } } as Partial<MapElement>)} />
+          </Field>
+          <Field label={t('偏角', 'Tooth Angle')}>
+            <RangeInput value={(element as LineElement).frontStyle!.toothAngle ?? 0} min={-60} max={60} step={1} suffix="°"
+              onChange={(v) => patch({ frontStyle: { ...(element as LineElement).frontStyle!, toothAngle: v } } as Partial<MapElement>)} />
+          </Field>
+          <Field label={t('梳齿朝向', 'Tooth Side')}>
+            <OptionBlocks<'1' | '-1'>
+              value={String((element as LineElement).frontStyle!.side ?? 1) as '1' | '-1'}
+              onChange={(v) => patch({ frontStyle: { ...(element as LineElement).frontStyle!, side: v === '1' ? 1 : -1 } } as Partial<MapElement>)}
+              options={[
+                { value: '1', label: t('→ 右', '→ Right') },
+                { value: '-1', label: t('← 左', '← Left') },
+              ]}
+            />
+          </Field>
         </Section>
       )}
 
       {element.type === 'polygon' && (
         <Section title="FILL / STROKE">
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="填充颜色">
-              <ColorPicker value={element.fillColor} onChange={(c) => patch({ fillColor: c })} />
+          <Field label={t('颜色', 'Color')}>
+            <ColorPicker value={element.fillColor} onChange={(c) => patch({ fillColor: c, strokeColor: c })} />
+          </Field>
+          <Field label={t('填充透明度', 'Fill Opacity')}>
+            <RangeInput value={element.fillOpacity} min={0} max={1} step={0.05} onChange={(v) => patch({ fillOpacity: v })} />
+          </Field>
+          {element.defenseStyle ? (
+            <Field label={t('大小', 'Size')}>
+              <SizeSlider base={8} value={element.strokeWidth} onChange={(v) => patch({ strokeWidth: Math.max(1, v) })} />
             </Field>
-            <Field label="填充透明度">
-              <input type="range" min="0" max="1" step="0.05" value={element.fillOpacity}
-                onChange={(e) => patch({ fillOpacity: parseFloat(e.target.value) })} className="w-full" />
+          ) : (
+            <Field label={t('边框宽度', 'Stroke Width')}>
+              <RangeInput value={element.strokeWidth} min={1} max={10} step={1} suffix="px" onChange={(v) => patch({ strokeWidth: Math.max(1, v) })} />
             </Field>
-            <Field label="边框颜色">
-              <ColorPicker value={element.strokeColor} onChange={(c) => patch({ strokeColor: c })} />
-            </Field>
-            <Field label="边框宽度">
-              <input type="number" min="1" max="10" className="input" value={element.strokeWidth}
-                onChange={(e) => patch({ strokeWidth: parseInt(e.target.value) || 2 })} />
-            </Field>
-          </div>
+          )}
+        </Section>
+      )}
+
+      {element.type === 'polygon' && (element as PolygonElement).defenseStyle && (
+        <Section title={t('防御圈参数', 'Defense Style')}>
+          <Field label={t('齿长', 'Tooth Length')}>
+            <RangeInput value={(element as PolygonElement).defenseStyle!.toothLength ?? 14} min={4} max={60} step={1} suffix="px"
+              onChange={(v) => patch({ defenseStyle: { ...(element as PolygonElement).defenseStyle!, toothLength: v } } as Partial<MapElement>)} />
+          </Field>
+          <Field label={t('齿距', 'Tooth Gap')}>
+            <RangeInput value={(element as PolygonElement).defenseStyle!.toothGap ?? 24} min={8} max={120} step={1} suffix="px"
+              onChange={(v) => patch({ defenseStyle: { ...(element as PolygonElement).defenseStyle!, toothGap: v } } as Partial<MapElement>)} />
+          </Field>
+          <Field label={t('偏角', 'Tooth Angle')}>
+            <RangeInput value={(element as PolygonElement).defenseStyle!.toothAngle ?? 0} min={-60} max={60} step={1} suffix="°"
+              onChange={(v) => patch({ defenseStyle: { ...(element as PolygonElement).defenseStyle!, toothAngle: v } } as Partial<MapElement>)} />
+          </Field>
+          <Field label={t('齿朝向', 'Tooth Side')}>
+            <OptionBlocks<'1' | '-1'>
+              value={String((element as PolygonElement).defenseStyle!.side ?? 1) as '1' | '-1'}
+              onChange={(v) => patch({ defenseStyle: { ...(element as PolygonElement).defenseStyle!, side: v === '1' ? 1 : -1 } } as Partial<MapElement>)}
+              options={[
+                { value: '1', label: t('→ 外', '→ Out') },
+                { value: '-1', label: t('← 内', '← In') },
+              ]}
+            />
+          </Field>
         </Section>
       )}
 
@@ -1294,12 +1364,6 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
           </div>
         </Section>
       )}
-
-      <Appearance color={colorOf} onChange={(c) => {
-        if (element.type === 'line') patch({ lineColor: c });
-        else if (element.type === 'polygon') patch({ fillColor: c, strokeColor: c });
-        else patch({ color: c } as Partial<MapElement>);
-      }} />
     </>
   );
 }
