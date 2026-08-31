@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { Camera, RotateCcw, ChevronDown } from 'lucide-react';
 import { useConfirm } from './ui/ConfirmHost';
 import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
@@ -60,7 +60,20 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     setCustomSymbols(project.customSymbols);
   }, [project.customSymbols]);
 
-  const styleUrl = getStyleUrl(project, chapter);
+  // 稳定 styleUrl 引用：对象样式+高程合并时 getStyleUrl 每次渲染都返回新对象，
+  // 若直接作 effect 依赖，地图 move → setCurrentCamera → 重渲染 → 重建地图，无限循环狂闪。
+  // 以底图/高程配置的内容签名做 memo，仅在真正切换/修改底图或高程时重建地图。
+  const baseMapStyleKey = JSON.stringify(
+    project.baseMaps.find((b) => b.id === (chapter.baseMapId || project.activeBaseMapId))?.style ?? null
+  );
+  const elevationKey = JSON.stringify(
+    project.elevationMaps.find((e) => e.id === (chapter.elevationMapId !== undefined ? chapter.elevationMapId : project.activeElevationMapId) && e.url) ?? null
+  );
+  const styleUrl = useMemo(
+    () => getStyleUrl(project, chapter),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseMapStyleKey, elevationKey, chapter.baseMapId, project.activeBaseMapId, chapter.elevationMapId, project.activeElevationMapId]
+  );
 
   // ===== 初始化地图 =====
   useEffect(() => {
@@ -83,6 +96,18 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     // 一键放置等依赖 mapRef 的功能会静默失效（getCenter 等在 load 前即可用）
     mapRef.current = map;
     sharedMap.set(map);
+
+    // 外部瓦片源（卫星图/DEM）放大时会间歇性返回不完整/损坏的图片，
+    // MapLibre 解码失败抛 InvalidStateError（The source image could not be decoded）。
+    // 该瓦片本身会被跳过、重试即可恢复，降级为警告避免打断渲染/污染控制台。
+    map.on('error', (e: any) => {
+      const msg = String(e?.error?.message || e?.message || '');
+      if (/could not be decoded|failed to decode|Failed to fetch|NetworkError|aborted/i.test(msg)) {
+        console.warn('[map] 瓦片加载/解码失败（已跳过，可重试）:', msg);
+        return;
+      }
+      console.error('[map]', e?.error || e);
+    });
 
     map.on('load', () => {
       mapRef.current = map;
