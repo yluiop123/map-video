@@ -1971,6 +1971,78 @@ function CountryDots({ countries, value, onChange }: {
   );
 }
 
+/** 国家颜色设置弹窗：点色块即时应用（背景地图实时预览），支持自定义取色/hex 输入 */
+function CountryColorDialog({ country, onClose, onChange, onAuto }: {
+  country: TerritoryElement['countries'][number];
+  onClose: () => void;
+  onChange: (color: string) => void;
+  onAuto: () => void;
+}) {
+  const t = useT();
+  const [hex, setHex] = useState(country.color.toUpperCase());
+  useEffect(() => { setHex(country.color.toUpperCase()); }, [country.color]);
+  const applyHex = (raw: string) => {
+    const v = raw.trim().replace(/^#/, '');
+    if (/^[0-9a-fA-F]{6}$/.test(v) || /^[0-9a-fA-F]{3}$/.test(v)) onChange(`#${v.toUpperCase()}`);
+  };
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center" onClick={onClose}>
+      <div
+        className="bg-card border border-white/10 rounded-xl shadow-xl w-[320px] max-w-[92vw]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 pt-4 pb-2 flex items-center gap-2">
+          <span className="w-4 h-4 rounded-full border border-white/25 shrink-0" style={{ backgroundColor: country.color }} />
+          <h2 className="text-base font-semibold shrink-0">{t('国家颜色', 'Country Color')}</h2>
+          <span className="text-xs text-muted-foreground truncate">{country.name}</span>
+          <button onClick={onClose} className="ml-auto text-muted-foreground hover:text-foreground shrink-0" aria-label={t('关闭', 'Close')}>✕</button>
+        </div>
+        <div className="px-4 pb-3">
+          <div className="grid grid-cols-6 gap-1.5">
+            {TERRITORY_PALETTE.map((c) => (
+              <button
+                key={c}
+                title={c}
+                onClick={() => onChange(c)}
+                className={`w-8 h-8 rounded-md border-2 transition-transform hover:scale-110 ${
+                  country.color.toLowerCase() === c.toLowerCase() ? 'border-white/80 scale-105' : 'border-white/15'
+                }`}
+                style={{ backgroundColor: c }}
+              />
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.06]">
+            <input
+              type="color"
+              title={t('自定义颜色', 'Custom color')}
+              value={country.color}
+              onChange={(e) => onChange(e.target.value)}
+              className="w-8 h-8 rounded cursor-pointer bg-transparent border border-white/15 p-0.5 shrink-0"
+            />
+            <div className="flex-1 flex items-center rounded-md border bg-white/[0.045] px-2 focus-within:border-white/25">
+              <span className="text-xs text-muted-foreground select-none">#</span>
+              <input
+                value={hex.replace(/^#/, '')}
+                onChange={(e) => { setHex(e.target.value); applyHex(e.target.value); }}
+                className="w-full h-8 bg-transparent text-xs font-mono uppercase outline-none"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="px-4 py-2.5 border-t border-white/[0.06] flex items-center justify-between">
+          <button
+            onClick={onAuto}
+            className="px-2.5 py-1.5 text-[11px] font-medium rounded-md border bg-white/[0.04] border-white/10 hover:bg-white/10"
+          >{t('全部自动配色', 'Auto All')}</button>
+          <button onClick={onClose} className="px-3 py-1.5 text-xs font-medium rounded-md bg-brand text-white">
+            {t('完成', 'Done')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TerritorySettings({ element, patch, project }: {
   element: TerritoryElement;
   patch: (changes: Partial<MapElement>) => void;
@@ -1985,6 +2057,7 @@ function TerritorySettings({ element, patch, project }: {
   const terrPlotId = useEditorStore((s) => s.terrPlotId);
   const setTerrPlotId = useEditorStore((s) => s.setTerrPlotId);
   const mode = useInteractionStore((s) => s.mode);
+  const [colorEditId, setColorEditId] = useState<string | null>(null);
 
   const { countries, plots, events, display } = element;
   const patchEl = (p: Partial<TerritoryElement>) => patch(p as Partial<MapElement>);
@@ -2053,7 +2126,12 @@ function TerritorySettings({ element, patch, project }: {
             const cnt = plots.filter((p) => p.ownerId === c.id).length;
             return (
               <div key={c.id} className="flex items-center gap-1.5">
-                <ColorPicker value={c.color} onChange={(col) => setCountries(countries.map((x) => (x.id === c.id ? { ...x, color: col } : x)))} />
+                <button
+                  title={t('设置颜色', 'Set color')}
+                  onClick={() => setColorEditId(c.id)}
+                  className="w-5 h-5 rounded-full border border-white/25 shrink-0 transition-transform hover:scale-110"
+                  style={{ backgroundColor: c.color }}
+                />
                 <input
                   className="input h-7 text-xs flex-1 min-w-0"
                   value={c.name}
@@ -2161,13 +2239,14 @@ function TerritorySettings({ element, patch, project }: {
                 ><Trash2 size={12} /></button>
               </div>
               <div className="flex items-center gap-1.5 flex-wrap">
-                <OptionBlocks<'instant' | 'fade' | 'draw'>
+                <OptionBlocks<'instant' | 'fade' | 'draw' | 'spread'>
                   value={ev.effect?.preset || 'draw'}
                   onChange={(v) => setEvents(events.map((x) => (x.id === ev.id ? { ...x, effect: { preset: v, duration: x.effect?.duration, highlight: x.effect?.highlight } } : x)))}
                   options={[
                     { value: 'instant', label: t('瞬时', 'Instant') },
                     { value: 'fade', label: t('渐变', 'Fade') },
                     { value: 'draw', label: t('描线', 'Draw') },
+                    { value: 'spread', label: t('扩散', 'Spread') },
                   ]}
                 />
                 <div className="w-24 shrink-0">
@@ -2222,6 +2301,19 @@ function TerritorySettings({ element, patch, project }: {
           <RangeInput value={display.fillOpacity} min={0} max={1} step={0.05} onChange={(v) => setDisplay({ fillOpacity: v })} />
         </Field>
       </Section>
+
+      {colorEditId && (() => {
+        const colorCountry = countries.find((c) => c.id === colorEditId);
+        if (!colorCountry) return null;
+        return (
+          <CountryColorDialog
+            country={colorCountry}
+            onClose={() => setColorEditId(null)}
+            onChange={(col) => setCountries(countries.map((x) => (x.id === colorCountry.id ? { ...x, color: col } : x)))}
+            onAuto={autoColor}
+          />
+        );
+      })()}
     </>
   );
 }
