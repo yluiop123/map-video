@@ -178,7 +178,7 @@ function getElementIcon(type: MapElement['type']): string {
   const icons: Record<string, string> = {
     point: '📍', moving_point: '🏃', line: '📏', polygon: '⬛',
     arrow: '➡️', double_arrow: '🩹', encirclement: '⭕', gathering: '⚔️', military_symbol: '🎖️',
-    connector: '🔗', custom_icon: '🖼️', flag: '🚩',
+    connector: '🔗', custom_icon: '🖼️', flag: '🚩', territory: '🗺️',
   };
   return icons[type] || '❓';
 }

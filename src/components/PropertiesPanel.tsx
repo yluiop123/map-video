@@ -1,10 +1,12 @@
 import { useRef, useState, useEffect } from 'react';
-import { MapPin, Route as RouteIcon, Square, Trash2, Plus } from 'lucide-react';
+import { MapPin, Route as RouteIcon, Square, Trash2, Plus, Landmark, Crosshair } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
+import { useInteractionStore } from '../stores/interactionStore';
 import { generateId } from '../types';
 import { FrameTimeField } from './FrameTimeField';
 import { frameToSeconds, secondsToFrame, round2 } from '../lib/time';
+import { TERRITORY_PALETTE } from '../lib/territory';
 import { Section, Field, StyleGrid, Toggle, ColorPicker, OptionBlocks, PanelHeader, useT, NumberInput } from './ui/primitives';
 import { useConfirm } from './ui/ConfirmHost';
 import Cropper from 'react-easy-crop';
@@ -13,10 +15,10 @@ import type {
   MapElement, PointElement, LineElement,
   PolygonElement, ArrowElement, CustomIconElement, FlagElement,
   DoubleArrowElement, EncirclementElement, GatheringElement,
-  CameraKeyframe,
+  CameraKeyframe, TerritoryElement,
 } from '../types';
 
-type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'image';
+type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'image' | 'territory';
 
 const CATEGORY_META: Record<Category, { icon: React.ReactNode; zh: string; en: string }> = {
   pin: { icon: <MapPin size={14} className="text-red-400" />, zh: '标记设置', en: 'Pin Settings' },
@@ -25,15 +27,17 @@ const CATEGORY_META: Record<Category, { icon: React.ReactNode; zh: string; en: s
   'shape-two': { icon: <Square size={14} className="text-orange-400" />, zh: '两点绘制设置', en: 'Two-Point Shape Settings' },
   'shape-special': { icon: <Square size={14} className="text-orange-400" />, zh: '特殊图形设置', en: 'Special Shape Settings' },
   image: { icon: <MapPin size={14} className="text-red-400" />, zh: '标记设置', en: 'Marker Settings' },
+  territory: { icon: <Landmark size={14} className="text-violet-400" />, zh: '疆域设置', en: 'Territory Settings' },
 };
 
 function categoryOf(el: MapElement): Category {
+  const t = el.type;
+  if (t === 'territory') return 'territory';
   const sc = el.shapeCategory;
   if (sc === 'multi') return 'shape-multi';
   if (sc === 'two') return 'shape-two';
   if (sc === 'special') return 'shape-special';
   if (sc === 'route') return 'route';
-  const t = el.type;
   if (t === 'point' || t === 'flag') return 'pin';
   // 旧数据兼容：无 shapeCategory
   if (t === 'arrow' && (el as ArrowElement).arrowType === 'swallowtail') return 'shape-special';
@@ -119,6 +123,7 @@ export function PropertiesPanel() {
         {cat === 'shape-two' && <TwoShapeSettings element={element} patch={patch} />}
         {cat === 'shape-special' && <SpecialShapeSettings element={element} patch={patch} />}
         {cat === 'image' && <ImageSettings element={element as CustomIconElement} patch={patch} />}
+        {cat === 'territory' && <TerritorySettings element={element as TerritoryElement} patch={patch} project={project} />}
 
         {cat !== 'pin' && cat !== 'route' && (
           <Section title={t('显示时间', 'Display Time')}>
@@ -1940,3 +1945,283 @@ function IconUploadButton({ onPick, className = '' }: {
 
 // 避免 CameraKeyframe 未使用告警（导出给未来扩展）
 export type { CameraKeyframe };
+
+// ========== 疆域设置面板 ==========
+
+type ProjectOf = NonNullable<ReturnType<typeof useProjectStore.getState>['project']>;
+
+/** 国家色点选择条（地块归属/事件占领方共用） */
+function CountryDots({ countries, value, onChange }: {
+  countries: TerritoryElement['countries'];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      {countries.map((c) => (
+        <button
+          key={c.id}
+          title={c.name}
+          onClick={() => onChange(c.id)}
+          className={`w-4 h-4 rounded-full border-2 transition-transform ${value === c.id ? 'border-white scale-110' : 'border-transparent opacity-70 hover:opacity-100'}`}
+          style={{ backgroundColor: c.color }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TerritorySettings({ element, patch, project }: {
+  element: TerritoryElement;
+  patch: (changes: Partial<MapElement>) => void;
+  project: ProjectOf;
+}) {
+  const t = useT();
+  const confirm = useConfirm();
+  const fps = project.globalConfig.defaultFPS;
+  const currentFrame = useEditorStore((s) => s.currentFrame);
+  const terrSelPlots = useEditorStore((s) => s.terrSelPlots);
+  const setTerrSelPlots = useEditorStore((s) => s.setTerrSelPlots);
+  const terrPlotId = useEditorStore((s) => s.terrPlotId);
+  const setTerrPlotId = useEditorStore((s) => s.setTerrPlotId);
+  const mode = useInteractionStore((s) => s.mode);
+
+  const { countries, plots, events, display } = element;
+  const patchEl = (p: Partial<TerritoryElement>) => patch(p as Partial<MapElement>);
+
+  const setCountries = (next: TerritoryElement['countries']) => patchEl({ countries: next });
+  const setPlots = (next: TerritoryElement['plots']) => patchEl({ plots: next });
+  const setEvents = (next: TerritoryElement['events']) => patchEl({ events: next });
+  const setDisplay = (d: Partial<TerritoryElement['display']>) => patchEl({ display: { ...display, ...d } });
+
+  const addCountry = () => {
+    setCountries([...countries, {
+      id: generateId(), name: `国家${countries.length + 1}`,
+      color: TERRITORY_PALETTE[countries.length % TERRITORY_PALETTE.length],
+    }]);
+  };
+  const autoColor = () => {
+    setCountries(countries.map((c, i) => ({ ...c, color: TERRITORY_PALETTE[i % TERRITORY_PALETTE.length] })));
+  };
+  const deleteCountry = (c: TerritoryElement['countries'][number]) => {
+    const used = plots.some((p) => p.ownerId === c.id) || events.some((ev) => ev.toCountryId === c.id);
+    if (used) return; // 被引用的按钮已禁用
+    setCountries(countries.filter((x) => x.id !== c.id));
+  };
+
+  const deletePlot = (p: TerritoryElement['plots'][number]) => {
+    void confirm({
+      message: `删除地块「${p.name || '未命名'}」？`,
+      danger: true, confirmText: t('删除', 'Delete'),
+    }).then((ok) => {
+      if (!ok) return;
+      setPlots(plots.filter((x) => x.id !== p.id));
+      // 同步清理引用该地块的事件
+      setEvents(events
+        .map((ev) => ({ ...ev, plotIds: ev.plotIds.filter((id) => id !== p.id) }))
+        .filter((ev) => ev.plotIds.length > 0));
+      if (terrPlotId === p.id) {
+        const rest = plots.filter((x) => x.id !== p.id);
+        setTerrPlotId(rest[0]?.id ?? null);
+      }
+      setTerrSelPlots(terrSelPlots.filter((id) => id !== p.id));
+    });
+  };
+
+  const createEvent = () => {
+    if (countries.length === 0 || terrSelPlots.length === 0) return;
+    setEvents([...events, {
+      id: generateId(),
+      frame: currentFrame,
+      plotIds: [...terrSelPlots],
+      toCountryId: countries[0].id,
+      effect: { preset: 'draw', duration: Math.max(1, Math.round(fps)), highlight: true },
+    }]);
+    setTerrSelPlots([]);
+  };
+
+  const plotLabel = (ids: string[]) =>
+    ids.map((id) => plots.find((p) => p.id === id)?.name || '?').join('、');
+
+  return (
+    <>
+      {/* ===== 国家 ===== */}
+      <Section title={t('国家', 'Countries')}>
+        <div className="space-y-1.5 mb-2 max-h-44 overflow-y-auto">
+          {countries.map((c) => {
+            const used = plots.some((p) => p.ownerId === c.id) || events.some((ev) => ev.toCountryId === c.id);
+            const cnt = plots.filter((p) => p.ownerId === c.id).length;
+            return (
+              <div key={c.id} className="flex items-center gap-1.5">
+                <ColorPicker value={c.color} onChange={(col) => setCountries(countries.map((x) => (x.id === c.id ? { ...x, color: col } : x)))} />
+                <input
+                  className="input h-7 text-xs flex-1 min-w-0"
+                  value={c.name}
+                  onChange={(e) => setCountries(countries.map((x) => (x.id === c.id ? { ...x, name: e.target.value } : x)))}
+                />
+                <span className="text-[10px] text-muted-foreground w-8 text-right shrink-0">{cnt} 地块</span>
+                <button
+                  disabled={used}
+                  title={used ? t('该国家被地块/事件引用，无法删除', 'Referenced by plots/events') : t('删除国家', 'Delete')}
+                  onClick={() => deleteCountry(c)}
+                  className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-400 disabled:opacity-25 disabled:hover:text-muted-foreground shrink-0"
+                ><Trash2 size={12} /></button>
+              </div>
+            );
+          })}
+          {countries.length === 0 && (
+            <p className="text-[11px] text-muted-foreground">{t('还没有国家，可新增或导入', 'No countries yet')}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button onClick={addCountry} className="px-2 py-1.5 text-[11px] font-medium rounded-md border bg-white/[0.04] border-white/10 hover:bg-white/10 flex items-center gap-1">
+            <Plus size={12} /> {t('新增国家', 'Add Country')}
+          </button>
+          <button onClick={autoColor} className="px-2 py-1.5 text-[11px] font-medium rounded-md border bg-white/[0.04] border-white/10 hover:bg-white/10">
+            {t('自动配色', 'Auto Colors')}
+          </button>
+        </div>
+      </Section>
+
+      {/* ===== 地块 ===== */}
+      <Section title={t('地块', 'Plots')}>
+        <div className="space-y-1.5 mb-2 max-h-56 overflow-y-auto">
+          {plots.map((p) => (
+            <div key={p.id} className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 border ${terrPlotId === p.id ? 'border-brand bg-brand/10' : 'border-transparent'}`}>
+              <button
+                title={t('设为编辑目标（也可在地图上双击该地块）· 拖顶点编辑 · Alt+点顶点删除', 'Set edit target (or dblclick plot on map) · drag vertices · Alt+click to delete')}
+                onClick={() => setTerrPlotId(terrPlotId === p.id ? null : p.id)}
+                className={`h-6 w-6 flex items-center justify-center rounded shrink-0 ${terrPlotId === p.id ? 'text-brand' : 'text-muted-foreground hover:text-foreground'}`}
+              ><Crosshair size={12} /></button>
+              <input
+                className="input h-7 text-xs flex-1 min-w-0"
+                value={p.name || ''}
+                placeholder={t('地块名称', 'Plot name')}
+                onChange={(e) => setPlots(plots.map((x) => (x.id === p.id ? { ...x, name: e.target.value } : x)))}
+              />
+              <CountryDots
+                countries={countries}
+                value={p.ownerId}
+                onChange={(cid) => setPlots(plots.map((x) => (x.id === p.id ? { ...x, ownerId: cid } : x)))}
+              />
+              <button
+                title={t('删除地块', 'Delete plot')}
+                onClick={() => deletePlot(p)}
+                className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-400 shrink-0"
+              ><Trash2 size={12} /></button>
+            </div>
+          ))}
+          {plots.length === 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              {t('用「疆域 → 绘制地块」或「导入疆域」添加', 'Draw or import plots')}
+            </p>
+          )}
+        </div>
+      </Section>
+
+      {/* ===== 兼并事件 ===== */}
+      <Section title={t('兼并事件', 'Annex Events')}>
+        <div className="flex items-center gap-1.5 mb-2">
+          <button
+            disabled={terrSelPlots.length === 0 || countries.length === 0}
+            onClick={createEvent}
+            title={mode === 'terr_annex' ? undefined : t('提示：先在工具条进入「疆域 → 兼并」点选地块', 'Use Territory → Annex tool to pick plots')}
+            className="px-2 py-1.5 text-[11px] font-medium rounded-md bg-brand text-white disabled:opacity-40"
+          >
+            {terrSelPlots.length > 0
+              ? t(`生成兼并事件（已选 ${terrSelPlots.length} 地块）`, `Create event (${terrSelPlots.length} plots)`)
+              : t('生成兼并事件（请点选地块）', 'Create event (pick plots)')}
+          </button>
+          {terrSelPlots.length > 0 && (
+            <button onClick={() => setTerrSelPlots([])} className="px-2 py-1.5 text-[11px] rounded-md border bg-white/[0.04] border-white/10 hover:bg-white/10">
+              {t('清除选择', 'Clear')}
+            </button>
+          )}
+        </div>
+        <div className="space-y-2 max-h-64 overflow-y-auto">
+          {[...events].sort((a, b) => a.frame - b.frame).map((ev) => (
+            <div key={ev.id} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-2 space-y-1.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-muted-foreground shrink-0">{t('时间', 'Time')}</span>
+                <div className="w-20 shrink-0">
+                  <FrameTimeField value={ev.frame} fps={fps} onFrameChange={(f) => setEvents(events.map((x) => (x.id === ev.id ? { ...x, frame: f } : x)))} />
+                </div>
+                <span className="text-[10px] text-muted-foreground shrink-0 ml-1">{t('占领', '→')}</span>
+                <div className="flex-1 min-w-0 overflow-x-auto">
+                  <CountryDots
+                    countries={countries}
+                    value={ev.toCountryId}
+                    onChange={(cid) => setEvents(events.map((x) => (x.id === ev.id ? { ...x, toCountryId: cid } : x)))}
+                  />
+                </div>
+                <button
+                  title={t('删除事件', 'Delete event')}
+                  onClick={() => setEvents(events.filter((x) => x.id !== ev.id))}
+                  className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-400 shrink-0"
+                ><Trash2 size={12} /></button>
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <OptionBlocks<'instant' | 'fade' | 'draw'>
+                  value={ev.effect?.preset || 'draw'}
+                  onChange={(v) => setEvents(events.map((x) => (x.id === ev.id ? { ...x, effect: { preset: v, duration: x.effect?.duration, highlight: x.effect?.highlight } } : x)))}
+                  options={[
+                    { value: 'instant', label: t('瞬时', 'Instant') },
+                    { value: 'fade', label: t('渐变', 'Fade') },
+                    { value: 'draw', label: t('描线', 'Draw') },
+                  ]}
+                />
+                <div className="w-24 shrink-0">
+                  <FrameTimeField
+                    value={ev.effect?.duration ?? Math.round(fps)}
+                    fps={fps}
+                    onFrameChange={(f) => setEvents(events.map((x) => (x.id === ev.id ? { ...x, effect: { preset: x.effect?.preset || 'draw', duration: Math.max(1, f), highlight: x.effect?.highlight } } : x)))}
+                  />
+                </div>
+                <Toggle
+                  checked={!!ev.effect?.highlight}
+                  label={t('高亮', 'Glow')}
+                  onChange={(v) => setEvents(events.map((x) => (x.id === ev.id ? { ...x, effect: { preset: x.effect?.preset || 'draw', duration: x.effect?.duration, highlight: v } } : x)))}
+                />
+              </div>
+              <p className="text-[10px] text-muted-foreground truncate">{plotLabel(ev.plotIds)}</p>
+            </div>
+          ))}
+          {events.length === 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              {t('暂无事件：点选地块后生成，播放到该时间即播放兼并动画', 'No events yet')}
+            </p>
+          )}
+        </div>
+      </Section>
+
+      {/* ===== 显示 ===== */}
+      <Section title={t('显示', 'Display')}>
+        <div className="bg-black/40 border border-white/[0.08] rounded-[10px] px-3 py-2.5 space-y-2.5">
+          <Toggle checked={display.countryBorders} label={t('国界（并集外边界）', 'Country Borders')} onChange={(v) => setDisplay({ countryBorders: v })} />
+          <Toggle checked={display.plotBorders} label={t('地块边界', 'Plot Borders')} onChange={(v) => setDisplay({ plotBorders: v })} />
+          <Toggle checked={display.countryNames} label={t('国名标签', 'Country Names')} onChange={(v) => setDisplay({ countryNames: v })} />
+          <Toggle checked={display.plotNames} label={t('地块名标签', 'Plot Names')} onChange={(v) => setDisplay({ plotNames: v })} />
+        </div>
+        <Field label={t('标签朝向', 'Label Align')}>
+          <OptionBlocks<'map' | 'viewport'>
+            value={display.labelAlign}
+            onChange={(v) => setDisplay({ labelAlign: v })}
+            options={[
+              { value: 'map', label: t('🧭 贴地', '🧭 Ground') },
+              { value: 'viewport', label: t('🎥 面向镜头', '🎥 Face Cam') },
+            ]}
+          />
+        </Field>
+        <Field label={t('标签缩放', 'Label Scale')}>
+          <RangeInput value={display.labelScale} min={0.5} max={3} step={0.1} suffix="×" onChange={(v) => setDisplay({ labelScale: v })} />
+        </Field>
+        <Field label={t('边界宽度', 'Border Width')}>
+          <RangeInput value={display.borderWidth} min={1} max={8} step={1} suffix="px" onChange={(v) => setDisplay({ borderWidth: Math.max(1, v) })} />
+        </Field>
+        <Field label={t('填充透明度', 'Fill Opacity')}>
+          <RangeInput value={display.fillOpacity} min={0} max={1} step={0.05} onChange={(v) => setDisplay({ fillOpacity: v })} />
+        </Field>
+      </Section>
+    </>
+  );
+}

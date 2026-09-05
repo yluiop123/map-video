@@ -32,6 +32,9 @@ export type InteractionMode =
   | 'add_shape_poly_curve'       // 曲线多边（多点采点闭合，边曲线化）
   | 'add_shape_poly_defend'      // 直线防御圈（闭合多边形 + 锯齿一圈）
   | 'add_shape_poly_curve_defend'// 曲线防御圈（闭合曲线多边形 + 锯齿一圈）
+  // 疆域
+  | 'add_terr_plot'    // 绘制地块（多点采点闭合 → 加入选中疆域）
+  | 'terr_annex'       // 兼并（点选地块多选 → 面板生成事件）
   // 军事
   | 'add_arrow'        // 直线箭头
   | 'add_curved'       // 弯曲燕尾箭头（沿贝塞尔曲线）
@@ -46,7 +49,7 @@ export interface FocusRequest {
 }
 
 /** 一键在地图中心放置元素（对应 Mapimator 点击工具即落点） */
-export type PlaceKind = 'pin' | 'image';
+export type PlaceKind = 'pin' | 'image' | 'territory';
 
 interface InteractionState {
   mode: InteractionMode;

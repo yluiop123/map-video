@@ -29,6 +29,13 @@ interface EditorState {
   routeEdit: 'none' | 'add' | 'del';
   setRouteEdit: (m: 'none' | 'add' | 'del') => void;
 
+  // 疆域：当前顶点编辑的地块 / 兼并工具点选的地块集合
+  terrPlotId: string | null;
+  setTerrPlotId: (id: string | null) => void;
+  terrSelPlots: string[];
+  toggleTerrSelPlot: (id: string) => void;
+  setTerrSelPlots: (ids: string[]) => void;
+
   // 属性面板界面语言（顶栏最右切换）：zh=中文 / en=English
   lang: 'zh' | 'en';
   setLang: (l: 'zh' | 'en') => void;
@@ -71,4 +78,13 @@ export const useEditorStore = create<EditorState>()((set) => ({
   setLang: (l) => set({ lang: l }),
   routeEdit: 'none',
   setRouteEdit: (m) => set({ routeEdit: m }),
+  terrPlotId: null,
+  setTerrPlotId: (id) => set({ terrPlotId: id }),
+  terrSelPlots: [],
+  toggleTerrSelPlot: (id) => set((s) => ({
+    terrSelPlots: s.terrSelPlots.includes(id)
+      ? s.terrSelPlots.filter((x) => x !== id)
+      : [...s.terrSelPlots, id],
+  })),
+  setTerrSelPlots: (ids) => set({ terrSelPlots: ids }),
 }));

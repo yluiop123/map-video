@@ -33,7 +33,7 @@ const CN_NAMES: Record<string, string> = {
   'Moldova': '摩尔多瓦', Georgia: '格鲁吉亚', Armenia: '亚美尼亚', Azerbaijan: '阿塞拜疆',
 };
 
-function cnName(en: string): string {
+export function cnName(en: string): string {
   return CN_NAMES[en] || en;
 }
 

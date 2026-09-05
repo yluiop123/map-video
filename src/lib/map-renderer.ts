@@ -5,11 +5,17 @@ import { interpolateKeyframes, interpolatePath } from './keyframe-interpolation'
 import {
   buildAttackArrow, buildStraightArrow, buildDoubleArrow, buildGatheringPlace,
 } from './military-plots';
+import {
+  ownerAt, plotColorAt, plotFxAt, unionCountryRings, centerOfFeature,
+  sliceRingClosed, makeTerritoryLabelImageData, territoryLabelImageId,
+  normalizeTerritoryDisplay,
+} from './territory';
 import type {
   MapElement, PointElement, MovingPointElement, LineElement,
   PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
   GatheringElement, MilitarySymbolElement, ConnectorElement,
-  CustomIconElement, FlagElement, CustomSymbol, CameraKeyframe
+  CustomIconElement, FlagElement, CustomSymbol, CameraKeyframe,
+  TerritoryElement,
 } from '../types';
 
 // ========== 自定义符号注册表 ==========
@@ -157,6 +163,7 @@ export function renderElements(
       case 'connector': renderConnector(map, element); break;
       case 'custom_icon': renderCustomIcon(map, element); break;
       case 'flag': renderFlag(map, element); break;
+      case 'territory': renderTerritory(map, element as TerritoryElement, frame); break;
     }
   }
 }
@@ -1237,6 +1244,191 @@ function buildToothedTeeth(
     prev = cur;
   }
   return lines;
+}
+
+// ========== 渲染：疆域（国家/地块/兼并动画） ==========
+
+/** 国界并集缓存：plots 数组引用 → 归属签名 → 边界要素 + 国名锚点（归属不变即命中） */
+const terrCacheByPlots = new WeakMap<object, Map<string, { borderFC: any; anchors: { name: string; color: string; lng: number; lat: number }[] }>>();
+
+function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: number) {
+  const { countries, plots, events } = element;
+  const display = normalizeTerritoryDisplay(element.display);
+  const srcId = `terr-${element.id}`;
+  const fillId = `terr-layer-${element.id}`;        // 填充层（同时是点选命中层，-layer- 命名）
+  const plineId = `terr-pline-${element.id}`;       // 地块边界
+  const bSrcId = `terr-bsrc-${element.id}`;
+  const borderId = `terr-border-${element.id}`;     // 国界
+  const dSrcId = `terr-dsrc-${element.id}`;
+  const drawId = `terr-draw-${element.id}`;         // 兼并描线
+  const gSrcId = `terr-gsrc-${element.id}`;
+  const glowFillId = `terr-gfill-${element.id}`;    // 高亮脉冲
+  const glowLineId = `terr-gline-${element.id}`;
+  const lSrcId = `terr-lsrc-${element.id}`;
+  const labelId = `terr-label-${element.id}`;       // 名称标签
+
+  const emptyFC = turf.featureCollection([] as any[]);
+
+  // —— 每帧推导归属 / 颜色 / 特效进度 ——
+  const fillFeatures: any[] = [];
+  const drawFeatures: any[] = [];
+  const glowFeatures: any[] = [];
+  for (const p of plots) {
+    if (!p.rings?.[0] || p.rings[0].length < 4) continue;
+    const color = plotColorAt(p, events, frame, countries);
+    const fx = plotFxAt(p, events, frame, countries);
+    const props = { pid: p.id, tid: element.id, color, op: display.fillOpacity };
+    fillFeatures.push(turf.polygon(p.rings as [number, number][][], props));
+    if (fx.draw < 1) {
+      const sliced = sliceRingClosed(p.rings[0], fx.draw);
+      if (sliced.length >= 2) drawFeatures.push(turf.lineString(sliced, { color }));
+    }
+    if (fx.glow > 0.01) {
+      glowFeatures.push(turf.polygon(p.rings as [number, number][][], { gop: fx.glow }));
+    }
+  }
+
+  // —— 国界：同国地块并集（缓存：plots 引用 + 归属签名） ——
+  const ownSig = plots.map((p) => `${p.id}:${ownerAt(p, events, frame)}`).join('|');
+  let cache = terrCacheByPlots.get(plots);
+  if (!cache) { cache = new Map(); terrCacheByPlots.set(plots, cache); }
+  let cached = cache.get(ownSig);
+  if (!cached) {
+    const byCountry = new Map<string, [number, number][][][]>();
+    for (const p of plots) {
+      if (!p.rings?.[0] || p.rings[0].length < 4) continue;
+      const arr = byCountry.get(ownerAt(p, events, frame)) || [];
+      arr.push(p.rings);
+      byCountry.set(ownerAt(p, events, frame), arr);
+    }
+    const borderFCs: any[] = [];
+    const anchors: { name: string; color: string; lng: number; lat: number }[] = [];
+    for (const [cid, ringsList] of byCountry) {
+      const c = countries.find((x) => x.id === cid);
+      const u = unionCountryRings(ringsList);
+      if (u) {
+        const geom = u.geometry;
+        const polys: [number, number][][][] = geom.type === 'Polygon' ? [geom.coordinates as [number, number][][]] : (geom.coordinates as [number, number][][][]);
+        for (const rings of polys) borderFCs.push(turf.polygon(rings, { color: c?.color || '#888888' }));
+        const ctr = centerOfFeature(u);
+        if (ctr) anchors.push({ name: c?.name || '', color: c?.color || '#FFFFFF', lng: ctr[0], lat: ctr[1] });
+      } else {
+        // union 失败回退：逐地块外环描边
+        for (const rings of ringsList) {
+          borderFCs.push(turf.polygon([rings[0]], { color: c?.color || '#888888' }));
+        }
+      }
+    }
+    cached = { borderFC: turf.featureCollection(borderFCs), anchors };
+    cache.set(ownSig, cached);
+  }
+
+  // —— 国名/地块名锚点 ——
+  const labelFeatures: any[] = [];
+  const registerLabel = (text: string, size: number) => {
+    const st = { size, color: '#FFFFFF', halo: 'rgba(0,0,0,0.85)', haloWidth: 3 };
+    const imgId = territoryLabelImageId(text, st);
+    if (!map.hasImage(imgId)) {
+      try { map.addImage(imgId, makeTerritoryLabelImageData(text, st), { pixelRatio: 1 }); } catch { /* style 未就绪 */ }
+    }
+    return imgId;
+  };
+  if (display.countryNames) {
+    for (const a of cached.anchors) {
+      if (!a.name) continue;
+      const imgId = registerLabel(a.name, Math.round(15 * display.labelScale));
+      labelFeatures.push(turf.point([a.lng, a.lat], { img: imgId, sc: 1 }));
+    }
+  }
+  if (display.plotNames) {
+    for (const p of plots) {
+      if (!p.rings?.[0] || p.rings[0].length < 4) continue;
+      const c = countries.find((x) => x.id === ownerAt(p, events, frame));
+      const ctr = centerOfFeature({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: p.rings } } as any);
+      if (!ctr) continue;
+      const imgId = registerLabel(p.name || c?.name || '', Math.round(12 * display.labelScale));
+      labelFeatures.push(turf.point(ctr, { img: imgId, sc: 1 }));
+    }
+  }
+
+  try {
+    // 填充 + 地块边界（同源）
+    if (!map.getSource(srcId)) {
+      map.addSource(srcId, { type: 'geojson', data: turf.featureCollection(fillFeatures) } as any);
+      map.addLayer({
+        id: fillId, type: 'fill', source: srcId,
+        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['get', 'op'] },
+      });
+      map.addLayer({
+        id: plineId, type: 'line', source: srcId,
+        paint: { 'line-color': 'rgba(255,255,255,0.55)', 'line-width': 1, 'line-opacity': 0.6 },
+      });
+    }
+    (map.getSource(srcId) as GeoJSONSource).setData(turf.featureCollection(fillFeatures));
+    map.setLayoutProperty(plineId, 'visibility', display.plotBorders ? 'visible' : 'none');
+
+    // 国界
+    if (!map.getSource(bSrcId)) {
+      map.addSource(bSrcId, { type: 'geojson', data: cached.borderFC } as any);
+      map.addLayer({
+        id: borderId, type: 'line', source: bSrcId,
+        paint: { 'line-color': ['get', 'color'], 'line-width': display.borderWidth, 'line-opacity': 0.95 },
+      });
+    }
+    (map.getSource(bSrcId) as GeoJSONSource).setData(cached.borderFC);
+    map.setPaintProperty(borderId, 'line-width', display.borderWidth);
+    map.setLayoutProperty(borderId, 'visibility', display.countryBorders ? 'visible' : 'none');
+
+    // 兼并描线
+    if (!map.getSource(dSrcId)) {
+      map.addSource(dSrcId, { type: 'geojson', data: turf.featureCollection(drawFeatures) } as any);
+      map.addLayer({
+        id: drawId, type: 'line', source: dSrcId,
+        paint: { 'line-color': ['get', 'color'], 'line-width': Math.max(2, display.borderWidth + 1), 'line-opacity': 0.95 },
+        layout: { 'line-cap': 'round' },
+      });
+    }
+    (map.getSource(dSrcId) as GeoJSONSource).setData(drawFeatures.length ? turf.featureCollection(drawFeatures) : emptyFC);
+    map.setPaintProperty(drawId, 'line-width', Math.max(2, display.borderWidth + 1));
+    map.setLayoutProperty(drawId, 'visibility', drawFeatures.length ? 'visible' : 'none');
+
+    // 高亮脉冲（填充提亮 + 白闪描边）
+    if (!map.getSource(gSrcId)) {
+      map.addSource(gSrcId, { type: 'geojson', data: emptyFC } as any);
+      map.addLayer({
+        id: glowFillId, type: 'fill', source: gSrcId,
+        paint: { 'fill-color': '#FFFFFF', 'fill-opacity': ['get', 'gop'] },
+      });
+      map.addLayer({
+        id: glowLineId, type: 'line', source: gSrcId,
+        paint: { 'line-color': '#FFFFFF', 'line-width': 4, 'line-opacity': ['get', 'gop'] },
+      });
+    }
+    (map.getSource(gSrcId) as GeoJSONSource).setData(glowFeatures.length ? turf.featureCollection(glowFeatures) : emptyFC);
+    map.setPaintProperty(glowLineId, 'line-width', 3 + display.borderWidth);
+    map.setLayoutProperty(glowFillId, 'visibility', glowFeatures.length ? 'visible' : 'none');
+    map.setLayoutProperty(glowLineId, 'visibility', glowFeatures.length ? 'visible' : 'none');
+
+    // 名称标签
+    if (!map.getSource(lSrcId)) {
+      map.addSource(lSrcId, { type: 'geojson', data: turf.featureCollection(labelFeatures) } as any);
+      map.addLayer({
+        id: labelId, type: 'symbol', source: lSrcId,
+        layout: {
+          'icon-image': ['get', 'img'],
+          'icon-size': ['get', 'sc'],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'icon-rotation-alignment': display.labelAlign === 'map' ? 'map' : 'viewport',
+          'icon-pitch-alignment': display.labelAlign === 'map' ? 'map' : 'viewport',
+        },
+      });
+    }
+    (map.getSource(lSrcId) as GeoJSONSource).setData(turf.featureCollection(labelFeatures));
+    map.setLayoutProperty(labelId, 'visibility', labelFeatures.length ? 'visible' : 'none');
+    map.setLayoutProperty(labelId, 'icon-rotation-alignment', display.labelAlign === 'map' ? 'map' : 'viewport');
+    map.setLayoutProperty(labelId, 'icon-pitch-alignment', display.labelAlign === 'map' ? 'map' : 'viewport');
+  } catch { /* style 未就绪，下一帧重试 */ }
 }
 
 // ========== 渲染：军事箭头（燕尾） ==========

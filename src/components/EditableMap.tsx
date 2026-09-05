@@ -16,10 +16,11 @@ import { useProjectStore, setHistoryMuted, snapshotHistory } from '../stores/pro
 import { useInteractionStore } from '../stores/interactionStore';
 import { useEditorStore } from '../stores/editorStore';
 import { generateId } from '../types';
+import { defaultTerritoryDisplay, coordKey, distToRingBoundary, insertRingVertex, moveSharedVertices, removeSharedVertex, ringOpen, traceRingPath, trimPlotOverlap } from '../lib/territory';
 import type {
   Chapter, MapVideoProject, MapElement, PointElement,
   MovingPointElement, LineElement, PolygonElement, ArrowElement, DoubleArrowElement,
-  EncirclementElement, GatheringElement, FlagElement, CameraKeyframe
+  EncirclementElement, GatheringElement, FlagElement, CameraKeyframe, TerritoryElement
 } from '../types';
 
 interface EditableMapProps {
@@ -28,9 +29,9 @@ interface EditableMapProps {
   currentFrame: number;
 }
 
-const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend'];
+const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot', 'terr_annex'];
 
-const POLY_DRAW_MODES = new Set(['add_polygon', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend']);
+const POLY_DRAW_MODES = new Set(['add_polygon', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot']);
 const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line', 'add_moving_bezier', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_front_line', 'add_shape_front_curve']);
 
 export function EditableMap({ project, chapter, currentFrame }: EditableMapProps) {
@@ -46,7 +47,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     cursor: [number, number] | null;   // 鼠标当前位置（用于橡皮筋预览）
     phase: 'collect' | 'radius';       // collect: 采点；radius: 圆类第二步定半径
     hits: string[];                    // 连线模式命中的元素 id
-  }>({ points: [], cursor: null, phase: 'collect', hits: [] });
+    marks: (TerrSnap | null)[];        // 疆域绘制：与 points 平行的吸附标记（描幕/T 型分叉用）
+  }>({ points: [], cursor: null, phase: 'collect', hits: [], marks: [] });
 
   const addElement = useProjectStore((s) => s.addElement);
   const addElements = useProjectStore((s) => s.addElements);
@@ -130,7 +132,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       const onMouseOutMap = () => H().handleHoverOut?.();
       const onMouseDownMap = (e: any) => H().handleMouseDown?.(e);
       const onClickMap = (e: any) => H().handleClick?.(e);
-      const onDblClickMap = () => H().handleDblClick?.();
+      const onDblClickMap = (e: any) => H().handleDblClick?.(e);
       const onContextMenuMap = (e: any) => H().handleContextMenu?.(e);
       const onWinMove = (e: MouseEvent) => H().handleWindowMouseMove?.(e);
       const onWinUp = () => H().handleWindowMouseUp?.();
@@ -199,6 +201,13 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
         coordinates: lngLat, symbolId: first?.id || '', size: 40, rotation: 0,
       };
+    } else if (kind === 'territory') {
+      el = {
+        id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
+        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        countries: [{ id: generateId(), name: '国家1', color: '#E23B3B' }],
+        plots: [], events: [], display: defaultTerritoryDisplay(),
+      } as TerritoryElement;
     }
 
     if (el) {
@@ -300,6 +309,39 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     } catch { /* style 未就绪：load 后（styleTick）随下一帧重试 */ }
   }, [currentFrame, selectedElementId, chapter, styleTick]);
 
+  // ===== 兼并模式：已选地块高亮 =====
+  const terrSelPlots = useEditorStore((s) => s.terrSelPlots);
+  // 编辑目标地块（双击地块/面板「⊙」设置）：变化时刷新顶点标记
+  const terrPlotId = useEditorStore((s) => s.terrPlotId);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const srcId = 'terr-sel';
+    const feats: any[] = [];
+    if (terrSelPlots.length) {
+      for (const el of chapter.elements) {
+        if (el.type !== 'territory') continue;
+        for (const p of (el as TerritoryElement).plots) {
+          if (terrSelPlots.includes(p.id) && p.rings?.[0]?.length >= 4) {
+            feats.push(turf.polygon(p.rings as [number, number][][]));
+          }
+        }
+      }
+    }
+    const fc = turf.featureCollection(feats);
+    try {
+      if (map.getSource(srcId)) {
+        (map.getSource(srcId) as GeoJSONSource).setData(fc);
+      } else {
+        map.addSource(srcId, { type: 'geojson', data: fc } as any);
+        map.addLayer({ id: 'terr-sel-fill', type: 'fill', source: srcId, paint: { 'fill-color': '#FFD700', 'fill-opacity': 0.16 } });
+        map.addLayer({ id: 'terr-sel-line', type: 'line', source: srcId, paint: { 'line-color': '#FFD700', 'line-width': 3, 'line-opacity': 0.95 } });
+      }
+      map.setLayoutProperty('terr-sel-fill', 'visibility', feats.length ? 'visible' : 'none');
+      map.setLayoutProperty('terr-sel-line', 'visibility', feats.length ? 'visible' : 'none');
+    } catch { /* style 未就绪：styleTick 后重试 */ }
+  }, [terrSelPlots, chapter, styleTick]);
+
   // ===== 镜头跳转指令（从镜头面板跳到对应视角，沿用关键帧缓动/时长） =====
   const cameraSeek = useEditorStore((s) => s.cameraSeek);
   useEffect(() => {
@@ -322,15 +364,23 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (!map) return;
     if (DRAW_MODES.includes(mode)) {
       map.doubleClickZoom.disable();
+    } else if (mode === 'select' && chapter.elements.some((x) => x.type === 'territory')) {
+      // 选择模式：双击保留给「编辑地块边界」，禁用双击缩放（滚轮/捏合仍可缩放）
+      map.doubleClickZoom.disable();
     } else {
       map.doubleClickZoom.enable();
     }
-  }, [mode, styleUrl]);
+    if (mode !== 'add_terr_plot' && map.getLayer('terr-snap')) {
+      map.setLayoutProperty('terr-snap', 'visibility', 'none');
+    }
+  }, [mode, styleUrl, chapter]);
 
   // ===== 重置绘制状态 =====
   const resetDraw = useCallback(() => {
-    drawRef.current = { points: [], cursor: null, phase: 'collect', hits: [] };
+    drawRef.current = { points: [], cursor: null, phase: 'collect', hits: [], marks: [] };
     cleanupPreview(mapRef.current);
+    const m0 = mapRef.current;
+    if (m0?.getLayer('terr-snap')) m0.setLayoutProperty('terr-snap', 'visibility', 'none');
   }, []);
 
   // ===== 橡皮筋预览 =====
@@ -648,11 +698,59 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       return;
     }
 
+    // —— 疆域地块绘制：吸附已有顶点/边 + 沿边界描幕 ——
+    if (mode === 'add_terr_plot') {
+      const terrs = (chapter.elements.filter((x) => x.type === 'territory') || []) as TerritoryElement[];
+      const snap = terrSnapNear(map, lngLat, terrs, { vertexPx: 12, edgePx: 12 });
+      const pt: [number, number] = snap ? snap.pt : lngLat;
+      // 描幕：上一点与本点吸附到同一地块（顶点或边）→ 自动插入两点间整段边界。
+      // Alt=长弧（共享段恰为长弧时）；Ctrl=不描幕直连。
+      const prev = d.marks[d.marks.length - 1];
+      if (snap && prev && prev.pid === snap.pid) {
+        const plot = terrs.find((t) => t.id === snap.elId)?.plots.find((p) => p.id === snap.pid);
+        if (plot?.rings?.[0]) {
+          const viOf = (mk: NonNullable<typeof snap>) => (mk.kind === 'vertex' ? mk.vi : nearestRingVertexIndex(plot.rings[0], mk.pt));
+          const i0 = viOf(prev);
+          const i1 = viOf(snap);
+          const oe = e.originalEvent as MouseEvent | undefined;
+          const ctrlSkip = oe?.ctrlKey === true;
+          const longArc = oe?.altKey === true;
+          if (!ctrlSkip && i0 !== i1) {
+            for (const m of traceRingPath(ringOpen(plot.rings[0]), i0, i1, longArc)) {
+              d.points.push(m);
+              d.marks.push(null);
+            }
+          }
+        }
+      }
+      d.points.push(pt);
+      d.marks.push(snap);
+      d.cursor = pt;
+      updatePreview();
+      return;
+    }
+
     // —— 移动路径 / 线 / 贝塞尔 / 大圆弧 / 面：采点，双击或回车完成 ——
     if (mode === 'add_moving_line' || mode === 'add_moving_bezier' || mode === 'add_line' || mode === 'add_bezier' || mode === 'add_line_arc' || POLY_DRAW_MODES.has(mode as any) || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_march' || mode === 'add_shape_swallowtail' || mode === 'add_special_swallow' || mode === 'add_shape_front_line' || mode === 'add_shape_front_curve') {
       d.points.push(lngLat);
       d.cursor = lngLat;
       updatePreview();
+      return;
+    }
+
+    // —— 疆域：兼并点选（点地块加入/移出选择，空白处不动作） ——
+    if (mode === 'terr_annex') {
+      const layers = (map.getStyle().layers || []).map((l: any) => l.id).filter((id: string) => id.startsWith('terr-layer-'));
+      const feats = layers.length ? map.queryRenderedFeatures(e.point, { layers }) : [];
+      if (feats.length) {
+        const f = feats[0] as any;
+        const pid = f?.properties?.pid as string;
+        const tid = f?.properties?.tid as string;
+        if (pid) {
+          useEditorStore.getState().toggleTerrSelPlot(pid);
+          if (tid) selectElement(tid);
+        }
+      }
       return;
     }
 
@@ -796,6 +894,86 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         frontStyle: { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 },
         shapeCategory: 'multi',
       } as LineElement);
+    } else if (mode === 'add_terr_plot') {
+      // 绘制地块：闭合环 → 加入选中疆域（无则新建）；完成后保持模式可连续绘制
+      const d0 = drawRef.current;
+      // 末点吸附回首点时去掉，避免双重闭合
+      if (pts.length > 1 && Math.abs(pts[0][0] - pts[pts.length - 1][0]) < 1e-9 && Math.abs(pts[0][1] - pts[pts.length - 1][1]) < 1e-9) pts = pts.slice(0, -1);
+      if (pts.length < 3) return;
+      const ring = [...pts, pts[0]] as [number, number][];
+      const st = useEditorStore.getState();
+      const proj = useProjectStore.getState();
+      let target = chapter.elements.find((x) => x.id === st.selectedElementId && x.type === 'territory') as TerritoryElement | undefined
+        || chapter.elements.find((x) => x.type === 'territory') as TerritoryElement | undefined;
+      // T 型分叉：吸附到邻边上的点同时插入相邻地块环，保证共享边界可联动
+      const splitPlots = new Map<string, TerritoryElement['plots']>();
+      const splitSeen = new Set<string>();
+      for (const mk of d0.marks || []) {
+        if (!mk || mk.kind !== 'edge') continue;
+        const sig = `${mk.pid}:${coordKey(mk.pt)}`; // 双击附加采点会重复同一吸附 → 去重
+        if (splitSeen.has(sig)) continue;
+        splitSeen.add(sig);
+        const terrEl = chapter.elements.find((x) => x.id === mk.elId && x.type === 'territory') as TerritoryElement | undefined;
+        if (!terrEl) continue;
+        const cur = splitPlots.get(mk.elId) ?? terrEl.plots;
+        if (!cur.find((p) => p.id === mk.pid)) continue;
+        splitPlots.set(mk.elId, cur.map((p) => (p.id === mk.pid ? { ...p, rings: [insertRingVertex(p.rings[0], mk.pt), ...p.rings.slice(1)] } : p)));
+      }
+      const newCountry = { id: generateId(), name: '国家1', color: '#E23B3B' };
+      if (!target) {
+        target = {
+          id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
+          startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+          countries: [newCountry], plots: [], events: [], display: defaultTerritoryDisplay(),
+        } as TerritoryElement;
+        addElement(chapter.id, target);
+      }
+      // 本轮全部地块更新（T 分叉 + 重叠修剪回插）先累积，统一一次写回，避免相互覆盖
+      const pend = new Map<string, TerritoryElement['plots']>(splitPlots);
+      const baseOf = (elId: string) => pend.get(elId) ?? (chapter.elements.find((x) => x.id === elId && x.type === 'territory') as TerritoryElement | undefined)?.plots;
+      const countryId = target.countries[0]?.id || newCountry.id;
+      // 重叠修剪：与既有地块的重叠沿既有边界裁齐（顶点与邻块一致 → 自动共享），完全被覆盖则放弃
+      const others: { elId: string; pid: string; ring: [number, number][]; keys: Set<string> }[] = [];
+      for (const el of chapter.elements) {
+        if (el.type !== 'territory') continue;
+        for (const p of baseOf(el.id) ?? []) {
+          if (p.rings?.[0] && p.rings[0].length >= 4) {
+            others.push({ elId: el.id, pid: p.id, ring: p.rings[0], keys: new Set(p.rings[0].map(coordKey)) });
+          }
+        }
+      }
+      const trimmed = trimPlotOverlap(ring, others.map((o) => o.ring));
+      if (!trimmed) { resetDraw(); return; }
+      // 反向 T 分叉：修剪产生的交点（落在邻块边界上）回插邻块环，保证共享边可联动
+      if (trimmed[0] !== ring) {
+        const trimPts = trimmed.flatMap((r) => r.slice(0, -1));
+        for (const v of trimPts) {
+          const vk = coordKey(v);
+          for (const o of others) {
+            if (o.keys.has(vk)) continue;
+            if (distToRingBoundary(v, o.ring) < 1e-6) {
+              const cur = baseOf(o.elId);
+              if (!cur?.find((p) => p.id === o.pid)) continue;
+              const next = cur.map((p) => (p.id === o.pid ? { ...p, rings: [insertRingVertex(p.rings[0], v), ...p.rings.slice(1)] } : p));
+              pend.set(o.elId, next);
+              o.keys.add(vk);
+              o.ring = next.find((p) => p.id === o.pid)!.rings[0];
+            }
+          }
+        }
+      }
+      for (const [elId, nextPlots] of pend) {
+        if (elId !== target.id) proj.updateElement(chapter.id, elId, { plots: nextPlots } as Partial<MapElement>);
+      }
+      const plot = { id: generateId(), name: `地块${target.plots.length + 1}`, rings: trimmed, ownerId: countryId };
+      proj.updateElement(chapter.id, target.id, {
+        plots: [...(pend.get(target.id) ?? target.plots), plot],
+        ...(target.countries.length ? {} : { countries: [newCountry] }),
+      } as Partial<MapElement>);
+      useEditorStore.getState().setTerrPlotId(plot.id);
+      selectElement(target.id);
+      resetDraw();
+      return;
     } else if (POLY_DRAW_MODES.has(mode as any)) {
       if (pts.length < 3) return;
       pts = [...pts, pts[0]];
@@ -828,10 +1006,36 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     resetDraw();
   }, [mode, chapter, addElement, selectElement, setMode, resetDraw, createElementAndSelect]);
 
-  const handleDblClick = useCallback(() => {
+  const handleDblClick = useCallback((e?: maplibregl.MapMouseEvent) => {
+    // 任何相关模式双击已有地块 → 进入该地块边界编辑（绘制模式限空笔，避免与"完成绘制"冲突）
+    const map = mapRef.current;
+    const m = useInteractionStore.getState().mode;
+    const d = drawRef.current;
+    const dblStroke = m === 'add_terr_plot'
+      && d.points.length === 2
+      && Math.abs(d.points[0][0] - d.points[1][0]) < 1e-9
+      && Math.abs(d.points[0][1] - d.points[1][1]) < 1e-9; // 双击自带的两次采点重合 = 空笔双击
+    if (map && e && (m === 'select' || m === 'terr_annex' || dblStroke)) {
+      const layers = (map.getStyle().layers || []).map((l: any) => l.id).filter((id: string) => id.startsWith('terr-layer-'));
+      const feats = layers.length ? map.queryRenderedFeatures(e.point, { layers }) : [];
+      const f = feats[0] as any;
+      const pid = f?.properties?.pid as string | undefined;
+      const tid = f?.properties?.tid as string | undefined;
+      if (pid && tid) {
+        const st = useProjectStore.getState();
+        const terr = (st.project?.chapters.find((c) => c.id === chapter.id) || chapter)
+          .elements.find((x) => x.id === tid && x.type === 'territory') as TerritoryElement | undefined;
+        if (terr) {
+          if (m === 'add_terr_plot') { resetDraw(); setMode('select'); } // 编辑需退出绘制模式（顶点拖拽在选择模式）
+          useEditorStore.getState().setTerrPlotId(pid);
+          selectElement(terr.id);
+          return;
+        }
+      }
+    }
     finishDrawing();
     useEditorStore.getState().setRouteEdit('none');
-  }, [finishDrawing]);
+  }, [finishDrawing, chapter, selectElement, resetDraw, setMode]);
 
   // ===== 悬停元素 → 移动光标（select 模式） =====
   const setCanvasCursor = useCallback((c: string) => {
@@ -900,6 +1104,26 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     // 优先命中路线顶点（可见标记点）：命中即选中该路线并进入顶点拖拽
     const v = hitRouteVertex(map, e.point, ch.elements, selId);
     if (v) {
+      // 疆域：Alt+点击顶点 → 删除（共享顶点同步删除；保底 3 点，少了删地块）
+      const vEl = ch.elements.find((x) => x.id === v.eid);
+      if (vEl?.type === 'territory' && e.originalEvent.altKey) {
+        const terr = vEl as TerritoryElement;
+        const pid = useEditorStore.getState().terrPlotId;
+        const plot = terr.plots.find((p) => p.id === pid);
+        const open = plot?.rings?.[0] ? ringOpen(plot.rings[0]) : null;
+        const victim = open?.[v.idx];
+        if (open && victim && open.length > 3) {
+          const { plots: nextPlots, removedPlotIds } = removeSharedVertex(terr.plots, victim);
+          snapshotHistory();
+          useProjectStore.getState().updateElement(ch.id, terr.id, { plots: nextPlots } as Partial<MapElement>);
+          if (pid && removedPlotIds.includes(pid)) {
+            const next = nextPlots[0];
+            useEditorStore.getState().setTerrPlotId(next?.id ?? null);
+          }
+          skipClickRef.current = true;
+          return;
+        }
+      }
       setHistoryMuted(true);
       snapshotHistory();
       dragRef.current = { active: true, elementId: v.eid, x: e.point.x, y: e.point.y, vertex: v.idx };
@@ -953,12 +1177,27 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       }
     }
 
-    // 绘制中更新光标位置 → 预览
-    if (map && DRAW_MODES.includes(useInteractionStore.getState().mode)) {
+    // 绘制中更新光标位置 → 预览（疆域绘制：先吸附已有顶点/边并显示指示圈）
+    // 顶点拖拽进行中不显示吸附圈（编辑拖拽不应触发绘制吸附）
+    if (map && DRAW_MODES.includes(useInteractionStore.getState().mode) && !(dragRef.current.active && dragRef.current.vertex !== undefined)) {
       const bbox = containerRef.current?.getBoundingClientRect();
       if (bbox) {
         const p = map.unproject([e.clientX - bbox.left, e.clientY - bbox.top]);
-        drawRef.current.cursor = [p.lng, p.lat];
+        const cur: [number, number] = [p.lng, p.lat];
+        if (useInteractionStore.getState().mode === 'add_terr_plot') {
+          const st = useProjectStore.getState();
+          const terrs = ((st.project?.chapters.find((c) => c.id === chapter.id) || chapter).elements.filter((x) => x.type === 'territory') || []) as TerritoryElement[];
+          const snap = terrSnapNear(map, cur, terrs, { vertexPx: 12, edgePx: 12 });
+          if (snap) {
+            drawRef.current.cursor = snap.pt;
+            updateTerrSnapMarker(map, snap.pt, snap.kind);
+          } else {
+            drawRef.current.cursor = cur;
+            if (map.getLayer('terr-snap')) map.setLayoutProperty('terr-snap', 'visibility', 'none');
+          }
+        } else {
+          drawRef.current.cursor = cur;
+        }
         updatePreview();
       }
     }
@@ -1006,6 +1245,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const d = drawRef.current;
     if (d.points.length > 0) {
       d.points.pop();
+      d.marks?.pop();
       if (d.points.length === 0) d.phase = 'collect';
       updatePreview();
     }
@@ -1026,6 +1266,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         if (DRAW_MODES.includes(useInteractionStore.getState().mode) && d.points.length > 0 && e.key === 'Backspace') {
           e.preventDefault();
           d.points.pop();
+          d.marks?.pop();
           if (d.points.length === 0) d.phase = 'collect';
           updatePreview();
           return;
@@ -1154,14 +1395,14 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         });
       }
     } catch { /* style 未就绪：styleTick 后重试 */ }
-  }, [chapter, selectedElementId, styleTick]);
+  }, [chapter, selectedElementId, styleTick, terrPlotId]);
 
   // ===== 播放时隐藏编辑辅助（顶点标识 / 选中高亮） =====
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const vis = isPlaying ? 'none' : 'visible';
-    ['vertex-dot', 'selection-line', 'selection-fill', 'selection-point', 'selection-move'].forEach((id) => {
+    ['vertex-dot', 'selection-line', 'selection-fill', 'selection-point', 'selection-move', 'terr-snap'].forEach((id) => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
     });
   }, [isPlaying, chapter, selectedElementId, styleTick]);
@@ -1468,6 +1709,8 @@ function modeHint(mode: string): string {
     case 'add_special_swallow': return '单击加控制点(≥2) · 双击完成自定义燕尾箭头 · Esc取消';
     case 'add_shape_front_line': return '单击加点 · 双击完成直线战线（一侧梳齿） · Esc取消';
     case 'add_shape_front_curve': return '单击加控制点(≥2) · 双击完成弯曲战线（一侧梳齿） · Esc取消';
+    case 'add_terr_plot': return '单击加顶点(≥3) · 靠邻边吸附，两点间自动描幕边界(Alt反向/Ctrl直连) · 双击完成 · 空笔双击已有地块=编辑边界 · Esc取消';
+    case 'terr_annex': return '点击地块加入/移出选择 · 双击地块编辑边界 · 右侧面板「生成兼并事件」 · Esc取消';
     default: return '';
   }
 }
@@ -1539,6 +1782,16 @@ function routePathOf(el: MapElement): [number, number][] | null {
   }
   if (el.type === 'encirclement') {
     return [el.center, circleRadiusHandle(el.center, el.radius)];
+  }
+  if (el.type === 'territory') {
+    // 疆域：编辑当前选中的地块外环（terrPlotId 在疆域面板点「⊙」设定；悬空/未设时兜底到第一个地块，
+    // 避免 alt 删点/删除地块/切换元素后编辑点消失）
+    const terr = el as TerritoryElement;
+    const plot = terr.plots.find((p) => p.id === useEditorStore.getState().terrPlotId) || terr.plots[0];
+    if (!plot?.rings?.[0] || plot.rings[0].length < 3) return null;
+    const ring = plot.rings[0];
+    const closed = Math.abs(ring[0][0] - ring[ring.length - 1][0]) < 1e-9 && Math.abs(ring[0][1] - ring[ring.length - 1][1]) < 1e-9;
+    return closed ? ring.slice(0, -1) : ring;
   }
   return null;
 }
@@ -1640,6 +1893,24 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
     useProjectStore.getState().updateElement(chapterId, el.id, { center, radius: rkm } as Partial<MapElement>);
     return true;
   }
+  if (el.type === 'territory') {
+    // 疆域：拖拽顶点 → 同键共享顶点在所有地块中同步移动（边界不裂缝）；
+    // 落点邻近其他顶点(≤8px)时焊合为共享顶点。
+    const terr = el as TerritoryElement;
+    const pid = useEditorStore.getState().terrPlotId;
+    const plot = terr.plots.find((p) => p.id === pid);
+    if (!plot?.rings?.[0] || plot.rings[0].length < 3) return false;
+    const ring = plot.rings[0];
+    const closed = Math.abs(ring[0][0] - ring[ring.length - 1][0]) < 1e-9 && Math.abs(ring[0][1] - ring[ring.length - 1][1]) < 1e-9;
+    if (idx >= ring.length - (closed ? 1 : 0)) return false;
+    let target = pt;
+    // 焊点仅对其他地块的顶点（≤8px）：避免把同环相邻顶点焊死（零长度边/塌边）
+    const weld = terrSnapNear(map, pt, [terr], { vertexPx: 8, edgePx: 0, excludePlotId: pid, excludeKey: coordKey(ring[idx]) });
+    if (weld?.kind === 'vertex') target = weld.pt;
+    const nextPlots = moveSharedVertices(terr.plots, ring[idx], target);
+    useProjectStore.getState().updateElement(chapterId, el.id, { plots: nextPlots } as Partial<MapElement>);
+    return true;
+  }
   return false;
 }
 
@@ -1672,6 +1943,96 @@ function hitRouteVertex(map: maplibregl.Map, point: maplibregl.PointLike, elemen
     if (hit) return hit;
   }
   return hitIn(elements.filter((e) => e.id !== preferId));
+}
+
+/** 疆域吸附目标：顶点优先、其次边；仅命中屏幕像素阈值内的目标 */
+interface TerrSnap { kind: 'vertex' | 'edge'; pt: [number, number]; elId: string; pid: string; vi: number }
+
+function terrSnapNear(
+  map: maplibregl.Map, cursor: [number, number], terrs: TerritoryElement[],
+  opts: { vertexPx: number; edgePx: number; excludePlotId?: string | null; excludeKey?: string | null },
+): TerrSnap | null {
+  const win = pixelsToDegrees(Math.max(opts.vertexPx, opts.edgePx) * 2 + 4, map.getZoom(), cursor[1]) * 2;
+  const cpx = map.project(cursor);
+  let bestV: (Omit<TerrSnap, 'kind'> & { px: number }) | null = null;
+  let bestE: (Omit<TerrSnap, 'kind' | 'vi'> & { px: number }) | null = null;
+  const segInWin = (a: [number, number], b: [number, number]) =>
+    !((a[0] < cursor[0] - win && b[0] < cursor[0] - win) || (a[0] > cursor[0] + win && b[0] > cursor[0] + win))
+    && !((a[1] < cursor[1] - win && b[1] < cursor[1] - win) || (a[1] > cursor[1] + win && b[1] > cursor[1] + win));
+  for (const terr of terrs) {
+    for (const plot of terr.plots) {
+      if (opts.excludePlotId && plot.id === opts.excludePlotId) continue;
+      for (const ring of plot.rings) {
+        const open = ringOpen(ring);
+        // 顶点
+        for (let i = 0; i < open.length; i++) {
+          const p = open[i];
+          if (Math.abs(p[0] - cursor[0]) > win || Math.abs(p[1] - cursor[1]) > win) continue;
+          if (opts.excludeKey && coordKey(p) === opts.excludeKey) continue;
+          const sp = map.project(p as [number, number]);
+          const d = Math.hypot(sp.x - cpx.x, sp.y - cpx.y);
+          if (d <= opts.vertexPx && (!bestV || d < bestV.px)) bestV = { px: d, pt: p, elId: terr.id, pid: plot.id, vi: i };
+        }
+        // 边（先框选，再屏幕像素精确测距；长直边也能命中中部）
+        if (opts.edgePx <= 0) continue;
+        for (let i = 0; i < open.length; i++) {
+          const a = open[i], b = open[(i + 1) % open.length];
+          if (!segInWin(a, b)) continue;
+          const pa = map.project(a as [number, number]), pb = map.project(b as [number, number]);
+          const dx = pb.x - pa.x, dy = pb.y - pa.y;
+          const L2 = dx * dx + dy * dy;
+          const t = L2 > 0 ? Math.max(0, Math.min(1, ((cpx.x - pa.x) * dx + (cpx.y - pa.y) * dy) / L2)) : 0;
+          const qx = pa.x + dx * t, qy = pa.y + dy * t;
+          const d = Math.hypot(qx - cpx.x, qy - cpx.y);
+          if (d <= opts.edgePx && (!bestE || d < bestE.px)) {
+            const ll = map.unproject([qx, qy]);
+            bestE = { px: d, pt: [ll.lng, ll.lat], elId: terr.id, pid: plot.id };
+          }
+        }
+      }
+    }
+  }
+  if (bestV) return { kind: 'vertex', pt: bestV.pt, elId: bestV.elId, pid: bestV.pid, vi: bestV.vi };
+  if (bestE) return { kind: 'edge', pt: bestE.pt, elId: bestE.elId, pid: bestE.pid, vi: -1 };
+  return null;
+}
+
+/** 边吸附点 → 最近环顶点索引（描摹起止定位用） */
+function nearestRingVertexIndex(ring: [number, number][], pt: [number, number]): number {
+  const open = ringOpen(ring);
+  const k = Math.cos((pt[1] * Math.PI) / 180) || 1e-9;
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < open.length; i++) {
+    const p = open[i];
+    const d = ((p[0] - pt[0]) * k) ** 2 + (p[1] - pt[1]) ** 2;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+/** 疆域吸附指示圈（vertex=白 / edge=蓝），置于最上层 */function updateTerrSnapMarker(map: maplibregl.Map, pt: [number, number], kind: 'vertex' | 'edge') {
+  const data = turf.featureCollection([turf.point(pt, { kind })]);
+  try {
+    if (!map.getSource('terr-snap')) {
+      map.addSource('terr-snap', { type: 'geojson', data } as any);
+      map.addLayer({
+        id: 'terr-snap', type: 'circle', source: 'terr-snap',
+        paint: {
+          'circle-radius': 8,
+          'circle-color': ['match', ['get', 'kind'], 'edge', '#3B82F6', '#FFFFFF'],
+          'circle-opacity': 0.2,
+          'circle-stroke-color': ['match', ['get', 'kind'], 'edge', '#3B82F6', '#FFFFFF'],
+          'circle-stroke-width': 2,
+        },
+      });
+    } else {
+      (map.getSource('terr-snap') as any).setData(data);
+    }
+    if (map.getLayer('terr-snap')) {
+      map.setLayoutProperty('terr-snap', 'visibility', 'visible');
+      map.moveLayer('terr-snap');
+    }
+  } catch { /* style 未就绪 */ }
 }
 
 function pickElement(map: maplibregl.Map, point: maplibregl.PointLike, elements: MapElement[]): string | null {

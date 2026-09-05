@@ -1,7 +1,7 @@
 ﻿import { useState, useMemo } from 'react';
 import {
   MapPin, Route as RouteIcon, Image as ImageIcon,
-  Shapes, Globe, Undo2, Redo2, FolderOpen, Settings2, Download, Languages,
+  Shapes, Globe, Undo2, Redo2, FolderOpen, Settings2, Download, Languages, Landmark,
 } from 'lucide-react';
 import { useProjectStore, isProjectDirty } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
@@ -11,6 +11,7 @@ import { sharedMap } from '../lib/shared-map';
 import { MapSearchBox } from './MapSearchBox';
 import { ChapterMenu } from './ChapterMenu';
 import { RegionPickerDialog } from './RegionPickerDialog';
+import { TerritoryImportDialog } from './TerritoryImportDialog';
 
 interface ToolbarProps {
   onOpenExport: () => void;
@@ -32,9 +33,13 @@ const TOOLS: ModeItem[] = [
   { icon: <ImageIcon size={15} className="text-emerald-400" />, label: 'Image', zh: '图片', action: 'place-image' },
   { icon: <Shapes size={15} className="text-orange-400" />, label: 'Shape', zh: '形状', mode: 'add_polygon' },
   { icon: <Globe size={15} className="text-sky-400" />, label: 'Region', zh: '区域', action: 'regionPicker' },
+  { icon: <Landmark size={15} className="text-violet-400" />, label: 'Terr', zh: '疆域', mode: 'add_terr_plot' },
 ];
 
 const ROUTE_MODES: InteractionMode[] = ['add_line', 'add_bezier', 'add_line_arc', 'add_arrow', 'add_curved', 'add_pincer'];
+
+/** 疆域工具的模式（«疆域»按钮高亮判定） */
+const TERR_MODES: InteractionMode[] = ['add_terr_plot', 'terr_annex'];
 
 /** 形状工具的模式（«形状»按钮高亮判定） */
 const SHAPE_MODES: InteractionMode[] = [
@@ -95,6 +100,7 @@ function toolActive(t: ModeItem, mode: InteractionMode): boolean {
   if (t.mode) {
     if (t.label === 'Route') return ROUTE_MODES.includes(mode);
     if (t.label === 'Shape') return SHAPE_MODES.includes(mode);
+    if (t.label === 'Terr') return TERR_MODES.includes(mode);
     return t.mode === mode;
   }
   if (t.label === 'Pin') return mode === 'add_point' || mode === 'add_flag';
@@ -102,6 +108,15 @@ function toolActive(t: ModeItem, mode: InteractionMode): boolean {
   if (t.label === 'Image') return mode === 'add_custom';
   return false;
 }
+
+/** 疆域分类菜单数据 */
+interface TerrItem { zh: string; en: string; glyph: string; hint?: string; act: 'new' | 'import' | 'plot' | 'annex' }
+const TERR_ITEMS: TerrItem[] = [
+  { zh: '新建疆域', en: 'New Territory', glyph: '🗺️', hint: '地图中心新建', act: 'new' },
+  { zh: '导入疆域', en: 'Import', glyph: '📥', hint: '国家库/GeoJSON', act: 'import' },
+  { zh: '绘制地块', en: 'Draw Plot', glyph: '✏️', hint: '多点闭合', act: 'plot' },
+  { zh: '兼并', en: 'Annex', glyph: '⚔️', hint: '点选地块→事件', act: 'annex' },
+];
 
 /**
  * 顶部栏（对齐 Mapimator 顶栏）：
@@ -220,15 +235,25 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
   );
 }
 
-/** 地图上方浮动工具条：选择 + 五大扁平工具（形状点击展开分类菜单） */
+/** 地图上方浮动工具条：选择 + 扁平工具（形状/疆域点击展开分类菜单） */
 export function FloatingTools() {
   const mode = useInteractionStore((s) => s.mode);
   const setMode = useInteractionStore((s) => s.setMode);
   const lang = useEditorStore((s) => s.lang);
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
   const [shapeOpen, setShapeOpen] = useState(false);
+  const [terrOpen, setTerrOpen] = useState(false);
+  const [terrImportOpen, setTerrImportOpen] = useState(false);
 
   const item = 'h-8 px-2.5 flex items-center gap-1.5 rounded-full text-xs font-medium transition-colors shrink-0';
+
+  const runTerrAction = (act: TerrItem['act']) => {
+    setTerrOpen(false);
+    if (act === 'new') { useInteractionStore.getState().requestPlace('territory'); setMode('select'); }
+    else if (act === 'import') setTerrImportOpen(true);
+    else if (act === 'plot') setMode('add_terr_plot');
+    else if (act === 'annex') setMode('terr_annex');
+  };
 
   return (
     <>
@@ -241,8 +266,9 @@ export function FloatingTools() {
               if (tool.action === 'regionPicker') setRegionPickerOpen(true);
               else if (tool.action === 'place-pin') { useInteractionStore.getState().requestPlace('pin'); setMode('select'); }
               else if (tool.action === 'place-image') { useInteractionStore.getState().requestPlace('image'); setMode('select'); }
-              else if (tool.mode === 'add_polygon') setShapeOpen((v) => !v);
-              else if (tool.mode) { setShapeOpen(false); setMode(tool.mode); }
+              else if (tool.mode === 'add_polygon') { setShapeOpen((v) => !v); setTerrOpen(false); }
+              else if (tool.label === 'Terr') { setTerrOpen((v) => !v); setShapeOpen(false); }
+              else if (tool.mode) { setShapeOpen(false); setTerrOpen(false); setMode(tool.mode); }
             }}
             className={`${item} ${toolActive(tool, mode) ? 'bg-white/15 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'}`}
           >
@@ -293,7 +319,43 @@ export function FloatingTools() {
         </div>
       )}
 
+      {/* 疆域分类菜单（展开在工具条下方） */}
+      {terrOpen && (
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[420px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300/90 bg-violet-500/10 rounded">
+              {lang === 'en' ? 'Territory' : '疆域'}
+            </div>
+            <div className="flex-1 h-px bg-white/[0.08]" />
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {TERR_ITEMS.map((s) => (
+              <button
+                key={s.act}
+                title={s.hint ? `${lang === 'en' ? s.en : s.zh}（${s.hint}）` : (lang === 'en' ? s.en : s.zh)}
+                onClick={() => runTerrAction(s.act)}
+                className="flex flex-col items-center gap-1 py-2 px-1 rounded-lg border bg-white/[0.04] border-white/[0.09] text-foreground/85 hover:bg-white/10 hover:border-white/25 transition-colors"
+              >
+                <span className="text-lg leading-none drop-shadow-sm">{s.glyph}</span>
+                <span className="text-[10.5px] leading-tight font-medium text-center">
+                  {lang === 'en' ? s.en : s.zh}
+                </span>
+                {s.hint && (
+                  <span className="text-[9px] leading-tight text-muted-foreground/80 text-center">{s.hint}</span>
+                )}
+              </button>
+            ))}
+          </div>
+          <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
+            {lang === 'en'
+              ? 'Country owns plots; annex events at frames recolor plots (border draw → fade → glow).'
+              : '国家拥有多个地块；兼并事件按帧生效：边界描线 → 颜色渐变 → 高亮。'}
+          </p>
+        </div>
+      )}
+
       {regionPickerOpen && <RegionPickerDialog onClose={() => setRegionPickerOpen(false)} />}
+      {terrImportOpen && <TerritoryImportDialog onClose={() => setTerrImportOpen(false)} />}
     </>
   );
 }

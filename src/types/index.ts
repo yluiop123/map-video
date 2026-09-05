@@ -88,7 +88,8 @@ export type ElementType =
   | 'military_symbol'
   | 'connector'
   | 'custom_icon'
-  | 'flag';
+  | 'flag'
+  | 'territory';
 
 export interface MapElementBase {
   id: string;
@@ -328,6 +329,60 @@ export interface FlagElement extends MapElementBase {
   scale?: number;      // 整体缩放倍数（默认 1）
 }
 
+// ========== 疆域（国家/地块/兼并） ==========
+
+/** 国家：名字 + 颜色（地块归属国的配色） */
+export interface TerritoryCountry {
+  id: string;
+  name: string;
+  color: string;
+}
+
+/** 地块：一块领土（多边形环），初始归属某国；国界=同国地块并集外边界 */
+export interface TerritoryPlot {
+  id: string;
+  name?: string;
+  /** GeoJSON Polygon rings：rings[0]=外环，其余=洞 */
+  rings: [number, number][][];
+  ownerId: string;             // 初始归属国 id
+}
+
+/** 兼并事件：在 frame 帧，把若干地块划给目标国；带描线/渐变/高亮特效 */
+export interface TerritoryEvent {
+  id: string;
+  frame: number;               // 兼并时刻（绝对帧）
+  plotIds: string[];           // 被占领的地块
+  toCountryId: string;         // 占领方
+  effect?: {
+    /** instant=瞬时换色 / fade=颜色渐变 / draw=边界描线+渐变 */
+    preset: 'instant' | 'fade' | 'draw';
+    /** 特效时长（帧）：渐变/描线占用 */
+    duration?: number;
+    /** 完成后高亮脉冲 */
+    highlight?: boolean;
+  };
+}
+
+export interface TerritoryDisplay {
+  countryBorders: boolean;     // 国界（并集外边界，国家色）
+  plotBorders: boolean;        // 地块边界（内部细线）
+  borderWidth: number;         // 国界线宽(px)
+  fillOpacity: number;
+  countryNames: boolean;       // 国名标签
+  plotNames: boolean;          // 地块名标签
+  /** 贴地（map，随地图旋转/俯仰）/ 面向镜头（viewport，广告牌） */
+  labelAlign: 'map' | 'viewport';
+  labelScale: number;          // 标签整体缩放（默认 1）
+}
+
+export interface TerritoryElement extends MapElementBase {
+  type: 'territory';
+  countries: TerritoryCountry[];
+  plots: TerritoryPlot[];
+  events: TerritoryEvent[];    // 按 frame 升序应用
+  display: TerritoryDisplay;
+}
+
 export type MapElement =
   | PointElement
   | MovingPointElement
@@ -340,7 +395,8 @@ export type MapElement =
   | MilitarySymbolElement
   | ConnectorElement
   | CustomIconElement
-  | FlagElement;
+  | FlagElement
+  | TerritoryElement;
 
 // ========== 样式类型 ==========
 

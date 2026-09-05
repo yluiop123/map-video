@@ -6,6 +6,17 @@ import type {
   ChapterEffect, ProjectExport
 } from '../types';
 import { generateId } from '../types';
+import { normalizeTerritoryDisplay } from '../lib/territory';
+
+/** 兼容旧存档：疆域元素 display 缺字段时补默认值（load/import 入口统一过一遍） */
+function normalizeChapters(chapters: Chapter[]): Chapter[] {
+  return chapters.map((c) => ({
+    ...c,
+    elements: (c.elements || []).map((e) => (
+      e.type === 'territory' ? { ...e, display: normalizeTerritoryDisplay(e.display) } : e
+    )),
+  }));
+}
 
 // ========== 默认配置 ==========
 
@@ -219,7 +230,11 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
 
     loadProject: async (id: string) => {
       const project = await dbApi.getProject(id);
-      if (project) { set({ project, history: [], future: [] }); markProjectSaved(project); }
+      if (project) {
+        const normalized = { ...project, chapters: normalizeChapters(project.chapters) };
+        set({ project: normalized, history: [], future: [] });
+        markProjectSaved(normalized);
+      }
     },
 
     saveProject: async () => {
@@ -475,7 +490,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     },
 
     importProjectConfig: (data: ProjectExport) => {
-      const project = { ...data.project, id: generateId(), updatedAt: new Date() };
+      const project = {
+        ...data.project,
+        id: generateId(),
+        updatedAt: new Date(),
+        chapters: normalizeChapters(data.project.chapters),
+      };
       set({ project, history: [], future: [] });
       dbApi.saveProject(project);
       markProjectSaved(project);
