@@ -354,8 +354,8 @@ export interface TerritoryEvent {
   plotIds: string[];           // 被占领的地块
   toCountryId: string;         // 占领方
   effect?: {
-    /** instant=瞬时换色 / fade=颜色渐变 / draw=边界描线+渐变 */
-    preset: 'instant' | 'fade' | 'draw';
+    /** instant=瞬时换色 / fade=颜色渐变 / draw=边界描线+渐变 / spread=从占领方边界向外扩散 */
+    preset: 'instant' | 'fade' | 'draw' | 'spread';
     /** 特效时长（帧）：渐变/描线占用 */
     duration?: number;
     /** 完成后高亮脉冲 */

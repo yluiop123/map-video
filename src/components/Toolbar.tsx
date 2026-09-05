@@ -348,8 +348,8 @@ export function FloatingTools() {
           </div>
           <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
             {lang === 'en'
-              ? 'Country owns plots; annex events at frames recolor plots (border draw → fade → glow).'
-              : '国家拥有多个地块；兼并事件按帧生效：边界描线 → 颜色渐变 → 高亮。'}
+              ? 'Annex events recolor plots: instant / fade / border draw / spread from invader, plus glow.'
+              : '兼并事件按帧生效：瞬时 / 渐变 / 描线 / 扩散（从占领方边界推进），可加高亮。'}
           </p>
         </div>
       )}

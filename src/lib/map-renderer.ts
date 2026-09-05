@@ -6,7 +6,7 @@ import {
   buildAttackArrow, buildStraightArrow, buildDoubleArrow, buildGatheringPlace,
 } from './military-plots';
 import {
-  ownerAt, plotColorAt, plotFxAt, unionCountryRings, centerOfFeature,
+  ownerAt, plotColorAt, plotFxAt, plotSpreadAt, unionCountryRings, centerOfFeature,
   sliceRingClosed, makeTerritoryLabelImageData, territoryLabelImageId,
   normalizeTerritoryDisplay,
 } from './territory';
@@ -1275,10 +1275,39 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
   const glowFeatures: any[] = [];
   for (const p of plots) {
     if (!p.rings?.[0] || p.rings[0].length < 4) continue;
-    const color = plotColorAt(p, events, frame, countries);
+    const color = plotColorAt(p, events, frame, countries, plots);
     const fx = plotFxAt(p, events, frame, countries);
     const props = { pid: p.id, tid: element.id, color, op: display.fillOpacity };
-    fillFeatures.push(turf.polygon(p.rings as [number, number][][], props));
+    // 扩散：把填充拆成 未覆盖(旧色) + 覆盖(新色) 两块 → 视觉与终态一致（无叠色/跳变），
+    // 两块边界即推进前沿（随地块边界样式描出）
+    let pushed = false;
+    const sp = plotSpreadAt(p, events, frame, countries, plots);
+    if (sp.active && sp.region) {
+      let diffPolys: [number, number][][][] | null = null;
+      try {
+        const cutFc = turf.featureCollection([
+          turf.polygon(p.rings as [number, number][][]),
+          ...sp.region.map((rings) => turf.polygon(rings as [number, number][][])),
+        ]);
+        const diff = turf.difference(cutFc);
+        const dg = (diff as unknown as { geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null)?.geometry;
+        if (dg) {
+          diffPolys = dg.type === 'Polygon'
+            ? [dg.coordinates as [number, number][][]]
+            : (dg.coordinates as [number, number][][][]);
+        }
+      } catch (e) {
+        console.warn('[territory] spread 切分失败，回退叠色:', e);
+      }
+      if (diffPolys) {
+        for (const rings of diffPolys) fillFeatures.push(turf.polygon(rings as [number, number][][], props));
+        for (const rings of sp.region) {
+          fillFeatures.push(turf.polygon(rings as [number, number][][], { ...props, color: sp.color }));
+        }
+        pushed = true;
+      }
+    }
+    if (!pushed) fillFeatures.push(turf.polygon(p.rings as [number, number][][], props));
     if (fx.draw < 1) {
       const sliced = sliceRingClosed(p.rings[0], fx.draw);
       if (sliced.length >= 2) drawFeatures.push(turf.lineString(sliced, { color }));

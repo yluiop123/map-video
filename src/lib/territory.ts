@@ -82,9 +82,11 @@ export function ownerCountryAt(
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-/** 当前帧地块填充色（含渐变插值）：返回 hex */
+/** 当前帧地块填充色（含渐变插值）：返回 hex。
+ *  allPlots 供 spread（扩散）判定前线；缺省时 spread 回退为整块渐变。 */
 export function plotColorAt(
   plot: TerritoryPlot, events: TerritoryEvent[], frame: number, countries: TerritoryCountry[],
+  allPlots?: TerritoryPlot[],
 ): string {
   const evs = eventsForPlot(events, plot.id);
   const countryColor = (id: string) => countries.find((c) => c.id === id)?.color || '#888888';
@@ -104,7 +106,15 @@ export function plotColorAt(
   if (t >= 1) return target;
   // 渐变起点 = 该事件之前地块的颜色（初始色或上一个事件的终色）
   const prevOwner = idx === 0 ? plot.ownerId : evs[idx - 1].toCountryId;
-  return lerpColor(countryColor(prevOwner), target, t);
+  const prev = countryColor(prevOwner);
+  if (preset === 'spread') {
+    // 扩散：推进区由渲染层单独绘制新色，本体保持旧色；
+    // 与占领方无共享边界（无前线可依）→ 回退为整块渐变
+    if (allPlots && spreadFrontier(plot, events, ev, allPlots).length) return prev;
+    return lerpColor(prev, target, t);
+  }
+  // fade / draw：整块颜色渐变（描线动画仅 draw 有）
+  return lerpColor(prev, target, t);
 }
 
 /** 当前帧地块的描线进度（0–1；未在描线期返回 1）与高亮强度（0–1） */
@@ -114,8 +124,8 @@ export function plotFxAt(plot: TerritoryPlot, events: TerritoryEvent[], frame: n
   for (const ev of evs) {
     const preset = ev.effect?.preset ?? 'draw';
     const win = effectWindow(ev);
-    // 描线进度（instant 无描线阶段）
-    if (preset !== 'instant' && frame >= win.start && frame < win.drawEnd) {
+    // 描线进度（仅 draw 有描线阶段；fade=纯渐变，spread=扩散，instant 无动画）
+    if (preset === 'draw' && frame >= win.start && frame < win.drawEnd) {
       draw = Math.min(draw, clamp01((frame - win.start) / Math.max(1, win.drawEnd - win.start)));
     }
     // 高亮脉冲（含 instant+highlight）
@@ -130,6 +140,105 @@ export function plotFxAt(plot: TerritoryPlot, events: TerritoryEvent[], frame: n
     }
   }
   return { draw, glow, glowColor };
+}
+
+// ========== 兼并扩散（spread）：从与占领方相邻的边界向外推进 ==========
+
+/** 点到线段距离（平面度坐标） */
+function distToSegment(p: [number, number], a: [number, number], b: [number, number]): number {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+}
+
+/** 扩散前线：地块各环上与占领方既有地块共享/接触的边段（1e-5° 容差 + 内含判定）。
+ *  返回空 = 无前线（无邻接或占领方尚无地块）→ 上层回退整块渐变。 */
+function spreadFrontier(
+  plot: TerritoryPlot, events: TerritoryEvent[], ev: TerritoryEvent, allPlots: TerritoryPlot[],
+): [number, number][][] {
+  const sameEvent = new Set(ev.plotIds);
+  const invRings: [number, number][][] = [];
+  for (const pl of allPlots) {
+    if (pl.id === plot.id || sameEvent.has(pl.id)) continue;
+    if (!pl.rings?.[0] || pl.rings[0].length < 4) continue;
+    if (ownerAt(pl, events, ev.frame) !== ev.toCountryId) continue;
+    for (const r of pl.rings) if (r && r.length >= 4) invRings.push(r);
+  }
+  if (!invRings.length) return [];
+  const eps = 1e-5;
+  const segs: [number, number][][] = [];
+  for (const ring of plot.rings) {
+    for (let i = 0; i < ring.length - 1; i++) {
+      const a = ring[i], b = ring[i + 1];
+      const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      let hit = false;
+      for (const r of invRings) {
+        if (distToRingBoundary(mid, r) < eps) { hit = true; break; }
+        try {
+          if (turf.booleanPointInPolygon(turf.point(mid), turf.polygon([r]))) { hit = true; break; }
+        } catch { /* 非法环跳过 */ }
+      }
+      if (hit) segs.push([a, b]);
+    }
+  }
+  return segs;
+}
+
+export interface PlotSpreadState {
+  active: boolean;                        // 正在扩散（渲染层绘制 region 新色覆盖）
+  p: number;                              // 扩散进度 0–1
+  color: string;                          // 新色（占领方颜色）
+  region: [number, number][][][] | null;  // 新色区域（每个面=环组；含洞）
+}
+
+/** 当前帧地块的扩散动画状态（渲染层据此绘制推进区；编辑端/导出端共用）。
+ *  active=false 时渲染层不画覆盖层，颜色由 plotColorAt 的回退逻辑接管。 */
+export function plotSpreadAt(
+  plot: TerritoryPlot, events: TerritoryEvent[], frame: number, countries: TerritoryCountry[], allPlots: TerritoryPlot[],
+): PlotSpreadState {
+  const evs = eventsForPlot(events, plot.id);
+  for (const ev of sortedEvents(evs)) {
+    if ((ev.effect?.preset ?? 'draw') !== 'spread') continue;
+    const win = effectWindow(ev);
+    if (frame < win.start || frame >= win.fadeEnd) continue;
+    const p = clamp01((frame - win.start) / Math.max(1, win.fadeEnd - win.start));
+    const color = countries.find((c) => c.id === ev.toCountryId)?.color || '#888888';
+    const segs = spreadFrontier(plot, events, ev, allPlots);
+    if (!segs.length) return { active: false, p, color, region: null };
+    // 推进半径 = 前线到最远顶点的距离 × 进度（1.08 冗余保证收尾全覆盖）
+    let maxD = 0;
+    for (const ring of plot.rings) {
+      for (const v of ring) {
+        let best = Infinity;
+        for (const [a, b] of segs) best = Math.min(best, distToSegment(v, a, b));
+        if (best > maxD) maxD = best;
+      }
+    }
+    if (!Number.isFinite(maxD) || maxD <= 0) return { active: false, p, color, region: null };
+    const r = Math.max(1e-7, p * maxD * 1.08);
+    try {
+      const buf = turf.buffer(turf.multiLineString(segs), r, { units: 'degrees' });
+      const bufGeom = (buf as unknown as { geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null)?.geometry;
+      if (!bufGeom) return { active: false, p, color, region: null };
+      const plotPoly = turf.polygon(plot.rings);
+      const inter = turf.intersect(turf.featureCollection([buf as any, plotPoly]));
+      const g = (inter as unknown as { geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null)?.geometry;
+      if (!g) return { active: false, p, color, region: null };
+      const polys: [number, number][][][] = g.type === 'Polygon'
+        ? [g.coordinates as [number, number][][]]
+        : (g.coordinates as [number, number][][][]);
+      return { active: true, p, color, region: polys.length ? polys : null };
+    } catch (e) {
+      // 剪裁失败：收尾阶段直接整块新色，否则视为未激活（避免闪烁）
+      console.warn('[territory] spread buffer/intersect 失败:', e);
+      return p > 0.9
+        ? { active: true, p, color, region: [plot.rings] }
+        : { active: false, p, color, region: null };
+    }
+  }
+  return { active: false, p: 0, color: '', region: null };
 }
 
 // ========== 颜色工具 ==========
