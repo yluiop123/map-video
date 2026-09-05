@@ -37,6 +37,8 @@ export interface RenderOpts {
 // 记录每个 map 上已被渲染的元素 ID 与类型签名（类型切换时需整体重建图层）
 const renderedByMap = new WeakMap<maplibregl.Map, Set<string>>();
 const renderedTypeByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
+// 记录被 hideElementLayers 隐藏过的元素 id：重新可见时需整体恢复层可见性
+const hiddenElByMap = new WeakMap<maplibregl.Map, Set<string>>();
 // 箭头图标已注册颜色（元素 id → 颜色），颜色变化需重注册
 const renderedHeadColorByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
 
@@ -113,6 +115,18 @@ export function hideElementLayers(map: maplibregl.Map, elementId: string): void 
   }
 }
 
+/** 恢复元素所有图层可见性（hideElementLayers 的逆操作；个别渲染函数随后会按条件重新修正） */
+export function showElementLayers(map: maplibregl.Map, elementId: string): void {
+  const style = map.getStyle();
+  if (!style?.layers) return;
+  for (const layer of style.layers) {
+    const id = layer.id;
+    if (id.includes(elementId) && id !== elementId) {
+      try { map.setLayoutProperty(id, 'visibility', 'visible'); } catch { /* */ }
+    }
+  }
+}
+
 
 export function renderElements(
   map: maplibregl.Map,
@@ -143,11 +157,19 @@ export function renderElements(
   for (const el of elements) nextMeta.set(el.id, el.type);
   renderedTypeByMap.set(map, nextMeta);
 
+  const hiddenEls = hiddenElByMap.get(map) || new Set<string>();
+  hiddenElByMap.set(map, hiddenEls);
   for (const element of elements) {
     if (!isVisible(element, frame)) {
       // 不可见：隐藏该元素所有图层（避免上一帧残留导致"显示时间之外仍显示"）
       hideElementLayers(map, element.id);
+      hiddenEls.add(element.id);
       continue;
+    }
+    if (hiddenEls.delete(element.id)) {
+      // 曾被隐藏过（时间窗瞬时越界，如播放首帧负 dt）：先整体恢复可见，
+      // 渲染函数随后按条件修正（否则渲染器不逐帧重设 visibility 的层如 terr 填充会永久消失）
+      showElementLayers(map, element.id);
     }
 
     switch (element.type) {

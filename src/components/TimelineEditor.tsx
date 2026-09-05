@@ -57,7 +57,8 @@ export function TimelineEditor() {
     let raf = 0;
     let last = performance.now();
     const tick = (now: number) => {
-      const dt = Math.min(0.25, (now - last) / 1000);
+      // rAF 回调的 now 是垂直同步帧起始时间，可能早于 effect 初始化的 last：负 dt 会把播放头推成负帧
+      const dt = Math.max(0, Math.min(0.25, (now - last) / 1000));
       last = now;
       const next = useEditorStore.getState().currentFrame + dt * fps;
       if (next >= chapterEnd) {
