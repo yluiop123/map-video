@@ -21,6 +21,7 @@ export function ElementsPanel() {
   const selectedChapterId = useEditorStore((s) => s.selectedChapterId);
   const selectElement = useEditorStore((s) => s.selectElement);
   const setElementsOpen = useEditorStore((s) => s.setElementsOpen);
+  const openFx = useEditorStore((s) => s.openFx);
   const addElement = useProjectStore((s) => s.addElement);
   const geoRef = useRef<HTMLInputElement>(null);
   const gpxRef = useRef<HTMLInputElement>(null);
@@ -146,6 +147,13 @@ export function ElementsPanel() {
               >
                 <span className="text-sm w-5 text-center shrink-0">{getElementIcon(element.type)}</span>
                 <span className={`flex-1 truncate text-xs ${element.visible === false ? 'text-muted-foreground line-through' : ''}`}>{element.name}</span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); selectElement(element.id); openFx('popup'); }}
+                  className={`p-1 rounded shrink-0 ${active ? 'text-brand' : 'text-muted-foreground'} opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-white/10 transition-opacity`}
+                  title="特效（弹窗/天气/画面/标题）"
+                >
+                  ✨
+                </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); updateElement(chapter.id, element.id, { visible: element.visible === false } as Partial<MapElement>); }}
                   className={`p-1 rounded shrink-0 ${element.visible === false ? 'text-muted-foreground' : 'text-foreground/70'} hover:text-foreground hover:bg-white/10`}

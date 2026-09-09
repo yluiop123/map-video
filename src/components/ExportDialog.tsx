@@ -136,7 +136,7 @@ export function ExportDialog({ onClose }: ExportDialogProps) {
           {/* 配置文件导出 */}
           <div className="border border-white/10 bg-white/[0.03] rounded-lg p-3">
             <h3 className="font-medium text-sm mb-2">导出项目配置 (JSON)</h3>
-            <p className="text-xs text-muted-foreground mb-2">导出整个项目，可导入复用。</p>
+            <p className="text-xs text-muted-foreground mb-2">导出整个项目，可导入复用（跨设备/跨端迁移）。</p>
             <button onClick={handleExportConfig} className="btn-outline text-sm w-full py-2">导出配置</button>
           </div>
 

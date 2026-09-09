@@ -2,14 +2,16 @@ import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
 import * as turf from '@turf/turf';
 import ms from 'milsymbol';
 import { interpolateKeyframes, interpolatePath } from './keyframe-interpolation';
+import { setFlyRibbon, clearFlyRibbons, flyHeight01, projectLifted, flyLiftMeters, setFlyMarker, clearFlyMarkers } from './fly-ribbon';
 import {
   buildAttackArrow, buildStraightArrow, buildDoubleArrow, buildGatheringPlace,
 } from './military-plots';
 import {
-  ownerAt, plotColorAt, plotFxAt, plotSpreadAt, unionCountryRings, centerOfFeature,
+  ownerAt, ownerVisualAt, plotColorAt, plotFxAt, plotSpreadAt, plotShrinkAt, unionCountryRings, centerOfFeature,
   sliceRingClosed, makeTerritoryLabelImageData, territoryLabelImageId,
   normalizeTerritoryDisplay,
 } from './territory';
+import type { TerritoryLabelStyle } from './territory';
 import type {
   MapElement, PointElement, MovingPointElement, LineElement,
   PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
@@ -101,6 +103,8 @@ export function removeElementLayers(map: maplibregl.Map, elementId: string): voi
     }
   }
   clearDefendJob(map, elementId);
+  clearFlyRibbons(map, elementId);
+  clearFlyMarkers(map, elementId);
 }
 
 /** 隐藏元素的所有图层（显示时间之外时调用，避免图层残留） */
@@ -660,7 +664,7 @@ export function lineEffectiveCoordinates(element: LineElement): [number, number]
       const a = pts[i], b = pts[i + 1];
       if (Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9) continue;
       try {
-        const gc = turf.greatCircle(a as [number, number], b as [number, number], { npoints: 72 });
+        const gc = turf.greatCircle(a as [number, number], b as [number, number], { npoints: 96 });
         const cs = gc.geometry.coordinates as [number, number][];
         if (out.length === 0) out.push(...cs);
         else out.push(...cs.slice(1));
@@ -704,11 +708,13 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const animEnd = (!isShapeLine && element.moveEndFrame !== undefined) ? element.moveEndFrame : element.endFrame;
   const anim = element.animEffect || 'grow';
   const isGrowOrFill = anim === 'grow' || anim === 'fill';
+  const isMarch = (anim === 'march' || anim === 'marchplain') && !isShapeLine;
+  const isFlyMode = !!element.flyMode && !isShapeLine;
   // 非均匀移动：线增长与标记同步（按各点到达帧映射路径比例；首点=绘制开始，末点=完成）
   const nonUniform = element.uniformMove === false && element.pointTimes && element.pointTimes.length >= 2;
   let progress = isShapeLine
     ? 1
-    : isGrowOrFill
+    : isGrowOrFill || isMarch
       ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
       : getProgress(element.drawProgress, frame);
   if (nonUniform) {
@@ -717,8 +723,33 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const effective = lineEffectiveCoordinates(element);
   const isPlain = !!element.plainPath;
 
+  // march 行进：定长亮段沿路线推进（头部前进），走过的消失，剩余段半透明不断变短
+  const MARCH_FRAC = 0.35;
+  let marchBright: any = null;
+  let marchBase: any = null;
+  let marchHead: [number, number] | null = null;
+  let marchH = 0;
+  let marchL = 0;
+  let marchTotal = 0;
+  if (isMarch && effective.length >= 2) {
+    const full = turf.lineString(effective);
+    const total = turf.length(full);
+    if (total > 0) {
+      const L = total * MARCH_FRAC;
+      const h = L + (total - L) * progress;
+      marchTotal = total;
+      marchL = L;
+      marchH = h;
+      marchBright = turf.featureCollection([turf.lineSliceAlong(full, Math.max(0, h - L), h)]);
+      if (anim === 'march' && total - h > total * 0.004) marchBase = turf.featureCollection([turf.lineSliceAlong(full, h, total)]);
+      marchHead = turf.along(full, h).geometry.coordinates as [number, number];
+    }
+  }
+
   let data: any;
-  if ((!isGrowOrFill && !nonUniform) || progress >= 1) {
+  if (isMarch && marchBright) {
+    data = marchBright;
+  } else if ((!isGrowOrFill && !nonUniform) || progress >= 1) {
     data = turf.featureCollection([turf.lineString(effective)]);
   } else {
     const full = turf.lineString(effective);
@@ -766,11 +797,64 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     map.setLayoutProperty(layerId, 'visibility', isPlain ? 'none' : 'visible');
   }
 
-  // fill 填充效果：底层完整半透明线
+  // ===== 飞行拱形（主线）：高度沿路线变化（起点贴地→逐渐抬升→巡航→逐渐降落回贴地）=====
+  // 平滑拱形由 WebGL Custom Layer（fly-ribbon）逐顶点完成：相机变化零几何重算；基础线/热区隐藏，
+  // 选中改由 pickFlyRibbon 屏幕距离判定。
+  cleanupLegacyFlyBands(map);
+  const flyActive = isFlyMode && !isPlain && effective.length >= 2;
+  let flyFracA = 0;
+  let flyFracB = 1;
+  let flyFullKm = 1;
+  let flyFullCumGeo: number[] | null = null;
+  let flyDataF: number[] | null = null;
+  if (flyActive) {
+    flyFullKm = geoLengthKm(effective);
+    flyFullCumGeo = geodesicCum(effective);
+    const dataLine = data?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined;
+    if (isMarch && marchTotal > 0) {
+      flyFracA = Math.max(0, marchH - marchL) / marchTotal;
+      flyFracB = marchH / marchTotal;
+      flyDataF = null;
+    } else if (dataLine && dataLine.length >= 2) {
+      // 全路线测地线绝对分数（与标记点同弧长空间）：ribbon 高度与标记点轨迹完全一致
+      flyDataF = geodesicFracAbs(dataLine, flyFullKm);
+      flyFracB = Math.max(0.001, Math.min(1, flyDataF[flyDataF.length - 1] || 1));
+    }
+    if (dataLine && dataLine.length >= 2) {
+      try { map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
+      try { map.setLayoutProperty(hitLayerId, 'visibility', 'none'); } catch { /* */ }
+      setFlyRibbon(map, `${element.id}|main`, {
+        paths: [{ coords: dataLine, f: flyDataF ?? undefined }],
+        frac: { a: flyFracA, b: flyFracB },
+        color: element.lineColor || '#FF0000',
+        widthPx: element.lineWidth || 8,
+        opacity: 1,
+        dash: element.lineDashArray,
+      });
+      // 地面投影（阴影航迹）：全程虚线贴地，让「悬空高度」可读
+      setFlyRibbon(map, `${element.id}|track`, {
+        paths: [{ coords: effective, lifts: effective.map(() => 0) }],
+        frac: { a: 0, b: 1 },
+        color: element.lineColor || '#FF0000',
+        widthPx: Math.max(1.5, (element.lineWidth || 8) * 0.3),
+        opacity: 0.45,
+        dash: [2, 2.5],
+      });
+    } else {
+      setFlyRibbon(map, `${element.id}|main`, null);
+      setFlyRibbon(map, `${element.id}|track`, null);
+    }
+  } else {
+    setFlyRibbon(map, `${element.id}|main`, null);
+    setFlyRibbon(map, `${element.id}|track`, null);
+    try { if (map.getLayer(hitLayerId)) map.setLayoutProperty(hitLayerId, 'visibility', 'visible'); } catch { /* */ }
+  }
+
+  // fill 填充效果：底层完整半透明线；march：剩余段半透明（不断变短）
   const fillSrcId = `line-fill-src-${element.id}`;
   const fillLayerId = `line-fill-layer-${element.id}`;
-  if (anim === 'fill' && !isPlain) {
-    const fullData = turf.featureCollection([turf.lineString(effective)]);
+  if ((anim === 'fill' && !isPlain) || (isMarch && !isPlain && marchBase)) {
+    const fullData = anim === 'fill' ? turf.featureCollection([turf.lineString(effective)]) : marchBase;
     try {
       if (map.getSource(fillSrcId)) {
         (map.getSource(fillSrcId) as GeoJSONSource).setData(fullData);
@@ -792,6 +876,37 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   } else if (map.getLayer(fillLayerId)) {
     try { map.removeLayer(fillLayerId); } catch { /* */ }
     try { if (map.getSource(fillSrcId)) map.removeSource(fillSrcId); } catch { /* */ }
+  }
+
+  // 飞行拱形：幽灵垫层（fill 完整线 / march 剩余段）同样走拱形 ribbon（剩余段从当前头部一直降回终点）
+  if (flyActive && ((anim === 'fill' && !isPlain) || (isMarch && !isPlain && marchBase))) {
+    const ghostCoords = anim === 'fill'
+      ? effective
+      : (marchBase?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined);
+    if (ghostCoords && ghostCoords.length >= 2) {
+      const gA = anim === 'fill' ? 0 : marchTotal > 0 ? marchH / marchTotal : 0;
+      try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
+      setFlyRibbon(map, `${element.id}|ghost`, {
+        paths: [{ coords: ghostCoords }],
+        frac: { a: gA, b: 1 },
+        color: element.lineColor || '#FF0000',
+        widthPx: element.lineWidth || 8,
+        opacity: 0.35,
+        dash: element.lineDashArray,
+      });
+    } else {
+      setFlyRibbon(map, `${element.id}|ghost`, null);
+    }
+  } else {
+    setFlyRibbon(map, `${element.id}|ghost`, null);
+  }
+
+  // fly 航迹已并入路线本体（不再有独立虚线航迹层）；此处仅清理旧版本/同会话切换的残留层
+  const raySrcId = `fly-ray-src-${element.id}`;
+  const rayLayerId = `fly-ray-${element.id}`;
+  if (map.getLayer(rayLayerId)) {
+    try { map.removeLayer(rayLayerId); } catch { /* */ }
+    try { if (map.getSource(raySrcId)) map.removeSource(raySrcId); } catch { /* */ }
   }
 
   // 移动图标（标记点沿路径）：showIcon 或 animEffect='move'
@@ -824,27 +939,20 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   // 标记：仅「显示标记」开启才渲染；动画前在起点、动画中移动、动画结束后停在终点，直到路线显示结束一起消失
   const needMarker = !!element.showIcon && (beforeAnim || duringAnim || afterAnim || inDisplay);
 
+  // 图标位置比例（0..1）：与 move 一致（动画窗口插值；grow/fill 用绘制进度；非均匀按各点到达帧）
+  const iconRatio = (nonUniform && inDisplay)
+    ? nonUniformRatio(element, frame)
+    : beforeAnim ? 0
+    : afterAnim ? 1
+    : (duringAnim || (element.showIcon && !hasAnim))
+      ? (isGrowOrFill ? progress : (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 0))
+      : 0;
   if (needMarker && effective.length >= 2) {
-    let iconCoord: [number, number];
-    if (nonUniform && inDisplay) {
-      // 非均匀移动：标记按各路径点到达帧推进（首点前停在起点，末点后停在终点），不受动画窗口截断
-      iconCoord = interpolatePath(effective, nonUniformRatio(element, frame));
-    } else if (beforeAnim) {
-      iconCoord = effective[0] as [number, number];
-    } else if (duringAnim || afterAnim || (element.showIcon && !hasAnim)) {
-      let ratio = 0;
-      if (afterAnim) ratio = 1;
-      else if (isGrowOrFill) {
-        ratio = progress;
-      } else {
-        const start = animStart;
-        const end = animEnd;
-        ratio = end > start ? Math.max(0, Math.min(1, (frame - start) / (end - start))) : 0;
-      }
-      iconCoord = interpolatePath(effective, Math.max(0, Math.min(1, ratio)));
-    } else {
-      iconCoord = effective[0] as [number, number];
-    }
+    const ratio = iconRatio;
+    // march：标记骑在定长亮段头部；其余：沿路线（弧长）取点
+    const iconCoord: [number, number] = (isMarch && marchHead)
+      ? marchHead
+      : interpolatePath(effective, Math.max(0, Math.min(1, ratio)));
     const iconData = turf.featureCollection([turf.point(iconCoord, { name: element.name })]);
     try {
       if (mShape === 'pin') ensureShapeImage(map, mImgId, getCached(`pin-${mColor}`, () => makePinImageData(mColor)));
@@ -863,13 +971,14 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         map.addSource(iconSrcId, { type: 'geojson', data: iconData } as any);
         map.addLayer({
           id: iconLayerId, type: 'symbol', source: iconSrcId,
-          layout: { 'icon-image': mImgId, 'icon-size': mScale, 'icon-anchor': mShape === 'pin' ? 'bottom' : 'center', 'icon-allow-overlap': true },
+          layout: { 'icon-image': mImgId, 'icon-size': mScale, 'icon-anchor': mShape === 'pin' ? 'bottom' : 'center', 'icon-offset': [0, 0] as any, 'icon-allow-overlap': true },
         });
       }
       if (map.getLayer(iconLayerId)) {
         map.setLayoutProperty(iconLayerId, 'icon-image', mImgId);
         map.setLayoutProperty(iconLayerId, 'icon-size', mScale);
         map.setLayoutProperty(iconLayerId, 'icon-anchor', mShape === 'pin' ? 'bottom' : 'center');
+        map.setLayoutProperty(iconLayerId, 'icon-offset', [0, 0] as any);
         map.setLayoutProperty(iconLayerId, 'visibility', 'visible');
       }
       // 标记标签：showLabel 开启且非 bubble/text 形状时，在标记旁显示文字气泡
@@ -895,14 +1004,29 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
             map.setLayoutProperty(lLayerId, 'visibility', 'visible');
           }
         } catch { /* */ }
-      } else if (map.getLayer('line-mlabel-' + element.id)) {
+} else if (map.getLayer('line-mlabel-' + element.id)) {
         try { map.removeLayer('line-mlabel-' + element.id); } catch { /* */ }
         try { if (map.getSource('line-mlabel-src-' + element.id)) map.removeSource('line-mlabel-src-' + element.id); } catch { /* */ }
+      }
+      // 飞行模式：标记点改由 fly-ribbon 自定义层绘制（与拱形同一投影，精确对齐），隐藏 symbol 层
+      if (flyActive) {
+        try { if (map.getLayer(iconLayerId)) map.setLayoutProperty(iconLayerId, 'visibility', 'none'); } catch { /* */ }
+        try { if (map.getLayer(`line-mlabel-${element.id}`)) map.setLayoutProperty(`line-mlabel-${element.id}`, 'visibility', 'none'); } catch { /* */ }
+        const imgH = (map.getImage(mImgId) as any)?.data?.height || 32;
+        setFlyMarker(map, `${element.id}|icon`, [{
+          imgId: mImgId, lnglat: iconCoord,
+          lift01: flyHeight01(Math.max(0, Math.min(1, iconRatio))),
+          sizePx: imgH * mScale,
+          anchorX: 0.5, anchorY: mShape === 'pin' ? 1 : 0.5,
+        }]);
+      } else {
+        setFlyMarker(map, `${element.id}|icon`, null);
       }
     } catch { /* style 未就绪 */ }
   } else if (map.getLayer(iconLayerId)) {
     try { map.removeLayer(iconLayerId); } catch { /* */ }
     try { if (map.getSource(iconSrcId)) map.removeSource(iconSrcId); } catch { /* */ }
+    setFlyMarker(map, `${element.id}|icon`, null);
   }
 
   // 战线梳齿（钢铁雄心防线风格）：主线指向的右手侧/左手侧短齿
@@ -974,11 +1098,17 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   // 方向箭头（示意）：线末端小三角，随线色；SVG 图标按像素固定尺寸渲染，与 zoom 无关
   const headSrcId = `line-head-src-${element.id}`;
   const headLayerId = `line-head-${element.id}`;
-  const showHead = !!element.lineArrow && progress >= 1 && effective.length >= 2;
+  const showHead = !!element.lineArrow && effective.length >= 2 && (progress >= 1 || (!!isMarch && !!marchBright));
   (window as any).__hl = { lineArrow: !!element.lineArrow, progress, effLen: effective.length, showHead };
   if (showHead) {
-    const tipLL = effective[effective.length - 1] as [number, number];
-    const prevLL = effective[effective.length - 2] as [number, number];
+    let tipLL = effective[effective.length - 1] as [number, number];
+    let prevLL = effective[effective.length - 2] as [number, number];
+    if (isMarch && marchHead && effective.length >= 2) {
+      // march：方向箭头骑在亮段头部，方向取亮段末端两点
+      const bw = marchBright?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined;
+      if (bw && bw.length >= 2) { tipLL = bw[bw.length - 1]; prevLL = bw[bw.length - 2]; }
+      else { tipLL = marchHead; prevLL = effective[0] as [number, number]; }
+    }
     const a = map.project(prevLL);
     const b = map.project(tipLL);
     let dx = b.x - a.x;
@@ -1123,7 +1253,60 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
           },
         });
       }
+      // 飞行拱形：光点按所在沿线位置取高度（与 ribbon 同测地线弧长、同 3D 投影）
+      if (flyActive && flyFullCumGeo) {
+        const s = flyFullCumGeo[Math.min(idx, flyFullCumGeo.length - 1)] / flyFullKm;
+        try {
+          const tr = liftTranslate(map, spotCoord, flyHeight01(Math.max(0, Math.min(1, s))));
+          map.setPaintProperty(spotLayerId, 'circle-translate', tr as any);
+          map.setPaintProperty(spotLayerId, 'circle-translate-anchor', 'viewport');
+        } catch { /* */ }
+      }
     }
+  }
+
+  // 飞行拱形：各挂点按自身「沿线位置」取高度（translate=3D 抬升后的屏幕位置，anchor=viewport）。
+  // 主线/热区/幽灵垫层在拱形模式下由分段层替代（已隐藏，无需平移）；战线梳齿保持贴地。
+  const zeroShift: [number, number] = [0, 0];
+  const iconLnglat: [number, number] | null = (isMarch && marchHead)
+    ? marchHead
+    : (effective.length >= 2 ? interpolatePath(effective, Math.max(0, Math.min(1, iconRatio))) : null);
+  const headLnglat: [number, number] | null = (isMarch && marchHead)
+    ? marchHead
+    : (flyActive && effective.length >= 2 ? interpolatePath(effective, Math.max(0, Math.min(1, flyFracB))) : null);
+  const flyIconShift: [number, number] = flyActive && iconLnglat
+    ? liftTranslate(map, iconLnglat, flyHeight01(Math.max(0, Math.min(1, iconRatio))))
+    : zeroShift;
+  const flyHeadShift: [number, number] = flyActive && headLnglat
+    ? liftTranslate(map, headLnglat, flyHeight01(Math.max(0, Math.min(1, flyFracB))))
+    : zeroShift;
+  const flyLabelShift: [number, number] = flyActive && effective.length >= 2
+    ? liftTranslate(map, interpolatePath(effective, 0.5), 1) // 线中点文案=全程中点=拱顶
+    : zeroShift;
+  const translateLayer = (layer: string, prop: string, shift: [number, number]) => {
+    if (!map.getLayer(layer)) return;
+    try {
+      map.setPaintProperty(layer, prop, shift as any);
+      map.setPaintProperty(layer, `${prop}-anchor`, 'viewport');
+    } catch { /* 层未创建或样式未就绪 */ }
+  };
+  if (flyActive) {
+    translateLayer(headLayerId, 'icon-translate', flyHeadShift);
+    translateLayer(iconLayerId, 'icon-translate', flyIconShift);
+    translateLayer(`line-mlabel-${element.id}`, 'icon-translate', flyIconShift);
+    translateLayer(labelBgId, 'text-translate', flyLabelShift);
+    translateLayer(labelLayerId, 'text-translate', flyLabelShift);
+  } else {
+    translateLayer(layerId, 'line-translate', zeroShift);
+    translateLayer(hitLayerId, 'line-translate', zeroShift);
+    translateLayer(fillLayerId, 'line-translate', zeroShift);
+    translateLayer(frontLayerId, 'line-translate', zeroShift);
+    translateLayer(headLayerId, 'icon-translate', zeroShift);
+    translateLayer(iconLayerId, 'icon-translate', zeroShift);
+    translateLayer(`line-mlabel-${element.id}`, 'icon-translate', zeroShift);
+    translateLayer(labelBgId, 'text-translate', zeroShift);
+    translateLayer(labelLayerId, 'text-translate', zeroShift);
+    for (let i = 0; i < dots; i++) translateLayer(`linespot-layer-${element.id}-${i}`, 'circle-translate', zeroShift);
   }
 }
 
@@ -1295,6 +1478,7 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
   const fillFeatures: any[] = [];
   const drawFeatures: any[] = [];
   const glowFeatures: any[] = [];
+  const borderOwner = new Map<string, string>();   // 已被吃尽的地块 → 国界/标签归属提前翻转（与吃尽同帧）
   for (const p of plots) {
     if (!p.rings?.[0] || p.rings[0].length < 4) continue;
     const color = plotColorAt(p, events, frame, countries, plots);
@@ -1304,27 +1488,74 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
     // 两块边界即推进前沿（随地块边界样式描出）
     let pushed = false;
     const sp = plotSpreadAt(p, events, frame, countries, plots);
-    if (sp.active && sp.region) {
-      let diffPolys: [number, number][][][] | null = null;
-      try {
-        const cutFc = turf.featureCollection([
-          turf.polygon(p.rings as [number, number][][]),
-          ...sp.region.map((rings) => turf.polygon(rings as [number, number][][])),
-        ]);
-        const diff = turf.difference(cutFc);
-        const dg = (diff as unknown as { geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null)?.geometry;
-        if (dg) {
-          diffPolys = dg.type === 'Polygon'
-            ? [dg.coordinates as [number, number][][]]
-            : (dg.coordinates as [number, number][][][]);
+    if (sp.active) {
+      if (!sp.region) {
+        // 已被完全覆盖 → 整块新色
+        fillFeatures.push(turf.polygon(p.rings as [number, number][][], { ...props, color: sp.color }));
+        borderOwner.set(p.id, ownerAt(p, events, frame));
+        pushed = true;
+      } else {
+        let diffPolys: [number, number][][][] | null = null;
+        try {
+          const cutFc = turf.featureCollection([
+            turf.polygon(p.rings as [number, number][][]),
+            ...sp.region.map((rings) => turf.polygon(rings as [number, number][][])),
+          ]);
+          const diff = turf.difference(cutFc);
+          const dg = (diff as unknown as { geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null)?.geometry;
+          if (dg) {
+            diffPolys = dg.type === 'Polygon'
+              ? [dg.coordinates as [number, number][][]]
+              : (dg.coordinates as [number, number][][][]);
+          }
+        } catch (e) {
+          console.warn('[territory] spread 切分失败，回退叠色:', e);
         }
-      } catch (e) {
-        console.warn('[territory] spread 切分失败，回退叠色:', e);
+        if (diffPolys) {
+          for (const rings of diffPolys) fillFeatures.push(turf.polygon(rings as [number, number][][], props));
+          for (const rings of sp.region) {
+            fillFeatures.push(turf.polygon(rings as [number, number][][], { ...props, color: sp.color }));
+          }
+          pushed = true;
+        }
       }
-      if (diffPolys) {
-        for (const rings of diffPolys) fillFeatures.push(turf.polygon(rings as [number, number][][], props));
-        for (const rings of sp.region) {
-          fillFeatures.push(turf.polygon(rings as [number, number][][], { ...props, color: sp.color }));
+    }
+    // 蚕食：与扩散同思路互斥两块——未吞并区=旧色，已吞并区=整块差集（占领方新色），
+    // 前线带起伏单向推进（推过即自然消失）。切分失败时只画未吞并区旧色（绝不叠色）。
+    if (!pushed) {
+      const sh = plotShrinkAt(p, events, frame, countries, plots);
+      if (sh.active) {
+        if (!sh.region) {
+          fillFeatures.push(turf.polygon(p.rings as [number, number][][], { ...props, color: sh.color }));
+          borderOwner.set(p.id, ownerAt(p, events, frame));
+        } else {
+          let eatenPolys: [number, number][][][] | null = null;
+          try {
+            const cutFc = turf.featureCollection([
+              turf.polygon(p.rings as [number, number][][]),
+              ...sh.region.map((rings) => turf.polygon(rings as [number, number][][])),
+            ]);
+            const diff = turf.difference(cutFc);
+            const dg = (diff as unknown as { geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null)?.geometry;
+            if (dg) {
+              const polys = dg.type === 'Polygon'
+                ? [dg.coordinates as [number, number][][]]
+                : dg.type === 'MultiPolygon'
+                  ? (dg.coordinates as [number, number][][][])
+                  : [];
+              if (polys.length) eatenPolys = polys;
+            }
+          } catch (e) {
+            console.warn('[territory] shrink 切分失败，只画未吞并区:', e);
+          }
+          for (const rings of sh.region) {
+            fillFeatures.push(turf.polygon(rings as [number, number][][], { ...props, color: sh.prevColor, op: display.fillOpacity * sh.fade }));
+          }
+          if (eatenPolys) {
+            for (const rings of eatenPolys) {
+              fillFeatures.push(turf.polygon(rings as [number, number][][], { ...props, color: sh.color }));
+            }
+          }
         }
         pushed = true;
       }
@@ -1339,8 +1570,11 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
     }
   }
 
-  // —— 国界：同国地块并集（缓存：plots 引用 + 归属签名） ——
-  const ownSig = plots.map((p) => `${p.id}:${ownerAt(p, events, frame)}`).join('|');
+  // —— 势力边界：同势力地块并集（缓存：plots 引用 + 归属签名）。
+  // 归属 = borderOwner（已吃尽，与吃尽同帧切换）?? ownerVisualAt（动画未完成保持旧归属，
+  // 完成才切换；避免兼并一开始整圈描边就变新色） ——
+  const ownerForBorder = (p: typeof plots[number]) => borderOwner.get(p.id) ?? ownerVisualAt(p, events, frame);
+  const ownSig = plots.map((p) => `${p.id}:${ownerForBorder(p)}`).join('|');
   let cache = terrCacheByPlots.get(plots);
   if (!cache) { cache = new Map(); terrCacheByPlots.set(plots, cache); }
   let cached = cache.get(ownSig);
@@ -1348,9 +1582,10 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
     const byCountry = new Map<string, [number, number][][][]>();
     for (const p of plots) {
       if (!p.rings?.[0] || p.rings[0].length < 4) continue;
-      const arr = byCountry.get(ownerAt(p, events, frame)) || [];
+      const ow = ownerForBorder(p);
+      const arr = byCountry.get(ow) || [];
       arr.push(p.rings);
-      byCountry.set(ownerAt(p, events, frame), arr);
+      byCountry.set(ow, arr);
     }
     const borderFCs: any[] = [];
     const anchors: { name: string; color: string; lng: number; lat: number }[] = [];
@@ -1374,10 +1609,10 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
     cache.set(ownSig, cached);
   }
 
-  // —— 国名/地块名锚点 ——
+  // —— 势力/地块名锚点（势力=大号白字+描边+势力色圆点；地块=小号+圆角底条）——
   const labelFeatures: any[] = [];
-  const registerLabel = (text: string, size: number) => {
-    const st = { size, color: '#FFFFFF', halo: 'rgba(0,0,0,0.85)', haloWidth: 3 };
+  const registerLabel = (text: string, size: number, extra?: Partial<TerritoryLabelStyle>) => {
+    const st: TerritoryLabelStyle = { size, color: '#FFFFFF', halo: 'rgba(0,0,0,0.85)', haloWidth: 3, ...extra };
     const imgId = territoryLabelImageId(text, st);
     if (!map.hasImage(imgId)) {
       try { map.addImage(imgId, makeTerritoryLabelImageData(text, st), { pixelRatio: 1 }); } catch { /* style 未就绪 */ }
@@ -1387,17 +1622,28 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
   if (display.countryNames) {
     for (const a of cached.anchors) {
       if (!a.name) continue;
-      const imgId = registerLabel(a.name, Math.round(15 * display.labelScale));
+      const imgId = registerLabel(a.name, Math.round(15 * display.labelScale), { dotColor: a.color });
       labelFeatures.push(turf.point([a.lng, a.lat], { img: imgId, sc: 1 }));
     }
   }
   if (display.plotNames) {
+    // 单地块势力：势力标签锚点（并集质心）与地块质心几乎重合，只显示势力名避免遮挡
+    const plotCountByOwner = new Map<string, number>();
+    if (display.countryNames) {
+      for (const p of plots) {
+        const ow = ownerForBorder(p);
+        plotCountByOwner.set(ow, (plotCountByOwner.get(ow) || 0) + 1);
+      }
+    }
     for (const p of plots) {
       if (!p.rings?.[0] || p.rings[0].length < 4) continue;
-      const c = countries.find((x) => x.id === ownerAt(p, events, frame));
+      const c = countries.find((x) => x.id === (borderOwner.get(p.id) ?? ownerVisualAt(p, events, frame)));
+      if (display.countryNames && c && (plotCountByOwner.get(c.id) || 0) === 1) continue;
       const ctr = centerOfFeature({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: p.rings } } as any);
       if (!ctr) continue;
-      const imgId = registerLabel(p.name || c?.name || '', Math.round(12 * display.labelScale));
+      const imgId = registerLabel(p.name || c?.name || '', Math.round(11 * display.labelScale), {
+        bg: 'rgba(12,10,9,0.55)', color: 'rgba(255,255,255,0.95)', halo: 'rgba(0,0,0,0.75)', haloWidth: 2,
+      });
       labelFeatures.push(turf.point(ctr, { img: imgId, sc: 1 }));
     }
   }
@@ -1703,6 +1949,172 @@ function buildCurvedSwallowtailWithOpts(
   return [polygon];
 }
 
+// ===== 飞行拱形（高度沿路线变化）公共工具 =====
+// 剖面：flyHeight01(沿线弧长比例) —— 起点贴地 → 逐渐抬升 → 巡航 → 逐渐降落回贴地。
+// mercator 与 globe 均由 fly-ribbon 自定义层（世界空间高程「加高程」）逐顶点完成；这里只提供
+// 标记点/光点/头部图标与拱形一致的屏幕平移、箭头多边形 → 轨道比例环（subdivFlyRing）与旧 band 分段层的遗留清理。
+
+/** 地面投影 + 世界空间高程(米)抬升 → 屏幕平移（viewport 锚）；与 ribbon 同一投影矩阵（含低俯仰屏幕兜底） */
+function liftTranslate(map: maplibregl.Map, lnglat: [number, number], lift01: number): [number, number] {
+  const g = map.project(lnglat as any);
+  const l = projectLifted(map, lnglat, Math.max(0, Math.min(1, lift01)) * flyLiftMeters(map), lift01);
+  return [l.x - g.x, l.y - g.y];
+}
+
+/** 累计弧长表（首项 0） */
+function cumArcOf(coords: [number, number][]): number[] {
+  const cum = new Array<number>(Math.max(0, coords.length));
+  for (let i = 0; i < coords.length; i++) {
+    cum[i] = i === 0 ? 0 : cum[i - 1] + Math.hypot(coords[i][0] - coords[i - 1][0], coords[i][1] - coords[i - 1][1]);
+  }
+  return cum;
+}
+
+/** 测地线（haversine）距离 km —— 标记点轨迹与 ribbon 高度共用同一弧长空间，避免漂移 */
+function geoKm(a: [number, number], b: [number, number]): number {
+  const R = 6371;
+  const dLat = ((b[1] - a[1]) * Math.PI) / 180;
+  const dLng = ((b[0] - a[0]) * Math.PI) / 180;
+  const s = Math.sin(dLat / 2) ** 2
+    + Math.cos((a[1] * Math.PI) / 180) * Math.cos((b[1] * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+function geodesicCum(coords: [number, number][]): number[] {
+  const c = new Array<number>(coords.length);
+  c[0] = 0;
+  for (let i = 1; i < coords.length; i++) c[i] = c[i - 1] + geoKm(coords[i - 1], coords[i]);
+  return c;
+}
+/** 各点在全路线中的测地线绝对分数（0..~frac），与标记点 interpolatePath(turf.along) 同一空间 */
+function geodesicFracAbs(coords: [number, number][], fullKm: number): number[] {
+  const c = geodesicCum(coords);
+  const f = new Array<number>(coords.length);
+  for (let i = 0; i < coords.length; i++) f[i] = fullKm > 0 ? Math.max(0, Math.min(1, c[i] / fullKm)) : 0;
+  return f;
+}
+function geoLengthKm(coords: [number, number][]): number {
+  const c = geodesicCum(coords);
+  return c[c.length - 1] || 0;
+}
+/** 轨道索引：粗化采样（≤80 点）+ 累计弧长 + 任意点 → 沿线比例 */
+interface RailIndex {
+  pts: [number, number][];
+  cum: number[];
+  total: number;
+  fracOf(pt: [number, number]): number;
+}
+
+function buildRailIndex(rail: [number, number][]): RailIndex | null {
+  let projRail = rail;
+  if (rail && rail.length > 80) {
+    const step = Math.ceil(rail.length / 80);
+    const sampled: [number, number][] = [];
+    for (let i = 0; i < rail.length; i += step) sampled.push(rail[i]);
+    if (sampled[sampled.length - 1] !== rail[rail.length - 1]) sampled.push(rail[rail.length - 1]);
+    projRail = sampled;
+  }
+  if (!projRail || projRail.length < 2) return null;
+  const railCum = cumArcOf(projRail);
+  const railTotal = railCum[railCum.length - 1];
+  if (!(railTotal > 0)) return null;
+  return {
+    pts: projRail,
+    cum: railCum,
+    total: railTotal,
+    fracOf(pt: [number, number]): number {
+      let best = 0;
+      let bestD = Infinity;
+      for (let i = 0; i < projRail.length; i++) {
+        const dx = pt[0] - projRail[i][0];
+        const dy = pt[1] - projRail[i][1];
+        const d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return railCum[best] / railTotal;
+    },
+  };
+}
+
+/** 环 → {coords,f}：逐点取轨道 frac，按 Δf 与边长细分（连续拱形，无分段台阶） */
+function subdivFlyRing(ring: [number, number][], railIdx: RailIndex | null): { coords: [number, number][]; f: number[] } {
+  const coords: [number, number][] = [];
+  const fs: number[] = [];
+  if (!ring || ring.length < 3) return { coords, f: fs };
+  let perim = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    perim += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  const maxLen = perim / 200;
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    const fa = railIdx ? railIdx.fracOf(a) : 0;
+    const fb = railIdx ? railIdx.fracOf(b) : 0;
+    const edgeLen = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    let steps = Math.max(
+      railIdx ? Math.ceil(Math.abs(fb - fa) / 0.03) : 1,
+      maxLen > 0 ? Math.ceil(edgeLen / maxLen) : 1
+    );
+    steps = Math.max(1, Math.min(8, steps));
+    for (let k = 0; k < steps; k++) {
+      const t = k / steps;
+      coords.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      fs.push(fa + (fb - fa) * t);
+    }
+  }
+  return { coords, f: fs };
+}
+
+/** 一次性清理旧「分段 band」遗留的 -f{i} 图层与 band 源（拱形已整体迁入 fly-ribbon 自定义层） */
+const legacyFlyBandsCleaned = new WeakMap<maplibregl.Map, true>();
+function cleanupLegacyFlyBands(map: maplibregl.Map): void {
+  if (legacyFlyBandsCleaned.has(map)) return;
+  legacyFlyBandsCleaned.set(map, true);
+  try {
+    const style = map.getStyle();
+    for (const l of style.layers) {
+      if (/-f\d+$/.test(l.id) && /^(arrow-|line-)/.test(l.id)) { try { map.removeLayer(l.id); } catch { /* */ } }
+    }
+    for (const sid of Object.keys(style.sources || {})) {
+      if (/^arrow-bands-/.test(sid) || /^line-.*-fly$/.test(sid) || /^line-fill-fly-/.test(sid)) {
+        try { map.removeSource(sid); } catch { /* */ }
+      }
+    }
+  } catch { /* */ }
+}
+/** 箭头飞行/行进的弧长轨道（curved 燕尾先贝塞尔加密） */
+function arrowRailOf(element: ArrowElement): [number, number][] {
+  const basePts = element.path && element.path.length > 2 ? element.path : [element.from, element.to];
+  if (element.arrowType === 'curved' || element.arrowType === 'curved-simple') {
+    try {
+      return turf.bezierSpline(turf.lineString(basePts as any), { resolution: 4000, sharpness: 0.6 }).geometry.coordinates as [number, number][];
+    } catch { /* 采样失败退化为原路径 */ }
+  }
+  return basePts as [number, number][];
+}
+
+/** march 填充行进的剩余段：与箭身等宽的素条带（无燕尾/无头部，避免双燕尾） */
+function ribbonRing(coords: [number, number][], widthDeg: number): [number, number][] | null {
+  if (!coords || coords.length < 2 || !(widthDeg > 0)) return null;
+  const half = widthDeg / 2;
+  const left: [number, number][] = [];
+  const right: [number, number][] = [];
+  for (let i = 0; i < coords.length; i++) {
+    const prev = coords[Math.max(0, i - 1)];
+    const next = coords[Math.min(coords.length - 1, i + 1)];
+    let dx = next[0] - prev[0];
+    let dy = next[1] - prev[1];
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len; dy /= len;
+    left.push([coords[i][0] - dy * half, coords[i][1] + dx * half]);
+    right.push([coords[i][0] + dy * half, coords[i][1] - dx * half]);
+  }
+  return [...left, ...right.reverse(), left[0]];
+}
+
 function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) {
   const sourceId = `arrow-${element.id}`;
   const layerId = `arrow-layer-${element.id}`;
@@ -1713,31 +2125,58 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   const animEff = (element as any).animEffect;
   const isGrowFill = animEff === 'grow' || animEff === 'fill';
   const isShapeArrow = element.shapeCategory === 'multi' || element.shapeCategory === 'special';
+  const isMarchA = (animEff === 'march' || animEff === 'marchplain') && !isShapeArrow;
+  const isFlyMode = !!element.flyMode && !isShapeArrow;
   const nonUniform = (element as any).uniformMove === false && (element as any).pointTimes && (element as any).pointTimes.length >= 2;
   const progress = isShapeArrow
     ? 1
-    : isGrowFill
+    : isGrowFill || isMarchA
       ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
       : getProgress(element.progress, frame);
   // 非均匀移动：箭头增长与标记同步
   const growProgress = nonUniform && isGrowFill
     ? nonUniformRatio(element as any, frame)
     : progress;
-  const curTo: [number, number] = [
+  let curTo: [number, number] = [
     element.from[0] + (element.to[0] - element.from[0]) * growProgress,
     element.from[1] + (element.to[1] - element.from[1]) * growProgress,
   ];
+  let effFrom = element.from;
+  let effTo = curTo;
+  let animPathOverride: [number, number][] | null = null;
+
+  // march 行进：定长箭头沿路径推进，走过段消失，剩余段半透明（不断变短）
+  let marchHead: [number, number] | null = null;
+  let marchBaseGeo: { path: [number, number][] } | null = null;
+  if (isMarchA) {
+    const rail = arrowRailOf(element);
+    const railLine = turf.lineString(rail as any);
+    const total = turf.length(railLine);
+    if (total > 0) {
+      const L = total * 0.35;
+      const h = L + (total - L) * growProgress;
+      const win = turf.lineSliceAlong(railLine, Math.max(0, h - L), h).geometry.coordinates as [number, number][];
+      if (win.length >= 2) {
+        effFrom = win[0];
+        effTo = win[win.length - 1];
+        animPathOverride = win;
+      }
+      marchHead = turf.along(railLine, h).geometry.coordinates as [number, number];
+      const remain = turf.lineSliceAlong(railLine, h, total).geometry.coordinates as [number, number][];
+      if (animEff === 'march' && remain.length >= 2) marchBaseGeo = { path: remain };
+    }
+  }
 
   // 固定地理宽度：用绘制时的 drawZoom 换算，箭头在地图中尺寸固定，随 zoom 缩放
-  const lat = (element.from[1] + curTo[1]) / 2;
+  const lat = (effFrom[1] + effTo[1]) / 2;
   const geoWidth = typeof element.drawZoom === 'number'
     ? pixelsToDegrees(element.width, element.drawZoom, lat)
     : element.width / 111;
 
   // 增长动画：curved/curved-simple 用弧长截取贝塞尔（平滑增长，与标记点同步，避免分段）
-  let animPath = element.path;
+  let animPath = animPathOverride ?? element.path;
   const growProg = growProgress;
-  if (element.path && element.path.length > 2 && growProg < 1 && (element.arrowType === 'curved' || element.arrowType === 'curved-simple')) {
+  if (!isMarchA && animPathOverride === null && element.path && element.path.length > 2 && growProg < 1 && (element.arrowType === 'curved' || element.arrowType === 'curved-simple')) {
     try {
       const spline = turf.bezierSpline(turf.lineString(element.path), { resolution: 4000, sharpness: 0.6 });
       const line = turf.lineString(spline.geometry.coordinates);
@@ -1748,13 +2187,13 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
       const n = Math.max(2, Math.ceil(element.path.length * Math.max(0.001, growProg)));
       animPath = element.path.slice(0, n);
     }
-  } else if (element.path && element.path.length > 2 && growProg < 1 && element.arrowType === 'attack') {
+  } else if (!isMarchA && animPathOverride === null && element.path && element.path.length > 2 && growProg < 1 && element.arrowType === 'attack') {
     const n = Math.max(2, Math.ceil(element.path.length * Math.max(0.001, growProg)));
     animPath = element.path.slice(0, n);
   }
 
-  const rings = buildArrowGeometry(element.from, curTo, geoWidth, element.arrowType, animPath);
-  // 转成 MultiPolygon：每个 ring 是一个 polygon
+  const rings = buildArrowGeometry(effFrom, effTo, geoWidth, element.arrowType, animPath);
+  // 转成 MultiPolygon：每个 ring 是一个 polygon；飞行模式下几何不变，由函数末尾统一 paint 平移实现悬停
   const polys = rings.map((ring) => turf.polygon([[...ring, ring[0]]]));
   const geojson = turf.featureCollection(polys);
 
@@ -1780,13 +2219,20 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     });
   }
 
-  // 填充效果：底层完整半透明箭头（animEff==='fill'）
+  // 填充效果：底层完整半透明箭头（animEff==='fill'）；march：剩余段半透明（不断变短）
   const fillSrcId = `arrow-fill-src-${element.id}`;
   const fillLayerId = `arrow-fill-layer-${element.id}`;
-  if (animEff === 'fill') {
-    const fullPath = element.path;
-    const fullRings = buildArrowGeometry(element.from, element.to, geoWidth, element.arrowType, fullPath);
-    const fullGeojson = turf.featureCollection(fullRings.map((ring) => turf.polygon([[...ring, ring[0]]])));
+  if (animEff === 'fill' || isMarchA) {
+    let fullGeojson: any;
+    if (isMarchA) {
+      // 剩余段：素条带（无燕尾无头部），仅填充行进(march)显示
+      const ring = animEff === 'march' && marchBaseGeo ? ribbonRing(marchBaseGeo.path, geoWidth) : null;
+      fullGeojson = turf.featureCollection(ring ? [turf.polygon([ring])] : []);
+    } else {
+      const fullPath = element.path;
+      const fullRings = buildArrowGeometry(element.from, element.to, geoWidth, element.arrowType, fullPath);
+      fullGeojson = turf.featureCollection(fullRings.map((ring) => turf.polygon([[...ring, ring[0]]])));
+    }
     try {
       if (map.getSource(fillSrcId)) {
         (map.getSource(fillSrcId) as GeoJSONSource).setData(fullGeojson);
@@ -1807,6 +2253,56 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     try { if (map.getSource(fillSrcId)) map.removeSource(fillSrcId); } catch { /* */ }
   }
 
+  // ===== 飞行拱形（箭头）：与路线同一 fly-ribbon（逐顶点平滑拱形，mercator/globe 通用）=====
+  // 填充=三角化多边形、描边=闭合 ribbon；幽灵垫层(march 剩余/fill)保持贴地。
+  cleanupLegacyFlyBands(map);
+  const flyActiveA = isFlyMode && rings.length > 0;
+  if (flyActiveA) {
+    const rail = arrowRailOf(element);
+    const railIdx = buildRailIndex(rail);
+    const flyRings = rings.map((ring) => subdivFlyRing(ring, railIdx)).filter((r) => r.coords.length >= 3);
+    try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
+    try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'none'); } catch { /* */ }
+    if (flyRings.length > 0) {
+      setFlyRibbon(map, `${element.id}|afill`, {
+        kind: 'poly',
+        rings: flyRings,
+        color: fillColor,
+opacity: fillOpacity,
+      });
+setFlyRibbon(map, `${element.id}|astroke`, {
+        paths: flyRings.map((r) => ({ coords: r.coords, f: r.f, closed: true })),
+        color: fillColor,
+        widthPx: 1.2,
+        opacity: 0.8,
+      });
+      // 地面投影（阴影航迹）：全程虚线贴地，让「悬空高度」可读
+      setFlyRibbon(map, `${element.id}|track`, {
+        paths: [{ coords: rail, lifts: rail.map(() => 0) }],
+        frac: { a: 0, b: 1 },
+        color: fillColor,
+        widthPx: 2,
+        opacity: 0.4,
+        dash: [2, 2.5],
+      });
+    } else {
+      setFlyRibbon(map, `${element.id}|track`, null);
+    }
+  } else {
+    setFlyRibbon(map, `${element.id}|afill`, null);
+    setFlyRibbon(map, `${element.id}|astroke`, null);
+    setFlyRibbon(map, `${element.id}|track`, null);
+    try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'visible'); } catch { /* */ }
+    try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'visible'); } catch { /* */ }
+  }
+  // fly 航迹已并入箭头本体（不再有独立虚线航迹层）；此处仅清理旧版本/同会话切换的残留层
+  const flySrcId = `arrow-fly-src-${element.id}`;
+  const flyLayerId = `arrow-fly-${element.id}`;
+  if (map.getLayer(flyLayerId)) {
+    try { map.removeLayer(flyLayerId); } catch { /* */ }
+    try { if (map.getSource(flySrcId)) map.removeSource(flySrcId); } catch { /* */ }
+  }
+
   // 移动图标（箭头路径上沿移动点）：三段式（动画前静态/动画中移动/动画后隐藏）
   const iconSrcId = `arrow-move-src-${element.id}`;
   const iconLayerId = `arrow-move-layer-${element.id}`;
@@ -1814,25 +2310,19 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   const beforeAnim = inDisplay && animEff && frame < animStart;
   const duringAnim = inDisplay && animEff && frame >= animStart && frame <= animEnd;
   const afterAnim = inDisplay && animEff && frame > animEnd;
+  // 图标位置比例（0..1）：非均匀按各路径点到达帧；grow/fill 用绘制进度；其余按动画窗口插值
+  const iconRatio = (nonUniform && inDisplay)
+    ? nonUniformRatio(element as any, frame)
+    : beforeAnim ? 0
+    : afterAnim ? 1
+    : duringAnim ? (isGrowFill ? progress : (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 0))
+    : 0;
   // 动画结束后标记停在终点，与箭头一起在显示结束消失；仅「显示标记」开启才渲染
   const needIcon = !!element.showIcon && (beforeAnim || duringAnim || afterAnim || inDisplay);
   if (needIcon) {
     const path = element.path && element.path.length >= 2 ? element.path : [element.from, element.to];
-    let ratio = 0;
-    if (nonUniform && inDisplay) {
-      // 非均匀移动：标记按各路径点到达帧推进，不受动画窗口截断
-      ratio = nonUniformRatio(element as any, frame);
-    } else if (beforeAnim) ratio = 0;
-    else if (afterAnim) ratio = 1;
-    else if (duringAnim) {
-      if (isGrowFill) ratio = progress;
-      else {
-        ratio = animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 0;
-      }
-    } else {
-      ratio = 0;
-    }
-    const iconCoord = interpolatePath(path, Math.max(0, Math.min(1, ratio)));
+    const ratio = iconRatio;
+    const iconCoord = (isMarchA && marchHead) ? marchHead : interpolatePath(path, Math.max(0, Math.min(1, ratio)));
     const iconData = turf.featureCollection([turf.point(iconCoord)]);
     const mi = (element as any).moveIcon;
     const mShape = mi?.shape || 'dot';
@@ -1855,7 +2345,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         map.addSource(iconSrcId, { type: 'geojson', data: iconData } as any);
         map.addLayer({
           id: iconLayerId, type: 'symbol', source: iconSrcId,
-          layout: { 'icon-image': mImgId, 'icon-size': mScale, 'icon-anchor': mEffShape === 'pin' ? 'bottom' : 'center', 'icon-allow-overlap': true },
+          layout: { 'icon-image': mImgId, 'icon-size': mScale, 'icon-anchor': mEffShape === 'pin' ? 'bottom' : 'center', 'icon-offset': [0, 0] as any, 'icon-allow-overlap': true },
         });
       }
       if (map.getLayer(iconLayerId)) {
@@ -1863,6 +2353,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         map.setLayoutProperty(iconLayerId, 'icon-image', mImgId);
         map.setLayoutProperty(iconLayerId, 'icon-size', mScale);
         map.setLayoutProperty(iconLayerId, 'icon-anchor', mEffShape === 'pin' ? 'bottom' : 'center');
+        map.setLayoutProperty(iconLayerId, 'icon-offset', [0, 0] as any);
         map.setLayoutProperty(iconLayerId, 'icon-pitch-alignment', flat ? 'map' : 'viewport');
         map.setLayoutProperty(iconLayerId, 'icon-rotation-alignment', flat ? 'map' : 'viewport');
         map.setLayoutProperty(iconLayerId, 'icon-rotate', flat ? (mi?.rotation || 0) : 0);
@@ -1895,10 +2386,47 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         try { map.removeLayer('arrow-mlabel-' + element.id); } catch { /* */ }
         try { if (map.getSource('arrow-mlabel-src-' + element.id)) map.removeSource('arrow-mlabel-src-' + element.id); } catch { /* */ }
       }
+      // 飞行模式：箭头标记点改由 fly-ribbon 自定义层绘制（与拱形同一投影，精确对齐）
+      if (flyActiveA) {
+        try { if (map.getLayer(iconLayerId)) map.setLayoutProperty(iconLayerId, 'visibility', 'none'); } catch { /* */ }
+        try { if (map.getLayer(`arrow-mlabel-${element.id}`)) map.setLayoutProperty(`arrow-mlabel-${element.id}`, 'visibility', 'none'); } catch { /* */ }
+        const imgH = (map.getImage(mImgId) as any)?.data?.height || 32;
+        setFlyMarker(map, `${element.id}|icon`, [{
+          imgId: mImgId, lnglat: iconCoord,
+          lift01: flyHeight01(Math.max(0, Math.min(1, iconRatio))),
+          sizePx: imgH * mScale,
+          anchorX: 0.5, anchorY: mEffShape === 'pin' ? 1 : 0.5,
+        }]);
+      } else {
+        setFlyMarker(map, `${element.id}|icon`, null);
+      }
     } catch { /* style 未就绪 */ }
   } else if (map.getLayer(iconLayerId)) {
     try { map.removeLayer(iconLayerId); } catch { /* */ }
     try { if (map.getSource(iconSrcId)) map.removeSource(iconSrcId); } catch { /* */ }
+    setFlyMarker(map, `${element.id}|icon`, null);
+  }
+
+  // 飞行拱形：移动图标/标签按「沿线位置」取高度；基础填充/描边由分段层替代（已隐藏，平移归零）；
+  // 幽灵垫层（fill/march 剩余）保持贴地。
+  const zeroShiftA: [number, number] = [0, 0];
+  const arrowPathL = element.path && element.path.length >= 2 ? element.path : [element.from, element.to];
+  const iconLnglatA: [number, number] = (isMarchA && marchHead) ? marchHead : interpolatePath(arrowPathL, Math.max(0, Math.min(1, iconRatio)));
+  const flyIconShiftA: [number, number] = flyActiveA
+    ? liftTranslate(map, iconLnglatA, flyHeight01(Math.max(0, Math.min(1, iconRatio))))
+    : zeroShiftA;
+  for (const [flyLayer, flyProp, shift] of [
+    [layerId, 'fill-translate', zeroShiftA],
+    [strokeLayerId, 'line-translate', zeroShiftA],
+    [fillLayerId, 'fill-translate', zeroShiftA],
+    [iconLayerId, 'icon-translate', flyIconShiftA],
+    [`arrow-mlabel-${element.id}`, 'icon-translate', flyIconShiftA],
+  ] as [string, string, [number, number]][]) {
+    if (!map.getLayer(flyLayer)) continue;
+    try {
+      map.setPaintProperty(flyLayer, flyProp, shift as any);
+      map.setPaintProperty(flyLayer, `${flyProp}-anchor`, 'viewport');
+    } catch { /* 层未创建或样式未就绪 */ }
   }
 }
 

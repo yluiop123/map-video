@@ -69,9 +69,17 @@ export interface Chapter {
   camera?: CameraKeyframe[];
   overlays: OverlayItem[];
   effects: ChapterEffect[];
+  /** 特效窗口：天气/画面特效层（屏幕空间，非地图元素），startFrame/endFrame 为绝对帧 */
+  fx?: ScreenFxItem[];
+  /** 章节标题样式（导出与预览共用渲染）；缺省用默认样式 */
+  titleStyle?: TitleStyle;
   transition?: TransitionConfig; // 进入本节的转场
   baseMapId?: string;            // 可选覆盖底图
   elevationMapId?: string | null;
+  /** 字幕/配音轨道（章内绝对帧） */
+  narration?: NarrationTrack;
+  /** 背景音乐段（章内绝对帧，可多段循环） */
+  music?: MusicTrack[];
 }
 
 // ========== 元素类型 ==========
@@ -104,8 +112,11 @@ export interface MapElementBase {
   /** 来源分类：区分形状工具绘制（multi=多点/two=两点/special=特殊）与路线工具绘制（route）。
    * 属性面板据此选择对应设置面板；无标记时按语义回退。 */
   shapeCategory?: 'multi' | 'two' | 'special' | 'route';
-  /** 动画效果：grow=普通增长(默认) / move=路线移动 / fill=填充 */
-  animEffect?: 'grow' | 'move' | 'fill';
+  /** 动画效果：grow=普通增长(默认) / move=路线移动 / fill=填充 / march=填充行进(定长段+剩余半透明变短) / marchplain=行进(仅定长段沿路线移动) */
+  animEffect?: 'grow' | 'move' | 'fill' | 'march' | 'marchplain';
+  /** 飞行模式：开启后路线与移动图标均不贴地，按高度剖面悬空显示（起点爬升→巡航→终点落地）。
+   * 与动画效果叠加时路线整条悬空显示，图标沿路线随播放进度移动。 */
+  flyMode?: boolean;
   /** 显示移动图标（标记点沿路径移动） */
   showIcon?: boolean;
   /** 移动标记样式（复用标记 Pin 的 dot/pin/emoji/bubble/text/flag/自定义图标） */
@@ -329,33 +340,33 @@ export interface FlagElement extends MapElementBase {
   scale?: number;      // 整体缩放倍数（默认 1）
 }
 
-// ========== 疆域（国家/地块/兼并） ==========
+// ========== 疆域（势力/地块/兼并） ==========
 
-/** 国家：名字 + 颜色（地块归属国的配色） */
+/** 势力：名字 + 颜色（地块归属势力的配色） */
 export interface TerritoryCountry {
   id: string;
   name: string;
   color: string;
 }
 
-/** 地块：一块领土（多边形环），初始归属某国；国界=同国地块并集外边界 */
+/** 地块：一块领土（多边形环），初始归属某势力；势力边界=同势力地块并集外边界 */
 export interface TerritoryPlot {
   id: string;
   name?: string;
   /** GeoJSON Polygon rings：rings[0]=外环，其余=洞 */
   rings: [number, number][][];
-  ownerId: string;             // 初始归属国 id
+  ownerId: string;             // 初始归属势力 id
 }
 
-/** 兼并事件：在 frame 帧，把若干地块划给目标国；带描线/渐变/高亮特效 */
+/** 兼并事件：在 frame 帧，把若干地块划给目标势力；带描线/渐变/高亮特效 */
 export interface TerritoryEvent {
   id: string;
   frame: number;               // 兼并时刻（绝对帧）
   plotIds: string[];           // 被占领的地块
   toCountryId: string;         // 占领方
   effect?: {
-    /** instant=瞬时换色 / fade=颜色渐变 / draw=边界描线+渐变 / spread=从占领方边界向外扩散 */
-    preset: 'instant' | 'fade' | 'draw' | 'spread';
+    /** instant=瞬时换色 / fade=颜色渐变 / draw=边界描线+渐变 / spread=从占领方边界向外扩散 / shrink=扩散推进+湍流置换前沿（蚕食） */
+    preset: 'instant' | 'fade' | 'draw' | 'spread' | 'shrink';
     /** 特效时长（帧）：渐变/描线占用 */
     duration?: number;
     /** 完成后高亮脉冲 */
@@ -364,11 +375,11 @@ export interface TerritoryEvent {
 }
 
 export interface TerritoryDisplay {
-  countryBorders: boolean;     // 国界（并集外边界，国家色）
+  countryBorders: boolean;     // 势力边界（并集外边界，势力色）
   plotBorders: boolean;        // 地块边界（内部细线）
-  borderWidth: number;         // 国界线宽(px)
+  borderWidth: number;         // 势力边界线宽(px)
   fillOpacity: number;
-  countryNames: boolean;       // 国名标签
+  countryNames: boolean;       // 势力标签
   plotNames: boolean;          // 地块名标签
   /** 贴地（map，随地图旋转/俯仰）/ 面向镜头（viewport，广告牌） */
   labelAlign: 'map' | 'viewport';
@@ -505,24 +516,243 @@ export interface OverlayItem {
   startFrame: number;
   endFrame: number;
   animation?: AnimationPreset; // 入场动画
+  exitAnimation?: AnimationPreset; // 退场动画（结束前 20 帧播放）
   scale?: number;
+  /** 九宫格标准位（POS_BASE）基础上的微调 %（-80..80 实际由渲染端钳制到 -40..40） */
+  offsetX?: number;
+  offsetY?: number;
+  /** 卡片背景样式 */
+  bg?: { color: string; opacity: number; blur: number; radius: number; border?: string };
   zIndex?: number;
 }
 
-export type OverlayType = 'text' | 'person' | 'chart' | 'video' | 'image' | 'group';
+/** 自定义弹窗内容块：文字 / 图片 / 视频，任意数量纵向堆叠 */
+export interface OverlayBlock {
+  id: string;
+  type: 'text' | 'image' | 'video';
+  text?: { content: string; fontSize: number; color: string; bold?: boolean; align?: 'left' | 'center' | 'right' };
+  /** image / video 源 */
+  url?: string;
+}
+
+// ========== 人物卡（块化：图片/姓名/介绍/名言/对话，各块开关+语音，布局可配） ==========
+
+export type PersonBlockKind = 'image' | 'name' | 'intro' | 'quote' | 'dialogue';
+
+export interface PersonBlock {
+  id: string;
+  kind: PersonBlockKind;
+  /** 显示开关 */
+  show: boolean;
+  /** name=姓名 / intro=介绍 / quote=名言 / dialogue=说的话（单角色自述） */
+  text?: string;
+  /** image 块图片 */
+  imageUrl?: string;
+  /** image 块尺寸 px（60–360） */
+  size?: number;
+  /** image 块遮罩：bottom/top=渐变压暗、circle=圆形裁剪、feather=边缘羽化 */
+  mask?: 'none' | 'bottom' | 'top' | 'circle' | 'feather';
+}
+
+export interface PersonLayoutCfg {
+  /** 图片相对文字的方位（none=不显示图片区，仅图片块单独渲染） */
+  imageSide: 'left' | 'right' | 'top' | 'bottom' | 'none';
+  align: 'left' | 'center';
+  /** 块间距 px */
+  gap: number;
+  /** 卡片最大宽 px（240–560） */
+  width: number;
+  /** 名言样式：bubble 引用气泡 / line 竖线引用 / big 大字居中 */
+  quoteStyle: 'bubble' | 'line' | 'big';
+  /** 海报式：姓名/介绍叠加在图片底部（配合 bottom 遮罩） */
+  textOverImage: boolean;
+}
+
+export interface PersonContent {
+  blocks: PersonBlock[];
+  layout: PersonLayoutCfg;
+  /** 整卡语音（唯一；编辑端点击播放，导出端纯视觉） */
+  audioUrl?: string;
+}
+
+/** 人物卡布局预设：应用=改 layout + 块显隐/顺序（不动已填内容） */
+export const PERSON_PRESETS: {
+  id: string; zh: string; en: string;
+  layout: PersonLayoutCfg;
+  order: PersonBlockKind[];
+  show: Partial<Record<PersonBlockKind, boolean>>;
+}[] = [
+  {
+    id: 'profile', zh: '人物简介', en: 'Profile',
+    layout: { imageSide: 'left', align: 'left', gap: 14, width: 380, quoteStyle: 'bubble', textOverImage: false },
+    order: ['image', 'name', 'intro'], show: { intro: true, quote: false, dialogue: false },
+  },
+  {
+    id: 'quoteCard', zh: '名言卡', en: 'Quote',
+    layout: { imageSide: 'top', align: 'center', gap: 12, width: 360, quoteStyle: 'big', textOverImage: false },
+    order: ['image', 'quote', 'name'], show: { intro: false, quote: true, dialogue: false },
+  },
+  {
+    id: 'dialogueCard', zh: '对话卡', en: 'Dialogue',
+    layout: { imageSide: 'left', align: 'left', gap: 12, width: 380, quoteStyle: 'bubble', textOverImage: false },
+    order: ['image', 'name', 'dialogue'], show: { intro: false, quote: false, dialogue: true },
+  },
+  {
+    id: 'poster', zh: '海报', en: 'Poster',
+    layout: { imageSide: 'top', align: 'left', gap: 10, width: 440, quoteStyle: 'line', textOverImage: true },
+    order: ['image', 'name', 'intro'], show: { intro: true, quote: false, dialogue: false },
+  },
+  {
+    id: 'imageOnly', zh: '仅图片', en: 'Image only',
+    layout: { imageSide: 'left', align: 'center', gap: 0, width: 420, quoteStyle: 'bubble', textOverImage: false },
+    order: ['image'], show: { name: false, intro: false, quote: false, dialogue: false },
+  },
+  {
+    id: 'all', zh: '全展示', en: 'All',
+    layout: { imageSide: 'left', align: 'left', gap: 14, width: 420, quoteStyle: 'bubble', textOverImage: false },
+    order: ['image', 'name', 'intro', 'quote', 'dialogue'],
+    show: {},
+  },
+];
+
+export function defaultPersonContent(): PersonContent {
+  const b = (kind: PersonBlockKind, extra: Partial<PersonBlock> = {}): PersonBlock =>
+    ({ id: generateId(), kind, show: kind !== 'quote' && kind !== 'dialogue', ...extra });
+  return {
+    layout: { imageSide: 'left', align: 'left', gap: 14, width: 380, quoteStyle: 'bubble', textOverImage: false },
+    blocks: [
+      b('image', { size: 72, mask: 'none' }),
+      b('name'),
+      b('intro'),
+      b('quote', { show: false }),
+      b('dialogue', { show: false }),
+    ],
+  };
+}
+
+/** person 旧结构（imageUrl/name/title/description/speech/audioUrl）→ 块化；缺字段补默认 */
+export function normalizePersonContent(p: unknown): PersonContent {
+  const def = defaultPersonContent();
+  if (!p || typeof p !== 'object') return def;
+  const obj = p as Partial<PersonContent> & { imageUrl?: string; name?: string; title?: string; description?: string; speech?: string };
+  if (Array.isArray(obj.blocks) && obj.blocks.length > 0) {
+    const layout: PersonLayoutCfg = { ...def.layout, ...(obj.layout || {}) };
+    const blocks = def.blocks.map((db) => {
+      const old = (obj.blocks as PersonBlock[]).find((x) => x && x.kind === db.kind);
+      return old ? { ...db, ...old, id: old.id || db.id } : db;
+    });
+    return { blocks, layout, audioUrl: obj.audioUrl };
+  }
+  // v1 → v2
+  const text: Partial<Record<PersonBlockKind, Partial<PersonBlock>>> = {};
+  if (obj.imageUrl) text.image = { imageUrl: obj.imageUrl };
+  if (obj.name) text.name = { text: obj.name };
+  if (obj.description) text.intro = { text: obj.description };
+  if (obj.speech) text.dialogue = { text: obj.speech };
+  return {
+    layout: def.layout,
+    blocks: def.blocks.map((db) => ({ ...db, ...(text[db.kind] || {}) })),
+    audioUrl: obj.audioUrl,
+  };
+}
+
+export type OverlayType =
+  | 'custom'                                        // 自定义（文字/图片/视频块组合 + 背景语音）
+  | 'chart'
+  | 'person'                                        // 人物卡（头像+姓名+职务+介绍+说话+音效）
+  | 'report' | 'timeline' | 'quote' | 'compare'     // 战报 / 时间线 / 引用 / 对比
+  | 'counter' | 'dialogue' | 'stats' | 'place';     // 计数 / 对话 / 态势 / 地点
+
+export type ChartType = 'bar' | 'line' | 'pie' | 'area' | 'hbar' | 'donut' | 'radar' | 'gauge' | 'vs';
 
 export type OverlayPosition =
   | 'top' | 'bottom' | 'left' | 'right' | 'center'
   | 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
 
+/** 九宫格 → 中心相对偏移（%，横向正值向右、纵向正值向下；±40 = 距边 10%） */
+export const POS_BASE: Record<OverlayPosition, [number, number]> = {
+  topLeft: [-40, -40], top: [0, -40], topRight: [40, -40],
+  left: [-40, 0], center: [0, 0], right: [40, 0],
+  bottomLeft: [-40, 40], bottom: [0, 40], bottomRight: [40, 40],
+};
+
 export interface OverlayContent {
   type: OverlayType;
+  /** custom：内容块组合（文字/图片/视频任意数量）+ 背景语音（卡片可见时播放，导出音频混流待支持） */
+  custom?: { blocks: OverlayBlock[]; audio?: { url: string; title?: string } };
+  /** person：块化人物卡（图片/姓名/介绍/名言/对话，各块开关+语音，布局可配；见 PersonContent） */
+  person?: PersonContent;
+  chart?: { type: ChartType; title?: string; data: { label: string; value: number }[]; data2?: { label: string; value: number }[]; color?: string; color2?: string };
+  /** report 战报卡：大数字战果 */
+  report?: { title?: string; value: number | string; unit?: string; note?: string };
+  /** timeline 时间线卡：逐条错峰进场 */
+  timeline?: { title?: string; items: { time?: string; text: string }[] };
+  /** quote 引用卡：史料/电文/回忆录引文 + 出处 */
+  quote?: { text: string; source?: string };
+  /** compare 对比卡：左右两列 VS */
+  compare?: { title?: string; left: { label: string; value: number }; right: { label: string; value: number }; unit?: string };
+  /** counter 计数卡：大数字随播放滚动增长（durationFrames=计数时长） */
+  counter?: { value: number; label?: string; prefix?: string; unit?: string; durationFrames?: number };
+  /** dialogue 对话卡：头像+聊天气泡（往来命令/电文） */
+  dialogue?: { title?: string; items: { who: string; avatarUrl?: string; text: string }[] };
+  /** [已删除] stats 态势卡：仅兼容旧数据，加载时迁移为 custom 文字块 */
+  stats?: { title?: string; items: { label: string; value: number; unit?: string; max?: number }[] };
+  /** place 地点卡：地名+简介+配图 */
+  place?: { name: string; description?: string; imageUrl?: string };
+  /** 兼容旧数据（text/list/image/video/audio/group），加载时自动迁移为 custom */
   text?: { content: string; fontSize: number; color: string; bold?: boolean; align?: 'left' | 'center' | 'right' };
-  person?: { imageUrl: string; name: string; title?: string; description?: string };
-  chart?: { type: 'bar' | 'line' | 'pie' | 'area'; title?: string; data: { label: string; value: number }[]; color?: string };
-  src?: string;                   // video / image 源
+  list?: { title?: string; items: string[] };
+  src?: string;
   image?: { url: string; alt?: string };
-  children?: OverlayItem[];       // group 组合
+  audio?: { url: string; title?: string };
+  children?: OverlayItem[];
+}
+
+const NEW_OVERLAY_TYPES = new Set<OverlayType>([
+  'custom', 'chart', 'person', 'report', 'timeline', 'quote', 'compare', 'counter', 'dialogue', 'place',
+]);
+
+/** 旧弹窗内容迁移为自定义块（load/import 入口调用；audio→纯背景语音卡，group 子内容递归拍平；person 迁移为块化） */
+export function normalizeOverlayContent(content: OverlayContent): OverlayContent {
+  if (content.type === 'person' && content.person) {
+    return { ...content, person: normalizePersonContent(content.person) };
+  }
+  if (content.type === 'stats') {
+    // 态势卡已删除：迁移为自定义文字块（标题 + 指标行）
+    const st = content.stats;
+    const blocks: OverlayBlock[] = [];
+    if (st?.title) blocks.push({ id: generateId(), type: 'text', text: { content: st.title, fontSize: 16, color: '#FFFFFF', bold: true, align: 'left' } });
+    for (const it of st?.items || []) {
+      blocks.push({ id: generateId(), type: 'text', text: { content: [it.label, String(it.value), it.unit].filter(Boolean).join('：'), fontSize: 14, color: '#e7e5e4', align: 'left' } });
+    }
+    return { type: 'custom', custom: { blocks } };
+  }
+  if (NEW_OVERLAY_TYPES.has(content.type)) return content;
+  const t = content.type as string;
+  if (t === 'audio' && content.audio) {
+    return { type: 'custom', custom: { blocks: [], audio: content.audio } };
+  }
+  const blocks: OverlayBlock[] = [];
+  const push = (b: Omit<OverlayBlock, 'id'>) => blocks.push({ id: generateId(), ...b });
+  if (t === 'text' && content.text) push({ type: 'text', text: content.text });
+  if (t === 'list') {
+    if (content.list?.title) push({ type: 'text', text: { content: content.list.title, fontSize: 18, color: '#FFFFFF', bold: true, align: 'left' } });
+    for (const it of content.list?.items || []) {
+      push({ type: 'text', text: { content: it, fontSize: 14, color: '#e7e5e4', align: 'left' } });
+    }
+  }
+  if (t === 'image') {
+    const url = content.image?.url || content.src;
+    if (url) push({ type: 'image', url });
+  }
+  if (t === 'video' && content.src) push({ type: 'video', url: content.src });
+  if (t === 'group') {
+    for (const child of content.children || []) {
+      const cc = normalizeOverlayContent(child.content);
+      if (cc.type === 'custom') blocks.push(...(cc.custom?.blocks || []));
+    }
+  }
+  return { type: 'custom', custom: { blocks } };
 }
 
 export type AnimationPreset =
@@ -552,10 +782,250 @@ export type ChapterEffect =
       color: string;
     };
 
+// ========== 特效窗口：天气 / 画面特效（屏幕空间层） ==========
+
+export type WeatherType = 'rain' | 'snow' | 'lightning' | 'fog';
+
+export type ScreenFxType =
+  | 'shake'       // 画面震动（整体位移包络）
+  | 'flash'       // 闪光（全屏色闪）
+  | 'vignette'    // 暗角
+  | 'cloudReveal' // 云层散开（程序化云层消散显露画面）
+  | 'fadeBlack'   // 黑场淡入（由黑渐显）
+  | 'fadeWhite';  // 白场淡入（由白渐显）
+
+export interface ScreenFxItem {
+  id: string;
+  kind: 'weather' | 'screen';
+  name: string;
+  startFrame: number;
+  endFrame: number;
+  /** kind==='weather'：天气参数（intensity 0–1，wind -1..1 向右为正） */
+  weather?: { type: WeatherType; intensity: number; wind: number };
+  /** kind==='screen'：画面特效参数（intensity 0–1；flash/fade 用 color） */
+  effect?: { type: ScreenFxType; intensity: number; color?: string };
+  enabled?: boolean;
+}
+
+/** 章节标题样式（双端同源渲染） */
+export interface TitleStyle {
+  show: boolean;
+  preset?: string;                         // 内置样式 id；手动改属性后变 'custom'
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  weight: number;                          // 300–900
+  pos: OverlayPosition;                    // 9 宫格位置（同弹窗）
+  offsetX: number;                         // 横向微调 %（-40..40，正值向右）
+  offsetY: number;                         // 纵向微调 %（-40..40，正值向下）
+  bg: 'none' | 'bar' | 'card';             // 无背景 / 半透明条带 / 卡片
+  bgColor: string;
+  shadow: boolean;
+}
+
+/** 内置标题样式预设：选中即套用一组参数，之后各项仍可自由调整 */
+export const TITLE_PRESETS: { id: string; zh: string; en: string; values: Omit<TitleStyle, 'show' | 'preset'> }[] = [
+  {
+    id: 'classic', zh: '默认卡片', en: 'Classic',
+    values: {
+      fontFamily: "'Geist', 'Noto Sans SC', system-ui, sans-serif", fontSize: 36, color: '#FFFFFF',
+      weight: 700, pos: 'bottomLeft', offsetX: 0, offsetY: 0, bg: 'card', bgColor: '#0c0a09', shadow: true,
+    },
+  },
+  {
+    id: 'documentary', zh: '纪录片', en: 'Documentary',
+    values: {
+      fontFamily: "Georgia, 'Noto Serif SC', 'SimSun', serif", fontSize: 46, color: '#FFFFFF',
+      weight: 700, pos: 'bottomLeft', offsetX: 0, offsetY: 0, bg: 'none', bgColor: '#0c0a09', shadow: true,
+    },
+  },
+  {
+    id: 'inkpaper', zh: '宣纸墨韵', en: 'Ink Paper',
+    values: {
+      fontFamily: "'KaiTi', 'STKaiti', serif", fontSize: 42, color: '#3a2e1c',
+      weight: 700, pos: 'bottomLeft', offsetX: 0, offsetY: 0, bg: 'card', bgColor: '#f3ecd8', shadow: false,
+    },
+  },
+  {
+    id: 'golden', zh: '金色史诗', en: 'Golden Epic',
+    values: {
+      fontFamily: "Georgia, 'Noto Serif SC', 'SimSun', serif", fontSize: 56, color: '#e8c56a',
+      weight: 900, pos: 'top', offsetX: 0, offsetY: 0, bg: 'none', bgColor: '#0c0a09', shadow: true,
+    },
+  },
+  {
+    id: 'military', zh: '军报横幅', en: 'Military',
+    values: {
+      fontFamily: "'SimHei', 'Microsoft YaHei', 'Noto Sans SC', sans-serif", fontSize: 38, color: '#FFFFFF',
+      weight: 900, pos: 'bottomLeft', offsetX: 0, offsetY: 0, bg: 'bar', bgColor: '#233318', shadow: false,
+    },
+  },
+  {
+    id: 'cinema', zh: '电影黑条', en: 'Cinema',
+    values: {
+      fontFamily: "'Geist', 'Noto Sans SC', system-ui, sans-serif", fontSize: 30, color: '#FFFFFF',
+      weight: 400, pos: 'bottom', offsetX: 0, offsetY: 40, bg: 'bar', bgColor: '#000000', shadow: false,
+    },
+  },
+];
+
+export function defaultTitleStyle(): TitleStyle {
+  return {
+    show: true,
+    preset: 'classic',
+    fontFamily: "'Geist', 'Noto Sans SC', system-ui, sans-serif",
+    fontSize: 36,
+    color: '#FFFFFF',
+    weight: 700,
+    pos: 'bottomLeft',
+    offsetX: 0,
+    offsetY: 0,
+    bg: 'card',
+    bgColor: '#0c0a09',
+    shadow: true,
+  };
+}
+
+/** 兼容旧标题样式（align+vPos → 9 宫格 pos；offsetX/Y=相对 POS_BASE 标准位的微调量），load/import 时调用 */
+export function normalizeTitleStyle(ts?: Partial<TitleStyle> & { align?: string; vPos?: string } | null): TitleStyle {
+  const m: Record<string, unknown> = { ...defaultTitleStyle(), ...(ts || {}) };
+  if (!m.pos) {
+    const a = m.align === 'right' ? 'right' : m.align === 'center' ? 'center' : 'left';
+    const v = m.vPos === 'top' ? 'top' : m.vPos === 'center' ? 'center' : 'bottom';
+    m.pos = v === 'center'
+      ? (a === 'center' ? 'center' : a === 'right' ? 'right' : 'left')
+      : v === 'top'
+        ? (a === 'center' ? 'top' : a === 'right' ? 'topRight' : 'topLeft')
+        : (a === 'center' ? 'bottom' : a === 'right' ? 'bottomRight' : 'bottomLeft');
+  }
+  if (typeof m.offsetX !== 'number') m.offsetX = 0;
+  if (typeof m.offsetY !== 'number') m.offsetY = 0;
+  delete m.align;
+  delete m.vPos;
+  return m as unknown as TitleStyle;
+}
+
 // ========== 工具函数 ==========
 
 export function generateId(): string {
   return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+}
+
+// ========== 字幕 / 配音 / 背景音乐（章级轨道） ==========
+
+/** 字幕/配音条：显示时长 = 配音音频时长（frames），无音频按字数估算 */
+export interface NarrationEntry {
+  id: string;
+  /** 字幕文本 = 配音朗读文本 */
+  text: string;
+  /** 配音音频（TTS 生成或导入，dataURL/远程 URL） */
+  audioUrl?: string;
+  /** 字幕显示时长（帧） */
+  durationFrames: number;
+  /** 章内起始帧（自动顺排，手动调整后 locked） */
+  startFrame: number;
+  /** 手动定位后不再自动顺排 */
+  locked?: boolean;
+  status?: 'none' | 'pending' | 'ready' | 'error';
+  error?: string;
+}
+
+export interface NarrationStyle {
+  fontSize: number;
+  color: string;
+  strokeColor: string;
+  strokeWidth: number;
+  /** none=无底 / bar=底部长条 */
+  bg: 'none' | 'bar';
+  bgColor: string;
+  /** 距画面底部百分比（0–40） */
+  posY: number;
+  /** 最大宽度百分比（超出换行） */
+  maxPct: number;
+}
+
+export interface NarrationTrack {
+  entries: NarrationEntry[];
+  style: NarrationStyle;
+}
+
+/** 背景音乐段：章内生效区间，可循环 */
+export interface MusicTrack {
+  id: string;
+  name: string;
+  url: string;
+  startFrame: number;
+  endFrame: number;
+  /** 0–1 */
+  volume: number;
+  loop: boolean;
+  /** 淡入/淡出（秒） */
+  fadeIn: number;
+  fadeOut: number;
+}
+
+/** AI / 配音服务配置（localStorage 持久化，不入项目文件防泄密） */
+export interface ProviderConfig {
+  id: string;
+  kind: 'llm' | 'tts';
+  label: string;
+  baseUrl: string;
+  apiKey: string;
+  /** LLM 模型名 / TTS 音色模型 */
+  model: string;
+  /** TTS 接口协议 */
+  protocol?: TtsProtocol;
+  /** TTS 音色/说话人 ID */
+  voice?: string;
+  /** 语速 0.5–2 */
+  speed?: number;
+  /** 附加 JSON 参数（合并进请求体） */
+  extra?: string;
+  /** true=走 MapVideo 后端代理（Full 模式，Key 在服务端）；false/缺省=浏览器直连 */
+  viaBackend?: boolean;
+}
+
+export type TtsProtocol = 'openai-speech' | 'minimax-t2a' | 'volc-tts' | 'qwen-tts' | 'custom';
+
+export interface ProviderPreset {
+  id: string;
+  label: string;
+  baseUrl: string;
+  model: string;
+  voice?: string;
+  protocol?: TtsProtocol;
+  /** 申请 Key 的地址提示 */
+  keyHint?: string;
+  /** 备注（CORS/协议说明） */
+  note?: string;
+}
+
+/** 无音频时按字数估算字幕时长：0.28s/字 + 0.3s 尾巴 */
+export function estimateTextDurationFrames(text: string, fps: number): number {
+  const sec = Math.max(0.8, text.length * 0.28 + 0.3);
+  return Math.max(1, Math.round(sec * fps));
+}
+
+export function defaultNarrationStyle(): NarrationStyle {
+  return {
+    fontSize: 30,
+    color: '#FFFFFF',
+    strokeColor: '#000000',
+    strokeWidth: 4,
+    bg: 'none',
+    bgColor: '#000000',
+    posY: 8,
+    maxPct: 80,
+  };
+}
+
+export function normalizeNarrationTrack(t?: NarrationTrack | null): NarrationTrack {
+  const style = { ...defaultNarrationStyle(), ...(t?.style || {}) };
+  const entries = (t?.entries || []).map((e) => ({
+    ...e,
+    durationFrames: Math.max(1, e.durationFrames || estimateTextDurationFrames(e.text || '', 30)),
+  }));
+  return { style, entries };
 }
 
 // ========== 导出/导入格式 ==========

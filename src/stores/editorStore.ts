@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type ChapterTab = 'transition' | 'overlay' | 'effects';
+export type FxTab = 'weather' | 'screen' | 'popup' | 'title' | 'subtitle' | 'music';
 
 interface EditorState {
   currentFrame: number;
@@ -8,10 +8,8 @@ interface EditorState {
   selectedElementId: string | null;
   selectedChapterId: string | null;
 
-  // 右侧面板模式：元素属性 / 章节全局设置 / 镜头关键帧属性
-  panelMode: 'element' | 'chapter' | 'keyframe';
-  // 章节全局设置下的子标签
-  chapterTab: ChapterTab;
+  // 右侧面板模式：元素属性 / 镜头关键帧属性 / 特效 / 无面板
+  panelMode: 'element' | 'keyframe' | 'fx' | 'none';
   // 底部 Storyboard 选中的镜头关键帧序号（进入关键帧属性面板）
   selectedKeyframeIdx: number | null;
 
@@ -24,6 +22,14 @@ interface EditorState {
   // 左侧浮动元素面板开合（对齐 Mapimator Layers，默认收起）
   elementsOpen: boolean;
   setElementsOpen: (open: boolean) => void;
+
+  // 特效（天气/画面/弹窗/标题）：在右侧面板编辑；单次只编辑一个特效项（fxSelId）
+  fxTab: FxTab;
+  /** 当前正在编辑的特效项 id（weather/screen/popup 项；title 无需） */
+  fxSelId: string | null;
+  openFx: (tab?: FxTab, selId?: string | null) => void;
+  setFxTab: (tab: FxTab) => void;
+  setFxSelId: (id: string | null) => void;
 
   // 路线路径点编辑模式：none / add（添加点）/ del（删除点）
   routeEdit: 'none' | 'add' | 'del';
@@ -44,8 +50,7 @@ interface EditorState {
   setIsPlaying: (playing: boolean) => void;
   selectElement: (id: string | null) => void;
   selectChapter: (id: string | null) => void;
-  setPanelMode: (mode: 'element' | 'chapter' | 'keyframe') => void;
-  setChapterTab: (tab: ChapterTab) => void;
+  setPanelMode: (mode: 'element' | 'keyframe' | 'fx' | 'none') => void;
   /** 选中镜头关键帧（进入右侧视角属性面板） */
   selectKeyframe: (idx: number | null) => void;
   setCurrentCamera: (cam: { center: [number, number]; zoom: number; pitch: number; bearing: number }) => void;
@@ -58,7 +63,6 @@ export const useEditorStore = create<EditorState>()((set) => ({
   selectedElementId: null,
   selectedChapterId: null,
   panelMode: 'element',
-  chapterTab: 'transition',
   selectedKeyframeIdx: null,
   currentCamera: { center: [104.0, 35.0], zoom: 4, pitch: 0, bearing: 0 },
   cameraSeek: null,
@@ -68,12 +72,21 @@ export const useEditorStore = create<EditorState>()((set) => ({
   selectElement: (id) => set({ selectedElementId: id, panelMode: 'element' }),
   selectChapter: (id) => set({ selectedChapterId: id }),
   setPanelMode: (mode) => set({ panelMode: mode }),
-  setChapterTab: (tab) => set({ chapterTab: tab }),
-  selectKeyframe: (idx) => set({ selectedKeyframeIdx: idx, panelMode: idx !== null ? 'keyframe' : 'chapter' }),
+  selectKeyframe: (idx) => set({ selectedKeyframeIdx: idx, panelMode: idx !== null ? 'keyframe' : 'none' }),
   setCurrentCamera: (cam) => set({ currentCamera: cam }),
   seekCamera: (cam, easing, duration) => set({ cameraSeek: { cam, easing, duration, ts: Date.now() } }),
   elementsOpen: false,
   setElementsOpen: (open) => set({ elementsOpen: open }),
+
+  fxTab: 'popup',
+  fxSelId: null,
+  openFx: (tab, selId) => set((s) => ({
+    panelMode: 'fx',
+    fxTab: tab || s.fxTab,
+    fxSelId: selId !== undefined ? selId : s.fxSelId,
+  })),
+  setFxTab: (tab) => set({ fxTab: tab }),
+  setFxSelId: (id) => set({ fxSelId: id }),
   lang: 'zh',
   setLang: (l) => set({ lang: l }),
   routeEdit: 'none',
@@ -88,3 +101,6 @@ export const useEditorStore = create<EditorState>()((set) => ({
   })),
   setTerrSelPlots: (ids) => set({ terrSelPlots: ids }),
 }));
+
+// 调试便捷入口（生产无副作用）：自动化脚本直控播放头/读取选中
+if (typeof window !== 'undefined') (window as any).__editorStore = useEditorStore;

@@ -1,4 +1,4 @@
-// 疆域导入对话框：内置国家库（搜索选国，MultiPolygon 自动拆地块） / GeoJSON 上传
+// 疆域导入对话框：内置势力库（搜索选国边界，MultiPolygon 自动拆地块） / GeoJSON 上传
 // 导入合并进目标疆域元素（选中元素为疆域则用之，否则自动新建）
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useProjectStore } from '../stores/projectStore';
@@ -40,7 +40,7 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
     let alive = true;
     listRegionNames()
       .then((n) => { if (alive) setNames(n); })
-      .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : '国家边界数据加载失败'); });
+      .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : '势力边界数据加载失败'); });
     return () => { alive = false; };
   }, []);
 
@@ -89,7 +89,7 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
         try { map.fitBounds([[minX, minY], [maxX, maxY]], { padding: 90, duration: 700, maxZoom: 9 }); } catch { /* ignore */ }
       }
     }
-    setMsg(`已导入 ${label}：${cCount} 个国家 / ${fresh.length} 个地块${skipped ? `，跳过重复 ${skipped}` : ''}`);
+    setMsg(`已导入 ${label}：${cCount} 个势力 / ${fresh.length} 个地块${skipped ? `，跳过重复 ${skipped}` : ''}`);
   };
 
   const importBuilt = async (en: string) => {
@@ -170,7 +170,7 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
 
         {/* Tabs */}
         <div className="px-4 pb-2 flex gap-1">
-          {([['built', '内置国家库'], ['geojson', 'GeoJSON 上传']] as const).map(([k, label]) => (
+          {([['built', '内置势力库'], ['geojson', 'GeoJSON 上传']] as const).map(([k, label]) => (
             <button
               key={k}
               onClick={() => setTab(k)}
@@ -202,7 +202,7 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
                 </div>
               )}
               {!err && names === null && (
-                <div className="text-xs text-muted-foreground py-6 text-center">国家边界数据加载中…（首次约 250KB）</div>
+                <div className="text-xs text-muted-foreground py-6 text-center">势力边界数据加载中…（首次约 250KB）</div>
               )}
               {names !== null && filtered.length === 0 && (
                 <div className="text-xs text-muted-foreground py-6 text-center">未匹配区域</div>
@@ -241,11 +241,11 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
               className="w-full py-6 text-sm border border-dashed rounded-lg bg-white/[0.03] hover:bg-white/[0.06] transition-colors text-muted-foreground"
             >
               点击选择 GeoJSON 文件（FeatureCollection）<br />
-              <span className="text-[10px]">按 country/国家 属性聚合国家；MultiPolygon 自动拆分地块</span>
+                <span className="text-[10px]">按 country 属性聚合势力；MultiPolygon 自动拆分地块</span>
             </button>
             {geo && (
               <div className="text-xs text-foreground/85 bg-white/[0.04] border border-white/10 rounded-lg px-3 py-2">
-                已解析：{geoCountries} 个国家 / {geo.length} 个地块
+                已解析：{geoCountries} 个势力 / {geo.length} 个地块
               </div>
             )}
             <button

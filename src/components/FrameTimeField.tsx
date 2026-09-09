@@ -27,10 +27,11 @@ export function FrameTimeField({
   textClass,
   style,
 }: FrameTimeFieldProps) {
+  const secs = Math.round(frameToSeconds(value, fps) * 100) / 100;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4, ...style }}>
       <NumberInput
-        value={frameToSeconds(value, fps)}
+        value={secs}
         onCommit={(v) => onFrameChange(secondsToFrame(Math.max(min, v || 0), fps))}
         className={className ?? 'input'}
         min={min}

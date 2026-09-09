@@ -9,6 +9,7 @@ import {
   buildArrowGeometry, buildSelectionFeature, pixelsToDegrees, rotatePt, resolveFollowCam, resolveOrbitCam,
 } from '../lib/map-renderer';
 import { buildDoubleArrow, buildGatheringPlace } from '../lib/military-plots';
+import { pickFlyRibbon } from '../lib/fly-ribbon';
 import { interpolateCamera, getEasing, interpolateKeyframes, interpolatePath } from '../lib/keyframe-interpolation';
 import { sharedMap } from '../lib/shared-map';
 import { findRegionsAt, loadRegionData, regionHitsToShapes } from '../lib/regions';
@@ -136,6 +137,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       const onContextMenuMap = (e: any) => H().handleContextMenu?.(e);
       const onWinMove = (e: MouseEvent) => H().handleWindowMouseMove?.(e);
       const onWinUp = () => H().handleWindowMouseUp?.();
+      const onMoveEndMap = () => H().handleMoveEnd?.();
       map.on('mousemove', onMouseMoveMap);
       map.on('mouseout', onMouseOutMap);
       map.on('mousedown', onMouseDownMap);
@@ -144,7 +146,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       map.on('contextmenu', onContextMenuMap);
       window.addEventListener('mousemove', onWinMove);
       window.addEventListener('mouseup', onWinUp);
-      (map as any).__mvHandlers = { onMouseMoveMap, onMouseOutMap, onMouseDownMap, onClickMap, onDblClickMap, onContextMenuMap, onWinMove, onWinUp };
+      map.on('moveend', onMoveEndMap);
+      (map as any).__mvHandlers = { onMouseMoveMap, onMouseOutMap, onMouseDownMap, onClickMap, onDblClickMap, onContextMenuMap, onWinMove, onWinUp, onMoveEndMap };
     });
     map.on('move', () => {
       const c = map.getCenter();
@@ -169,6 +172,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         map.off('contextmenu', h.onContextMenuMap);
         window.removeEventListener('mousemove', h.onWinMove);
         window.removeEventListener('mouseup', h.onWinUp);
+        map.off('moveend', h.onMoveEndMap);
       }
       map.remove();
       mapRef.current = null;
@@ -205,7 +209,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       el = {
         id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
         startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
-        countries: [{ id: generateId(), name: '国家1', color: '#E23B3B' }],
+        countries: [{ id: generateId(), name: '势力1', color: '#E23B3B' }],
         plots: [], events: [], display: defaultTerritoryDisplay(),
       } as TerritoryElement;
     }
@@ -919,7 +923,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         if (!cur.find((p) => p.id === mk.pid)) continue;
         splitPlots.set(mk.elId, cur.map((p) => (p.id === mk.pid ? { ...p, rings: [insertRingVertex(p.rings[0], mk.pt), ...p.rings.slice(1)] } : p)));
       }
-      const newCountry = { id: generateId(), name: '国家1', color: '#E23B3B' };
+      const newCountry = { id: generateId(), name: '势力1', color: '#E23B3B' };
       if (!target) {
         target = {
           id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
@@ -1284,6 +1288,25 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
             useProjectStore.getState().deleteElement(chapter.id, id);
             selectElement(null);
           });
+        } else if (useEditorStore.getState().fxSelId) {
+          // 选中了特效/弹窗项：Del 删除该项（天气/画面/弹窗）
+          e.preventDefault();
+          const fxId = useEditorStore.getState().fxSelId;
+          const ch = useProjectStore.getState().project?.chapters.find((c) => c.id === chapter.id);
+          const sfx = ch?.fx?.find((f) => f.id === fxId);
+          const ov = ch?.overlays?.find((o) => o.id === fxId);
+          if (!sfx && !ov) return;
+          void confirm({
+            message: `删除「${sfx?.name || ov?.name || '特效'}」？`,
+            danger: true,
+            confirmText: '删除',
+          }).then((ok) => {
+            if (!ok) return;
+            const s2 = useProjectStore.getState();
+            if (sfx) s2.removeScreenFx(chapter.id, sfx.id);
+            else if (ov) s2.deleteOverlay(chapter.id, ov.id);
+            useEditorStore.getState().setFxSelId(null);
+          });
         }
       }
     };
@@ -1295,6 +1318,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
   handlersRef.current = {
     handleClick, handleDblClick, handleMouseDown, handleContextMenu,
     handleHover, handleHoverOut, handleWindowMouseMove, handleWindowMouseUp,
+    // 交互（缩放/平移/倾斜）结束：按新 zoom 重算 zoom 相关几何（如飞行路线悬空高度、箭头像素宽度）
+    handleMoveEnd: () => setStyleTick((n) => n + 1),
   };
 
   // ===== 选中高亮 =====
@@ -2037,16 +2062,20 @@ function nearestRingVertexIndex(ring: [number, number][], pt: [number, number]):
 
 function pickElement(map: maplibregl.Map, point: maplibregl.PointLike, elements: MapElement[]): string | null {
   const layers = getAllElementLayers(map);
-  if (layers.length === 0) return null;
-  const feats = map.queryRenderedFeatures(point, { layers });
-  for (const f of feats) {
-    const id = f.layer?.id;
-    if (id) {
-      const eid = elementIdFromLayerId(id, elements);
-      if (eid) return eid;
+  if (layers.length > 0) {
+    const feats = map.queryRenderedFeatures(point, { layers });
+    for (const f of feats) {
+      const id = f.layer?.id;
+      if (id) {
+        const eid = elementIdFromLayerId(id, elements);
+        if (eid) return eid;
+      }
     }
   }
-  return null;
+  // 飞行拱形（custom layer 不参与 queryRenderedFeatures）：点击点到抬升折线的屏幕距离判定
+  const pickPx = Array.isArray(point) ? point[0] : point.x;
+  const pickPy = Array.isArray(point) ? point[1] : point.y;
+  return pickFlyRibbon(map, pickPx, pickPy, elements);
 }
 
 function getAllElementLayers(map: maplibregl.Map): string[] {

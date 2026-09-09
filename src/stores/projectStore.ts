@@ -1,20 +1,33 @@
 import { create } from 'zustand';
-import * as dbApi from './db';
+import { storage } from '../lib/storage';
 import type {
   MapVideoProject, Chapter, MapElement, GlobalConfig, BaseMapConfig,
   ElevationMapConfig, CustomSymbol, OverlayItem, CameraKeyframe, TransitionConfig,
-  ChapterEffect, ProjectExport
+  ChapterEffect, ProjectExport, ScreenFxItem,
+  NarrationEntry, NarrationStyle, MusicTrack
 } from '../types';
-import { generateId } from '../types';
+import { generateId, normalizeOverlayContent, normalizeTitleStyle, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
 
-/** 兼容旧存档：疆域元素 display 缺字段时补默认值（load/import 入口统一过一遍） */
+/** 兼容旧存档：疆域 display / 章节特效层 / 旧弹窗类型缺字段时补默认值（load/import 入口统一过一遍） */
 function normalizeChapters(chapters: Chapter[]): Chapter[] {
   return chapters.map((c) => ({
     ...c,
-    elements: (c.elements || []).map((e) => (
-      e.type === 'territory' ? { ...e, display: normalizeTerritoryDisplay(e.display) } : e
-    )),
+    fx: (c.fx || []).map((f) => ({ enabled: true, ...f })),
+    titleStyle: c.titleStyle ? normalizeTitleStyle(c.titleStyle) : undefined,
+    elements: (c.elements || []).map((e) => {
+// 迁移：旧版飞行动画效果 → 飞行模式开关（路线/图标整条悬空）+ 路线移动（图标随播放进度沿航迹移动）
+      const legacyFly = (e as any).animEffect === 'fly';
+      const el = legacyFly ? { ...e, flyMode: true, animEffect: 'move' as const } : e;
+      return e.type === 'territory' ? { ...el, display: normalizeTerritoryDisplay((el as any).display) } : el;
+    }),
+    overlays: (c.overlays || []).map((o) => {
+      const legacy = o as typeof o & { offset?: { x: number; y: number }; widthPct?: number };
+      const { offset: _off, widthPct: _wp, ...rest } = legacy;
+      return { ...rest, offsetX: rest.offsetX ?? 0, offsetY: rest.offsetY ?? 0, content: normalizeOverlayContent(o.content) };
+    }),
+    narration: c.narration ? normalizeNarrationTrack(c.narration) : { entries: [], style: defaultNarrationStyle() },
+    music: (c.music || []).map((m) => ({ ...m, fadeIn: m.fadeIn ?? 0, fadeOut: m.fadeOut ?? 0, volume: m.volume ?? 0.6, loop: m.loop ?? false })),
   }));
 }
 
@@ -47,7 +60,7 @@ const DEFAULT_BASE_MAPS: BaseMapConfig[] = [
   },
   { id: 'dark', name: '暗色地图', style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json' },
   { id: 'light', name: '亮色地图', style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json' },
-  { id: 'voyager', name: '探索者地图', style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json' },
+{ id: 'voyager', name: '探索者地图', style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json' },
   {
     id: 'satellite', name: '卫星影像',
     style: {
@@ -68,16 +81,16 @@ const DEFAULT_BASE_MAPS: BaseMapConfig[] = [
 ];
 
 const DEFAULT_ELEVATION_MAPS: ElevationMapConfig[] = [
-  { id: 'none', name: '无高程（平面）', url: '' },
+{ id: 'none', name: '无高程（平面）', url: '' },
   { id: 'maplibre-terrain', name: '地形高程 (MapLibre)', url: 'https://demotiles.maplibre.org/terrain-tiles/tiles.json', encoding: 'terrarium', exaggeration: 1.5 },
   { id: 'aws-terrain', name: '地形高程 (AWS Terrarium)', url: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png', encoding: 'terrarium', exaggeration: 1.5 },
 ];
 
 function createDefaultChapter(index = 0, startFrame = 0, duration = 3000): Chapter {
-  const titles = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+const titles = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
   return {
     id: generateId(),
-    title: `第${titles[Math.min(index, titles.length - 1)]}章`,
+title: `第${titles[Math.min(index, titles.length - 1)]}章`,
     subtitle: '',
     order: index,
     startFrame,
@@ -86,6 +99,9 @@ function createDefaultChapter(index = 0, startFrame = 0, duration = 3000): Chapt
     camera: [{ frame: startFrame, center: [104.0, 35.0], zoom: 4 }],
     overlays: [],
     effects: [],
+    fx: [],
+    narration: { entries: [], style: defaultNarrationStyle() },
+    music: [],
   };
 }
 
@@ -103,7 +119,7 @@ let lastHistoryTime = 0;
 /** 已保存（写入 IndexedDB）项目的 JSON 快照，用于保存按钮的脏标记 */
 let savedProjectJSON = '';
 function markProjectSaved(p: MapVideoProject) { savedProjectJSON = JSON.stringify(p); }
-/** 项目是否有未保存修改（内存态 ≠ 最近一次落盘态） */
+/** 项目是否有未保存修改（内存 vs 最近一次落盘态） */
 export function isProjectDirty(p: MapVideoProject | null): boolean {
   if (!p) return false;
   if (!savedProjectJSON) return true;
@@ -140,7 +156,7 @@ interface ProjectState {
   updateChapter: (id: string, changes: Partial<Chapter>) => void;
   deleteChapter: (id: string) => void;
   reorderChapters: (chapters: Chapter[]) => void;
-  /** 复制章节（含元素/镜头/叠加层，ID 全部重建），并顺移后续章节 */
+/** 复制章节（含元素/镜头/叠加层，ID 全部重建），并顺移后续章节 */
   duplicateChapter: (id: string) => void;
 
   // 元素操作
@@ -149,10 +165,24 @@ interface ProjectState {
   deleteElement: (chapterId: string, elementId: string) => void;
   addElements: (chapterId: string, elements: MapElement[]) => void;
 
-  // Overlay 操作
-  addOverlay: (chapterId: string, overlay: OverlayItem) => void;
-  updateOverlay: (chapterId: string, overlayId: string, changes: Partial<OverlayItem>) => void;
-  deleteOverlay: (chapterId: string, overlayId: string) => void;
+    // Overlay 操作
+    addOverlay: (chapterId: string, overlay: OverlayItem) => void;
+    updateOverlay: (chapterId: string, overlayId: string, changes: Partial<OverlayItem>) => void;
+    deleteOverlay: (chapterId: string, overlayId: string) => void;
+
+  // 特效窗口：天气/画面特效层操作
+    addScreenFx: (chapterId: string, fx: ScreenFxItem) => void;
+    updateScreenFx: (chapterId: string, fxId: string, changes: Partial<ScreenFxItem>) => void;
+    removeScreenFx: (chapterId: string, fxId: string) => void;
+
+    // 字幕/配音轨道
+    setNarrationStyle: (chapterId: string, patch: Partial<NarrationStyle>) => void;
+    setNarrationEntries: (chapterId: string, entries: NarrationEntry[]) => void;
+    updateNarrationEntry: (chapterId: string, entryId: string, patch: Partial<NarrationEntry>) => void;
+
+    // 背景音乐
+    setMusicTracks: (chapterId: string, tracks: MusicTrack[]) => void;
+    updateMusicTrack: (chapterId: string, trackId: string, patch: Partial<MusicTrack>) => void;
 
   // 相机操作
   setChapterCamera: (chapterId: string, camera: CameraKeyframe[]) => void;
@@ -172,7 +202,6 @@ interface ProjectState {
   // 高程图操作
   setActiveElevationMap: (id: string | null) => void;
   addElevationMap: (e: ElevationMapConfig) => void;
-
   // 自定义符号
   addCustomSymbol: (symbol: CustomSymbol) => void;
   removeCustomSymbol: (id: string) => void;
@@ -224,12 +253,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         customSymbols: [],
       };
       set({ project, history: [], future: [] });
-      dbApi.saveProject(project);
+      storage.saveProject(project);
       markProjectSaved(project);
     },
 
     loadProject: async (id: string) => {
-      const project = await dbApi.getProject(id);
+      const project = await storage.getProject(id);
       if (project) {
         const normalized = { ...project, chapters: normalizeChapters(project.chapters) };
         set({ project: normalized, history: [], future: [] });
@@ -241,18 +270,18 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       const { project } = get();
       if (!project) return;
       const updated = { ...project, updatedAt: new Date() };
-      await dbApi.saveProject(updated);
+      await storage.saveProject(updated);
       set({ project: updated });
       markProjectSaved(updated);
     },
 
     deleteProject: async (id: string) => {
-      await dbApi.deleteProject(id);
+      await storage.deleteProject(id);
       const { project } = get();
       if (project?.id === id) set({ project: null, history: [], future: [] });
     },
 
-    listProjects: async () => dbApi.listProjects(),
+    listProjects: async () => storage.listProjects(),
 
     // ----- 章节 -----
     addChapter: (title?: string) => {
@@ -304,6 +333,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         clone.endFrame = src.endFrame + dur;
         clone.elements.forEach((e) => { (e as any).id = generateId(); });
         clone.overlays.forEach((o) => { o.id = generateId(); });
+        clone.fx = (clone.fx || []).map((f) => ({ ...f, id: generateId() }));
         const chapters = [...state.project.chapters];
         chapters.splice(idx + 1, 0, clone);
         // 顺移后续章节，腾出时间轴空间
@@ -313,6 +343,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
           c.elements.forEach((e) => { e.startFrame += dur; e.endFrame += dur; });
           if (c.camera) c.camera = c.camera.map((k) => ({ ...k, frame: k.frame + dur }));
           c.overlays.forEach((o) => { o.startFrame += dur; o.endFrame += dur; });
+          if (c.fx) c.fx = c.fx.map((f) => ({ ...f, startFrame: f.startFrame + dur, endFrame: f.endFrame + dur }));
           chapters[i] = c;
         }
         return { project: { ...state.project, chapters } };
@@ -409,6 +440,107 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       });
     },
 
+    // ----- 字幕/配音轨道 -----
+    setNarrationStyle: (chapterId: string, patch: Partial<NarrationStyle>) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const chapters = state.project.chapters.map((ch) =>
+          ch.id === chapterId
+            ? { ...ch, narration: { ...normalizeNarrationTrack(ch.narration), style: { ...normalizeNarrationTrack(ch.narration).style, ...patch } } }
+            : ch
+        );
+        return { project: { ...state.project, chapters } };
+      });
+    },
+
+    setNarrationEntries: (chapterId: string, entries: NarrationEntry[]) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const chapters = state.project.chapters.map((ch) =>
+          ch.id === chapterId ? { ...ch, narration: { ...normalizeNarrationTrack(ch.narration), entries } } : ch
+        );
+        return { project: { ...state.project, chapters } };
+      });
+    },
+
+    updateNarrationEntry: (chapterId: string, entryId: string, patch: Partial<NarrationEntry>) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const chapters = state.project.chapters.map((ch) => {
+          if (ch.id !== chapterId) return ch;
+          const cur = normalizeNarrationTrack(ch.narration);
+          return {
+            ...ch,
+            narration: { ...cur, entries: cur.entries.map((e) => (e.id === entryId ? { ...e, ...patch } as NarrationEntry : e)) },
+          };
+        });
+        return { project: { ...state.project, chapters } };
+      });
+    },
+
+    // ----- 背景音乐 -----
+    setMusicTracks: (chapterId: string, tracks: MusicTrack[]) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const chapters = state.project.chapters.map((ch) =>
+          ch.id === chapterId ? { ...ch, music: tracks } : ch
+        );
+        return { project: { ...state.project, chapters } };
+      });
+    },
+
+    updateMusicTrack: (chapterId: string, trackId: string, patch: Partial<MusicTrack>) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const chapters = state.project.chapters.map((ch) =>
+          ch.id === chapterId
+            ? { ...ch, music: (ch.music || []).map((m) => (m.id === trackId ? { ...m, ...patch } : m)) }
+            : ch
+        );
+        return { project: { ...state.project, chapters } };
+      });
+    },
+    // ----- 特效窗口：天气/画面特效层 -----
+    addScreenFx: (chapterId: string, fx: ScreenFxItem) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const chapters = state.project.chapters.map((ch) =>
+          ch.id === chapterId ? { ...ch, fx: [...(ch.fx || []), fx] } : ch
+        );
+        return { project: { ...state.project, chapters } };
+      });
+    },
+
+    updateScreenFx: (chapterId: string, fxId: string, changes: Partial<ScreenFxItem>) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const chapters = state.project.chapters.map((ch) =>
+          ch.id === chapterId
+            ? { ...ch, fx: (ch.fx || []).map((f) => f.id === fxId ? { ...f, ...changes } as ScreenFxItem : f) }
+            : ch
+        );
+        return { project: { ...state.project, chapters } };
+      });
+    },
+
+    removeScreenFx: (chapterId: string, fxId: string) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const chapters = state.project.chapters.map((ch) =>
+          ch.id === chapterId ? { ...ch, fx: (ch.fx || []).filter((f) => f.id !== fxId) } : ch
+        );
+        return { project: { ...state.project, chapters } };
+      });
+    },
+
     setChapterCamera: (chapterId: string, camera: CameraKeyframe[]) => {
       commit();
       set((state) => state.project
@@ -497,7 +629,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         chapters: normalizeChapters(data.project.chapters),
       };
       set({ project, history: [], future: [] });
-      dbApi.saveProject(project);
+      storage.saveProject(project);
       markProjectSaved(project);
     },
 

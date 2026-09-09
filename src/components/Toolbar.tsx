@@ -1,13 +1,14 @@
-﻿import { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import {
   MapPin, Route as RouteIcon, Image as ImageIcon,
-  Shapes, Globe, Undo2, Redo2, FolderOpen, Settings2, Download, Languages, Landmark,
+  Shapes, Globe, Undo2, Redo2, FolderOpen, Settings2, Download, Languages, Landmark, UserRound,
 } from 'lucide-react';
 import { useProjectStore, isProjectDirty } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { useInteractionStore, type InteractionMode } from '../stores/interactionStore';
 import { exportVideo, downloadBlob } from '../lib/export-video';
 import { sharedMap } from '../lib/shared-map';
+import { IS_DESKTOP } from '../lib/backend';
 import { MapSearchBox } from './MapSearchBox';
 import { ChapterMenu } from './ChapterMenu';
 import { RegionPickerDialog } from './RegionPickerDialog';
@@ -69,7 +70,7 @@ const SHAPE_GROUPS: { zh: string; en: string; items: ShapeItem[] }[] = [
       { mode: 'add_shape_front_line', zh: '直线战线', en: 'Front Line', glyph: '▮─' },
       { mode: 'add_shape_front_curve', zh: '弯曲战线', en: 'Curved Front', glyph: 'ㅤ〰' },
       { mode: 'add_shape_march', zh: '行军箭头', en: 'March Arrow', glyph: '⚔️' },
-      { mode: 'add_shape_swallowtail', zh: '燕尾箭头', en: 'Swallowtail', glyph: '🪶' },
+      { mode: 'add_shape_swallowtail', zh: '燕尾箭头', en: 'Swallowtail', glyph: '🏹' },
       { mode: 'add_polygon', zh: '多边形', en: 'Polygon', glyph: '⬛' },
       { mode: 'add_shape_poly_curve', zh: '曲线多边', en: 'Curved Poly', glyph: '🌀' },
       { mode: 'add_shape_poly_defend', zh: '直线防御圈', en: 'Straight Defense', glyph: '▮⬛' },
@@ -88,7 +89,7 @@ const SHAPE_GROUPS: { zh: string; en: string; items: ShapeItem[] }[] = [
   {
     zh: '特殊图形', en: 'Special',
     items: [
-      { mode: 'add_special_swallow', zh: '自定义燕尾箭头', en: 'Custom Swallowtail', glyph: '🪶', hint: 'attack+燕尾' },
+      { mode: 'add_special_swallow', zh: '自定义燕尾箭头', en: 'Custom Swallowtail', glyph: '🏹', hint: 'attack+燕尾' },
       { mode: 'add_attack', zh: '自定义箭头', en: 'Custom Arrow', glyph: '➹', hint: 'bent attack' },
       { mode: 'add_pincer', zh: '钳形', en: 'Pincer', glyph: '🩹', hint: '4点自动合成' },
     ],
@@ -113,7 +114,7 @@ function toolActive(t: ModeItem, mode: InteractionMode): boolean {
 interface TerrItem { zh: string; en: string; glyph: string; hint?: string; act: 'new' | 'import' | 'plot' | 'annex' }
 const TERR_ITEMS: TerrItem[] = [
   { zh: '新建疆域', en: 'New Territory', glyph: '🗺️', hint: '地图中心新建', act: 'new' },
-  { zh: '导入疆域', en: 'Import', glyph: '📥', hint: '国家库/GeoJSON', act: 'import' },
+  { zh: '导入疆域', en: 'Import', glyph: '📥', hint: '势力库/GeoJSON', act: 'import' },
   { zh: '绘制地块', en: 'Draw Plot', glyph: '✏️', hint: '多点闭合', act: 'plot' },
   { zh: '兼并', en: 'Annex', glyph: '⚔️', hint: '点选地块→事件', act: 'annex' },
 ];
@@ -134,6 +135,7 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
   const setLang = useEditorStore((s) => s.setLang);
 
   const [exporting, setExporting] = useState(false);
+  const [exportPct, setExportPct] = useState(0);
   // 有未保存修改时保存按钮才可用
   const dirty = useMemo(() => isProjectDirty(project), [project]);
 
@@ -141,13 +143,16 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
 
   const handleExport = async () => {
     setExporting(true);
+    setExportPct(0);
     try {
-      const blob = await exportVideo({ project, onProgress: (p) => console.log('Export:', p) });
+      const blob = await exportVideo({ project, onProgress: (p) => setExportPct(p) });
       downloadBlob(blob, `${project.name || 'map-video'}.mp4`);
     } catch (err) {
       console.error(err);
+      alert(`导出失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setExporting(false);
+      setExportPct(0);
     }
   };
 
@@ -205,14 +210,15 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
         <Settings2 size={15} />
       </button>
 
-      {/* 导出视频（白底主按钮） */}
+      {/* 导出视频（白底主按钮，导出时显示进度百分比+细进度条） */}
       <button
         onClick={handleExport}
         disabled={exporting}
-        className="h-9 px-3.5 flex items-center gap-1.5 rounded-md bg-white text-black text-sm font-medium hover:bg-white/90 transition-colors disabled:opacity-50 shrink-0"
+        className="relative h-9 px-3.5 flex items-center gap-1.5 rounded-md bg-white text-black text-sm font-medium hover:bg-white/90 transition-colors disabled:opacity-50 shrink-0 overflow-hidden"
       >
         <Download size={14} />
-        {exporting ? '导出中...' : '导出视频'}
+        {exporting ? `导出中 ${Math.round(exportPct * 100)}%` : '导出视频'}
+        {exporting && <span className="absolute left-0 bottom-0 h-0.5 bg-[var(--brand)]" style={{ width: `${exportPct * 100}%` }} />}
       </button>
 
       {/* 界面语言切换（属性面板标签 中/EN） */}
@@ -231,6 +237,15 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
           EN
         </button>
       </div>
+
+      {/* 桌面版徽标（Electron preload 注入；网页/GH Pages 不显示） */}
+      {IS_DESKTOP && (
+        <div className="h-9 px-2.5 flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.05] shrink-0" title="桌面版：AI/配音/SQLite 本地库可用">
+          <UserRound size={13} className="text-muted-foreground" />
+          <span className="text-xs">桌面版</span>
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+        </div>
+      )}
     </div>
   );
 }
@@ -348,8 +363,8 @@ export function FloatingTools() {
           </div>
           <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
             {lang === 'en'
-              ? 'Annex events recolor plots: instant / fade / border draw / spread from invader, plus glow.'
-              : '兼并事件按帧生效：瞬时 / 渐变 / 描线 / 扩散（从占领方边界推进），可加高亮。'}
+              ? 'Annex events recolor plots: instant / fade / border draw / spread from invader / nibble by an advancing ragged front, plus glow.'
+              : '兼并事件按帧生效：瞬时 / 渐变 / 描线 / 扩散（从占领方边界推进）/ 蚕食（扩散推进+湍流置换前沿），可加高亮。'}
           </p>
         </div>
       )}

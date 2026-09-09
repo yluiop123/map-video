@@ -1,4 +1,4 @@
-// 疆域系统核心逻辑：归属推导 / 颜色渐变 / 国界并集 / 描线切片 / 位图标签 / 导入合并
+// 疆域系统核心逻辑：归属推导 / 颜色渐变 / 势力边界并集 / 描线切片 / 位图标签 / 导入合并
 // 纯函数 + turf，供编辑器与导出端共用（渲染层在 map-renderer.renderTerritory）
 import * as turf from '@turf/turf';
 import type { Feature, MultiPolygon, Polygon } from 'geojson';
@@ -6,7 +6,7 @@ import type {
   TerritoryCountry, TerritoryEvent, TerritoryPlot, TerritoryElement, TerritoryDisplay,
 } from '../types';
 
-/** 自动配色盘（按国家数量循环取色，保证相邻国家颜色区分） */
+/** 自动配色盘（按势力数量循环取色，保证相邻势力颜色区分） */
 export const TERRITORY_PALETTE = [
   '#E23B3B', '#2E7DD1', '#3AA655', '#F5A623', '#8E44AD', '#16A085',
   '#E67E22', '#2980B9', '#C0392B', '#27AE60', '#D4AC0D', '#7F8C8D',
@@ -72,6 +72,20 @@ export function ownerAt(plot: TerritoryPlot, events: TerritoryEvent[], frame: nu
   return owner;
 }
 
+/** 渲染用归属（国界联合/名称标签）：动画事件（fade/draw/spread/shrink）进行中保持旧归属，
+ *  完成后才切换；instant 仍在事件帧立即切换。 */
+export function ownerVisualAt(plot: TerritoryPlot, events: TerritoryEvent[], frame: number): string {
+  const evs = eventsForPlot(events, plot.id);
+  let owner = plot.ownerId;
+  for (const ev of evs) {
+    if (frame < ev.frame) continue;
+    const preset = ev.effect?.preset ?? 'draw';
+    if (preset === 'instant') { owner = ev.toCountryId; continue; }
+    if (frame >= effectWindow(ev).fadeEnd) owner = ev.toCountryId;
+  }
+  return owner;
+}
+
 /** 当前帧某地块的归属国（对象） */
 export function ownerCountryAt(
   plot: TerritoryPlot, events: TerritoryEvent[], frame: number, countries: TerritoryCountry[],
@@ -83,7 +97,7 @@ export function ownerCountryAt(
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
 /** 当前帧地块填充色（含渐变插值）：返回 hex。
- *  allPlots 供 spread（扩散）判定前线；缺省时 spread 回退为整块渐变。 */
+ *  allPlots 供 spread（扩散）与 shrink（蚕食）判定占领方前线；缺省时回退为整块渐变。 */
 export function plotColorAt(
   plot: TerritoryPlot, events: TerritoryEvent[], frame: number, countries: TerritoryCountry[],
   allPlots?: TerritoryPlot[],
@@ -110,6 +124,12 @@ export function plotColorAt(
   if (preset === 'spread') {
     // 扩散：推进区由渲染层单独绘制新色，本体保持旧色；
     // 与占领方无共享边界（无前线可依）→ 回退为整块渐变
+    if (allPlots && spreadFrontier(plot, events, ev, allPlots).length) return prev;
+    return lerpColor(prev, target, t);
+  }
+  if (preset === 'shrink') {
+    // 蚕食：动画期间本体（未吞并区/描边）保持旧色，已吞并区由渲染层单独绘制新色；
+    // 无前线（无邻接）→ 回退为整块渐变
     if (allPlots && spreadFrontier(plot, events, ev, allPlots).length) return prev;
     return lerpColor(prev, target, t);
   }
@@ -241,6 +261,206 @@ export function plotSpreadAt(
   return { active: false, p: 0, color: '', region: null };
 }
 
+// ========== 兼并蚕食（shrink）：扩散机制 + 湍流置换前沿 ==========
+// 与占领方邻接的前线（同 spread 判定）整体向外推进；前沿各点沿内法向叠加
+// 多频正弦湍流置换（相位随进度漂移、幅度随进度收敛）→ 有机指状边缘；
+// 未吞并区始终贴原始轮廓。无前线（无邻接）→ 整块渐变兜底（与扩散一致）。
+
+const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+/** 字符串种子 → n 个稳定相位（0–2π）：湍流形状编辑端/导出端一致 */
+function phasesOf(key: string, n: number): number[] {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const s = (h >>> 0) + 0.5;
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = Math.sin(s * (12.9898 + i * 7.233)) * 43758.5453;
+    out.push((v - Math.floor(v)) * Math.PI * 2);
+  }
+  return out;
+}
+
+/** 湍流置换矢量场：x/y 各三频正弦叠加（归一化坐标，波长约地块跨度 1/2、1/4、1/8），相位随进度漂移 */
+function turbVec(nx: number, ny: number, p: number, ph: number[]): [number, number] {
+  const vx = 0.55 * Math.sin(nx * 12.6 + ny * 4.1 + p * 2.2 + ph[0])
+    + 0.30 * Math.sin(nx * 5.3 - ny * 24.8 - p * 1.6 + ph[1])
+    + 0.15 * Math.sin(nx * 50.2 + ny * 9.7 + p * 3.1 + ph[2]);
+  const vy = 0.55 * Math.sin(nx * 7.7 - ny * 11.9 - p * 1.9 + ph[3])
+    + 0.30 * Math.sin(nx * 21.4 + ny * 5.6 + p * 2.7 + ph[4])
+    + 0.15 * Math.sin(nx * 8.9 + ny * 47.3 - p * 3.4 + ph[5]);
+  return [vx, vy];
+}
+
+export interface PlotShrinkState {
+  active: boolean;                        // 蚕食进行中（渲染层互斥绘制：未吞并=旧色，已吞并=新色）
+  p: number;                              // 缓动后进度 0–1
+  fade: number;                           // 未吞并区不透明度系数（恒 1：前线推过即自然消失）
+  color: string;                          // 新色（占领方）
+  prevColor: string;                      // 旧色（未吞并区）
+  region: [number, number][][][] | null;  // 未吞并区（保持原始轮廓）；null=已被完全吞并
+}
+
+/** 当前帧地块的蚕食动画状态（编辑端/导出端共用）。
+ *  前线=与占领方邻接的边界，随进度扩散推进；前沿叠加湍流置换（指状有机边缘）；
+ *  无邻接前线 → active=false，由 plotColorAt 的整块渐变兜底（与扩散一致）。 */
+export function plotShrinkAt(
+  plot: TerritoryPlot, events: TerritoryEvent[], frame: number, countries: TerritoryCountry[], allPlots: TerritoryPlot[],
+): PlotShrinkState {
+  const evs = eventsForPlot(events, plot.id);
+  for (let i = 0; i < evs.length; i++) {
+    const ev = evs[i];
+    if ((ev.effect?.preset ?? 'draw') !== 'shrink') continue;
+    const win = effectWindow(ev);
+    if (frame < win.start || frame >= win.fadeEnd) continue;
+    const countryColor = (id: string) => countries.find((c) => c.id === id)?.color || '#888888';
+    const prevOwner = i === 0 ? plot.ownerId : evs[i - 1].toCountryId;
+    const color = countryColor(ev.toCountryId);
+    const prevColor = countryColor(prevOwner);
+    if (!plot.rings?.[0] || plot.rings[0].length < 4) {
+      return { active: true, p: 1, fade: 1, color, prevColor, region: null };
+    }
+    const raw = clamp01((frame - win.start) / Math.max(1, win.fadeEnd - win.start));
+    const p = easeInOutCubic(raw);
+    const mk = (region: [number, number][][][] | null): PlotShrinkState =>
+      ({ active: true, p, fade: 1, color, prevColor, region });
+    if (raw >= 0.97) return mk(null); // 收尾：跳过残带发丝差集，直接落位
+    // 前线（同扩散判定）：与占领方既有地块接触的边段
+    const segs = spreadFrontier(plot, events, ev, allPlots);
+    if (!segs.length) return { active: false, p, fade: 1, color, prevColor, region: null };
+    // 几何量：推进半径上限（前线到最远顶点）、跨度（湍流波长与采样步长基准）
+    let maxD = 0, xs0 = Infinity, xs1 = -Infinity, ys0 = Infinity, ys1 = -Infinity;
+    for (const ring of plot.rings) {
+      for (const v of ring) {
+        let best = Infinity;
+        for (const [a, b] of segs) best = Math.min(best, distToSegment(v, a, b));
+        if (best > maxD) maxD = best;
+        if (v[0] < xs0) xs0 = v[0];
+        if (v[0] > xs1) xs1 = v[0];
+        if (v[1] < ys0) ys0 = v[1];
+        if (v[1] > ys1) ys1 = v[1];
+      }
+    }
+    if (!Number.isFinite(maxD) || maxD <= 0) return { active: false, p, fade: 1, color, prevColor, region: null };
+    const span = Math.max(1e-7, Math.max(xs1 - xs0, ys1 - ys0));
+    const ph = phasesOf(`${plot.id}|${ev.id}`, 6);
+    const plotPoly = turf.polygon(plot.rings as [number, number][][]);
+    const inside = (pt: [number, number]) => {
+      try { return turf.booleanPointInPolygon(turf.point(pt), plotPoly); } catch { return false; }
+    };
+    // 各前线段的内法向（中点沿法向微移落在地块内为正）
+    const segData = segs.map(([a, b]) => {
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy) || 1e-12;
+      let nx = -dy / len, ny = dx / len;
+      const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      if (!inside([mid[0] + nx * 1e-4, mid[1] + ny * 1e-4])) { nx = -nx; ny = -ny; }
+      return { a, b, len, nx, ny, tx: dx / len, ty: dy / len };
+    });
+    // 顶点法向合并（相邻前线段共享顶点取平均 → 置换后前线链无缝衔接）
+    const vnorm = new Map<string, { x: number; y: number }>();
+    for (const sd of segData) {
+      for (const pt of [sd.a, sd.b]) {
+        const key = coordKey(pt);
+        const e = vnorm.get(key) || { x: 0, y: 0 };
+        e.x += sd.nx; e.y += sd.ny;
+        vnorm.set(key, e);
+      }
+    }
+    const vNormal = (pt: [number, number]) => {
+      const e = vnorm.get(coordKey(pt));
+      if (!e) return null;
+      const l = Math.hypot(e.x, e.y);
+      return l > 1e-12 ? { nx: e.x / l, ny: e.y / l } : null;
+    };
+    // 前线链（按环序连段，断点/跨环开新链）；段内加密采样 → 湍流置换出前沿折线。
+    // 起步容差 tol：推进量未超过 tol 的前沿段不产生已吞并条带（避免与地块边界重合的
+    // 退化差集 → 发丝级新色描边伪影）；连续已咬入的采样段各成条带。
+    const R = p * maxD * 1.65;                                 // 平均推进距离（冗余保证收尾全覆盖）
+    const wN = 0.62 * (1 - 0.6 * p);                           // 法向湍流幅度（随进度收敛，提前清场）
+    const wT = 0.5 * (1 - 0.5 * p);                            // 切向湍流幅度
+    const tol = maxD * 0.045;                                  // 起步/收尾容差
+    const step = Math.max(span * 0.04, 1e-6);
+    type ChainPt = { x: number; y: number; nx: number; ny: number; tx: number; ty: number; eat: boolean };
+    const chains: ChainPt[][] = [];
+    let cur: ChainPt[] | null = null;
+    let prevB: string | null = null;
+    for (const sd of segData) {
+      if (!cur || prevB !== coordKey(sd.a)) { cur = []; chains.push(cur); }
+      const na = vNormal(sd.a) || { nx: sd.nx, ny: sd.ny };
+      const nb = vNormal(sd.b) || { nx: sd.nx, ny: sd.ny };
+      const subdiv = Math.max(1, Math.ceil(sd.len / step));
+      for (let k = cur.length === 0 ? 0 : 1; k <= subdiv; k++) {
+        const t = k / subdiv;
+        const px = sd.a[0] + (sd.b[0] - sd.a[0]) * t;
+        const py = sd.a[1] + (sd.b[1] - sd.a[1]) * t;
+        let nx = na.nx + (nb.nx - na.nx) * t;
+        let ny = na.ny + (nb.ny - na.ny) * t;
+        const nl = Math.hypot(nx, ny) || 1;
+        nx /= nl; ny /= nl;
+        const [vx, vy] = turbVec(px / span, py / span, p, ph);
+        const offN = R * (1 + wN * vx) - tol;                  // 法向：推进 + 指状起伏，越过容差才算咬入
+        const offT = R * wT * vy;                              // 切向：置换抖动（位置驱动，共享顶点天然一致）
+        const eat = offN > 0;
+        const adv = Math.max(offN, 0);
+        cur.push({ x: px + nx * adv + sd.tx * offT, y: py + ny * adv + sd.ty * offT, nx, ny, tx: sd.tx, ty: sd.ty, eat });
+      }
+      prevB = coordKey(sd.b);
+    }
+    // 链端沿切向延伸出地块范围：避免端部滑移/容差在地块上下边缘留下未覆盖残带
+    const ext = span * 1.2;
+    for (const ch of chains) {
+      if (!ch.length) continue;
+      const first = ch[0], last = ch[ch.length - 1];
+      ch.unshift({ x: first.x - first.tx * ext, y: first.y - first.ty * ext, nx: first.nx, ny: first.ny, tx: first.tx, ty: first.ty, eat: true });
+      ch.push({ x: last.x + last.tx * ext, y: last.y + last.ty * ext, nx: last.nx, ny: last.ny, tx: last.tx, ty: last.ty, eat: true });
+    }
+    // 前线链 → 已吞并区（连续咬入段的条带）；多链/多段求并集
+    const back = maxD * 4 + span * 0.5 + 1e-3;
+    const strips: Feature<Polygon>[] = [];
+    for (const ch of chains) {
+      let run: ChainPt[] = [];
+      const flush = () => {
+        if (run.length >= 2) {
+          const ring: [number, number][] = [
+            ...run.map((q) => [q.x, q.y] as [number, number]),
+            ...run.slice().reverse().map((q) => [q.x - q.nx * back, q.y - q.ny * back] as [number, number]),
+          ];
+          ring.push(ring[0]); // GeoJSON 环必须闭合
+          try { strips.push(turf.polygon([ring]) as Feature<Polygon>); } catch { /* 跳过坏链 */ }
+        }
+        run = [];
+      };
+      for (const q of ch) { if (q.eat) run.push(q); else flush(); }
+      flush();
+    }
+    if (!strips.length) return mk([plot.rings as [number, number][][]]); // 尚未咬入 → 整块保持旧色
+    try {
+      let eaten: Feature<Polygon | MultiPolygon>[] = strips;
+      if (strips.length > 1) {
+        try {
+          const u = turf.union(turf.featureCollection(strips)) as unknown as Feature<Polygon | MultiPolygon> | null;
+          if (u) eaten = [u];
+        } catch { /* 并集失败 → 逐条带作差 */ }
+      }
+      const diff = turf.difference(turf.featureCollection([plotPoly as Feature<Polygon>, ...eaten]));
+      const g = (diff as unknown as { geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null)?.geometry;
+      if (!g) return mk(null); // 差集为空 → 已被完全吞并
+      const polys: [number, number][][][] | null = g.type === 'Polygon'
+        ? [g.coordinates as [number, number][][]]
+        : g.type === 'MultiPolygon'
+          ? (g.coordinates as [number, number][][][])
+          : null;
+      if (polys && polys.length) return mk(polys);
+      return mk(null);
+    } catch (e) {
+      console.warn('[territory] shrink 前线切分失败，整块渐变兜底:', e);
+      return p > 0.9 ? mk(null) : { active: false, p, fade: 1, color, prevColor, region: null };
+    }
+  }
+  return { active: false, p: 0, fade: 1, color: '', prevColor: '', region: null };
+}
+
 // ========== 颜色工具 ==========
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -266,7 +486,7 @@ export function lighten(color: string, amt: number): string {
 
 // ========== 几何工具 ==========
 
-/** 同国地块并集（国界外边界）：失败返回 null（渲染层回退为逐地块描边） */
+/** 同势力地块并集（势力边界外边界）：失败返回 null（渲染层回退为逐地块描边） */
 export function unionCountryRings(ringsList: [number, number][][][]): Feature<Polygon | MultiPolygon> | null {
   const polys: Feature<Polygon>[] = [];
   for (const rings of ringsList) {
@@ -284,7 +504,7 @@ export function unionCountryRings(ringsList: [number, number][][][]): Feature<Po
   }
 }
 
-/** 面要素质心（供国名/地块名锚点） */
+/** 面要素质心（供势力/地块名锚点） */
 export function centerOfFeature(f: Feature<Polygon | MultiPolygon>): [number, number] | null {
   try {
     const c = turf.centerOfMass(f as any);
@@ -488,18 +708,28 @@ export function traceRingPath(
 }
 
 // ========== 名称标签位图（canvas，中文无忧；贴地/面向镜头由 symbol 层对齐控制） ==========
+// 势力标签=大号加粗白字+深色描边+势力色圆点前缀；地块标签=小号+半透明圆角底条（pill），二者一眼可分。
 
-export interface TerritoryLabelStyle { size: number; bold?: boolean; color?: string; halo?: string; haloWidth?: number }
+export interface TerritoryLabelStyle {
+  size: number; bold?: boolean; color?: string; halo?: string; haloWidth?: number;
+  /** 半透明圆角底条（地块标签用） */
+  bg?: string;
+  /** 文字左侧色点（势力标签用，颜色=势力色） */
+  dotColor?: string;
+}
 
 export function makeTerritoryLabelImageData(text: string, st: TerritoryLabelStyle): ImageData {
   const size = Math.max(8, Math.round(st.size));
   const haloWidth = st.haloWidth ?? 3;
+  const dotR = st.dotColor ? Math.max(2, Math.round(size * 0.16)) : 0;
+  const padL = haloWidth + (dotR > 0 ? dotR * 2 + Math.max(4, Math.round(size * 0.3)) : 0);
+  const padR = haloWidth + (st.bg ? 5 : 0);
   const canvas = document.createElement('canvas');
   const ctx0 = canvas.getContext('2d')!;
   const font = `${st.bold === false ? '' : 'bold '}${size}px "Microsoft YaHei", "PingFang SC", sans-serif`;
   ctx0.font = font;
   const tw = Math.ceil(ctx0.measureText(text || ' ').width);
-  const w = tw + haloWidth * 2 + 6;
+  const w = padL + tw + padR + 4;
   const h = Math.ceil(size * 1.5) + haloWidth * 2;
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d')!;
@@ -508,19 +738,39 @@ export function makeTerritoryLabelImageData(text: string, st: TerritoryLabelStyl
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   ctx.miterLimit = 2;
-  if (haloWidth > 0) {
+  if (st.bg) {
+    // 圆角底条（pill）
+    ctx.fillStyle = st.bg;
+    const r = Math.min((h - 2) / 2, 8);
+    ctx.beginPath();
+    ctx.moveTo(1 + r, 1);
+    ctx.arcTo(w - 1, 1, w - 1, h - 1, r);
+    ctx.arcTo(w - 1, h - 1, 1, h - 1, r);
+    ctx.arcTo(1, h - 1, 1, 1, r);
+    ctx.arcTo(1, 1, w - 1, 1, r);
+    ctx.closePath();
+    ctx.fill();
+  }
+  if (dotR > 0) {
+    ctx.fillStyle = st.dotColor || '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(haloWidth + dotR, h / 2, dotR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tx = padL + tw / 2;
+  if (haloWidth > 0 && !st.bg) {
     ctx.strokeStyle = st.halo || 'rgba(0,0,0,0.85)';
     ctx.lineWidth = haloWidth * 2;
-    ctx.strokeText(text || '', w / 2, h / 2);
+    ctx.strokeText(text || '', tx, h / 2);
   }
   ctx.fillStyle = st.color || '#FFFFFF';
-  ctx.fillText(text || '', w / 2, h / 2);
+  ctx.fillText(text || '', tx, h / 2);
   return ctx.getImageData(0, 0, w, h);
 }
 
 /** 位图标签 imageId（同文案+样式复用同一张贴图） */
 export function territoryLabelImageId(text: string, st: TerritoryLabelStyle): string {
-  const key = `${text}|${st.size}|${st.bold === false ? 0 : 1}|${st.color}|${st.halo || ''}`;
+  const key = `${text}|${st.size}|${st.bold === false ? 0 : 1}|${st.color}|${st.halo || ''}|${st.haloWidth ?? 3}|${st.bg || ''}|${st.dotColor || ''}`;
   let h = 0;
   for (let i = 0; i < key.length; i++) h = ((h << 5) - h + key.charCodeAt(i)) | 0;
   return `tlbl${(h >>> 0).toString(36)}`;
@@ -534,7 +784,7 @@ export interface TerritoryShapeInput {
   rings: [number, number][][];
 }
 
-/** 内置国家库/GeoJSON 解析出的地块，并入库（同名国合并、自动配色） */
+/** 内置势力库/GeoJSON 解析出的地块，并入库（同名势力合并、自动配色） */
 export function mergeShapesIntoTerritory(
   el: TerritoryElement, shapes: TerritoryShapeInput[],
 ): { countries: TerritoryCountry[]; plots: TerritoryPlot[] } {
@@ -542,7 +792,7 @@ export function mergeShapesIntoTerritory(
   const plots = [...el.plots];
   const byName = new Map(countries.map((c) => [c.name, c]));
   for (const s of shapes) {
-    const cname = (s.countryName || '未知国家').trim() || '未知国家';
+    const cname = (s.countryName || '未知势力').trim() || '未知势力';
     let c = byName.get(cname);
     if (!c) {
       c = { id: `tc${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name: cname, color: TERRITORY_PALETTE[countries.length % TERRITORY_PALETTE.length] };
@@ -579,7 +829,7 @@ export function parseTerritoryGeoJSON(fc: any): TerritoryShapeInput[] {
     if (!g) continue;
     const props = (f.properties || {}) as Record<string, unknown>;
     const name = pickProp(props, NAME_KEYS);
-    const cname = pickProp(props, COUNTRY_KEYS) || name || '未知国家';
+    const cname = pickProp(props, COUNTRY_KEYS) || name || '未知势力';
     const push = (rings: [number, number][][], idx: number, total: number) => {
       if (!rings || !rings[0] || rings[0].length < 4) return;
       const suffix = total > 1 ? `·${idx + 1}` : '';

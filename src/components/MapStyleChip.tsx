@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Layers, Mountain, Globe, Grid2x2, Check } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
+import { useEditorStore } from '../stores/editorStore';
 
 /**
  * 地图左下角底图芯片（对齐 Mapimator SATELLITE 样式）：
@@ -8,6 +9,7 @@ import { useProjectStore } from '../stores/projectStore';
  */
 export function MapStyleChip() {
   const project = useProjectStore((s) => s.project);
+  const isPlaying = useEditorStore((s) => s.isPlaying);
   const setActiveBaseMap = useProjectStore((s) => s.setActiveBaseMap);
   const setActiveElevationMap = useProjectStore((s) => s.setActiveElevationMap);
   const updateGlobalConfig = useProjectStore((s) => s.updateGlobalConfig);
@@ -25,7 +27,7 @@ export function MapStyleChip() {
     return () => window.removeEventListener('mousedown', onDown);
   }, [open]);
 
-  if (!project) return null;
+  if (!project || isPlaying) return null;
 
   const activeBaseMap = project.baseMaps.find((b) => b.id === project.activeBaseMapId);
   const isGlobe = (project.globalConfig.projection || 'mercator') === 'globe';

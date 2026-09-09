@@ -1,4 +1,4 @@
-import { renderMediaOnWeb, canRenderMediaOnWeb, type WebRendererContainer, type WebRendererVideoCodec } from '@remotion/web-renderer';
+import { renderMediaOnWeb, canRenderMediaOnWeb, type WebRendererContainer, type WebRendererVideoCodec, type WebRendererAudioCodec } from '@remotion/web-renderer';
 import { MapVideo } from '../compositions/MapVideo';
 import type { MapVideoProject } from '../types';
 import { calculateTotalDuration } from './keyframe-interpolation';
@@ -74,6 +74,10 @@ export async function exportVideo(options: ExportOptions): Promise<Blob> {
     hardwareAcceleration: 'no-preference',
     isProduction: true,
     logLevel: 'warn',
+    // 音频混流：composition 内 <Audio>（配音/BGM）经 remotion TRenderAsset 收集后由 mediabunny 编码进 MP4
+    muted: false,
+    audioCodec: 'aac' as WebRendererAudioCodec,
+    sampleRate: 48000,
   });
 
   return await result.getBlob();

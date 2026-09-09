@@ -13,7 +13,6 @@ export function ChapterMenu() {
   const selectedChapterId = useEditorStore((s) => s.selectedChapterId);
   const selectChapter = useEditorStore((s) => s.selectChapter);
   const setCurrentFrame = useEditorStore((s) => s.setCurrentFrame);
-  const setPanelMode = useEditorStore((s) => s.setPanelMode);
   const updateChapter = useProjectStore((s) => s.updateChapter);
   const duplicateChapter = useProjectStore((s) => s.duplicateChapter);
   const deleteChapter = useProjectStore((s) => s.deleteChapter);
@@ -158,13 +157,6 @@ export function ChapterMenu() {
               className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-xs font-medium text-foreground/80 border border-dashed border-white/15 hover:bg-white/[0.06] transition-colors"
             >
               <Plus size={13} /> 新增章节
-            </button>
-            <button
-              onClick={() => { setPanelMode('chapter'); setOpen(false); }}
-              className="px-2.5 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
-              title="转场/弹出元素/特效"
-            >
-              章节设置
             </button>
           </div>
         </div>

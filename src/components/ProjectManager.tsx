@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useProjectStore } from '../stores/projectStore';
 import { useConfirm } from './ui/ConfirmHost';
+import { IS_DESKTOP } from '../lib/backend';
 import type { MapVideoProject, ProjectExport } from '../types';
 
 export function ProjectManager() {
@@ -92,6 +93,18 @@ export function ProjectManager() {
             📂 导入配置文件
           </button>
           <p className="text-xs text-muted-foreground mt-1">支持导入导出的 .json 配置</p>
+        </div>
+
+        {/* 存储形态说明 */}
+        <div className="mb-6">
+          <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground mb-2">
+            存储 {IS_DESKTOP ? '· 桌面版（SQLite 本地库）' : '· 浏览器（IndexedDB）'}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {IS_DESKTOP
+              ? '项目与 AI/配音配置存本机数据库；AI 与配音在字幕/音乐页签使用。'
+              : '纯前端模式：数据存浏览器 IndexedDB，可导出/导入 JSON 迁移；AI/配音需桌面版。'}
+          </p>
         </div>
 
         {/* 项目列表 */}

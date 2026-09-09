@@ -729,17 +729,17 @@ function RouteSettings({ element, patch, chapter }: {
             { value: 'bezier', label: '〰 曲线' },
             { value: 'straight-arrow', label: t('──▶ 带箭头直线', '──▶ Arrow Line') },
             { value: 'curved-arrow', label: t('➤ 箭头曲线', '➤ Curved Arrow') },
-            { value: 'military-arrow', label: t('🪶 燕尾箭头', '🪶 Swallowtail') },
+            { value: 'military-arrow', label: t('🏹 燕尾箭头', '🏹 Swallowtail') },
             { value: 'military-simple', label: t('⚔️ 行军箭头', '⚔️ March Arrow') },
-            { value: 'plain-straight', label: t('▫ 无样式直线', '▫ Plain Line') },
-            { value: 'plain-bezier', label: t('▫ 无样式曲线', '▫ Plain Curve') },
+            { value: 'plain-straight', label: t('□ 无样式直线', '□ Plain Line') },
+            { value: 'plain-bezier', label: t('□ 无样式曲线', '□ Plain Curve') },
           ]}
           onChange={setStyle}
         />
       </Section>
 
       <Section title={t('动画效果', 'Animation Effect')}>
-        <OptionBlocks<'grow' | 'move' | 'fill'>
+        <OptionBlocks<'grow' | 'move' | 'fill' | 'march' | 'marchplain'>
           value={(element as LineElement).animEffect || 'grow'}
           onChange={(v) => {
             const le = element as LineElement;
@@ -762,8 +762,17 @@ function RouteSettings({ element, patch, chapter }: {
             { value: 'grow', label: t('📈 普通增长', '📈 Grow') },
             { value: 'move', label: t('🏃 路线移动', '🏃 Move') },
             { value: 'fill', label: t('🎨 填充', '🎨 Fill') },
+            { value: 'march', label: t('🚶 填充行进', '🚶 Fill March') },
+            { value: 'marchplain', label: t('👣 行进', '👣 March') },
           ]}
         />
+        <div className="mt-2">
+          <Toggle
+            checked={!!(element as MapElement).flyMode}
+            label={t('✈️ 飞行（路线与图标不贴地）', '✈️ Fly (route & icon elevated)')}
+            onChange={(v) => patch({ flyMode: v } as Partial<MapElement>)}
+          />
+        </div>
       </Section>
 
       <Section title={t('显示时间', 'Display Time')}>
@@ -1212,7 +1221,7 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
             { value: 'bezier-arrow', label: t('➤ 带箭头曲线', '➤ Arrow Curve') },
             { value: 'front-line', label: t('▮─ 直线战线', '▮─ Front Line') },
             { value: 'front-curve', label: t('ㅤ〰 弯曲战线', 'ㅤ〰 Curved Front') },
-            { value: 'swallowtail', label: t('🪶 燕尾箭头', '🪶 Swallowtail') },
+            { value: 'swallowtail', label: t('🏹 燕尾箭头', '🏹 Swallowtail') },
             { value: 'march', label: t('⚔️ 行军箭头', '⚔️ March Arrow') },
             { value: 'poly', label: '⬛ 多边形' },
             { value: 'poly-curve', label: '🌀 曲线多边' },
@@ -1950,7 +1959,7 @@ export type { CameraKeyframe };
 
 type ProjectOf = NonNullable<ReturnType<typeof useProjectStore.getState>['project']>;
 
-/** 国家色点选择条（地块归属/事件占领方共用） */
+/** 势力色点选择条（地块归属/事件占领方共用） */
 function CountryDots({ countries, value, onChange }: {
   countries: TerritoryElement['countries'];
   value: string;
@@ -1971,7 +1980,7 @@ function CountryDots({ countries, value, onChange }: {
   );
 }
 
-/** 国家颜色设置弹窗：点色块即时应用（背景地图实时预览），支持自定义取色/hex 输入 */
+/** 势力颜色设置弹窗：点色块即时应用（背景地图实时预览），支持自定义取色/hex 输入 */
 function CountryColorDialog({ country, onClose, onChange, onAuto }: {
   country: TerritoryElement['countries'][number];
   onClose: () => void;
@@ -1993,7 +2002,7 @@ function CountryColorDialog({ country, onClose, onChange, onAuto }: {
       >
         <div className="px-4 pt-4 pb-2 flex items-center gap-2">
           <span className="w-4 h-4 rounded-full border border-white/25 shrink-0" style={{ backgroundColor: country.color }} />
-          <h2 className="text-base font-semibold shrink-0">{t('国家颜色', 'Country Color')}</h2>
+          <h2 className="text-base font-semibold shrink-0">{t('势力颜色', 'Faction Color')}</h2>
           <span className="text-xs text-muted-foreground truncate">{country.name}</span>
           <button onClick={onClose} className="ml-auto text-muted-foreground hover:text-foreground shrink-0" aria-label={t('关闭', 'Close')}>✕</button>
         </div>
@@ -2069,7 +2078,7 @@ function TerritorySettings({ element, patch, project }: {
 
   const addCountry = () => {
     setCountries([...countries, {
-      id: generateId(), name: `国家${countries.length + 1}`,
+      id: generateId(), name: `势力${countries.length + 1}`,
       color: TERRITORY_PALETTE[countries.length % TERRITORY_PALETTE.length],
     }]);
   };
@@ -2118,8 +2127,8 @@ function TerritorySettings({ element, patch, project }: {
 
   return (
     <>
-      {/* ===== 国家 ===== */}
-      <Section title={t('国家', 'Countries')}>
+      {/* ===== 势力 ===== */}
+      <Section title={t('势力', 'Factions')}>
         <div className="space-y-1.5 mb-2 max-h-44 overflow-y-auto">
           {countries.map((c) => {
             const used = plots.some((p) => p.ownerId === c.id) || events.some((ev) => ev.toCountryId === c.id);
@@ -2140,7 +2149,7 @@ function TerritorySettings({ element, patch, project }: {
                 <span className="text-[10px] text-muted-foreground w-8 text-right shrink-0">{cnt} 地块</span>
                 <button
                   disabled={used}
-                  title={used ? t('该国家被地块/事件引用，无法删除', 'Referenced by plots/events') : t('删除国家', 'Delete')}
+                  title={used ? t('该势力被地块/事件引用，无法删除', 'Referenced by plots/events') : t('删除势力', 'Delete')}
                   onClick={() => deleteCountry(c)}
                   className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-400 disabled:opacity-25 disabled:hover:text-muted-foreground shrink-0"
                 ><Trash2 size={12} /></button>
@@ -2148,12 +2157,12 @@ function TerritorySettings({ element, patch, project }: {
             );
           })}
           {countries.length === 0 && (
-            <p className="text-[11px] text-muted-foreground">{t('还没有国家，可新增或导入', 'No countries yet')}</p>
+            <p className="text-[11px] text-muted-foreground">{t('还没有势力，可新增或导入', 'No factions yet')}</p>
           )}
         </div>
         <div className="flex items-center gap-1.5">
           <button onClick={addCountry} className="px-2 py-1.5 text-[11px] font-medium rounded-md border bg-white/[0.04] border-white/10 hover:bg-white/10 flex items-center gap-1">
-            <Plus size={12} /> {t('新增国家', 'Add Country')}
+            <Plus size={12} /> {t('新增势力', 'Add Faction')}
           </button>
           <button onClick={autoColor} className="px-2 py-1.5 text-[11px] font-medium rounded-md border bg-white/[0.04] border-white/10 hover:bg-white/10">
             {t('自动配色', 'Auto Colors')}
@@ -2239,7 +2248,7 @@ function TerritorySettings({ element, patch, project }: {
                 ><Trash2 size={12} /></button>
               </div>
               <div className="flex items-center gap-1.5 flex-wrap">
-                <OptionBlocks<'instant' | 'fade' | 'draw' | 'spread'>
+                <OptionBlocks<'instant' | 'fade' | 'draw' | 'spread' | 'shrink'>
                   value={ev.effect?.preset || 'draw'}
                   onChange={(v) => setEvents(events.map((x) => (x.id === ev.id ? { ...x, effect: { preset: v, duration: x.effect?.duration, highlight: x.effect?.highlight } } : x)))}
                   options={[
@@ -2247,6 +2256,7 @@ function TerritorySettings({ element, patch, project }: {
                     { value: 'fade', label: t('渐变', 'Fade') },
                     { value: 'draw', label: t('描线', 'Draw') },
                     { value: 'spread', label: t('扩散', 'Spread') },
+                    { value: 'shrink', label: t('蚕食', 'Nibble') },
                   ]}
                 />
                 <div className="w-24 shrink-0">
@@ -2276,9 +2286,9 @@ function TerritorySettings({ element, patch, project }: {
       {/* ===== 显示 ===== */}
       <Section title={t('显示', 'Display')}>
         <div className="bg-black/40 border border-white/[0.08] rounded-[10px] px-3 py-2.5 space-y-2.5">
-          <Toggle checked={display.countryBorders} label={t('国界（并集外边界）', 'Country Borders')} onChange={(v) => setDisplay({ countryBorders: v })} />
+          <Toggle checked={display.countryBorders} label={t('势力边界（并集外边界）', 'Faction Borders')} onChange={(v) => setDisplay({ countryBorders: v })} />
           <Toggle checked={display.plotBorders} label={t('地块边界', 'Plot Borders')} onChange={(v) => setDisplay({ plotBorders: v })} />
-          <Toggle checked={display.countryNames} label={t('国名标签', 'Country Names')} onChange={(v) => setDisplay({ countryNames: v })} />
+          <Toggle checked={display.countryNames} label={t('势力标签', 'Faction Labels')} onChange={(v) => setDisplay({ countryNames: v })} />
           <Toggle checked={display.plotNames} label={t('地块名标签', 'Plot Names')} onChange={(v) => setDisplay({ plotNames: v })} />
         </div>
         <Field label={t('标签朝向', 'Label Align')}>

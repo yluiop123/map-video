@@ -1,4 +1,4 @@
-node_modules/
+﻿node_modules/
 dist/
 dev-server.log
 tsconfig.tsbuildinfo
@@ -6,3 +6,6 @@ docs/studio-shots/
 test001-config.json
 .video_agent/
 .zcode/
+release/
+*.log
+flyarch-config.json

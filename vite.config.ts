@@ -9,7 +9,8 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-  base: '/map-video/',
+  // GH Pages 用 /map-video/；Electron 桌面构建用相对路径（app:// 协议加载）
+  base: process.env.VITE_BASE ?? '/map-video/',
   server: {
     // 本机文件监听不可靠（改动不触发热更新），改用轮询
     watch: {
