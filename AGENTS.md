@@ -1,7 +1,7 @@
 # AGENTS.md — MapVideo 项目上下文（AI 助手必读）
 
 > 目的：让任何 AI 编码工具（Codex / ZCode / Claude 等）在本目录打开后，快速理解项目现状、约定与坑，避免重复踩坑或破坏已有功能。
-> 本文件是**当前事实的唯一权威**；`docs/ARCHITECTURE.md` 是早期设计稿，与现状有出入，仅作历史参考。
+> 本文件是**当前事实的唯一权威**（原 docs/ARCHITECTURE.md 早期设计稿已删除）。
 
 ## 1. 项目是什么
 
@@ -84,7 +84,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
 
-- **主题**：stone 深色系（bg #0c0a09 / card #1c1917 / accent #292524 / border 白10%），令牌在 `src/index.css`（HSL 变量，无浅色主题）；字体 Geist（Google Fonts，index.html 引入，fallback system-ui）；品牌蓝 `--brand`（选中/播放头/Toggle）。参考截图在 `docs/studio-shots/ref/`。
+- **主题**：stone 深色系（bg #0c0a09 / card #1c1917 / accent #292524 / border 白10%），令牌在 `src/index.css`（HSL 变量，无浅色主题）；字体 Geist（Google Fonts，index.html 引入，fallback system-ui）；品牌蓝 `--brand`（选中/播放头/Toggle）。参考截图目录已删除。
 - **布局**：TopBar(h-14：Logo+项目芯片+章节菜单芯片+地名搜索+撤销重做/保存/导出) → 全幅地图舞台（浮动工具条 top-center、左下角 MapStyleChip 底图/高程/3D、元素浮层左侧、设置浮层右侧 overlay）→ 时间线(播放条+轨道)。章节管理在顶栏 ChapterMenu 弹出框（切换/铅笔重命名/复制/删除/新增/章节设置），不再占用底部空间。
 - 顶栏工具是**扁平一键直达**（点击即创建/进入模式），样式差异全部放右侧 Settings 面板切换；**没有下拉工具组**。工具条/时间线上的「元素」按钮开合左侧元素浮层（editorStore.elementsOpen，默认收起）。
 - Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → CUSTOM IMAGE → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
@@ -105,6 +105,6 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 ## 9. 已知待办 / 弱项
 
 - ORIENTATION/点动画/移动点高亮圈等仅在编辑端验证过，导出端 MapScene 未逐项回归。
-- `docs/ARCHITECTURE.md` 过时；新文档以本文件为准。
+- docs/ARCHITECTURE.md 已删除；数据库设计见 README「数据库设计」。
 - 3D(globe) 下 `pixelsToDegrees` 为墨卡托近似，高纬度箭头宽度略有偏差。
 - Region 数据源为世界国家级（英文属性名，内置 ~100 国中英映射）；省级需换 `setRegionSources` 数据源。

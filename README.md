@@ -53,6 +53,49 @@ npm run dist:win       # 打 Windows 安装包/portable exe → release/
 - `npm run build` 后把 `dist/` 发到 Pages（仓库名即 `/map-video/` base 路径）
 - AI/配音入口自动隐藏；数据存浏览器 IndexedDB，可「导出配置 JSON / 导入」迁移到桌面端
 
+## 数据库设计
+
+### 桌面端（SQLite）
+
+- **引擎**：Electron 内置 `node:sqlite`（DatabaseSync），零原生模块、零安装
+- **文件**：`%APPDATA%/map-video/mapvideo.db`——单文件库，**拷走即备份**，换机恢复放回同路径即可
+- **建表**：`electron/main.mjs → initDb()`（幂等 `CREATE TABLE IF NOT EXISTS`，升级时按列补齐）
+
+**projects 表（项目库）**
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | TEXT PRIMARY KEY | 项目 ID |
+| name | TEXT NOT NULL | 项目名 |
+| data | TEXT NOT NULL | 完整项目 JSON（章节/元素/镜头/特效/字幕/音乐/底图/自定义符号全部内嵌其中） |
+| size | INTEGER | JSON 字节数 |
+| updated_at | INTEGER | 保存时间（epoch ms），列表按此倒序 |
+
+**providers 表（AI/配音配置，Key 存本机不出库）**
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | TEXT PRIMARY KEY | 配置 ID（预设复制或自定义） |
+| kind | TEXT | `llm` \| `tts` |
+| label / base_url / api_key / model | TEXT | 厂商连接信息 |
+| protocol | TEXT | TTS 协议：`openai-speech` / `minimax-t2a` / `volc-tts` / `qwen-tts` / `custom`；LLM 统一 OpenAI 兼容 chat/completions |
+| voice | TEXT | 音色/说话人 ID |
+| speed | REAL | 语速 0.5–2 |
+| extra | TEXT | 附加 JSON 参数（合并进请求体） |
+| active | INTEGER | 生效标记（每 kind 仅一条 =1） |
+| sort | INTEGER | 列表排序 |
+
+**访问边界**：SQLite 仅主进程读写；渲染进程通过 `window.mapvideo.projects / providers` IPC CRUD（contextIsolation 开启，渲染进程摸不到库文件）。
+
+### 网页端（GH Pages Lite）
+
+| 介质 | 内容 |
+|---|---|
+| IndexedDB `MapVideoDB`（Dexie v1，表 projects：`id, name, createdAt, updatedAt`） | 完整项目 JSON（结构同桌面端 data 列） |
+| localStorage `mapvideo-providers` | AI/配音配置（仅本地开发直连模式用，GH Pages 不展示入口） |
+
+**跨端迁移**：桌面 ⇄ 网页统一走「导出配置 JSON / 导入」（`ProjectExport` 格式，两端数据结构相同）。
+
 ## 技术
 
 React 18 · TypeScript 5 · Vite 6 · maplibre-gl 5 · Remotion 4（web-renderer 浏览器端导出）· zustand · Dexie（网页存储）· Electron 44 + node:sqlite（桌面）· electron-builder（打包）
