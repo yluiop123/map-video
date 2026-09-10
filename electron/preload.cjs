@@ -15,6 +15,13 @@ contextBridge.exposeInMainWorld('mapvideo', {
     remove: (id) => ipcRenderer.invoke('db:providers:remove', id),
     setActive: (kind, id) => ipcRenderer.invoke('db:providers:setActive', { kind, id }),
   },
+  assets: {
+    save: (p) => ipcRenderer.invoke('assets:save', p),
+    read: (assetId) => ipcRenderer.invoke('assets:read', assetId),
+    remove: (assetId) => ipcRenderer.invoke('assets:remove', assetId),
+    exists: (assetId) => ipcRenderer.invoke('assets:exists', assetId),
+    stat: () => ipcRenderer.invoke('assets:stat'),
+  },
   aiChat: (config, system, user) => ipcRenderer.invoke('ai:chat', { config, system, user }),
   aiTts: (config, text) => ipcRenderer.invoke('ai:tts', { config, text }),
   env: () => ipcRenderer.invoke('env:get'),

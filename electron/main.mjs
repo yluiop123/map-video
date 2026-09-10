@@ -7,6 +7,7 @@
 import { app, BrowserWindow, ipcMain, protocol, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 const DIST = path.join(app.getAppPath(), 'dist');
@@ -221,6 +222,56 @@ function registerIpc() {
     node: process.versions.node,
     userData: app.getPath('userData'),
   }));
+
+  // 素材（asset）：图片 / GIF / 模型等大文件外置到 userData/assets/<sha256><ext>
+  // 项目 JSON 里只存 asset_id(=sha256)，彻底避免 base64 内联撑爆存档。
+  const EXT_BY_MIME = {
+    'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif',
+    'image/svg+xml': '.svg',
+    'model/gltf-binary': '.glb', 'model/gltf+json': '.gltf', 'model/obj': '.obj',
+    'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'video/mp4': '.mp4',
+  };
+  const assetsDir = () => {
+    const dir = path.join(app.getPath('userData'), 'assets');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+  /** 把 assetId 收敛成目录内的安全文件名（防目录穿越） */
+  const assetPath = (assetId) => {
+    const id = path.basename(String(assetId || ''));
+    const dir = assetsDir();
+    if (!/^[0-9a-f]{64}$/i.test(id)) return null;
+    const hit = fs.readdirSync(dir).find((f) => f === id || f.startsWith(id + '.'));
+    return hit ? path.join(dir, hit) : null;
+  };
+
+  ipcMain.handle('assets:save', (_e, { mime, bytes }) => {
+    const buf = Buffer.from(bytes);
+    const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+    const relPath = sha256 + (EXT_BY_MIME[mime] || '');
+    const abs = path.join(assetsDir(), relPath);
+    if (!fs.existsSync(abs)) fs.writeFileSync(abs, buf);
+    return { assetId: sha256, relPath, byteSize: buf.length };
+  });
+  ipcMain.handle('assets:read', (_e, assetId) => {
+    const abs = assetPath(assetId);
+    if (!abs) return null;
+    return { bytes: new Uint8Array(fs.readFileSync(abs)) };
+  });
+  ipcMain.handle('assets:remove', (_e, assetId) => {
+    const abs = assetPath(assetId);
+    if (abs) fs.unlinkSync(abs);
+    return { ok: true };
+  });
+  ipcMain.handle('assets:exists', (_e, assetId) => !!assetPath(assetId));
+  /** 孤儿素材扫描：返回目录内文件数与总字节数（供设置页/维护用） */
+  ipcMain.handle('assets:stat', () => {
+    const dir = assetsDir();
+    const files = fs.readdirSync(dir);
+    let bytes = 0;
+    for (const f of files) bytes += fs.statSync(path.join(dir, f)).size;
+    return { count: files.length, bytes, dir };
+  });
 
   ipcMain.handle('shell:openExternal', (_e, url) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url);

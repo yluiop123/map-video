@@ -4,6 +4,10 @@
  */
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const isWin = process.platform === 'win32';
 
 const children = [];
 
@@ -29,16 +33,19 @@ process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 
 // 1. vite（前端热更）
-const vite = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'dev'], {
+// 注意：Node 20.12+/22 在 Windows 下 spawn .cmd 必须经 shell，否则抛 EINVAL
+const vite = spawn(isWin ? 'npm.cmd' : 'npm', ['run', 'dev'], {
   stdio: 'inherit',
-  shell: false,
+  shell: isWin,
 });
 children.push(vite);
 
 await waitVite();
 
 // 2. Electron（渲染进程加载 vite；保留默认 electron 用户数据目录以便真机一致性）
-const electron = spawn(process.platform === 'win32' ? 'node_modules\\.bin\\electron.cmd' : './node_modules/.bin/electron', ['.'], {
+// 直接起 electron.exe（由 electron 包导出的真实二进制路径），避免 .cmd + EINVAL
+const electronBin = require('electron');
+const electron = spawn(electronBin, ['.'], {
   stdio: 'inherit',
   env: {
     ...process.env,
