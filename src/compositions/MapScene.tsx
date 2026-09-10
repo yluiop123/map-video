@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { AbsoluteFill, useDelayRender, useVideoConfig, useCurrentFrame } from 'remotion';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { renderElements, setCustomSymbols, resolveFollowCam, resolveOrbitCam } from '../lib/map-renderer';
+import { renderElements, setCustomSymbols, setRenderFps, resolveFollowCam, resolveOrbitCam } from '../lib/map-renderer';
 import { interpolateCamera } from '../lib/keyframe-interpolation';
+import { getAssetUrl } from '../lib/assets';
 import type { Chapter, MapVideoProject } from '../types';
 
 interface MapSceneProps {
@@ -55,6 +56,22 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [styleUrl, handle, continueRender]);
 
+  // 预加载 3D 模型：Remotion 会乱序渲染帧，若不预加载，某帧可能模型尚未解码而空白
+  useEffect(() => {
+    const ids = chapter.elements
+      .filter((el) => el.type === 'point' && el.shape === 'model' && el.assetId)
+      .map((el) => (el as { assetId: string }).assetId);
+    if (!ids.length) return;
+    const h = delayRender('Loading 3D models...');
+    void Promise.all(ids.map((id) => getAssetUrl(id)))
+      .then(async (list) => {
+        const { preloadModelAssets } = await import('../lib/model-renderer');
+        await preloadModelAssets(list.filter((u): u is string => !!u));
+      })
+      .finally(() => continueRender(h));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chapter.elements, delayRender, continueRender]);
+
   // 帧更新：相机 + 元素
   useEffect(() => {
     const map = mapRef.current;
@@ -62,6 +79,7 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
 
     const h = delayRender('Rendering frame...');
     setCustomSymbols(project.customSymbols);
+    setRenderFps(fps);   // GIF 逐帧 / 模型自转的时间基准（双端一致）
 
     if (chapter.camera && chapter.camera.length > 0) {
       const cam = interpolateCamera(chapter.camera, frame, fps);

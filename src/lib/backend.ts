@@ -22,6 +22,14 @@ declare global {
         remove: (id: string) => Promise<{ ok: boolean }>;
         setActive: (kind: 'llm' | 'tts', id: string | null) => Promise<{ ok: boolean }>;
       };
+      /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId = sha256） */
+      assets: {
+        save: (p: { mime: string; bytes: Uint8Array }) => Promise<{ assetId: string; relPath: string; byteSize: number }>;
+        read: (assetId: string) => Promise<{ bytes: Uint8Array } | null>;
+        remove: (assetId: string) => Promise<{ ok: boolean }>;
+        exists: (assetId: string) => Promise<boolean>;
+        stat: () => Promise<{ count: number; bytes: number; dir: string }>;
+      };
       aiChat: (config: import('../types').ProviderConfig, system: string, user: string) => Promise<{ content?: string; error?: string }>;
       aiTts: (config: import('../types').ProviderConfig, text: string) => Promise<{ bytes?: Uint8Array; mime?: string; error?: string }>;
       env: () => Promise<{ version: string; electron: string; node: string; userData: string }>;

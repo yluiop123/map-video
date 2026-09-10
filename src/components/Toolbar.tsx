@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import {
-  MapPin, Route as RouteIcon, Image as ImageIcon,
+  MapPin, Route as RouteIcon,
   Shapes, Globe, Undo2, Redo2, FolderOpen, Settings2, Download, Languages, Landmark, UserRound,
 } from 'lucide-react';
 import { useProjectStore, isProjectDirty } from '../stores/projectStore';
@@ -24,14 +24,13 @@ interface ModeItem {
   label: string;
   zh: string;
   /** 非绘图动作 */
-  action?: 'regionPicker' | 'place-pin' | 'place-image';
+  action?: 'regionPicker' | 'place-pin';
 }
 
 /** 浮动工具条（对齐 Mapimator：一键直达，样式在右侧 Settings 切换） */
 const TOOLS: ModeItem[] = [
   { icon: <MapPin size={15} className="text-red-400" />, label: 'Pin', zh: '标记', action: 'place-pin' },
   { icon: <RouteIcon size={15} className="text-blue-400" />, label: 'Route', zh: '路线', mode: 'add_line' },
-  { icon: <ImageIcon size={15} className="text-emerald-400" />, label: 'Image', zh: '图片', action: 'place-image' },
   { icon: <Shapes size={15} className="text-orange-400" />, label: 'Shape', zh: '形状', mode: 'add_polygon' },
   { icon: <Globe size={15} className="text-sky-400" />, label: 'Region', zh: '区域', action: 'regionPicker' },
   { icon: <Landmark size={15} className="text-violet-400" />, label: 'Terr', zh: '疆域', mode: 'add_terr_plot' },
@@ -106,7 +105,6 @@ function toolActive(t: ModeItem, mode: InteractionMode): boolean {
   }
   if (t.label === 'Pin') return mode === 'add_point' || mode === 'add_flag';
   if (t.label === 'Text') return mode === 'add_text';
-  if (t.label === 'Image') return mode === 'add_custom';
   return false;
 }
 
@@ -280,7 +278,6 @@ export function FloatingTools() {
             onClick={() => {
               if (tool.action === 'regionPicker') setRegionPickerOpen(true);
               else if (tool.action === 'place-pin') { useInteractionStore.getState().requestPlace('pin'); setMode('select'); }
-              else if (tool.action === 'place-image') { useInteractionStore.getState().requestPlace('image'); setMode('select'); }
               else if (tool.mode === 'add_polygon') { setShapeOpen((v) => !v); setTerrOpen(false); }
               else if (tool.label === 'Terr') { setTerrOpen((v) => !v); setShapeOpen(false); }
               else if (tool.mode) { setShapeOpen(false); setTerrOpen(false); setMode(tool.mode); }

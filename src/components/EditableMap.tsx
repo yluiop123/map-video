@@ -5,7 +5,7 @@ import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import * as turf from '@turf/turf';
 import {
-  renderElements, setCustomSymbols,
+  renderElements, setCustomSymbols, setRenderFps,
   buildArrowGeometry, buildSelectionFeature, pixelsToDegrees, rotatePt, resolveFollowCam, resolveOrbitCam,
 } from '../lib/map-renderer';
 import { buildDoubleArrow, buildGatheringPlace } from '../lib/military-plots';
@@ -60,10 +60,11 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
   const [viewSaved, setViewSaved] = useState(false);
   const [viewBarHidden, setViewBarHidden] = useState(false);
 
-  // 注入自定义符号表（供 renderer 加载上传图标）
+  // 注入自定义符号表（供 renderer 加载上传图标）+ 渲染帧率（GIF 逐帧 / 模型自转基准）
   useEffect(() => {
     setCustomSymbols(project.customSymbols);
-  }, [project.customSymbols]);
+    setRenderFps(project.globalConfig?.defaultFPS ?? 30);
+  }, [project.customSymbols, project.globalConfig?.defaultFPS]);
 
   // 稳定 styleUrl 引用：对象样式+高程合并时 getStyleUrl 每次渲染都返回新对象，
   // 若直接作 effect 依赖，地图 move → setCurrentCamera → 重渲染 → 重建地图，无限循环狂闪。
@@ -198,13 +199,6 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         coordinates: lngLat, color: '#FF4444', iconSize: 10, shape: 'pin',
         label: { text: '标记点', fontSize: 13, color: '#000000', position: 'top', bgColor: '#FFFFFF', bgPadding: 6, bgRadius: 6 },
       } as PointElement;
-    } else if (kind === 'image') {
-      const first = project.customSymbols[0];
-      el = {
-        id: generateId(), type: 'custom_icon', name: '图片', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
-        coordinates: lngLat, symbolId: first?.id || '', size: 40, rotation: 0,
-      };
     } else if (kind === 'territory') {
       el = {
         id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
@@ -553,16 +547,6 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       } as FlagElement);
       return;
     }
-    if (mode === 'add_custom') {
-      const first = project.customSymbols[0];
-      createElementAndSelect({
-        id: generateId(), type: 'custom_icon', name: '自定义图标', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
-        coordinates: lngLat, symbolId: first?.id || '', size: 40, rotation: 0,
-      });
-      return;
-    }
-
     // —— 行政区一键高亮：点击国土自动生成可编辑的高亮面 ——
     if (mode === 'add_region') {
       void (async () => {
@@ -1707,7 +1691,6 @@ function modeHint(mode: string): string {
     case 'add_moving_line': return '单击加路径点(≥2个) · 双击完成 · Backspace撤销 · Esc取消';
     case 'add_moving_bezier': return '单击加控制点(≥2个) · 双击完成生成曲线路径 · Esc取消';
     case 'add_flag': return '点击地图插旗';
-    case 'add_custom': return '点击地图放置图标';
     case 'add_line': return '单击加点 · 双击完成 · Backspace撤销 · Esc取消';
     case 'add_bezier': return '单击加控制点(≥2个) · 双击完成生成曲线 · Esc取消';
     case 'add_line_arc': return '单击加点(≥2个) · 双击完成 · 相邻点按地球大圆展开';
@@ -2116,7 +2099,7 @@ function moveElementTo(chapter: Chapter, elementId: string, lngLat: [number, num
   const el = chapter.elements.find((e) => e.id === elementId);
   if (!el) return;
 
-  if (el.type === 'point' || el.type === 'military_symbol' || el.type === 'custom_icon' || el.type === 'flag') {
+  if (el.type === 'point' || el.type === 'military_symbol' || el.type === 'flag') {
     useProjectStore.getState().updateElement(chapter.id, elementId, { coordinates: lngLat });
   } else if (el.type === 'moving_point') {
     useProjectStore.getState().updateElement(chapter.id, elementId, { path: [lngLat, ...el.path.slice(1)] });

@@ -15,7 +15,13 @@ function normalizeChapters(chapters: Chapter[]): Chapter[] {
     ...c,
     fx: (c.fx || []).map((f) => ({ enabled: true, ...f })),
     titleStyle: c.titleStyle ? normalizeTitleStyle(c.titleStyle) : undefined,
-    elements: (c.elements || []).map((e) => {
+    elements: (c.elements || []).map((raw) => {
+      // 迁移：custom_icon 元素类型已下线 → 退化为普通标记点（保留坐标、名称与时间）
+      let e = raw;
+      if ((e as any).type === 'custom_icon') {
+        const { symbolId: _sid, size: _size, ...rest } = e as any;
+        e = { ...rest, type: 'point', shape: undefined } as unknown as MapElement;
+      }
 // 迁移：旧版飞行动画效果 → 飞行模式开关（路线/图标整条悬空）+ 路线移动（图标随播放进度沿航迹移动）
       const legacyFly = (e as any).animEffect === 'fly';
       const el = legacyFly ? { ...e, flyMode: true, animEffect: 'move' as const } : e;

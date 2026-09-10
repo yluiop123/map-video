@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { createElement, useRef, useState, useEffect, useMemo } from 'react';
 import { MapPin, Route as RouteIcon, Square, Trash2, Plus, Landmark, Crosshair } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
@@ -13,12 +13,16 @@ import Cropper from 'react-easy-crop';
 import 'react-easy-crop/react-easy-crop.css';
 import type {
   MapElement, PointElement, LineElement,
-  PolygonElement, ArrowElement, CustomIconElement, FlagElement,
+  PolygonElement, ArrowElement, FlagElement,
   DoubleArrowElement, EncirclementElement, GatheringElement,
-  CameraKeyframe, TerritoryElement,
+  CameraKeyframe, TerritoryElement, PointShape,
 } from '../types';
+import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES } from '../lib/builtin-assets';
+import { defaultVisualFor, getPinCapability } from '../lib/pin-visual';
+import { loadLucideIcons, filterExistingIcons, type IconComponent } from '../lib/icon-library';
+import { uploadAsset } from '../lib/assets';
 
-type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'image' | 'territory';
+type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'territory';
 
 const CATEGORY_META: Record<Category, { icon: React.ReactNode; zh: string; en: string }> = {
   pin: { icon: <MapPin size={14} className="text-red-400" />, zh: '标记设置', en: 'Pin Settings' },
@@ -26,7 +30,6 @@ const CATEGORY_META: Record<Category, { icon: React.ReactNode; zh: string; en: s
   'shape-multi': { icon: <Square size={14} className="text-orange-400" />, zh: '多点绘制设置', en: 'Multi-Point Shape Settings' },
   'shape-two': { icon: <Square size={14} className="text-orange-400" />, zh: '两点绘制设置', en: 'Two-Point Shape Settings' },
   'shape-special': { icon: <Square size={14} className="text-orange-400" />, zh: '特殊图形设置', en: 'Special Shape Settings' },
-  image: { icon: <MapPin size={14} className="text-red-400" />, zh: '标记设置', en: 'Marker Settings' },
   territory: { icon: <Landmark size={14} className="text-violet-400" />, zh: '疆域设置', en: 'Territory Settings' },
 };
 
@@ -51,7 +54,7 @@ function categoryOf(el: MapElement): Category {
     if (pk === 'circle' || pk === 'rect') return 'shape-two';
     return 'shape-multi';
   }
-  return 'image';
+  return 'pin';
 }
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
@@ -117,12 +120,11 @@ export function PropertiesPanel() {
           />
         </Section>
 
-        {cat === 'pin' && <PinSettings element={element as PointElement | FlagElement} patch={patch} project={project} />}
+        {cat === 'pin' && <PinSettings element={element as PointElement | FlagElement} patch={patch} />}
         {cat === 'route' && <RouteSettings element={element} patch={patch} chapter={findChapterOf(project, element.id)!} />}
         {cat === 'shape-multi' && <MultiShapeSettings element={element} patch={patch} />}
         {cat === 'shape-two' && <TwoShapeSettings element={element} patch={patch} />}
         {cat === 'shape-special' && <SpecialShapeSettings element={element} patch={patch} />}
-        {cat === 'image' && <ImageSettings element={element as CustomIconElement} patch={patch} />}
         {cat === 'territory' && <TerritorySettings element={element as TerritoryElement} patch={patch} project={project} />}
 
         {cat !== 'pin' && cat !== 'route' && (
@@ -245,23 +247,23 @@ function LabelStyleFields({ label, onChange, allowCenter, fixedCenter }: {
 
 // ========== PIN ==========
 
-type PinStyle = 'dot' | 'pin' | 'bubble' | 'emoji' | 'text' | 'flag' | 'image';
+type PinStyle = 'dot' | 'pin' | 'bubble' | 'emoji' | 'text' | 'flag' | 'image' | 'gif' | 'model' | 'icon';
 
 const EMOJI_CHOICES = ['📍', '🚩', '⚔️', '🏰', '🔥', '⭐', '✅', '❌', '💀', '🛡️', '⚓', '✈️', '🚀', '💥', '👑', '🎯', '🪖', '☢️', '🕊️', '🩸', '⚠️', '💤', '🧭', '📕'];
 
-function PinSettings({ element, patch, project }: {
+function PinSettings({ element, patch }: {
   element: PointElement | FlagElement;
   patch: (changes: Partial<MapElement>) => void;
-  project: NonNullable<ReturnType<typeof useProjectStore.getState>['project']>;
 }) {
   const pe = element as PointElement;
   const style: PinStyle = element.type === 'flag' ? 'flag' : pinStyleOf(pe);
   const coords = element.coordinates;
+  const cap = getPinCapability(pe.shape);   // 能力矩阵：决定哪些控件可用
   const t = useT();
 
   return (
     <>
-      <PinStyleChooser element={element} patch={patch} project={project} />
+      <PinStyleChooser element={element} patch={patch} />
 
       <div className="grid grid-cols-2 gap-2">
         <Field label={t('经度', 'Longitude')}>
@@ -272,7 +274,7 @@ function PinSettings({ element, patch, project }: {
         </Field>
       </div>
 
-      {(style === 'dot' || style === 'pin' || style === 'bubble' || style === 'emoji' || style === 'text' || style === 'flag') && (
+      {(
         <Section title={t('大小', 'Size')}>
           <div className="flex items-center gap-2">
             <input
@@ -285,7 +287,7 @@ function PinSettings({ element, patch, project }: {
         </Section>
       )}
 
-      {(style === 'dot' || style === 'pin' || style === 'bubble' || style === 'emoji' || style === 'text') && (
+      {cap.canFlat && style !== 'flag' && (
         <Section title={t('朝向', 'Orientation')}>
           <StyleGrid<'faceCam' | 'flat'>
             value={pe.orientation ?? 'faceCam'}
@@ -340,32 +342,64 @@ function PinSettings({ element, patch, project }: {
         </Section>
       )}
 
-      {(style === 'dot' || style === 'pin') && (
+      {(style === 'dot' || style === 'pin' || style === 'image' || style === 'icon') && cap.canTint && (
         <Appearance color={pe.color || '#FF4444'} onChange={(c) => patch({ color: c })} />
+      )}
+
+      {style === 'model' && (
+        <Section title={t('模型', 'Model')}>
+          <Field label={t('自转角速度（度/秒）', 'Auto rotate (°/s)')}>
+            <NumberInput
+              value={String(pe.visualMeta?.autoRotate ?? 0)}
+              onCommit={(v) => patch({ visualMeta: { ...pe.visualMeta, autoRotate: v || 0 } })}
+              className="input"
+            />
+          </Field>
+          <Field label={t('初始朝向（度）', 'Initial angle (°)')}>
+            <NumberInput
+              value={String(pe.visualMeta?.spin ?? 0)}
+              onCommit={(v) => patch({ visualMeta: { ...pe.visualMeta, spin: v || 0 } })}
+              className="input"
+            />
+          </Field>
+          <p className="text-[10px] text-muted-foreground/70">
+            {t('模型以位图贴片呈现：不可着色、不能贴地，俯仰变化时不做透视变形', 'Rendered as billboard: no tint, no flat, no perspective')}
+          </p>
+        </Section>
+      )}
+
+      {style === 'icon' && (
+        <Section title={t('图标', 'Icon')}>
+          <Field label={t('描边粗细', 'Stroke width')}>
+            <NumberInput
+              value={String(pe.visualMeta?.strokeWidth ?? 2)}
+              step="0.5"
+              onCommit={(v) => patch({ visualMeta: { ...pe.visualMeta, strokeWidth: v || 2 } })}
+              className="input"
+            />
+          </Field>
+        </Section>
       )}
 
     </>
   );
 }
 
-/** PIN STYLE 选择区（PinSettings 与 ImageSettings 共用）：基础样式 + 图标库（上传的自定义图标） */
-function PinStyleChooser({ element, patch, project }: {
+/** PIN STYLE 选择区（标记与旗帜共用）：基础样式切换（图片 / 自定义图标已随 custom_icon 类型下线） */
+function PinStyleChooser({ element, patch }: {
   element: MapElement;
   patch: (c: Partial<MapElement>) => void;
-  project: NonNullable<ReturnType<typeof useProjectStore.getState>['project']>;
 }) {
-  const coords = (element as unknown as CustomIconElement).coordinates;
+  const coords = (element as PointElement).coordinates;
   const pe = element as PointElement;
   const isFlag = element.type === 'flag';
-  const style: PinStyle = isFlag ? 'flag' : element.type === 'custom_icon' ? 'image' : pinStyleOf(pe);
-  const removeCustomSymbol = useProjectStore((s) => s.removeCustomSymbol);
+  const style: PinStyle = isFlag ? 'flag' : pinStyleOf(pe);
   const t = useT();
-  const confirm = useConfirm();
 
   const setStyle = (s: PinStyle) => {
-    // 从自定义图标或旗帜切回其他样式时，把残留的白色 color 重置为默认红
-    const leavingIcon = style === 'image' || style === 'flag';
-    const colorReset = leavingIcon ? { color: '#FF4444' } : {};
+    // 从旗帜切回其他样式时，把残留的白色 color 重置为默认红
+    const leavingFlag = style === 'flag';
+    const colorReset = leavingFlag ? { color: '#FF4444' } : {};
     if (s === 'dot') {
       patch({ type: 'point', shape: undefined, iconUrl: undefined, coordinates: coords, ...colorReset } as Partial<MapElement>);
     } else if (s === 'pin' || s === 'bubble' || s === 'emoji') {
@@ -384,12 +418,12 @@ function PinStyleChooser({ element, patch, project }: {
       const lbl = pe.label;
       patch({
         type: 'flag', coordinates: coords, text: lbl?.text || element.name || '旗',
-        flagColor: leavingIcon ? '#E23B3B' : (pe.color || '#E23B3B'), textColor: lbl?.color || '#FFFFFF',
+        flagColor: leavingFlag ? '#E23B3B' : (pe.color || '#E23B3B'), textColor: lbl?.color || '#FFFFFF',
         fontSize: 28, flagWidth: 216, scale: 1,
       } as Partial<MapElement>);
-    } else {
-      const first = project.customSymbols[0];
-      patch({ type: 'custom_icon', symbolId: first?.id || '', size: 40, rotation: 0, color: '#FFFFFF' } as Partial<MapElement>);
+    } else if (s === 'image' || s === 'gif' || s === 'model' || s === 'icon') {
+      // 资源形态：交给能力矩阵补默认值，并清掉该形态不支持的字段（与数据库 CHECK 一致）
+      patch({ type: 'point', coordinates: coords, ...defaultVisualFor(s as PointShape, pe) } as Partial<MapElement>);
     }
   };
 
@@ -417,38 +451,239 @@ function PinStyleChooser({ element, patch, project }: {
             {o.label}
           </button>
         ))}
-        {/* 自定义图标：文字块同款样式，可删除 */}
-        {project.customSymbols.map((s) => (
-          <div key={s.id} className="relative group/sym">
-            <button
-              title={s.name}
-              onClick={() => patch({ type: 'custom_icon', symbolId: s.id, coordinates: coords, size: 40, rotation: 0, color: '#FFFFFF' } as Partial<MapElement>)}
-              className={`${blockBtn} w-full ${
-                style === 'image' && (element as unknown as CustomIconElement).symbolId === s.id
-                  ? blockOn
-                  : blockOff
-              }`}
-            >
-              <span className="truncate">{s.name}</span>
-            </button>
-            <button
-              title={t('删除图标', 'Delete icon')}
-              onClick={(e) => {
-                e.stopPropagation();
-                void confirm({ message: t(`从图标库删除「${s.name}」？`, `Delete "${s.name}" from library?`), danger: true, confirmText: t('删除', 'Delete') }).then((ok: boolean) => ok && removeCustomSymbol(s.id));
-              }}
-              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white items-center justify-center hidden group-hover/sym:flex hover:bg-red-400"
-            >
-              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-            </button>
-          </div>
-        ))}
-        {/* 上传入口固定在最后 */}
-        <IconUploadButton
-          onPick={(id) => patch({ type: 'custom_icon', symbolId: id, coordinates: coords, size: 40, rotation: 0, color: '#FFFFFF' } as Partial<MapElement>)}
-        />
       </div>
+      {/* 资源形态：图片 / 动图 / 模型 / 图标库 */}
+      <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+        {([
+          { value: 'image', label: t('🖼 图片', '🖼 IMAGE') },
+          { value: 'gif', label: t('🎞 动图', '🎞 GIF') },
+          { value: 'model', label: t('🧊 模型', '🧊 MODEL') },
+          { value: 'icon', label: t('🔷 图标', '🔷 ICON') },
+        ] as { value: PinStyle; label: string }[]).map((o) => (
+          <button
+            key={o.value}
+            onClick={() => setStyle(o.value)}
+            className={`${blockBtn} ${style === o.value ? blockOn : blockOff}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <PinResourcePicker element={pe} style={style} patch={patch} />
     </Section>
+  );
+}
+
+/** 资源形态的资源选择区：内置网格（图片 / 动图 / 模型 / 图标库）；上传入口下一步接入 */
+function PinResourcePicker({ element, style, patch }: {
+  element: PointElement;
+  style: PinStyle;
+  patch: (c: Partial<MapElement>) => void;
+}) {
+  const t = useT();
+  const isIconStyle = style === 'icon';
+  const isResource = style === 'image' || style === 'gif' || style === 'model' || isIconStyle;
+
+  // 精选图标静态导入（见 icon-library.ts），同步可得，不再有「正在加载」态
+  const icons = useMemo(() => {
+    if (!isIconStyle) return {} as Record<string, IconComponent>;
+    const all = loadLucideIcons();
+    const picked: Record<string, IconComponent> = {};
+    for (const n of filterExistingIcons(BUILTIN_ICON_NAMES)) picked[n] = all[n];
+    return picked;
+  }, [isIconStyle]);
+
+  if (!isResource) return null;
+
+  const cellBase = 'flex items-center justify-center rounded border transition-colors';
+  const cellOn = 'border-brand ring-2 ring-brand/60 bg-brand/20';
+  const cellOff = 'border-white/10 bg-white/[0.03] hover:bg-accent hover:border-white/20';
+
+  if (isIconStyle) {
+    const names = Object.keys(icons);
+    return (
+      <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
+        {names.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground">{t('无可用图标', 'No icons available')}</p>
+        ) : (
+          <div className="grid grid-cols-8 gap-1 max-h-44 overflow-y-auto">
+            {names.map((name) => {
+              const Icon = icons[name];
+              return (
+                <button
+                  key={name}
+                  title={name}
+                  onClick={() => patch({ iconLib: 'lucide', iconName: name } as Partial<MapElement>)}
+                  className={`${cellBase} h-7 ${element.iconName === name ? cellOn : cellOff}`}
+                >
+                  {createElement(Icon, { size: 14 })}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <p className="mt-1.5 text-[10px] text-muted-foreground/70">
+          {t(`内置 lucide 图标 ${names.length} 个`, `lucide icons (${names.length})`)}
+        </p>
+      </div>
+    );
+  }
+
+  const list = style === 'image' ? BUILTIN_IMAGES : style === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
+  return (
+    <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
+      <div className="grid grid-cols-4 gap-1.5 max-h-44 overflow-y-auto">
+        {list.map((a) => (
+          <button
+            key={a.id}
+            title={a.name}
+            onClick={() => patch({ builtinId: a.id } as Partial<MapElement>)}
+            className={`${cellBase} h-12 px-1 text-[10px] leading-tight text-center ${element.builtinId === a.id ? cellOn : cellOff}`}
+          >
+            {a.src
+              ? <img src={a.src} alt={a.name} className="w-6 h-6 object-contain" />
+              : <span className="text-foreground/80">{a.name}</span>}
+          </button>
+        ))}
+      </div>
+      <ResourceUploadRow style={style} patch={patch} />
+    </div>
+  );
+}
+
+/** 路线「显示标记」的资源选择区（与标记的 PinResourcePicker 同构，选择写入 moveIcon） */
+function MoveResourcePicker({ mi, patch }: {
+  mi: NonNullable<LineElement['moveIcon']>;
+  patch: (c: Partial<MapElement>) => void;
+}) {
+  const t = useT();
+  const shape = mi.shape as 'image' | 'gif' | 'model' | 'icon';
+  const set = (c: Partial<NonNullable<LineElement['moveIcon']>>) =>
+    patch({ moveIcon: { ...mi, ...c } } as Partial<MapElement>);
+
+  const icons = useMemo(() => {
+    const all = loadLucideIcons();
+    const picked: Record<string, IconComponent> = {};
+    for (const n of filterExistingIcons(BUILTIN_ICON_NAMES)) picked[n] = all[n];
+    return picked;
+  }, []);
+
+  const cellBase = 'flex items-center justify-center rounded border transition-colors';
+  const cellOn = 'border-brand ring-2 ring-brand/60 bg-brand/20';
+  const cellOff = 'border-white/10 bg-white/[0.03] hover:bg-accent hover:border-white/20';
+
+  if (shape === 'icon') {
+    const names = Object.keys(icons);
+    return (
+      <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
+        <div className="grid grid-cols-8 gap-1 max-h-44 overflow-y-auto">
+          {names.map((name) => {
+            const Icon = icons[name];
+            return (
+              <button
+                key={name}
+                title={name}
+                onClick={() => set({ shape: 'icon', iconLib: 'lucide', iconName: name, builtinId: undefined, assetId: undefined, symbolId: undefined })}
+                className={`${cellBase} h-7 ${mi.iconName === name ? cellOn : cellOff}`}
+              >
+                {createElement(Icon, { size: 14 })}
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-1.5 text-[10px] text-muted-foreground/70">
+          {t(`内置 lucide 图标 ${names.length} 个`, `lucide icons (${names.length})`)}
+        </p>
+      </div>
+    );
+  }
+
+  const list = shape === 'image' ? BUILTIN_IMAGES : shape === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
+  return (
+    <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
+      <div className="grid grid-cols-4 gap-1.5 max-h-44 overflow-y-auto">
+        {list.map((a) => (
+          <button
+            key={a.id}
+            title={a.name}
+            onClick={() => set({ builtinId: a.id, assetId: undefined, symbolId: undefined })}
+            className={`${cellBase} h-12 px-1 text-[10px] leading-tight text-center ${mi.builtinId === a.id ? cellOn : cellOff}`}
+          >
+            {a.src
+              ? <img src={a.src} alt={a.name} className="w-6 h-6 object-contain" />
+              : <span className="text-foreground/80">{a.name}</span>}
+          </button>
+        ))}
+      </div>
+      {shape === 'image' && (
+        <div className="mt-1.5">
+          <div className="grid grid-cols-8 gap-1">
+            {(useProjectStore.getState().project?.customSymbols || []).map((sym) => (
+              <button
+                key={sym.id}
+                title={sym.name}
+                onClick={() => set({ builtinId: undefined, symbolId: sym.id })}
+                className={`${cellBase} h-7 overflow-hidden ${mi.symbolId === sym.id ? cellOn : cellOff}`}
+              >
+                <img src={sym.url} alt={sym.name} className="w-5 h-5 object-contain" />
+              </button>
+            ))}
+            <IconUploadButton onPick={(id) => set({ builtinId: undefined, symbolId: id })} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 资源上传：按形态限定格式，上传后进 asset 表（外置存储），元素只存 assetId */
+function ResourceUploadRow({ style, patch }: {
+  style: PinStyle;
+  patch: (c: Partial<MapElement>) => void;
+}) {
+  const t = useT();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  const accept =
+    style === 'image' ? 'image/png,image/jpeg,image/webp,image/svg+xml' :
+      style === 'gif' ? 'image/gif,image/webp' :
+        style === 'model' ? '.glb,.gltf,model/gltf-binary,model/gltf+json' : '';
+  const hint =
+    style === 'image' ? t('PNG / JPG / WEBP / SVG', 'PNG / JPG / WEBP / SVG') :
+      style === 'gif' ? t('GIF / 动态 WEBP', 'GIF / animated WEBP') :
+        t('GLB / GLTF（建议 < 20MB）', 'GLB / GLTF (< 20MB recommended)');
+
+  return (
+    <div className="mt-1.5">
+      <input
+        ref={fileRef}
+        type="file"
+        accept={accept}
+        className="hidden"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file) return;
+          setBusy(true);
+          try {
+            const projectId = useProjectStore.getState().project?.id || '';
+            const ref = await uploadAsset(file, projectId);
+            patch({ assetId: ref.assetId, builtinId: undefined } as Partial<MapElement>);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+      <button
+        onClick={() => fileRef.current?.click()}
+        disabled={busy}
+        className="w-full h-7 rounded border border-dashed border-white/15 text-[11px] text-foreground/80 hover:bg-accent transition-colors disabled:opacity-50"
+      >
+        {busy ? t('上传中…', 'Uploading…') : t('⬆ 上传自有资源', '⬆ Upload')}
+      </button>
+      <p className="mt-1 text-[10px] text-muted-foreground/70">{hint}</p>
+    </div>
   );
 }
 /** 显示时间：默认全程显示（不开启），开启后可自定义起止时间 */
@@ -561,8 +796,12 @@ function RangeInput({ value, min, max, step = 1, suffix = '', onChange }: {
   );
 }
 
-function pinStyleOf(pe: PointElement): 'dot' | 'pin' | 'bubble' | 'emoji' | 'text' | 'image' {
-  if (pe.iconUrl) return 'image';
+function pinStyleOf(pe: PointElement): PinStyle {
+  if (pe.shape === 'image') return 'image';
+  if (pe.shape === 'gif') return 'gif';
+  if (pe.shape === 'model') return 'model';
+  if (pe.shape === 'icon') return 'icon';
+  if (pe.iconUrl) return 'image';      // 旧数据：iconUrl 视为图片形态
   if (pe.shape === 'text') return 'text';
   if (pe.shape === 'pin') return 'pin';
   if (pe.shape === 'bubble') return 'bubble';
@@ -918,24 +1157,34 @@ function RouteSettings({ element, patch, chapter }: {
                     {o.label}
                   </button>
                 ))}
-                {/* 自定义图标（与标记共用图标库） */}
-                {(useProjectStore.getState().project?.customSymbols || []).map((sym) => (
+              </div>
+              {/* 资源形态（与标记设置一致：图片 / 动图 / 模型 / 图标库） */}
+              <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+                {([
+                  { value: 'image', label: t('🖼 图片', '🖼 IMAGE') },
+                  { value: 'gif', label: t('🎞 动图', '🎞 GIF') },
+                  { value: 'model', label: t('🧊 模型', '🧊 MODEL') },
+                  { value: 'icon', label: t('🔷 图标', '🔷 ICON') },
+                ] as { value: NonNullable<LineElement['moveIcon']>['shape']; label: string }[]).map((o) => (
                   <button
-                    key={sym.id}
-                    title={sym.name}
-                    onClick={() => patch({ moveIcon: { ...(element as LineElement).moveIcon, shape: 'image', symbolId: sym.id } } as Partial<MapElement>)}
-                    className={`flex items-center justify-center gap-1 px-1 py-1.5 text-[11px] font-medium rounded-md border truncate transition-colors overflow-hidden ${((element as LineElement).moveIcon?.shape === 'image' && (element as LineElement).moveIcon?.symbolId === sym.id) ? 'bg-brand/20 border-brand text-foreground font-semibold' : 'bg-white/[0.03] border-white/10 text-foreground/80 hover:bg-accent hover:border-white/20'}`}
+                    key={o.value}
+                    onClick={() => patch({ moveIcon: { ...(element as LineElement).moveIcon, shape: o.value } } as Partial<MapElement>)}
+                    className={`flex items-center justify-center gap-1 px-1 py-1.5 text-[11px] font-medium rounded-md border truncate transition-colors ${((element as LineElement).moveIcon?.shape || 'dot') === o.value ? 'bg-brand/20 border-brand text-foreground font-semibold' : 'bg-white/[0.03] border-white/10 text-foreground/80 hover:bg-accent hover:border-white/20'}`}
                   >
-                    <img src={sym.url} alt={sym.name} className="w-5 h-5 object-contain" />
+                    {o.label}
                   </button>
                 ))}
-                <IconUploadButton
-                  onPick={(id) => patch({ moveIcon: { ...(element as LineElement).moveIcon, shape: 'image', symbolId: id } } as Partial<MapElement>)}
-                />
               </div>
             </Field>
 
-            {((element as LineElement).moveIcon?.shape || 'dot') !== 'image' && (
+            {['image', 'gif', 'model', 'icon'].includes((element as LineElement).moveIcon?.shape || '') && (
+              <MoveResourcePicker
+                mi={(element as LineElement).moveIcon || { shape: 'image' }}
+                patch={patch}
+              />
+            )}
+
+            {((element as LineElement).moveIcon?.shape || 'dot') !== 'emoji' && (
               <Field label={t('图标颜色', 'Icon Color')}>
                 <ColorPicker value={(element as LineElement).moveIcon?.color || '#FF6600'} onChange={(c) => patch({ moveIcon: { ...(element as LineElement).moveIcon, color: c } } as Partial<MapElement>)} />
               </Field>
@@ -1704,69 +1953,6 @@ function SpecialShapeSettings({ element, patch }: { element: MapElement; patch: 
   );
 }
 
-// ========== IMAGE ==========
-
-function ImageSettings({ element, patch }: { element: CustomIconElement; patch: (c: Partial<MapElement>) => void }) {
-  const t = useT();
-  const el = element;
-  const sizePct = Math.round(((el.size || 32) / 64) * 100);
-
-  return (
-    <>
-      <PinStyleChooser element={element} patch={patch} project={useProjectStore.getState().project!} />
-
-      <div className="grid grid-cols-2 gap-2">
-        <Field label={t('经度', 'Longitude')}>
-          <NumberInput step="0.00001" className="input" value={Number(el.coordinates[0]).toFixed(5)}
-            onCommit={(v) => patch({ coordinates: [v || 0, el.coordinates[1]] })} />
-        </Field>
-        <Field label={t('纬度', 'Latitude')}>
-          <NumberInput step="0.00001" className="input" value={Number(el.coordinates[1]).toFixed(5)}
-            onCommit={(v) => patch({ coordinates: [el.coordinates[0], v || 0] })} />
-        </Field>
-      </div>
-
-      <Section title={t('大小', 'Size')}>
-        <div className="flex items-center gap-2">
-          <input
-            type="range" min={30} max={300} step={5} value={sizePct}
-            onChange={(e) => patch({ size: Math.max(8, Math.round((parseInt(e.target.value) || 100) * 0.64)) })}
-            className="w-full"
-          />
-          <span className="text-xs w-12 text-right shrink-0">{sizePct}%</span>
-        </div>
-      </Section>
-
-      <Section title={t('朝向', 'Orientation')}>
-        <OptionBlocks<'faceCam' | 'flat'>
-          value={el.orientation ?? 'faceCam'}
-          onChange={(v) => patch({ orientation: v, ...(v === 'faceCam' ? { rotation: 0 } : {}) } as Partial<MapElement>)}
-          options={[
-            { value: 'faceCam', label: t('🎥 面向镜头', '🎥 Face Cam') },
-            { value: 'flat', label: t('🗺 贴地', '🗺 Flat') },
-          ]}
-        />
-        <Field label={t('旋转', 'Rotation')}>
-          <div className="flex items-center gap-2">
-            <input
-              type="range" min="0" max="360" step="1" value={Math.round(el.rotation || 0)}
-              onChange={(e) => patch({ rotation: parseFloat(e.target.value) || 0 } as Partial<MapElement>)}
-              className="w-full"
-            />
-            <span className="text-xs w-10 text-right shrink-0">{Math.round(el.rotation || 0)}°</span>
-          </div>
-        </Field>
-      </Section>
-
-      <Section title={t('图标颜色', 'Icon Color')}>
-        <ColorPicker
-          value={el.color || '#FFFFFF'}
-          onChange={(c) => patch({ color: c } as Partial<MapElement>)}
-        />
-      </Section>
-    </>
-  );
-}
 function UploadIconDialog({ dataUrl, defaultName, onConfirm, onCancel }: {
   dataUrl: string;
   defaultName: string;

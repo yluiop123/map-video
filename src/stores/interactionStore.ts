@@ -8,7 +8,6 @@ export type InteractionMode =
   | 'add_moving_line'  // 移动点（直线路径）
   | 'add_moving_bezier'// 移动点（贝塞尔曲线路径）
   | 'add_flag'         // 旗帜
-  | 'add_custom'       // 图片（自定义图标上传）
   // 线
   | 'add_line'         // 直线
   | 'add_bezier'       // 贝塞尔曲线
@@ -49,7 +48,7 @@ export interface FocusRequest {
 }
 
 /** 一键在地图中心放置元素（对应 Mapimator 点击工具即落点） */
-export type PlaceKind = 'pin' | 'image' | 'territory';
+export type PlaceKind = 'pin' | 'territory';
 
 interface InteractionState {
   mode: InteractionMode;

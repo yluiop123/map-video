@@ -95,7 +95,6 @@ export type ElementType =
   | 'gathering'
   | 'military_symbol'
   | 'connector'
-  | 'custom_icon'
   | 'flag'
   | 'territory';
 
@@ -119,9 +118,9 @@ export interface MapElementBase {
   flyMode?: boolean;
   /** 显示移动图标（标记点沿路径移动） */
   showIcon?: boolean;
-  /** 移动标记样式（复用标记 Pin 的 dot/pin/emoji/bubble/text/flag/自定义图标） */
+  /** 移动标记样式（与标记 Pin 相同的形态集合与样式项：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库） */
   moveIcon?: {
-    shape?: 'dot' | 'pin' | 'emoji' | 'bubble' | 'text' | 'flag' | 'image';
+    shape?: 'dot' | 'pin' | 'emoji' | 'bubble' | 'text' | 'flag' | 'image' | 'gif' | 'model' | 'icon';
     color?: string;
     emoji?: string;
     scale?: number;
@@ -135,8 +134,13 @@ export interface MapElementBase {
     /** 旗帜文字 */
     flagText?: string;
     flagColor?: string;
-    /** 自定义图标 symbolId */
+    /** 自定义图标 symbolId（上传入口，保留兼容） */
     symbolId?: string;
+    /** 资源来源（与标记的 element.builtinId/assetId/iconLib+iconName 语义一致） */
+    builtinId?: string;
+    assetId?: string;
+    iconLib?: string;
+    iconName?: string;
     /** 朝向：faceCam=面向镜头(默认)；flat=贴地 */
     orientation?: 'faceCam' | 'flat';
     /** flat 贴地时的旋转角 */
@@ -154,6 +158,42 @@ export interface MapElementBase {
   pointTimes?: number[];
 }
 
+/** 点的视觉形态（9 种）：5 种矢量基础形态 + 4 种资源形态 */
+export type PointShape =
+  | 'circle'   // 圆点
+  | 'text'     // 文字贴片
+  | 'pin'      // 水滴针
+  | 'bubble'   // 气泡
+  | 'emoji'    // 表情
+  | 'image'    // 图片（内置 SVG 图集 / 上传 png·jpg·webp·svg）
+  | 'gif'      // 动图（内置程序化动画 / 上传 gif·webp）
+  | 'model'    // 3D 模型（内置程序化简模 / 上传 glb·gltf；three.js + custom layer）
+  | 'icon';    // 图标库（lucide / react-icons / 自建库）
+
+/** 形态专属表现参数（对应数据库 element_marker.visual_meta_json） */
+export interface VisualMeta {
+  /** image：适配方式 */
+  fit?: 'contain' | 'cover';
+  /** image：是否允许着色 */
+  tintable?: boolean;
+  /** gif：帧率 */
+  fps?: number;
+  /** gif：是否循环 */
+  loop?: boolean;
+  /** model：离地高度（米） */
+  altitude?: number;
+  /** model：自转角速度（度/秒） */
+  autoRotate?: number;
+  /** model：初始朝向（度） */
+  spin?: number;
+  /** model：是否随地图俯仰倾斜 */
+  pitchAlign?: boolean;
+  /** model：播放的动画片段名 */
+  animation?: string;
+  /** icon：描边粗细 */
+  strokeWidth?: number;
+}
+
 export interface PointElement extends MapElementBase {
   type: 'point';
   coordinates: [number, number];
@@ -161,18 +201,30 @@ export interface PointElement extends MapElementBase {
   iconSize?: number;
   color?: string;
   label?: LabelConfig;
-  /** 自定义图片（data URL 或 http URL） */
+  /** 自定义图片（data URL 或 http URL）；等价于 shape='image' + 资源来源之一 */
   iconUrl?: string;
-  /** 呈现形态：圆点 / 纯文字贴片 / 水滴针 / 气泡 / Emoji */
-  shape?: 'circle' | 'text' | 'pin' | 'bubble' | 'emoji';
+  /** 呈现形态（9 种） */
+  shape?: PointShape;
   /** shape==='emoji' 时的表情字符 */
   emoji?: string;
   /** 等比缩放：30%–300%（默认 1）。影响圆点大小与文案标签字号，替代固定像素 */
   scale?: number;
-  /** 朝向：faceCam=始终面向摄像机（默认）；flat=贴地（可配合 rotation 旋转） */
+  /** 朝向：faceCam=始终面向摄像机（默认）；flat=贴地（可配合 rotation 旋转）。model 形态强制 faceCam */
   orientation?: 'faceCam' | 'flat';
   /** 贴地时的旋转角（0-360，地图空间） */
   rotation?: number;
+
+  // ── 资源来源（与数据库 element_marker 的 builtin_id / asset_id / icon_lib+icon_name 一一对应）──
+  /** 内置资源 id：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin */
+  builtinId?: string;
+  /** 上传的媒体素材 id（asset 表） */
+  assetId?: string;
+  /** 图标库命名空间：lucide / react-icons/tabler / 自建库名 */
+  iconLib?: string;
+  /** 图标名（shape='icon' 时必填） */
+  iconName?: string;
+  /** 形态专属表现参数 */
+  visualMeta?: VisualMeta;
 }
 
 export interface MovingPointElement extends MapElementBase {
@@ -319,16 +371,6 @@ export interface ConnectorElement extends MapElementBase {
   arrowhead?: boolean;
 }
 
-export interface CustomIconElement extends MapElementBase {
-  type: 'custom_icon';
-  coordinates: [number, number];
-  symbolId: string;
-  size: number;
-  rotation?: number;
-  color?: string;      // 图标着色（乘法混合，白色=原图）
-  orientation?: 'faceCam' | 'flat';      // 图标着色（乘法混合，白色=原图）
-}
-
 export interface FlagElement extends MapElementBase {
   type: 'flag';
   coordinates: [number, number];
@@ -405,7 +447,6 @@ export type MapElement =
   | GatheringElement
   | MilitarySymbolElement
   | ConnectorElement
-  | CustomIconElement
   | FlagElement
   | TerritoryElement;
 

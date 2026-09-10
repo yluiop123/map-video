@@ -16,9 +16,23 @@ import type {
   MapElement, PointElement, MovingPointElement, LineElement,
   PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
   GatheringElement, MilitarySymbolElement, ConnectorElement,
-  CustomIconElement, FlagElement, CustomSymbol, CameraKeyframe,
+  FlagElement, CustomSymbol, CameraKeyframe,
   TerritoryElement,
 } from '../types';
+import { getPinCapability, resolvePinVisualSource } from './pin-visual';
+import { getBuiltinAsset } from './builtin-assets';
+import { iconNameToDataUrl } from './icon-library';
+import { getAssetUrl, getAssetBytes } from './assets';
+import { decodeGifCached, gifFrameAt, type GifFrames } from './gif-decoder';
+import { renderProceduralAnim } from './procedural-anim';
+// 注意：model-renderer（three.js）走**动态 import** —— 只有真正渲染模型形态时才加载，
+// 否则 three 会被打进主 chunk，首屏凭空多出 ~650KB。
+
+/** 渲染帧率（由 EditableMap / MapScene 注入；GIF 逐帧与模型自转都按它换算，保证双端一致） */
+let renderFps = 30;
+export function setRenderFps(fps: number): void {
+  renderFps = fps > 0 ? fps : 30;
+}
 
 // ========== 自定义符号注册表 ==========
 
@@ -187,7 +201,6 @@ export function renderElements(
       case 'gathering': renderGathering(map, element, frame); break;
       case 'military_symbol': renderMilitarySymbol(map, element); break;
       case 'connector': renderConnector(map, element); break;
-      case 'custom_icon': renderCustomIcon(map, element); break;
       case 'flag': renderFlag(map, element); break;
       case 'territory': renderTerritory(map, element as TerritoryElement, frame); break;
     }
@@ -214,7 +227,6 @@ function getProgress(kfs: { frame: number; value: number }[] | undefined, frame:
 
 // ========== 渲染：固定点 ==========
 
-const pointIconPending = new Set<string>();
 /** canvas 形状图缓存：id -> ImageData（跨地图复用） */
 const shapeImageCache = new Map<string, ImageData>();
 
@@ -357,13 +369,30 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   const sourceId = `point-${element.id}`;
   const layerId = `point-layer-${element.id}`;
   const labelLayerId = `point-label-${element.id}`;
-  const iconImageId = `point-icon-${element.id}`;
-  const hasIcon = !!element.iconUrl;
   const shape = element.shape || 'circle';
+  const cap = getPinCapability(shape);
+  /** 资源形态（image / gif / model / icon） */
+  const isResourceShape = cap.source !== 'none';
+  /** 走位图管线的形态（model 走 3D custom layer，见渲染端模型章节） */
+  const isVisualShape = shape === 'image' || shape === 'gif' || shape === 'icon' || shape === 'model';
+  const visualSrc = isResourceShape ? resolvePinVisualSource(element) : ({ type: 'none' } as const);
+  const legacyIconUrl = element.iconUrl;
+  const hasVisual = (isVisualShape && visualSrc.type !== 'none') || !!legacyIconUrl;
+  const visualKey = legacyIconUrl
+    || (visualSrc.type === 'builtin' ? visualSrc.asset.id
+      : visualSrc.type === 'asset' ? visualSrc.assetId
+      : visualSrc.type === 'icon' ? `${visualSrc.lib}:${visualSrc.name}`
+      : '');
+  const visualTint = element.color || '#FFFFFF';
+  // 模型自转：角度由 frame 决定（确定性），量化为 10° 一档并纳入 imageId —— 换角度即换图
+  const modelAngle = shape === 'model'
+    ? Math.round(((element.visualMeta?.spin ?? 0) + (element.visualMeta?.autoRotate ?? 0) * (frame / renderFps)) / 10) * 10
+    : 0;
+  const visualImageId = `pt-vis-${hashStr(visualKey + visualTint + (shape === 'model' ? `@${modelAngle}` : ''))}`;
   const isTextPin = shape === 'text';
   const useShapeImg = shape === 'pin' || shape === 'bubble' || shape === 'circle';
   const isEmoji = shape === 'emoji';
-  const circleVisible = !hasIcon && !isTextPin && !useShapeImg && !isEmoji;
+  const circleVisible = !hasVisual && !isTextPin && !useShapeImg && !isEmoji;
   const labelHidden = element.label?.text === '';
   const hasLabel = (!!element.label?.text || isTextPin) && !labelHidden && shape !== 'bubble';
   // text 钉固定居中：忽略历史存量里可能残留的 bottom 等位置；pin/dot/emoji 默认标签在上方
@@ -452,12 +481,18 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         map.setPaintProperty(labelLayerId, 'icon-opacity', opacity);
       }
     }
-    // 更新 icon symbol 可见性
+    // 更新资源视觉层（图片 / GIF 静帧 / 图标 / 旧 iconUrl）
     if (map.getLayer(`${layerId}-icon`)) {
-      map.setLayoutProperty(`${layerId}-icon`, 'visibility', hasIcon ? 'visible' : 'none');
-      if (hasIcon) {
-        map.setLayoutProperty(`${layerId}-icon`, 'icon-image', iconImageId);
-        map.setLayoutProperty(`${layerId}-icon`, 'icon-size', (element.iconSize || 24) / 64);
+      map.setLayoutProperty(`${layerId}-icon`, 'visibility', hasVisual ? 'visible' : 'none');
+      if (hasVisual) {
+        if (map.hasImage(visualImageId)) {
+          map.setLayoutProperty(`${layerId}-icon`, 'icon-image', visualImageId);
+        }
+        map.setLayoutProperty(`${layerId}-icon`, 'icon-size', visualIconSize(element, isVisualShape, scale));
+        map.setLayoutProperty(`${layerId}-icon`, 'icon-pitch-alignment', pitchAlign);
+        map.setLayoutProperty(`${layerId}-icon`, 'icon-rotation-alignment', rotAlign);
+        map.setLayoutProperty(`${layerId}-icon`, 'icon-rotate', iconRotate);
+        map.setPaintProperty(`${layerId}-icon`, 'icon-opacity', opacity);
       }
     }
     // 更新 label（气泡位图：可见性 + 图像/锚点/缩放/透明度同步）
@@ -508,6 +543,22 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
       paint: { 'icon-opacity': opacity },
     });
 
+    // 资源视觉层（图片 / GIF 静帧 / 图标库）：资源异步就绪后由更新分支切到真实图
+    ensurePlaceholderImage(map);
+    map.addLayer({
+      id: `${layerId}-icon`, type: 'symbol', source: sourceId,
+      layout: {
+        'icon-image': map.hasImage(visualImageId) ? visualImageId : VIS_PLACEHOLDER,
+        'icon-allow-overlap': true,
+        'icon-size': visualIconSize(element, isVisualShape, scale),
+        'icon-pitch-alignment': pitchAlign,
+        'icon-rotation-alignment': rotAlign,
+        'icon-rotate': iconRotate,
+        'visibility': hasVisual ? 'visible' : 'none',
+      },
+      paint: { 'icon-opacity': opacity },
+    });
+
     // LABEL：无尾标签位图层（默认透明背景 + 防遮挡偏移）
     if (hasLabel) {
       ensureShapeImage(map, labelImgId, getCached(labelImgId, () => makeBubbleImageData(labelText, labelBg, labelFg, labelSize, element.label?.bgRadius ?? 6, element.label?.bgPadding ?? 6, false)));
@@ -526,9 +577,25 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
     });
   }
 
-  // 加载自定义图片
-  if (hasIcon && element.iconUrl) {
-    ensurePointIcon(map, iconImageId, element.iconUrl);
+  // 资源位图（内置 SVG / 上传素材 / 图标库）：异步就绪后 addImage 并触发重绘
+  if (hasVisual) {
+    if (shape === 'model') {
+      ensureModelImage(map, visualImageId, visualSrc, modelAngle, visualTint);
+    } else if (shape === 'gif') {
+      ensureGifFrame(map, element, visualImageId, visualKey, visualSrc, frame, visualTint);
+    } else {
+      const tint = (!legacyIconUrl && cap.canTint) ? visualTint : undefined;
+      ensureVisualImage(map, visualImageId, () => {
+        if (legacyIconUrl) return legacyIconUrl;
+        if (visualSrc.type === 'builtin') return visualSrc.asset.src || null;
+        if (visualSrc.type === 'asset') return getAssetUrl(visualSrc.assetId);
+        if (visualSrc.type === 'icon') {
+          // 图标按元素 color 染色（此前硬编码 '#FFFFFF' 导致图标永远白色）
+          return iconNameToDataUrl(visualSrc.lib, visualSrc.name, tint || '#FFFFFF', element.visualMeta?.strokeWidth ?? 2);
+        }
+        return null;
+      }, tint);
+    }
   }
 
 }
@@ -572,31 +639,177 @@ function getLabelPixelOffset(shape: string, pos: string, scale: number): [number
   }
 }
 
-function ensurePointIcon(map: maplibregl.Map, imageId: string, url: string) {
-  if (map.hasImage(imageId) || pointIconPending.has(imageId)) return;
-  pointIconPending.add(imageId);
-  const img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.onload = () => {
-    pointIconPending.delete(imageId);
-    if (map.hasImage(imageId)) return;
-    try {
-      const maxDim = 64;
-      const scale = maxDim / Math.max(img.width, img.height);
-      const w = Math.max(2, Math.round(img.width * scale));
-      const h = Math.max(2, Math.round(img.height * scale));
-      const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(img, 0, 0, w, h);
-      const data = ctx.getImageData(0, 0, w, h);
-      map.addImage(imageId, data, { pixelRatio: 1 });
-      map.triggerRepaint();
-    } catch { /* 跨域等失败 */ }
-  };
-  img.onerror = () => pointIconPending.delete(imageId);
-  img.src = url;
+/** 资源视觉层占位图（1×1 透明），避免 addLayer 时 icon-image 尚未加载而报错 */
+const VIS_PLACEHOLDER = 'pt-vis-placeholder';
+
+function ensurePlaceholderImage(map: maplibregl.Map): void {
+  if (map.hasImage(VIS_PLACEHOLDER)) return;
+  try {
+    map.addImage(VIS_PLACEHOLDER, { width: 1, height: 1, data: new Uint8ClampedArray(4) }, { pixelRatio: 1 });
+  } catch { /* style 未就绪：下一帧重试 */ }
 }
+
+/** 视觉层显示尺寸：资源形态随 scale（位图基准 64px），旧 iconUrl 沿用 iconSize 逻辑 */
+function visualIconSize(element: PointElement, isVisualShape: boolean, scale: number): number {
+  return isVisualShape ? scale : (element.iconSize || 24) / 64;
+}
+
+/** GIF 解码结果缓存（按资源 key） */
+const gifFrameCache = new Map<string, GifFrames>();
+const gifPending = new Set<string>();
+const modelPending = new Set<string>();
+
+/** 当前元素相对自身起点的播放毫秒（GIF 循环 / 程序化动画的相位基准） */
+function elapsedMsOf(element: { startFrame?: number }, frame: number): number {
+  return Math.max(0, frame - (element.startFrame || 0)) * (1000 / renderFps);
+}
+
+/** 3D 模型：离屏渲染 → ImageData → 走普通位图管线（确定性，与 Remotion 兼容） */
+function ensureModelImage(
+  map: maplibregl.Map,
+  imageId: string,
+  src: ReturnType<typeof resolvePinVisualSource>,
+  angle: number,
+  color?: string,
+): void {
+  if (map.hasImage(imageId) || modelPending.has(imageId)) return;
+  modelPending.add(imageId);
+  void (async () => {
+    const { renderProceduralModel, renderGltfModel } = await import('./model-renderer');
+    let data: ImageData | null = null;
+    if (src.type === 'builtin' && src.asset.model) {
+      data = renderProceduralModel(src.asset.model.kind, angle, color || '#d7d3ce');
+    } else if (src.type === 'asset') {
+      const url = await getAssetUrl(src.assetId);
+      data = url ? await renderGltfModel(url, angle, color) : null;
+    }
+    if (data) {
+      try {
+        if (map.hasImage(imageId)) map.updateImage(imageId, data);
+        else map.addImage(imageId, data, { pixelRatio: 1 });
+        map.triggerRepaint();
+      } catch { /* style 未就绪：下一帧重试 */ }
+    }
+  })().finally(() => modelPending.delete(imageId));
+}
+
+/**
+ * 路线/箭头「显示标记」的资源来源解析（与 point 的 resolvePinVisualSource 同构；
+ * 优先级：图标库 → 内置资源 → 上传素材 → 旧上传图标 symbolId）。
+ */
+function moveIconVisualSrc(mi: LineElement['moveIcon']): ReturnType<typeof resolvePinVisualSource> {
+  if (!mi) return { type: 'none' };
+  if (mi.shape === 'icon' && mi.iconName) return { type: 'icon', lib: mi.iconLib || 'lucide', name: mi.iconName };
+  const builtin = getBuiltinAsset(mi.builtinId);
+  if (builtin) return { type: 'builtin', asset: builtin };
+  if (mi.assetId) return { type: 'asset', assetId: mi.assetId };
+  if (mi.symbolId) {
+    const sym = customSymbolsRegistry.find((x) => x.id === mi.symbolId);
+    if (sym?.url) return { type: 'legacy-url', url: sym.url };
+  }
+  return { type: 'none' };
+}
+
+/** ImageData 染色（multiply + 恢复 alpha）；白色=原色直接返回。用于上传 GIF 帧统一着色 */
+function tintImageData(data: ImageData, color?: string): ImageData {
+  if (!color || color.toUpperCase() === '#FFFFFF') return data;
+  const w = data.width;
+  const h = data.height;
+  const src = document.createElement('canvas');
+  src.width = w; src.height = h;
+  src.getContext('2d')!.putImageData(data, 0, 0);
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d', { willReadFrequently: true })!;
+  octx.drawImage(src, 0, 0);
+  octx.globalCompositeOperation = 'multiply';
+  octx.fillStyle = color;
+  octx.fillRect(0, 0, w, h);
+  octx.globalCompositeOperation = 'destination-in';
+  octx.drawImage(src, 0, 0);           // 恢复原 alpha
+  return octx.getImageData(0, 0, w, h);
+}
+
+/**
+ * 动图：内置走程序化动画（canvas 逐帧绘制）；上传的 GIF 解码一次后按 frame 换帧。
+ * 两者都由 elapsedMs 决定当前帧 —— 同一 frame 永远得到同一张图（Remotion 确定性）。
+ * 着色：内置动图白色基图直接按 color 绘制；上传 GIF 帧取出后 multiply 染色（帧缓存保持原色）。
+ */
+function ensureGifFrame(
+  map: maplibregl.Map,
+  element: { startFrame?: number },
+  imageId: string,
+  key: string,
+  src: ReturnType<typeof resolvePinVisualSource>,
+  frame: number,
+  color?: string,
+): void {
+  const ms = elapsedMsOf(element, frame);
+
+  // 内置程序化动图
+  if (src.type === 'builtin' && src.asset.anim) {
+    const data = renderProceduralAnim(src.asset.anim, ms, color || '#FFFFFF');
+    if (data) {
+      try {
+        if (map.hasImage(imageId)) map.updateImage(imageId, data);
+        else map.addImage(imageId, data, { pixelRatio: 1 });
+      } catch { /* style 未就绪 */ }
+    }
+    return;
+  }
+
+  // 上传的 GIF：先解码，之后每帧 updateImage
+  const cached = gifFrameCache.get(key);
+  if (cached) {
+    const data = tintImageData(cached.frames[gifFrameAt(cached, ms)], color);
+    try {
+      if (map.hasImage(imageId)) map.updateImage(imageId, data);
+      else map.addImage(imageId, data, { pixelRatio: 1 });
+    } catch { /* style 未就绪 */ }
+    return;
+  }
+
+  if (gifPending.has(key)) return;
+  gifPending.add(key);
+  void decodeGifCached(key, async () => {
+    if (src.type === 'asset') {
+      const bytes = await getAssetBytes(src.assetId);
+      if (!bytes) return null;
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    }
+    if (src.type === 'legacy-url') {
+      try {
+        const res = await fetch(src.url);
+        return await res.arrayBuffer();
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  })
+    .then((g) => { if (g) gifFrameCache.set(key, g); })
+    .finally(() => gifPending.delete(key));
+}
+
+const visualPending = new Set<string>();
+
+/** 异步加载资源位图到 MapLibre（按 imageId 去重；就绪后触发重绘） */
+function ensureVisualImage(
+  map: maplibregl.Map,
+  imageId: string,
+  loader: () => string | null | Promise<string | null>,
+  tint?: string,
+): void {
+  if (map.hasImage(imageId) || visualPending.has(imageId)) return;
+  visualPending.add(imageId);
+  void Promise.resolve()
+    .then(loader)
+    .then((src) => { if (src) ensureImageIcon(map, imageId, src, 64, tint); })
+    .catch(() => { /* 资源缺失：保持占位 */ })
+    .finally(() => visualPending.delete(imageId));
+}
+
+
 
 // ========== 渲染：移动点 ==========
 
@@ -929,8 +1142,8 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         ? `pt-mtxt-${hashStr(mLabelText + mLabelColor + mScale + (mi?.labelSize ?? 13))}`
         : mShape === 'flag'
           ? `pt-mflag-${hashStr((mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
-          : mShape === 'image'
-            ? `cust-icon-${mi?.symbolId || ''}-${(mColor || '#FFFFFF').replace('#', '')}`
+          : (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon')
+            ? `pt-mvis-${hashStr(mShape + (mi?.builtinId || '') + (mi?.assetId || '') + (mi?.symbolId || '') + (mi?.iconLib || '') + (mi?.iconName || '') + mColor)}`
             : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
   const inDisplay = frame >= element.startFrame && frame <= element.endFrame;
   const beforeAnim = inDisplay && hasAnim && frame < animStart;
@@ -960,9 +1173,22 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       else if (mShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 6, mi?.labelPadding ?? 8, false)));
       else if (mShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
       else if (mShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
-      else if (mShape === 'image') {
-        const sym = customSymbolsRegistry.find((x) => x.id === mi?.symbolId);
-        if (sym?.url) ensureImageIcon(map, mImgId, sym.url, Math.round(32 * mScale), mColor);
+      else if (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon') {
+        // 资源形态：与标记共用资源管线（内置 / 上传素材 / 图标库；symbolId 为旧上传图标入口）
+        const vsrc = moveIconVisualSrc(mi);
+        if (mShape === 'gif') {
+          ensureGifFrame(map, { startFrame: element.startFrame }, mImgId, `gif:${vsrc.type === 'asset' ? vsrc.assetId : vsrc.type === 'builtin' ? vsrc.asset.id : element.id}`, vsrc, frame, mColor);
+        } else if (mShape === 'model') {
+          ensureModelImage(map, mImgId, vsrc, 0, mColor);
+        } else {
+          ensureVisualImage(map, mImgId, () => {
+            if (vsrc.type === 'builtin') return vsrc.asset.src || null;
+            if (vsrc.type === 'asset') return getAssetUrl(vsrc.assetId);
+            if (vsrc.type === 'icon') return iconNameToDataUrl(vsrc.lib, vsrc.name, mColor);
+            if (vsrc.type === 'legacy-url') return vsrc.url;
+            return null;
+          }, mColor);
+        }
       }
       else ensureShapeImage(map, mImgId, getCached(`dot-${mColor}`, () => makeDotImageData(mColor)));
       if (map.getSource(iconSrcId)) {
@@ -2332,12 +2558,41 @@ setFlyRibbon(map, `${element.id}|astroke`, {
     const mLabelColor = mi?.labelColor || '#000000';
     const mLabelBg = (mi?.labelBg || '#FFFFFF') !== 'transparent' && (mi?.labelBg || '#FFFFFF') !== 'rgba(0,0,0,0)' ? (mi?.labelBg || '#FFFFFF') : 'rgba(0,0,0,0)';
     const mEffShape = (mShape === 'bubble' || mShape === 'text') && !mLabelText ? 'dot' : mShape;
+    const mVisKey = `${mi?.builtinId || ''}|${mi?.assetId || ''}|${mi?.symbolId || ''}|${mi?.iconLib || ''}:${mi?.iconName || ''}`;
     const mImgId = mEffShape === 'emoji'
       ? 'pt-emoji-' + Array.from(String(mi?.emoji || '📍')).map((c) => (c as string).codePointAt(0)!.toString(16)).join('-')
-      : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
+      : mEffShape === 'bubble'
+        ? `pt-abub-${hashStr(mLabelText + mLabelBg + mLabelColor + mScale + (mi?.labelSize ?? 12) + (mi?.labelPadding ?? 8) + (mi?.labelRadius ?? 6))}`
+        : mEffShape === 'text'
+          ? `pt-atxt-${hashStr(mLabelText + mLabelColor + mScale + (mi?.labelSize ?? 13))}`
+          : mEffShape === 'flag'
+            ? `pt-aflag-${hashStr((mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
+            : (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon')
+              ? `pt-mvis-${hashStr(mEffShape + mVisKey + mColor)}`
+              : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
     try {
       if (mEffShape === 'pin') ensureShapeImage(map, mImgId, getCached(`pin-${mColor}`, () => makePinImageData(mColor)));
       else if (mEffShape === 'emoji') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeEmojiImageData(mi?.emoji || '📍')));
+      else if (mEffShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 6, mi?.labelPadding ?? 8, false)));
+      else if (mEffShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
+      else if (mEffShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
+      else if (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon') {
+        // 资源形态：与标记/路线共用资源管线
+        const vsrc = moveIconVisualSrc(mi);
+        if (mEffShape === 'gif') {
+          ensureGifFrame(map, { startFrame: element.startFrame }, mImgId, `gif:${vsrc.type === 'asset' ? vsrc.assetId : vsrc.type === 'builtin' ? vsrc.asset.id : element.id}`, vsrc, frame, mColor);
+        } else if (mEffShape === 'model') {
+          ensureModelImage(map, mImgId, vsrc, 0, mColor);
+        } else {
+          ensureVisualImage(map, mImgId, () => {
+            if (vsrc.type === 'builtin') return vsrc.asset.src || null;
+            if (vsrc.type === 'asset') return getAssetUrl(vsrc.assetId);
+            if (vsrc.type === 'icon') return iconNameToDataUrl(vsrc.lib, vsrc.name, mColor);
+            if (vsrc.type === 'legacy-url') return vsrc.url;
+            return null;
+          }, mColor);
+        }
+      }
       else ensureShapeImage(map, mImgId, getCached(`dot-${mColor}`, () => makeDotImageData(mColor)));
       if (map.getSource(iconSrcId)) {
         (map.getSource(iconSrcId) as GeoJSONSource).setData(iconData);
@@ -2740,45 +2995,9 @@ function renderConnector(map: maplibregl.Map, element: ConnectorElement) {
   }
 }
 
-// ========== 渲染：自定义图标（上传图片） ==========
+// ========== 图片图标缓存（供「移动图标」image 样式复用） ==========
 
 const customIconPending = new Set<string>();
-
-function renderCustomIcon(map: maplibregl.Map, element: CustomIconElement) {
-  const sourceId = `customicon-${element.id}`;
-  const layerId = `customicon-layer-${element.id}`;
-  const symbol = customSymbolsRegistry.find((s) => s.id === element.symbolId);
-  const colorKey = (element.color || '#FFFFFF').replace('#', '');
-  const imageId = `cust-icon-${element.symbolId}-${colorKey}`;
-
-  const geojson = turf.featureCollection([turf.point(element.coordinates)]);
-
-  const flat = element.orientation === 'flat';
-  const rotAlign = flat ? 'map' as const : 'viewport' as const;
-  if (!map.getSource(sourceId)) {
-    map.addSource(sourceId, { type: 'geojson', data: geojson });
-    map.addLayer({
-      id: layerId, type: 'symbol', source: sourceId,
-      layout: {
-        'icon-image': imageId,
-        'icon-size': (element.size || 32) / 64,
-        'icon-rotate': element.rotation || 0,
-        'icon-rotation-alignment': rotAlign,
-        'icon-pitch-alignment': rotAlign,
-        'icon-allow-overlap': true,
-      },
-    });
-  } else if (map.getLayer(layerId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
-    map.setLayoutProperty(layerId, 'icon-image', imageId);
-    map.setLayoutProperty(layerId, 'icon-size', (element.size || 32) / 64);
-    map.setLayoutProperty(layerId, 'icon-rotate', element.rotation || 0);
-    map.setLayoutProperty(layerId, 'icon-rotation-alignment', rotAlign);
-    map.setLayoutProperty(layerId, 'icon-pitch-alignment', rotAlign);
-  }
-
-  if (symbol?.url) ensureImageIcon(map, imageId, symbol.url, element.size || 32, element.color);
-}
 
 function ensureImageIcon(map: maplibregl.Map, imageId: string, url: string, _size: number, color?: string) {
   if (map.hasImage(imageId) || customIconPending.has(imageId)) return;
@@ -2960,7 +3179,6 @@ export function buildSelectionFeature(element: MapElement): any | null {
   switch (element.type) {
     case 'point':
     case 'military_symbol':
-    case 'custom_icon':
     case 'flag':
       return turf.point((element as any).coordinates);
     case 'moving_point':
