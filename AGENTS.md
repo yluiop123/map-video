@@ -60,7 +60,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 ## 5. 领域模型速记
 
 - **Chapter**：startFrame/endFrame（绝对帧）、title/subtitle、elements、camera(视角关键帧)、overlays、transition、特效。章节页签=横向 tabs；时间线只显示当前章节。
-- **MapElement** 判别联合：point(7种PIN样式: shape=dot/pin/bubble/emoji/text + flag + custom_icon + iconUrl)、line(straight/bezier/arc + label + routeEffect + flowSpeed)、moving_point(path+pathProgress)、polygon(shapeKind=poly/rect/circle + circleMeta/rectMeta)、arrow(7种箭头)、double_arrow、encirclement、gathering、flag、connector、military_symbol、custom_icon。
+- **MapElement** 判别联合：point(5种形态: shape=dot/pin/bubble/emoji/text；可带 iconUrl 自定义图)、line(straight/bezier/arc + label + routeEffect + flowSpeed)、moving_point(path+pathProgress)、polygon(shapeKind=poly/rect/circle + circleMeta/rectMeta)、arrow(7种箭头)、double_arrow、encirclement、gathering、flag、connector、military_symbol、territory。（**custom_icon 类型与 Image 工具已于 2026-09-10 下线**；旧数据由 `normalizeChapters` 在 load/import 时退化为 point）
 - **CameraKeyframe**：frame=**到达时间**（绝对帧）；`moveDuration`(帧)=起飞提前量，**默认 2*fps**；语义=停留→飞行→落位（`interpolateCamera(kfs, frame, fps)`）。
 - **LabelConfig**：text/color/position(上左下右中)/bgColor(默认透明)/bgPadding/bgRadius/fontWeight。渲染=canvas 气泡位图（makeBubbleImageData，仅 BUBBLE 样式带尾巴）。
 - **PointElement 特有**：shape、emoji、scale(0.3–3 等比缩放点+label)、orientation(faceCam/flat)、rotation(贴地旋转)、iconUrl、label。
@@ -81,15 +81,17 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 9. **pincer(钳形) 与 double_arrow**：预览与最终必须同用 `buildDoubleArrow`；不要用 buildArrowGeometry 的 pincer 分支做预览。
 11. **镜头插值 effect 的依赖必须是 `chapter.camera`（数组引用）而非 `chapter`**：任何元素属性修改都会重建 chapter 对象，若依赖 chapter 会在每次改样式/改属性时触发 `jumpTo`，把用户手动平移的地图拽回关键帧位置。
 10. **地图事件 vs 播放循环**：`map.on('move')` 会 60fps 触发 `setCurrentCamera`→全订阅组件重渲染，属预期；不要在 move 回调里做重活。
+12. **Windows + Node 22 不能直接 spawn `.cmd`/`.bat`**（CVE-2024-27980，会 EINVAL）：必须 `shell: true` 或走真实 exe 路径（`scripts/dev-desktop.mjs` 已修：Electron 用 `require('electron')` 返回的真实路径）。
+13. **本机安全删除守卫**：批量删除 >50 项会被拦（典型场景：Vite 重建依赖缓存 `node_modules/.vite`、npm install 后的临时目录）。规避方式是 **mv 挪走而非删除**：`move node_modules\.vite node_modules\.vite.bak.%RANDOM%`。
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
 
 - **主题**：stone 深色系（bg #0c0a09 / card #1c1917 / accent #292524 / border 白10%），令牌在 `src/index.css`（HSL 变量，无浅色主题）；字体 Geist（Google Fonts，index.html 引入，fallback system-ui）；品牌蓝 `--brand`（选中/播放头/Toggle）。参考截图目录已删除。
 - **布局**：TopBar(h-14：Logo+项目芯片+章节菜单芯片+地名搜索+撤销重做/保存/导出) → 全幅地图舞台（浮动工具条 top-center、左下角 MapStyleChip 底图/高程/3D、元素浮层左侧、设置浮层右侧 overlay）→ 时间线(播放条+轨道)。章节管理在顶栏 ChapterMenu 弹出框（切换/铅笔重命名/复制/删除/新增/章节设置），不再占用底部空间。
 - 顶栏工具是**扁平一键直达**（点击即创建/进入模式），样式差异全部放右侧 Settings 面板切换；**没有下拉工具组**。工具条/时间线上的「元素」按钮开合左侧元素浮层（editorStore.elementsOpen，默认收起）。
-- Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → CUSTOM IMAGE → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
+- Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
 - 右侧浮层显示条件：element 模式需有选中元素；keyframe/chapter 模式始终显示（editorStore.panelMode 三态）。
-- 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（预设色板+自定义弹窗），不要再写裸 `input[type=color]`；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（normalizeImageSquare 统一 64×64 + 命名入 customSymbols）；PIN STYLE 网格由 PinStyleChooser 共用（PinSettings 与 ImageSettings 同构，Marker(flag) 与点类型面板结构已统一）。
+- 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（预设色板+自定义弹窗），不要再写裸 `input[type=color]`；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
 - 时间显示用秒（`lib/time.ts` / FrameTimeField），内部仍存帧。
 - **路线顶点编辑**：EditableMap 对 line/moving_point/arrow/double_arrow 显示路径点标记（vertex-dot 图层，选中的更大更蓝），mousedown 优先命中顶点（12px）→ 拖拽只更新该点坐标（routePathOf/hitRouteVertex 辅助函数）；路径点坐标也可在属性面板「路径点」中输入/删除。燕尾箭头归入形状类别（categoryOf 特判 arrowType）。
 - **属性面板双语**：editorStore.lang（中/EN，顶栏最右切换），标签用 `useT()` 钩子：`t('中文', 'English')`；新增属性标签必须双语。hints 暂仅中文。
@@ -105,6 +107,44 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 ## 9. 已知待办 / 弱项
 
 - ORIENTATION/点动画/移动点高亮圈等仅在编辑端验证过，导出端 MapScene 未逐项回归。
-- docs/ARCHITECTURE.md 已删除；数据库设计见 README「数据库设计」。
+- docs/ARCHITECTURE.md 已删除；数据库设计见 `docs/db-schema-v2.sql`（唯一事实源）+ `docs/db-tables.html`（速查页）；README「数据库设计」仍是 V1 描述，待重写。
 - 3D(globe) 下 `pixelsToDegrees` 为墨卡托近似，高纬度箭头宽度略有偏差。
 - Region 数据源为世界国家级（英文属性名，内置 ~100 国中英映射）；省级需换 `setRegionSources` 数据源。
+
+## 10. 数据库约定（V2 设计稿，尚未落地到运行时）
+
+**规模**：22 张表 / 3 视图 / 6 触发器 / 334 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+
+- **元素按工具栏聚合为 4 张类别宽表**，表内用 `type` 判别列区分子类型，**没有 `element` 基表**：
+
+  | 表 | type 取值 | 工具栏 |
+  |---|---|---|
+  | `element_marker` | point / flag / military_symbol | Pin |
+  | `element_route` | line / moving_point / connector | Route |
+  | `element_shape` | polygon / arrow / double_arrow / gathering / encirclement | Shape |
+  | `element_territory` | territory（势力/地块/事件 JSON 内联） | Terr |
+
+- **改版的代价 —— 弱引用**：`element_route.from/to_element_id`（连接线端点）与 `element_keyframe.element_id` 无外键，靠 4 条 `trg_*_cleanup` 触发器 + `v_check_dangling` 视图兜底；疆域 JSON 内部一致性靠 `v_check_territory_ref`（`json_each`）。**新增跨表引用时必须重复这个模式**。
+- **能力矩阵三处联动，改一处必须同步另两处**：模型不可着色且不能贴地、GIF 不可着色 —— ① DDL 的 CHECK ② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
+- **外键策略**：保留外键与触发器，**不要为性能删外键**（强制检查 ≈1µs/行）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（生成字段字典注入 `docs/db-tables.html`，`--check` 只校验）、`tools/db-field-notes.mjs`（334 字段中文说明词表，**新增字段漏补说明会直接报错**）、`tools/render-mermaid.mjs`（E-R 图预渲染注入报告）。
+
+## 11. 标记（Pin）形态扩展的代码落点
+
+point 有 **9 种视觉形态**：`circle/text/pin/bubble/emoji` + `image/gif/model/icon`。资源两来源：`asset_id`（用户上传，外置）与 `builtin_id`（内置、**不入库**）；图标形态用 `icon_lib` + `icon_name`（自建库落 `custom_symbol.ns`）。
+
+| 文件 | 职责 |
+|---|---|
+| `lib/builtin-assets.ts` | 内置资源：20 图（内联 SVG）+ 8 动图（程序化）+ 5 模型（程序化简模）；换真实文件只需改常量 |
+| `lib/pin-visual.ts` | **能力矩阵 + `defaultVisualFor` 的唯一事实源**（UI/CHECK/渲染三处共用） |
+| `lib/icon-library.ts` | lucide 懒加载 → 位图（Vite 自动切 chunk） |
+| `lib/assets.ts` | 素材门面：**assetId = sha256** 内容寻址，objectURL 缓存；桌面端走 IPC 落盘、网页端 Dexie Blob |
+| `lib/model-renderer.ts` | 3D 模型**离屏渲染**（独立 canvas + GL 上下文）→ ImageData |
+| `lib/gif-decoder.ts` / `lib/procedural-anim.ts` | GIF 解码（gifuct-js，含 disposal 合成）/ 内置动图 canvas 绘制 |
+
+**★ Remotion 确定性守则（改这几处务必遵守）**：
+1. **three 用离屏渲染 → 位图 → 复用 MapLibre 图片管线**。不要改成「共享 MapLibre WebGL 上下文的 custom layer」——会带来抓帧时序、GL 状态污染、并发竞争三类风险。
+2. **不用 `requestAnimationFrame`、不用 `clock/delta`**：GIF 与模型姿态都由 `frame`（经 `setRenderFps` 注入 fps 基准）决定，同一 frame 永远同一张图。
+3. **异步资源必须预加载**：上传的模型在 `MapScene` 用 `delayRender` + `preloadModelAssets` 预加载，否则乱序渲染时某帧会空白。
+4. **three 必须动态 import**（`await import('./model-renderer')`），否则 625KB 进主包。
+5. **坑**：lucide-react 的 `icons` 导出是**组件表**而非 IconNode（`icons.MapPin` 是组件对象），转位图要 `renderToStaticMarkup(createElement(Comp, {color, strokeWidth, size}))`。

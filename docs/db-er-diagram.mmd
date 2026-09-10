@@ -1,0 +1,101 @@
+%% MapVideo V2 核心 E-R 图（数据源：docs/db-schema-v2.sql / src/types/index.ts）
+%% 重新渲染： node tools/render-mermaid.mjs docs/db-er-diagram.mmd --out docs/db-er-diagram.svg --inject docs/db-redesign.html
+%% 说明：报告里内联的是本文件预渲染出的 SVG，不依赖浏览器运行时解析，离线可用。
+%% 2026-09-10 改版：元素表由「element 基表 + 13 子表」改为 4 张类别宽表；图片类下线；疆域内部实体 JSON 内联。
+erDiagram
+  PROJECT {
+    text project_id PK
+    text name
+    text active_base_map_id FK
+    int default_fps
+  }
+  CHAPTER {
+    text chapter_id PK
+    text project_id FK
+    int order_index
+    int start_frame
+  }
+  ELEMENT_MARKER {
+    text element_id PK
+    text chapter_id FK
+    text type "point|flag|military_symbol"
+    text shape "9 种形态"
+    text asset_id FK "上传的图片/GIF/模型"
+    text builtin_id "内置资源 id"
+    text icon_lib "图标库"
+    real lng
+    real lat
+  }
+  ELEMENT_ROUTE {
+    text element_id PK
+    text chapter_id FK
+    text type "line|moving_point|connector"
+    text from_element_id "弱引用"
+    text to_element_id "弱引用"
+  }
+  ELEMENT_SHAPE {
+    text element_id PK
+    text chapter_id FK
+    text type "polygon|arrow|double_arrow|gathering|encirclement"
+  }
+  ELEMENT_TERRITORY {
+    text element_id PK
+    text chapter_id FK
+    text type "territory"
+    text countries_json
+    text plots_json
+    text events_json
+  }
+  ELEMENT_KEYFRAME {
+    text kf_id PK
+    text element_id "弱引用"
+    text element_type
+    text chapter_id FK
+    text property
+    int frame
+  }
+  CAMERA_KEYFRAME {
+    text kf_id PK
+    text chapter_id FK
+    text follow_route_element_id FK
+  }
+  ASSET {
+    text asset_id PK
+    text project_id FK
+    text sha256
+    text storage
+  }
+  OVERLAY {
+    text overlay_id PK
+    text chapter_id FK
+    text type
+  }
+  PROVIDER {
+    text provider_id PK
+    text kind
+    int active
+  }
+  PROJECT ||--o{ CHAPTER : "1:N 章节"
+  PROJECT ||--o{ BASE_MAP : "1:N 底图"
+  PROJECT ||--o{ ELEVATION_MAP : "1:N 高程"
+  PROJECT ||--o{ CUSTOM_SYMBOL : "1:N 自定义符号"
+  PROJECT ||--o{ ASSET : "1:N 素材"
+  CHAPTER ||--o{ ELEMENT_MARKER : "1:N 标记(Pin)"
+  CHAPTER ||--o{ ELEMENT_ROUTE : "1:N 路线(Route)"
+  CHAPTER ||--o{ ELEMENT_SHAPE : "1:N 形状(Shape)"
+  CHAPTER ||--o{ ELEMENT_TERRITORY : "1:N 疆域(Terr)"
+  CHAPTER ||--o{ ELEMENT_KEYFRAME : "1:N 关键帧"
+  CHAPTER ||--o{ CAMERA_KEYFRAME : "1:N 视角关键帧"
+  CHAPTER ||--o{ OVERLAY : "1:N 弹窗"
+  CHAPTER ||--o{ SCREEN_FX : "1:N 特效窗口"
+  CHAPTER ||--o{ CHAPTER_FX : "1:N 章特效"
+  CHAPTER ||--o{ MUSIC_TRACK : "1:N 配乐"
+  CHAPTER ||--|| NARRATION : "1:1 字幕档"
+  NARRATION ||--o{ NARRATION_ENTRY : "1:N 字幕条"
+  OVERLAY ||--o{ OVERLAY_BLOCK : "1:N 内容块"
+  OVERLAY ||--o{ PERSON_BLOCK : "1:N 人物块"
+  ELEMENT_MARKER ||--o{ ELEMENT_KEYFRAME : "弱引用 无外键"
+  ELEMENT_MARKER }o--o| ASSET : "媒体资源 asset_id"
+  CUSTOM_SYMBOL }o--|| ASSET : "图标素材"
+  CAMERA_KEYFRAME }o--o| ELEMENT_ROUTE : "跟随机位 SET NULL"
+  ELEMENT_ROUTE }o--o{ ELEMENT_MARKER : "connector 端点 弱引用 无外键"
