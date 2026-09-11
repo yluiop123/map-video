@@ -1,9 +1,25 @@
 // ========== 项目类型 ==========
 
+/** 合集：项目之上的一层分组容器 */
+export interface Collection {
+  id: string;
+  name: string;
+  createdAt: Date;
+  updatedAt: Date;
+  /** 排序权重（越小越靠前；默认合集恒为 -1） */
+  order?: number;
+}
+
+/** 默认合集：新建项目未指定归属时落在这里；不可删除 */
+export const DEFAULT_COLLECTION_ID = 'default';
+export const DEFAULT_COLLECTION_NAME = '默认合集';
+
 export interface MapVideoProject {
   id: string;
   name: string;
   description?: string;
+  /** 所属合集 id；缺省视为默认合集 */
+  collectionId?: string;
   createdAt: Date;
   updatedAt: Date;
   globalConfig: GlobalConfig;
@@ -13,6 +29,16 @@ export interface MapVideoProject {
   elevationMaps: ElevationMapConfig[];
   activeElevationMapId: string | null;
   customSymbols: CustomSymbol[];
+  /** 自定义图片库：用户上传的标记图片（二进制外置在 asset 表，这里只登记引用，供面板复用） */
+  customImages: CustomImage[];
+}
+
+/** 自定义图片库条目：指向 asset 表里的图片素材 */
+export interface CustomImage {
+  assetId: string;
+  /** 展示名（默认取文件名） */
+  name: string;
+  createdAt: Date;
 }
 
 export interface GlobalConfig {

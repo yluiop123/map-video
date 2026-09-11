@@ -11,10 +11,16 @@ declare global {
     mapvideo?: {
       desktop: boolean;
       projects: {
-        list: () => Promise<{ id: string; name: string; updatedAt: number; size: number }[]>;
+        list: () => Promise<{ id: string; name: string; updatedAt: number; size: number; collectionId?: string }[]>;
         get: (id: string) => Promise<unknown>;
-        save: (p: { id: string; name: string; data: unknown }) => Promise<{ id: string }>;
+        save: (p: { id: string; name: string; data: unknown; collectionId?: string }) => Promise<{ id: string }>;
         remove: (id: string) => Promise<{ ok: boolean }>;
+      };
+      /** 合集：项目之上的一层分组（不指定归属时落默认合集） */
+      collections: {
+        list: () => Promise<{ id: string; name: string; order?: number; createdAt?: number; updatedAt?: number }[]>;
+        save: (c: { id: string; name: string; order?: number }) => Promise<{ id: string }>;
+        remove: (id: string) => Promise<{ ok: boolean; reason?: string }>;
       };
       providers: {
         list: () => Promise<import('../types').ProviderConfig[]>;

@@ -26,6 +26,13 @@ function initDb() {
       size INTEGER DEFAULT 0,
       updated_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS collections (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      ord INTEGER DEFAULT 0,
+      created_at INTEGER,
+      updated_at INTEGER
+    );
     CREATE TABLE IF NOT EXISTS providers (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
@@ -41,6 +48,17 @@ function initDb() {
       sort INTEGER DEFAULT 0
     );
   `);
+
+  // 迁移：projects 增加 collection_id 列（旧库没有此列），并保证「默认合集」存在
+  const cols = db.prepare('PRAGMA table_info(projects)').all().map((c) => c.name);
+  if (!cols.includes('collection_id')) {
+    db.exec("ALTER TABLE projects ADD COLUMN collection_id TEXT DEFAULT 'default'");
+  }
+  const now = Date.now();
+  db.prepare(`
+    INSERT OR IGNORE INTO collections (id, name, ord, created_at, updated_at)
+    VALUES ('default', '默认合集', -1, ?, ?)
+  `).run(now, now);
 }
 
 // ---------- AI / TTS（协议实现，与 web 服务端同源） ----------
@@ -147,22 +165,41 @@ async function synthAudio(cfg, text) {
 function registerIpc() {
   // 项目
   ipcMain.handle('db:projects:list', () => {
-    return db.prepare('SELECT id, name, updated_at AS updatedAt, size FROM projects ORDER BY updated_at DESC').all();
+    return db.prepare('SELECT id, name, updated_at AS updatedAt, size, collection_id AS collectionId FROM projects ORDER BY updated_at DESC').all();
   });
   ipcMain.handle('db:projects:get', (_e, id) => {
     const row = db.prepare('SELECT data FROM projects WHERE id = ?').get(id);
     return row ? JSON.parse(row.data) : null;
   });
-  ipcMain.handle('db:projects:save', (_e, { id, name, data }) => {
+  ipcMain.handle('db:projects:save', (_e, { id, name, data, collectionId }) => {
     const json = JSON.stringify(data);
     db.prepare(`
-      INSERT INTO projects (id, name, data, size, updated_at) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET name = excluded.name, data = excluded.data, size = excluded.size, updated_at = excluded.updated_at
-    `).run(id, name || '未命名', json, json.length, Date.now());
+      INSERT INTO projects (id, name, data, size, updated_at, collection_id) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, data = excluded.data, size = excluded.size, updated_at = excluded.updated_at, collection_id = excluded.collection_id
+    `).run(id, name || '未命名', json, json.length, Date.now(), collectionId || data?.collectionId || 'default');
     return { id };
   });
   ipcMain.handle('db:projects:remove', (_e, id) => {
     db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+    return { ok: true };
+  });
+
+  // 合集（项目之上的一层分组）
+  ipcMain.handle('db:collections:list', () => {
+    return db.prepare('SELECT id, name, ord AS "order", created_at AS createdAt, updated_at AS updatedAt FROM collections ORDER BY ord ASC, updated_at DESC').all();
+  });
+  ipcMain.handle('db:collections:save', (_e, { id, name, order }) => {
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO collections (id, name, ord, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, ord = excluded.ord, updated_at = excluded.updated_at
+    `).run(id, name || '未命名合集', order ?? 0, now, now);
+    return { id };
+  });
+  ipcMain.handle('db:collections:remove', (_e, id) => {
+    if (id === 'default') return { ok: false, reason: 'default-immutable' };
+    db.prepare("UPDATE projects SET collection_id = 'default' WHERE collection_id = ?").run(id);
+    db.prepare('DELETE FROM collections WHERE id = ?').run(id);
     return { ok: true };
   });
 

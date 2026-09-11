@@ -63,7 +63,14 @@ export default function App() {
   }, []);
 
   if (!project) {
-    return <ProjectManager />;
+    // 项目列表页同样要挂 ConfirmHost：useConfirm 依赖它渲染弹窗并 resolve，
+    // 缺了会导致 await confirm(...) 永久挂起（删除合集/项目“点了没反应”）
+    return (
+      <>
+        <ProjectManager />
+        <ConfirmHost />
+      </>
+    );
   }
 
   const currentChapter = project.chapters.find((c) => c.id === selectedChapterId) || project.chapters[0];

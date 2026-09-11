@@ -2,11 +2,11 @@ import { create } from 'zustand';
 import { storage } from '../lib/storage';
 import type {
   MapVideoProject, Chapter, MapElement, GlobalConfig, BaseMapConfig,
-  ElevationMapConfig, CustomSymbol, OverlayItem, CameraKeyframe, TransitionConfig,
+  ElevationMapConfig, CustomSymbol, CustomImage, OverlayItem, CameraKeyframe, TransitionConfig,
   ChapterEffect, ProjectExport, ScreenFxItem,
   NarrationEntry, NarrationStyle, MusicTrack
 } from '../types';
-import { generateId, normalizeOverlayContent, normalizeTitleStyle, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
+import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeTitleStyle, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
 
 /** 兼容旧存档：疆域 display / 章节特效层 / 旧弹窗类型缺字段时补默认值（load/import 入口统一过一遍） */
@@ -151,7 +151,7 @@ interface ProjectState {
   future: MapVideoProject[];
 
   // 项目操作
-  createProject: (name: string) => void;
+  createProject: (name: string, collectionId?: string) => Promise<void>;
   loadProject: (id: string) => Promise<void>;
   saveProject: () => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
@@ -212,11 +212,15 @@ interface ProjectState {
   addCustomSymbol: (symbol: CustomSymbol) => void;
   removeCustomSymbol: (id: string) => void;
 
+  // 自定义图片库（上传后登记，供面板复用）
+  addCustomImage: (img: CustomImage) => void;
+  removeCustomImage: (assetId: string) => void;
+
   // 全局配置（如 3D 球体投影开关）
   updateGlobalConfig: (changes: Partial<GlobalConfig>) => void;
 
   // 导入导出
-  importProjectConfig: (data: ProjectExport) => void;
+  importProjectConfig: (data: ProjectExport, collectionId?: string) => Promise<void>;
   createExport: () => ProjectExport;
   clear: () => void;
 
@@ -247,9 +251,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     future: [],
 
     // ----- 项目 -----
-    createProject: (name: string) => {
+    createProject: async (name: string, collectionId?: string) => {
       const project: MapVideoProject = {
-        id: generateId(), name, createdAt: new Date(), updatedAt: new Date(),
+        id: generateId(), name, collectionId: collectionId || DEFAULT_COLLECTION_ID,
+        createdAt: new Date(), updatedAt: new Date(),
         globalConfig: { ...DEFAULT_GLOBAL_CONFIG },
         chapters: [createDefaultChapter(0, 0, DEFAULT_GLOBAL_CONFIG.defaultDuration)],
         baseMaps: [...DEFAULT_BASE_MAPS],
@@ -257,9 +262,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         elevationMaps: [...DEFAULT_ELEVATION_MAPS],
         activeElevationMapId: 'none',
         customSymbols: [],
+        customImages: [],
       };
       set({ project, history: [], future: [] });
-      storage.saveProject(project);
+      await storage.saveProject(project);
       markProjectSaved(project);
     },
 
@@ -620,6 +626,23 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         : state);
     },
 
+    addCustomImage: (img: CustomImage) => {
+      commit();
+      set((state) => {
+        if (!state.project) return state;
+        const list = state.project.customImages || [];
+        if (list.some((x) => x.assetId === img.assetId)) return state;  // 内容寻址：同一张图不重复登记
+        return { project: { ...state.project, customImages: [...list, img] } };
+      });
+    },
+
+    removeCustomImage: (assetId: string) => {
+      commit();
+      set((state) => state.project
+        ? { project: { ...state.project, customImages: (state.project.customImages || []).filter((x) => x.assetId !== assetId) } }
+        : state);
+    },
+
     updateGlobalConfig: (changes: Partial<GlobalConfig>) => {
       commit();
       set((state) => state.project
@@ -627,15 +650,17 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         : state);
     },
 
-    importProjectConfig: (data: ProjectExport) => {
+    importProjectConfig: async (data: ProjectExport, collectionId?: string) => {
       const project = {
         ...data.project,
         id: generateId(),
+        collectionId: collectionId || DEFAULT_COLLECTION_ID,
         updatedAt: new Date(),
         chapters: normalizeChapters(data.project.chapters),
+        customImages: data.project.customImages ?? [],
       };
       set({ project, history: [], future: [] });
-      storage.saveProject(project);
+      await storage.saveProject(project);
       markProjectSaved(project);
     },
 

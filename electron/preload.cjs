@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('mapvideo', {
     save: (p) => ipcRenderer.invoke('db:projects:save', p),
     remove: (id) => ipcRenderer.invoke('db:projects:remove', id),
   },
+  collections: {
+    list: () => ipcRenderer.invoke('db:collections:list'),
+    save: (c) => ipcRenderer.invoke('db:collections:save', c),
+    remove: (id) => ipcRenderer.invoke('db:collections:remove', id),
+  },
   providers: {
     list: () => ipcRenderer.invoke('db:providers:list'),
     upsert: (cfg) => ipcRenderer.invoke('db:providers:upsert', cfg),

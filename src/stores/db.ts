@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
-import type { MapVideoProject } from '../types';
-import { generateId } from '../types';
+import type { MapVideoProject, Collection } from '../types';
+import { generateId, DEFAULT_COLLECTION_ID } from '../types';
 
 /** 素材行：图片 / GIF / 模型等大文件，存 Blob（内容寻址，assetId = sha256） */
 export interface AssetRow {
@@ -18,6 +18,7 @@ export interface AssetRow {
 interface MapVideoDB {
   projects: Table<MapVideoProject, string>;
   assets: Table<AssetRow, string>;
+  collections: Table<Collection, string>;
 }
 
 const db = new Dexie('MapVideoDB') as Dexie & MapVideoDB;
@@ -28,6 +29,12 @@ db.version(1).stores({
 db.version(2).stores({
   projects: 'id, name, createdAt, updatedAt',
   assets: 'assetId, projectId, createdAt',
+});
+// v3：新增 collections 表（项目之上的合分层级）；projects 补 collectionId 索引
+db.version(3).stores({
+  projects: 'id, name, createdAt, updatedAt, collectionId',
+  assets: 'assetId, projectId, createdAt',
+  collections: 'id, name, order, updatedAt',
 });
 
 export async function saveProject(project: MapVideoProject): Promise<void> {
@@ -49,6 +56,26 @@ export async function listProjects(): Promise<MapVideoProject[]> {
 export async function clearAll(): Promise<void> {
   await db.projects.clear();
   await db.assets.clear();
+  await db.collections.clear();
+}
+
+// ---------- 合集（项目之上的一层分组） ----------
+
+export async function listCollections(): Promise<Collection[]> {
+  const rows = await db.collections.toArray();
+  return rows.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name));
+}
+
+export async function saveCollection(c: Collection): Promise<void> {
+  await db.collections.put({ ...c, updatedAt: new Date() });
+}
+
+/** 删除合集：其下项目回落默认合集（不删项目）；默认合集不可删 */
+export async function deleteCollection(id: string): Promise<void> {
+  if (id === DEFAULT_COLLECTION_ID) return;
+  await db.collections.delete(id);
+  const affected = await db.projects.where('collectionId').equals(id).toArray();
+  for (const p of affected) await db.projects.put({ ...p, collectionId: DEFAULT_COLLECTION_ID });
 }
 
 // ---------- 素材 ----------
