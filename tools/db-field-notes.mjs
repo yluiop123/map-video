@@ -3,7 +3,7 @@
  *
  * 为什么单独一份文件：DDL 是结构事实源，字段的业务含义变更比结构频繁，
  * 分开后改说明不必动 DDL；同时生成器会强制「每个字段都必须有说明」，
- * 新增字段若忘了补说明，docs/db-tables.html 生成时会直接报错。
+ * 新增字段若忘了补说明，docs/db-tables.md 生成时会直接报错。
  *
  * 说明撰写依据：docs/db-schema-v2.sql 的内联注释 + src/types/index.ts 的字段语义。
  * 修改后重跑：node --experimental-sqlite tools/gen-db-field-dict.mjs

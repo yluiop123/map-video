@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * gen-db-field-dict.mjs — 从 DDL 生成「逐表字段字典」，注入 docs/db-tables.html
+ * gen-db-field-dict.mjs — 从 DDL 生成「逐表字段字典」（Markdown），注入 docs/db-tables.md
  *
- * 为什么用生成而不是手写：37 张表 300+ 个列，手写必然与 DDL 漂移。
+ * 为什么用生成而不是手写：22 张表 300+ 个列，手写必然与 DDL 漂移。
  * 本脚本把 DDL 当作唯一事实源，改了 DDL 重跑即可，且会断言与 SQLite 解析结果一致。
+ * 注：文档一律用 Markdown（2026-09-11 起不再生成 HTML）。
  *
  * 用法：
- *   node --experimental-sqlite tools/gen-db-field-dict.mjs                # 默认 docs/db-schema-v2.sql → docs/db-tables.html
+ *   node --experimental-sqlite tools/gen-db-field-dict.mjs                # 默认 docs/db-schema-v2.sql → docs/db-tables.md
  *   node --experimental-sqlite tools/gen-db-field-dict.mjs --check        # 只校验不写入（CI/提交前用）
- *   node --experimental-sqlite tools/gen-db-field-dict.mjs --ddl x.sql --html y.html
+ *   node --experimental-sqlite tools/gen-db-field-dict.mjs --ddl x.sql --md y.md
  *
- * 注入位置：docs/db-tables.html 中 <!-- FIELD-DICT:BEGIN --> 与 <!-- FIELD-DICT:END --> 之间
+ * 注入位置：docs/db-tables.md 中 <!-- FIELD-DICT:BEGIN --> 与 <!-- FIELD-DICT:END --> 之间
  * 退出码：0 正常；1 校验失败或标记缺失
  */
 import { DatabaseSync } from 'node:sqlite';
@@ -26,11 +27,11 @@ const opt = (name, dflt) => {
 };
 const CHECK_ONLY = argv.includes('--check');
 const DDL = opt('--ddl', 'docs/db-schema-v2.sql');
-const HTML = opt('--html', 'docs/db-tables.html');
+const MD = opt('--md', 'docs/db-tables.md');
 const MARKER = 'FIELD-DICT';
 
-// 分组：与 db-tables.html §3 保持一致（顺序即输出顺序）
-// 元素部分按「工具条按钮」分类（见 docs/db-tables.html 第五节），而非按技术结构分类
+// 分组：与 db-tables.md §3 保持一致（顺序即输出顺序）
+// 元素部分按「工具条按钮」分类（见 docs/db-tables.md 第五节），而非按技术结构分类
 const GROUPS = [
   ['组 1 · 元数据', ['schema_meta']],
   ['组 2 · 项目聚合根', ['project']],
@@ -263,51 +264,58 @@ if (problems.length) {
   process.exit(1);
 }
 
-// ---------- 生成 HTML ----------
+// ---------- 生成 Markdown ----------
 const totalCols = sqliteTables.reduce((n, t) => n + tables.get(t).cols.length, 0);
 
+// 约束徽标（Markdown 行内代码）
 const badge = (c) => {
   const parts = [];
-  if (c.pk) parts.push('<span class="tag t-blue">PK</span>');
-  if (c.notNull && !c.pk) parts.push('<span class="tag t-gray">NOT NULL</span>');
-  if (c.unique && !c.pk) parts.push('<span class="tag t-gray">UNIQUE</span>');
-  if (c.ref) parts.push(`<span class="tag t-amber">FK → ${c.ref.table}${c.ref.onDelete ? ' ' + c.ref.onDelete : ''}</span>`);
-  return parts.join('');
+  if (c.pk) parts.push('`PK`');
+  if (c.notNull && !c.pk) parts.push('`NOT NULL`');
+  if (c.unique && !c.pk) parts.push('`UNIQUE`');
+  if (c.ref) parts.push(`\`FK → ${c.ref.table}${c.ref.onDelete ? ' ' + c.ref.onDelete : ''}\``);
+  return parts.join(' ') || '—';
 };
 
-const out = [];
-out.push(`<p>本片由 DDL 自动生成（<code>tools/gen-db-field-dict.mjs</code>），共 <b>${sqliteTables.length} 张表 / ${totalCols} 个列，每列都有中文说明</b>。字段说明取自 <code>tools/db-field-notes.mjs</code>（人工词表，${descStats.notes} 条），结构与约束取自 DDL。脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。</p>`);
-out.push('<p class="legend">元素相关的 <b>4 张类别宽表按工具条按钮分类</b>（标记 / 路线 / 形状 / 疆域），每张表用 <code>type</code> 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。</p>');
-out.push('<p class="legend">读法：<b>列</b>为字段名；<b>约束</b>中的 <span class="tag t-blue">PK</span> 主键、<span class="tag t-gray">NOT NULL</span> 必填、<span class="tag t-amber">FK</span> 外键（括号内为删除时的行为：CASCADE 级联删除 / SET NULL 置空 / RESTRICT 拒绝删除）；<b>说明</b>取自 DDL 内联注释。</p>');
+// 表格单元格转义：竖线与换行
+const cell = (s) => String(s == null ? '' : s).replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ');
 
-const idx = GROUPS.map(([g, list]) => `<p style="margin:6px 0"><b>${esc(g)}</b><br>${list.map((t) => `<a href="#t-${t}">${t}</a>`).join(' · ')}</p>`).join('\n');
-out.push(`<div class="card"><h4 style="margin-top:0">快速跳转</h4>\n${idx}\n</div>`);
+const out = [];
+out.push(`> 本节由 DDL 自动生成（\`tools/gen-db-field-dict.mjs\`），共 **${sqliteTables.length} 张表 / ${totalCols} 个列，每列都有中文说明**。字段说明取自 \`tools/db-field-notes.mjs\`（人工词表，${descStats.notes} 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。\n`);
+out.push('> 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。\n');
+out.push('> 读法：**列**为字段名；**约束**中 `PK` 主键、`NOT NULL` 必填、`FK` 外键（其后为删除行为：CASCADE 级联删除 / SET NULL 置空 / RESTRICT 拒绝删除）。\n');
+
+out.push('#### 快速跳转\n');
+for (const [g, list] of GROUPS) {
+  out.push(`- **${g}**：${list.map((t) => '`' + t + '`').join(' · ')}`);
+}
+out.push('');
 
 for (const [g, list] of GROUPS) {
-  out.push(`<h3>${esc(g)}</h3>`);
+  out.push(`### ${g}\n`);
   for (const t of list) {
     const tb = tables.get(t);
     const pkCols = tb.cols.filter((c) => c.pk).map((c) => c.name).join(' + ');
     const entry = TOOL_ENTRY[t];
-    out.push(`<h4 id="t-${t}" style="margin-bottom:2px"><code style="font-size:14px">${t}</code>${tb.comment ? ` <span class="tag t-gray">${esc(tb.comment)}</span>` : ''}</h4>`);
-    out.push(`<p class="legend" style="margin:0 0 4px">${tb.cols.length} 列 · 主键 <code>${pkCols || '—'}</code>${entry ? ` · 工具入口：${esc(entry)}` : ''}</p>`);
-    out.push('<table><thead><tr><th>列</th><th>类型</th><th>约束</th><th>说明</th></tr></thead><tbody>');
+    out.push(`#### ${t}${tb.comment ? ` — ${tb.comment}` : ''}\n`);
+    out.push(`${tb.cols.length} 列 · 主键 ${pkCols ? '`' + pkCols + '`' : '—'}${entry ? ` · 工具入口：${entry}` : ''}\n`);
+    out.push('| 列 | 类型 | 约束 | 说明 |');
+    out.push('|---|---|---|---|');
     for (const c of tb.cols) {
       const notes = [];
-      if (c.desc) notes.push(esc(c.desc));
-      if (c.default) notes.push(`默认 <code>${esc(c.default)}</code>`);
-      if (c.checks.length) notes.push(c.checks.map((x) => `<code>CHECK (${esc(x)})</code>`).join(' '));
-      out.push(`<tr><td><code>${c.name}</code></td><td><span class="legend" style="margin:0">${c.type || '—'}</span></td><td>${badge(c) || '<span class="legend" style="margin:0">—</span>'}</td><td>${notes.join(' · ') || ''}</td></tr>`);
+      if (c.desc) notes.push(c.desc);
+      if (c.default) notes.push(`默认 \`${c.default}\``);
+      if (c.checks.length) notes.push(c.checks.map((x) => `\`CHECK (${x})\``).join(' '));
+      out.push(`| \`${c.name}\` | ${c.type || '—'} | ${badge(c)} | ${cell(notes.join(' · '))} |`);
     }
-    out.push('</tbody></table>');
+    out.push('');
     if (tb.constraints.length) {
-      const lines = tb.constraints.map((c) => {
-        const extra = c.comments.length ? ` <span class="legend" style="margin:0">（${esc(c.comments.join('；'))}）</span>` : '';
-        return `<li><code>${esc(c.text)}</code>${extra}</li>`;
-      });
-      out.push(`<div style="margin:4px 0 18px"><b class="legend">表级约束</b><ul class="legend" style="margin:4px 0 0">${lines.join('')}</ul></div>`);
-    } else {
-      out.push('<div style="margin:4px 0 18px"></div>');
+      out.push('**表级约束**\n');
+      for (const c of tb.constraints) {
+        const extra = c.comments.length ? `（${c.comments.join('；')}）` : '';
+        out.push(`- \`${c.text}\`${extra}`);
+      }
+      out.push('');
     }
   }
 }
@@ -323,12 +331,12 @@ if (CHECK_ONLY) {
   process.exit(0);
 }
 
-const html = fs.readFileSync(HTML, 'utf8');
-const bi = html.indexOf(begin);
-const ei = html.indexOf(end);
+const md = fs.readFileSync(MD, 'utf8');
+const bi = md.indexOf(begin);
+const ei = md.indexOf(end);
 if (bi === -1 || ei === -1) {
-  console.error(`注入失败：${HTML} 中找不到 ${begin} / ${end} 标记对`);
+  console.error(`注入失败：${MD} 中找不到 ${begin} / ${end} 标记对`);
   process.exit(1);
 }
-fs.writeFileSync(HTML, html.slice(0, bi + begin.length) + '\n' + generated + '\n' + html.slice(ei), 'utf8');
-console.log(`已注入 ${HTML}：${sqliteTables.length} 张表 / ${totalCols} 列（说明：词表 ${descStats.notes} 条${descStats.ddl.length ? ` + DDL 注释 ${descStats.ddl.length} 条` : ''}），生成内容 ${(generated.length / 1024).toFixed(1)}KB`);
+fs.writeFileSync(MD, md.slice(0, bi + begin.length) + '\n' + generated + '\n' + md.slice(ei), 'utf8');
+console.log(`已注入 ${MD}：${sqliteTables.length} 张表 / ${totalCols} 列（说明：词表 ${descStats.notes} 条${descStats.ddl.length ? ` + DDL 注释 ${descStats.ddl.length} 条` : ''}），生成内容 ${(generated.length / 1024).toFixed(1)}KB`);

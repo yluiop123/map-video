@@ -34,6 +34,23 @@ npm run dist:win       # 打 Windows 安装包/portable exe → release/
 
 > 注意：`dist/` 是两个形态共用的产物目录——发布 GH Pages 用 `npm run build`，跑/打包桌面用 `npm run build:desktop`，切换时重新构建即可。
 
+## 打包产物（`release/`）
+
+`npm run dist:win` 的输出目录；`build.win.target = ["nsis", "portable"]`，因此会产出**两种分发形态**：
+
+| 文件 | 大小 | 用途 |
+|---|---|---|
+| `MapVideo Setup <版本>.exe` | ~157 MB | **安装版（NSIS）**：安装向导、可自选安装目录、自动创建快捷方式 → **对外分发用这个** |
+| `MapVideo <版本>.exe` | ~157 MB | **便携版（Portable）**：免安装，双击即跑；功能与安装版完全相同 |
+| `MapVideo Setup <版本>.exe.blockmap` | ~0.2 MB | 差分更新的块映射表（electron-updater 升级时只下改动部分） |
+| `latest.yml` | — | electron-updater 更新元数据（版本号 / 校验和 / 下载地址） |
+| `builder-debug.yml` | — | electron-builder 调试清单，非必需 |
+| `win-unpacked/` | — | **中间产物**：未压缩的程序目录（真正的程序是里面的 `MapVideo.exe` + `resources/`），上面两个 exe 由它压缩而来 |
+
+- 整个目录都是**产物、不入库**（`.gitignore` 已忽略），可整目录删除后重新打包
+- 只需留存一份给用户时：删掉 `win-unpacked/`、`builder-debug.yml` 与两个形态中的一个即可
+- 已知体积浪费：`win-unpacked/resources/app.asar.unpacked/node_modules/@esbuild/*/esbuild.exe`（~11 MB）是 `@remotion/bundler` 依赖链带进来的**构建期**二进制，运行不需要
+
 ## 桌面端架构
 
 ```

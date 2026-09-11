@@ -1,6 +1,5 @@
 %% MapVideo V2 核心 E-R 图（数据源：docs/db-schema-v2.sql / src/types/index.ts）
-%% 重新渲染： node tools/render-mermaid.mjs docs/db-er-diagram.mmd --out docs/db-er-diagram.svg --inject docs/db-redesign.html
-%% 说明：报告里内联的是本文件预渲染出的 SVG，不依赖浏览器运行时解析，离线可用。
+%% 用法：直接以 ```mermaid 代码块嵌入 docs/db-redesign.md（Markdown 渲染器原生支持，不再预渲染 SVG）
 %% 2026-09-10 改版：元素表由「element 基表 + 13 子表」改为 4 张类别宽表；图片类下线；疆域内部实体 JSON 内联。
 erDiagram
   PROJECT {
