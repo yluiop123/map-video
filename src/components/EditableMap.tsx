@@ -5,7 +5,7 @@ import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import * as turf from '@turf/turf';
 import {
-  renderElements, setCustomSymbols, setRenderFps,
+  renderElements, setCustomSymbols, setRenderFps, setVisualReadyHandler,
   buildArrowGeometry, buildSelectionFeature, pixelsToDegrees, rotatePt, resolveFollowCam, resolveOrbitCam,
 } from '../lib/map-renderer';
 import { buildDoubleArrow, buildGatheringPlace } from '../lib/military-plots';
@@ -230,6 +230,12 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
   }, [globeOn, styleUrl]);
 
   const [styleTick, setStyleTick] = useState(0);
+  // 资源位图（图片/动图/模型/图标库）首次就绪 → 重跑一次 renderElements，
+  // 把图层上的占位图换成真实位图（否则要等下一次元素变更才显示，「点两次」就是这个原因）
+  useEffect(() => {
+    setVisualReadyHandler(() => setStyleTick((n) => n + 1));
+    return () => setVisualReadyHandler(null);
+  }, []);
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const confirm = useConfirm();
   const routeEditMode = useEditorStore((s) => s.routeEdit);

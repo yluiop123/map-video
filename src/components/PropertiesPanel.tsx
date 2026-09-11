@@ -9,18 +9,17 @@ import { frameToSeconds, secondsToFrame, round2 } from '../lib/time';
 import { TERRITORY_PALETTE } from '../lib/territory';
 import { Section, Field, StyleGrid, Toggle, ColorPicker, OptionBlocks, PanelHeader, useT, NumberInput } from './ui/primitives';
 import { useConfirm } from './ui/ConfirmHost';
-import Cropper from 'react-easy-crop';
-import 'react-easy-crop/react-easy-crop.css';
+
 import type {
   MapElement, PointElement, LineElement,
   PolygonElement, ArrowElement, FlagElement,
   DoubleArrowElement, EncirclementElement, GatheringElement,
-  CameraKeyframe, TerritoryElement, PointShape,
+  CameraKeyframe, TerritoryElement, PointShape, CustomImage,
 } from '../types';
 import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES } from '../lib/builtin-assets';
 import { defaultVisualFor, getPinCapability } from '../lib/pin-visual';
 import { loadLucideIcons, filterExistingIcons, type IconComponent } from '../lib/icon-library';
-import { uploadAsset } from '../lib/assets';
+import { uploadAsset, getAssetUrl, removeAsset } from '../lib/assets';
 
 type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'territory';
 
@@ -58,6 +57,9 @@ function categoryOf(el: MapElement): Category {
 }
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+/** 稳定的空数组常量：zustand selector 里绝不能现造 `|| []`，否则快照每次都变 → 无限重渲染 */
+const EMPTY_CUSTOM_IMAGES: CustomImage[] = [];
 
 export function PropertiesPanel() {
   const t = useT();
@@ -137,7 +139,7 @@ export function PropertiesPanel() {
         {cat === 'pin' && element.type === 'point' && (() => {
           const pe = element as PointElement;
           const st = pinStyleOf(pe);
-          if (st === 'image') return null;
+          // 所有点形态（含图片/动图/模型/图标）都支持标签，与 PIN/DOT 一致
           const fixedCenter = st === 'text' || st === 'bubble';
           return (
             <>
@@ -342,7 +344,7 @@ function PinSettings({ element, patch }: {
         </Section>
       )}
 
-      {(style === 'dot' || style === 'pin' || style === 'image' || style === 'icon') && cap.canTint && (
+      {((['dot', 'pin', 'image', 'gif', 'model', 'icon'] as PinStyle[]).includes(style)) && cap.canTint && (
         <Appearance color={pe.color || '#FF4444'} onChange={(c) => patch({ color: c })} />
       )}
 
@@ -433,11 +435,9 @@ function PinStyleChooser({ element, patch }: {
 
   return (
     <Section title={t('样式', 'Pin Style')}>
-      <div className="grid grid-cols-3 gap-1.5">
-        {/* 基础样式 */}
+      <div className="grid grid-cols-4 gap-1.5">
+        {/* 基础样式（圆点 / 水滴针已归入「图片」类别） */}
         {([
-          { value: 'pin', label: '📍 PIN' },
-          { value: 'dot', label: '⚫ DOT' },
           { value: 'bubble', label: '💬 BUBBLE' },
           { value: 'flag', label: t('🚩 旗帜', '🚩 MARKER') },
           { value: 'text', label: 'Aa TEXT' },
@@ -493,6 +493,25 @@ function PinResourcePicker({ element, style, patch }: {
     return picked;
   }, [isIconStyle]);
 
+  // 自定义图片库（项目级）：上传后登记，缩略图按 assetId 异步取 URL
+  // 注意：selector 只能返回原值 —— `|| []` 每次产生新数组会让 useSyncExternalStore 判定快照变化，导致无限重渲染
+  const customImages = useProjectStore((s) => s.project?.customImages) ?? EMPTY_CUSTOM_IMAGES;
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const deleteCustomImage = useDeleteCustomImage();
+  useEffect(() => {
+    if (style !== 'image' || customImages.length === 0) return;
+    let alive = true;
+    void (async () => {
+      const next: Record<string, string> = {};
+      for (const ci of customImages) {
+        const u = await getAssetUrl(ci.assetId);
+        if (u) next[ci.assetId] = u;
+      }
+      if (alive) setThumbs(next);
+    })();
+    return () => { alive = false; };
+  }, [style, customImages]);
+
   if (!isResource) return null;
 
   const cellBase = 'flex items-center justify-center rounded border transition-colors';
@@ -530,14 +549,35 @@ function PinResourcePicker({ element, style, patch }: {
   }
 
   const list = style === 'image' ? BUILTIN_IMAGES : style === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
+  const resettable = { builtinId: undefined, assetId: undefined, symbolId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined } as Partial<MapElement>;
+  const isDot = !element.shape || element.shape === 'circle';
   return (
     <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
+      {/* 内置图片：圆点 / 水滴针是内置图形，与内置图集同列（排在首位） */}
       <div className="grid grid-cols-4 gap-1.5 max-h-44 overflow-y-auto">
+        {style === 'image' && (
+          <>
+            <button
+              title={t('圆点', 'Dot')}
+              onClick={() => patch({ ...resettable, shape: 'circle', color: element.color || '#FF4444' } as Partial<MapElement>)}
+              className={`${cellBase} h-12 ${isDot ? cellOn : cellOff}`}
+            >
+              <span className="block w-4 h-4 rounded-full bg-white" />
+            </button>
+            <button
+              title={t('水滴针', 'Pin')}
+              onClick={() => patch({ ...resettable, shape: 'pin', color: element.color || '#FF4444' } as Partial<MapElement>)}
+              className={`${cellBase} h-12 ${element.shape === 'pin' ? cellOn : cellOff}`}
+            >
+              <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
+            </button>
+          </>
+        )}
         {list.map((a) => (
           <button
             key={a.id}
             title={a.name}
-            onClick={() => patch({ builtinId: a.id } as Partial<MapElement>)}
+            onClick={() => patch({ ...resettable, shape: style as PointShape, builtinId: a.id } as Partial<MapElement>)}
             className={`${cellBase} h-12 px-1 text-[10px] leading-tight text-center ${element.builtinId === a.id ? cellOn : cellOff}`}
           >
             {a.src
@@ -546,9 +586,89 @@ function PinResourcePicker({ element, style, patch }: {
           </button>
         ))}
       </div>
-      <ResourceUploadRow style={style} patch={patch} />
+
+      {/* 自定义图片：上传后登记进项目 customImages，之后可随时复用 */}
+      {style === 'image' && (
+        <>
+          <p className="mt-2 mb-1 text-[10px] text-muted-foreground/70">{t('自定义图片', 'Custom images')}</p>
+          {customImages.length > 0 && (
+            <CustomImageGrid
+              images={customImages}
+              thumbs={thumbs}
+              activeId={element.assetId}
+              onPick={(assetId) => patch({ ...resettable, shape: 'image', assetId } as Partial<MapElement>)}
+              onDelete={deleteCustomImage}
+            />
+          )}
+          <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: 'image' as PointShape, ...resettable, assetId } as Partial<MapElement>)} />
+        </>
+      )}
+      {style !== 'image' && <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: style as PointShape, ...resettable, assetId } as Partial<MapElement>)} />}
     </div>
   );
+}
+
+/** 自定义图片网格（标记与路线共用）：缩略图 + 悬停删除 */
+function CustomImageGrid({ images, thumbs, activeId, onPick, onDelete }: {
+  images: CustomImage[];
+  thumbs: Record<string, string>;
+  activeId?: string;
+  onPick: (assetId: string) => void;
+  onDelete: (img: CustomImage) => void;
+}) {
+  const cellBase = 'flex items-center justify-center rounded border transition-colors';
+  const cellOn = 'border-brand ring-2 ring-brand/60 bg-brand/20';
+  const cellOff = 'border-white/10 bg-white/[0.03] hover:bg-accent hover:border-white/20';
+  return (
+    <div className="grid grid-cols-4 gap-1.5 mb-1.5">
+      {images.map((ci) => (
+        <div key={ci.assetId} className="relative group">
+          <button
+            title={ci.name}
+            onClick={() => onPick(ci.assetId)}
+            className={`${cellBase} h-12 w-full overflow-hidden ${activeId === ci.assetId ? cellOn : cellOff}`}
+          >
+            {thumbs[ci.assetId]
+              ? <img src={thumbs[ci.assetId]} alt={ci.name} className="w-6 h-6 object-contain" />
+              : <span className="text-[10px] text-foreground/60">{ci.name.slice(0, 3)}</span>}
+          </button>
+          <button
+            title="删除"
+            onClick={(e) => { e.stopPropagation(); onDelete(ci); }}
+            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none hidden group-hover:flex items-center justify-center shadow"
+          >×</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 删除自定义图片：移除登记 +（若已无任何元素引用）清理素材二进制 + 立即落库。
+ * 素材是内容寻址共享的，仍被元素引用时只移除列表项、保留文件。
+ */
+function useDeleteCustomImage() {
+  const confirm = useConfirm();
+  const t = useT();
+  const removeCustomImage = useProjectStore((s) => s.removeCustomImage);
+  return async (img: CustomImage) => {
+    const ok = await confirm({
+      message: `${t('删除自定义图片', 'Delete image')}「${img.name}」？`,
+      danger: true,
+      confirmText: t('删除', 'Delete'),
+    });
+    if (!ok) return;
+    const project = useProjectStore.getState().project;
+    const referenced = (project?.chapters || []).some((ch) =>
+      ch.elements.some((el) => {
+        const e = el as { assetId?: string; moveIcon?: { assetId?: string } };
+        return e.assetId === img.assetId || e.moveIcon?.assetId === img.assetId;
+      }),
+    );
+    removeCustomImage(img.assetId);
+    if (!referenced) await removeAsset(img.assetId);
+    await useProjectStore.getState().saveProject();
+  };
 }
 
 /** 路线「显示标记」的资源选择区（与标记的 PinResourcePicker 同构，选择写入 moveIcon） */
@@ -567,6 +687,24 @@ function MoveResourcePicker({ mi, patch }: {
     for (const n of filterExistingIcons(BUILTIN_ICON_NAMES)) picked[n] = all[n];
     return picked;
   }, []);
+
+  // 自定义图片库与标记共用（项目级）；缩略图按 assetId 异步取 URL
+  const customImages = useProjectStore((s) => s.project?.customImages) ?? EMPTY_CUSTOM_IMAGES;
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const deleteCustomImage = useDeleteCustomImage();
+  useEffect(() => {
+    if (shape !== 'image' || customImages.length === 0) return;
+    let alive = true;
+    void (async () => {
+      const next: Record<string, string> = {};
+      for (const ci of customImages) {
+        const u = await getAssetUrl(ci.assetId);
+        if (u) next[ci.assetId] = u;
+      }
+      if (alive) setThumbs(next);
+    })();
+    return () => { alive = false; };
+  }, [shape, customImages]);
 
   const cellBase = 'flex items-center justify-center rounded border transition-colors';
   const cellOn = 'border-brand ring-2 ring-brand/60 bg-brand/20';
@@ -599,14 +737,35 @@ function MoveResourcePicker({ mi, patch }: {
   }
 
   const list = shape === 'image' ? BUILTIN_IMAGES : shape === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
+  const miResettable = { builtinId: undefined, assetId: undefined, symbolId: undefined, iconLib: undefined, iconName: undefined };
+  const isDotMi = !mi.shape || mi.shape === 'dot';
   return (
     <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
+      {/* 内置图片：圆点 / 水滴针与内置图集同列（与标记设置一致） */}
       <div className="grid grid-cols-4 gap-1.5 max-h-44 overflow-y-auto">
+        {shape === 'image' && (
+          <>
+            <button
+              title={t('圆点', 'Dot')}
+              onClick={() => set({ ...miResettable, shape: 'dot', color: mi.color || '#FF6600' })}
+              className={`${cellBase} h-12 ${isDotMi ? cellOn : cellOff}`}
+            >
+              <span className="block w-4 h-4 rounded-full bg-white" />
+            </button>
+            <button
+              title={t('水滴针', 'Pin')}
+              onClick={() => set({ ...miResettable, shape: 'pin', color: mi.color || '#FF6600' })}
+              className={`${cellBase} h-12 ${mi.shape === 'pin' ? cellOn : cellOff}`}
+            >
+              <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
+            </button>
+          </>
+        )}
         {list.map((a) => (
           <button
             key={a.id}
             title={a.name}
-            onClick={() => set({ builtinId: a.id, assetId: undefined, symbolId: undefined })}
+            onClick={() => set({ ...miResettable, shape: shape as 'image' | 'gif' | 'model', builtinId: a.id })}
             className={`${cellBase} h-12 px-1 text-[10px] leading-tight text-center ${mi.builtinId === a.id ? cellOn : cellOff}`}
           >
             {a.src
@@ -615,35 +774,45 @@ function MoveResourcePicker({ mi, patch }: {
           </button>
         ))}
       </div>
+
+      {/* 自定义图片：与标记共用同一个项目级图片库（上传一次，标记与路线都能用） */}
       {shape === 'image' && (
-        <div className="mt-1.5">
-          <div className="grid grid-cols-8 gap-1">
-            {(useProjectStore.getState().project?.customSymbols || []).map((sym) => (
-              <button
-                key={sym.id}
-                title={sym.name}
-                onClick={() => set({ builtinId: undefined, symbolId: sym.id })}
-                className={`${cellBase} h-7 overflow-hidden ${mi.symbolId === sym.id ? cellOn : cellOff}`}
-              >
-                <img src={sym.url} alt={sym.name} className="w-5 h-5 object-contain" />
-              </button>
-            ))}
-            <IconUploadButton onPick={(id) => set({ builtinId: undefined, symbolId: id })} />
-          </div>
-        </div>
+        <>
+          <p className="mt-2 mb-1 text-[10px] text-muted-foreground/70">{t('自定义图片', 'Custom images')}</p>
+          {customImages.length > 0 && (
+            <CustomImageGrid
+              images={customImages}
+              thumbs={thumbs}
+              activeId={mi.assetId}
+              onPick={(assetId) => set({ ...miResettable, shape: 'image', assetId })}
+              onDelete={deleteCustomImage}
+            />
+          )}
+          <ResourceUploadRow
+            style="image"
+            onLoaded={(assetId) => set({ ...miResettable, shape: 'image', assetId })}
+          />
+        </>
       )}
     </div>
   );
 }
 
-/** 资源上传：按形态限定格式，上传后进 asset 表（外置存储），元素只存 assetId */
-function ResourceUploadRow({ style, patch }: {
+/**
+ * 资源上传：按形态限定格式，上传后进 asset 表（外置存储）。
+ * 图片形态同时登记进项目「自定义图片」库（内容寻址去重），之后可跨元素 / 跨路线复用。
+ * onLoaded 决定把 assetId 落到哪里（元素顶层 或 moveIcon）。
+ */
+function ResourceUploadRow({ style, onLoaded }: {
   style: PinStyle;
-  patch: (c: Partial<MapElement>) => void;
+  onLoaded: (assetId: string, fileName: string) => void;
 }) {
   const t = useT();
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // 每次上传后重建 input（key 变化）→ 彻底避免 value 残留导致「再选同一文件不触发 onChange」
+  const [nonce, setNonce] = useState(0);
 
   const accept =
     style === 'image' ? 'image/png,image/jpeg,image/webp,image/svg+xml' :
@@ -656,33 +825,50 @@ function ResourceUploadRow({ style, patch }: {
 
   return (
     <div className="mt-1.5">
-      <input
-        ref={fileRef}
-        type="file"
-        accept={accept}
-        className="hidden"
-        onChange={async (e) => {
-          const file = e.target.files?.[0];
-          e.target.value = '';
-          if (!file) return;
-          setBusy(true);
-          try {
-            const projectId = useProjectStore.getState().project?.id || '';
-            const ref = await uploadAsset(file, projectId);
-            patch({ assetId: ref.assetId, builtinId: undefined } as Partial<MapElement>);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      />
       <button
+        type="button"
         onClick={() => fileRef.current?.click()}
         disabled={busy}
         className="w-full h-7 rounded border border-dashed border-white/15 text-[11px] text-foreground/80 hover:bg-accent transition-colors disabled:opacity-50"
       >
         {busy ? t('上传中…', 'Uploading…') : t('⬆ 上传自有资源', '⬆ Upload')}
       </button>
+      <input
+        key={nonce}
+        ref={fileRef}
+        type="file"
+        accept={accept}
+        className="hidden"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          setErr(null);
+          setBusy(true);
+          try {
+            const projectId = useProjectStore.getState().project?.id || '';
+            const ref = await uploadAsset(file, projectId);
+            onLoaded(ref.assetId, file.name);
+            // 图片形态：登记进「自定义图片」库（内容寻址去重），供之后复用
+            if (style === 'image') {
+              useProjectStore.getState().addCustomImage({
+                assetId: ref.assetId,
+                name: file.name.replace(/\.[^.]+$/, '') || '图片',
+                createdAt: new Date(),
+              });
+            }
+            // 素材上传属结构性变更：立即落库 —— 否则重开应用后「自定义图片库」与元素引用都会丢
+            await useProjectStore.getState().saveProject();
+          } catch (e2) {
+            console.error('[asset] 上传失败', e2);
+            setErr(String((e2 as Error)?.message || e2));
+          } finally {
+            setBusy(false);
+            setNonce((n) => n + 1);   // 重建 input，下一次可继续上传（含同一文件）
+          }
+        }}
+      />
       <p className="mt-1 text-[10px] text-muted-foreground/70">{hint}</p>
+      {err && <p className="mt-1 text-[10px] text-red-400">{t('上传失败', 'Upload failed')}：{err}</p>}
     </div>
   );
 }
@@ -797,16 +983,14 @@ function RangeInput({ value, min, max, step = 1, suffix = '', onChange }: {
 }
 
 function pinStyleOf(pe: PointElement): PinStyle {
-  if (pe.shape === 'image') return 'image';
   if (pe.shape === 'gif') return 'gif';
   if (pe.shape === 'model') return 'model';
   if (pe.shape === 'icon') return 'icon';
-  if (pe.iconUrl) return 'image';      // 旧数据：iconUrl 视为图片形态
   if (pe.shape === 'text') return 'text';
-  if (pe.shape === 'pin') return 'pin';
   if (pe.shape === 'bubble') return 'bubble';
   if (pe.shape === 'emoji') return 'emoji';
-  return 'dot';
+  // 「图片」类别：圆点 / 水滴针是内置图形（shape = circle / pin），与内置图片同属一类
+  return 'image';
 }
 
 function ShowLabelToggle({ element, patch }: { element: PointElement; patch: (c: Partial<MapElement>) => void }) {
@@ -1140,15 +1324,13 @@ function RouteSettings({ element, patch, chapter }: {
           <div className="space-y-3">
             {/* 图标样式（等宽网格，参照标记设置） */}
             <Field label={t('图标样式', 'Icon Style')}>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-4 gap-1.5">
                 {([
-                  { value: 'pin', label: '📍 PIN' },
-                  { value: 'dot', label: '⚫ DOT' },
                   { value: 'bubble', label: '💬 BUBBLE' },
                   { value: 'flag', label: t('🚩 旗帜', '🚩 MARKER') },
                   { value: 'text', label: 'Aa TEXT' },
                   { value: 'emoji', label: '😀 EMOJI' },
-                ] as { value: 'dot' | 'pin' | 'bubble' | 'flag' | 'text' | 'emoji'; label: string }[]).map((o) => (
+                ] as { value: 'bubble' | 'flag' | 'text' | 'emoji'; label: string }[]).map((o) => (
                   <button
                     key={o.value}
                     onClick={() => patch({ moveIcon: { ...(element as LineElement).moveIcon, shape: o.value } } as Partial<MapElement>)}
@@ -1953,189 +2135,6 @@ function SpecialShapeSettings({ element, patch }: { element: MapElement; patch: 
   );
 }
 
-function UploadIconDialog({ dataUrl, defaultName, onConfirm, onCancel }: {
-  dataUrl: string;
-  defaultName: string;
-  onConfirm: (symbolId: string) => void;
-  onCancel: () => void;
-}) {
-  const addCustomSymbol = useProjectStore((s) => s.addCustomSymbol);
-  const t = useT();
-  const [name, setName] = useState(defaultName);
-  const [mode, setMode] = useState<'square' | 'circle' | 'original'>('square');
-  const [crop, setCrop] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const cropPxRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
-  const previewRef = useRef<HTMLCanvasElement>(null);
-
-  const loadImage = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('图片解码失败'));
-    img.src = src;
-  });
-
-  // 实时预览（模式/裁剪变化时重绘 64×64）
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const cv = previewRef.current;
-      if (!cv) return;
-      const ctx = cv.getContext('2d')!;
-      ctx.clearRect(0, 0, 64, 64);
-      try {
-        const img = await loadImage(dataUrl);
-        if (!alive) return;
-        if (mode === 'original') {
-          const k = Math.min(64 / img.naturalWidth, 64 / img.naturalHeight);
-          const w = img.naturalWidth * k, h = img.naturalHeight * k;
-          ctx.drawImage(img, (64 - w) / 2, (64 - h) / 2, w, h);
-          return;
-        }
-        const px = cropPxRef.current;
-        if (!px || px.width < 4 || px.height < 4) return;
-        ctx.save();
-        if (mode === 'circle') { ctx.beginPath(); ctx.arc(32, 32, 32, 0, Math.PI * 2); ctx.clip(); }
-        ctx.drawImage(img, px.x, px.y, px.width, px.height, 0, 0, 64, 64);
-        ctx.restore();
-      } catch { /* 忽略预览失败 */ }
-    })();
-    return () => { alive = false; };
-  }, [dataUrl, mode, crop, zoom]);
-
-  const buildExport = async (): Promise<string | null> => {
-    const img = await loadImage(dataUrl);
-    const c = document.createElement('canvas');
-    c.width = 64; c.height = 64;
-    const ctx = c.getContext('2d')!;
-    if (mode === 'original') {
-      const k = Math.min(64 / img.naturalWidth, 64 / img.naturalHeight);
-      const w = img.naturalWidth * k, h = img.naturalHeight * k;
-      ctx.drawImage(img, (64 - w) / 2, (64 - h) / 2, w, h);
-      return c.toDataURL('image/png');
-    }
-    const px = cropPxRef.current;
-    if (!px || px.width < 4 || px.height < 4) return null;
-    if (mode === 'circle') { ctx.beginPath(); ctx.arc(32, 32, 32, 0, Math.PI * 2); ctx.clip(); }
-    ctx.drawImage(img, px.x, px.y, px.width, px.height, 0, 0, 64, 64);
-    return c.toDataURL('image/png');
-  };
-
-  const confirmAdd = async () => {
-    const url = await buildExport();
-    if (!url) return;
-    const id = generateId();
-    addCustomSymbol({ id, name: name.trim() || '图标', type: 'image', url, width: 64, height: 64 });
-    onConfirm(id);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center" onClick={onCancel}>
-      <div className="w-[380px] bg-card border border-white/10 rounded-2xl shadow-2xl p-4" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold mb-3">{t('上传图标', 'Upload Icon')}</h3>
-
-        {/* 裁剪模式 */}
-        <OptionBlocks<'square' | 'circle' | 'original'>
-          value={mode}
-          onChange={(v) => { setMode(v); setCrop({ x: 0, y: 0 }); setZoom(1); }}
-          options={[
-            { value: 'square', label: t('方形', 'Square') },
-            { value: 'circle', label: t('圆形', 'Circle') },
-            { value: 'original', label: t('原图', 'Original') },
-          ]}
-        />
-
-        {/* 裁剪器 / 原图预览 */}
-        <div className="mt-2 mb-3">
-          {mode === 'original' ? (
-            <div className="h-48 rounded-lg border border-white/10 bg-white/[0.04] flex items-center justify-center overflow-hidden">
-              <img src={dataUrl} alt="" className="max-w-full max-h-full object-contain" />
-            </div>
-          ) : (
-            <div className="relative h-48 rounded-lg overflow-hidden">
-              <Cropper
-                image={dataUrl}
-                crop={crop}
-                zoom={zoom}
-                aspect={1}
-                cropShape={mode === 'circle' ? 'round' : 'rect'}
-                showGrid={false}
-                onCropChange={setCrop}
-                onZoomChange={setZoom}
-                onCropComplete={(_, px) => { cropPxRef.current = px; }}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* 预览 + 命名 */}
-        <div className="flex items-center gap-3 mb-3">
-          <div className="w-14 h-14 rounded-lg border border-white/10 bg-white/[0.04] flex items-center justify-center overflow-hidden shrink-0">
-            <canvas ref={previewRef} width={64} height={64} className="w-full h-full object-contain" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <label className="text-[11px] text-muted-foreground block mb-1">{t('图标名称', 'Icon Name')}</label>
-            <input
-              autoFocus value={name} onChange={(e) => setName(e.target.value)}
-              className="input h-8 text-xs" placeholder={t('图标名称', 'Icon Name')}
-              onKeyDown={(e) => { if (e.key === 'Enter') confirmAdd(); }}
-            />
-            <p className="text-[10px] text-muted-foreground mt-1">{t('统一输出 64×64 图标', 'Outputs a 64×64 icon')}</p>
-          </div>
-        </div>
-
-        <div className="flex gap-2">
-          <button onClick={onCancel} className="btn-outline text-xs flex-1 py-1.5">{t('取消', 'Cancel')}</button>
-          <button onClick={confirmAdd} className="btn-primary text-xs flex-1 py-1.5">{t('添加', 'Add')}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** 上传图标按钮：选图 → 统一长宽 → 命名 → 加入图标库 */
-function IconUploadButton({ onPick, className = '' }: {
-  onPick: (symbolId: string) => void;
-  className?: string;
-}) {
-  const t = useT();
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [pending, setPending] = useState<{ dataUrl: string; name: string } | null>(null);
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => fileRef.current?.click()}
-        title={t('上传图片作为图标', 'Upload image as icon')}
-        className={`px-1 py-1.5 text-[11px] font-medium rounded-md border border-dashed border-white/20 text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors flex items-center justify-center gap-1 w-full ${className}`}
-      >
-        <Plus size={12} /> {t('上传', 'Upload')}
-      </button>
-      <input
-        ref={fileRef} type="file" accept="image/*" className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          const reader = new FileReader();
-          reader.onload = () => setPending({ dataUrl: reader.result as string, name: file.name.replace(/\.[^.]+$/, '') });
-          reader.readAsDataURL(file);
-          e.target.value = '';
-        }}
-      />
-      {pending && (
-        <UploadIconDialog
-          dataUrl={pending.dataUrl}
-          defaultName={pending.name}
-          onCancel={() => setPending(null)}
-          onConfirm={(id) => { setPending(null); onPick(id); }}
-        />
-      )}
-
-    </>
-  );
-}
-
 // ========== 通用保留区 ==========
 
 // 避免 CameraKeyframe 未使用告警（导出给未来扩展）
@@ -2166,7 +2165,7 @@ function CountryDots({ countries, value, onChange }: {
   );
 }
 
-/** 势力颜色设置弹窗：点色块即时应用（背景地图实时预览），支持自定义取色/hex 输入 */
+/** 势力颜色设置弹窗：用全局 ColorPicker 选色（地图实时预览），支持一键自动配色 */
 function CountryColorDialog({ country, onClose, onChange, onAuto }: {
   country: TerritoryElement['countries'][number];
   onClose: () => void;
@@ -2174,12 +2173,6 @@ function CountryColorDialog({ country, onClose, onChange, onAuto }: {
   onAuto: () => void;
 }) {
   const t = useT();
-  const [hex, setHex] = useState(country.color.toUpperCase());
-  useEffect(() => { setHex(country.color.toUpperCase()); }, [country.color]);
-  const applyHex = (raw: string) => {
-    const v = raw.trim().replace(/^#/, '');
-    if (/^[0-9a-fA-F]{6}$/.test(v) || /^[0-9a-fA-F]{3}$/.test(v)) onChange(`#${v.toUpperCase()}`);
-  };
   return (
     <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center" onClick={onClose}>
       <div
@@ -2193,36 +2186,8 @@ function CountryColorDialog({ country, onClose, onChange, onAuto }: {
           <button onClick={onClose} className="ml-auto text-muted-foreground hover:text-foreground shrink-0" aria-label={t('关闭', 'Close')}>✕</button>
         </div>
         <div className="px-4 pb-3">
-          <div className="grid grid-cols-6 gap-1.5">
-            {TERRITORY_PALETTE.map((c) => (
-              <button
-                key={c}
-                title={c}
-                onClick={() => onChange(c)}
-                className={`w-8 h-8 rounded-md border-2 transition-transform hover:scale-110 ${
-                  country.color.toLowerCase() === c.toLowerCase() ? 'border-white/80 scale-105' : 'border-white/15'
-                }`}
-                style={{ backgroundColor: c }}
-              />
-            ))}
-          </div>
-          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.06]">
-            <input
-              type="color"
-              title={t('自定义颜色', 'Custom color')}
-              value={country.color}
-              onChange={(e) => onChange(e.target.value)}
-              className="w-8 h-8 rounded cursor-pointer bg-transparent border border-white/15 p-0.5 shrink-0"
-            />
-            <div className="flex-1 flex items-center rounded-md border bg-white/[0.045] px-2 focus-within:border-white/25">
-              <span className="text-xs text-muted-foreground select-none">#</span>
-              <input
-                value={hex.replace(/^#/, '')}
-                onChange={(e) => { setHex(e.target.value); applyHex(e.target.value); }}
-                className="w-full h-8 bg-transparent text-xs font-mono uppercase outline-none"
-              />
-            </div>
-          </div>
+          {/* 复用全局统一的 ColorPicker（不再自制色板 + 裸 input[type=color]） */}
+          <ColorPicker value={country.color} onChange={onChange} title={t('势力颜色', 'Faction Color')} />
         </div>
         <div className="px-4 py-2.5 border-t border-white/[0.06] flex items-center justify-between">
           <button

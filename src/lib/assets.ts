@@ -20,6 +20,23 @@ export interface AssetRef {
 
 const urlCache = new Map<string, string>();
 
+/**
+ * 按扩展名补 mime：部分系统/浏览器给 .glb / .gltf 的 `file.type` 是空串，
+ * 会导致桌面端落盘时取不到后缀（功能不受影响，但文件难以辨认）。
+ */
+const MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+  gif: 'image/gif', svg: 'image/svg+xml',
+  glb: 'model/gltf-binary', gltf: 'model/gltf+json', obj: 'model/obj',
+  mp3: 'audio/mpeg', wav: 'audio/wav', mp4: 'video/mp4',
+};
+
+function resolveMime(file: File | Blob): string {
+  if (file.type) return file.type;
+  const ext = ((file as File).name || '').split('.').pop()?.toLowerCase() || '';
+  return MIME_BY_EXT[ext] || 'application/octet-stream';
+}
+
 async function sha256Hex(buf: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', buf);
   return Array.from(new Uint8Array(digest))
@@ -30,7 +47,7 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
 /** 上传素材 → 返回 assetId；元素只需存这个 id */
 export async function uploadAsset(file: File | Blob, projectId = ''): Promise<AssetRef> {
   const buf = await file.arrayBuffer();
-  const mime = file.type || 'application/octet-stream';
+  const mime = resolveMime(file);
 
   if (IS_DESKTOP) {
     // 桌面端交给主进程算哈希并落盘（渲染进程不依赖 crypto.subtle 的安全上下文）

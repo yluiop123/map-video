@@ -639,6 +639,27 @@ function getLabelPixelOffset(shape: string, pos: string, scale: number): [number
   }
 }
 
+/**
+ * 资源位图**首次就绪**时的通知钩子。
+ *
+ * 图片 / 动图 / 模型 / 图标库是异步加载的：首次渲染时图层先挂 VIS_PLACEHOLDER，
+ * 等 addImage 完成后如果只 triggerRepaint，图层的 icon-image 仍是占位图 ——
+ * 必须让编辑器再跑一次 renderElements 才会把 icon-image 切成真实位图
+ * （否则表现为「点两次才显示」）。此处回调由 EditableMap 注册为 setStyleTick(+1)。
+ * 注意：只在 addImage（首次创建）时通知，updateImage（GIF/模型逐帧换图）不通知，避免死循环。
+ */
+let onVisualReady: (() => void) | null = null;
+
+/** 注册「资源位图就绪」回调（编辑器用；传 null 注销） */
+export function setVisualReadyHandler(fn: (() => void) | null): void {
+  onVisualReady = fn;
+}
+
+function notifyVisualReady(map: maplibregl.Map): void {
+  try { map.triggerRepaint(); } catch { /* style 未就绪 */ }
+  try { onVisualReady?.(); } catch { /* ignore */ }
+}
+
 /** 资源视觉层占位图（1×1 透明），避免 addLayer 时 icon-image 尚未加载而报错 */
 const VIS_PLACEHOLDER = 'pt-vis-placeholder';
 
@@ -686,8 +707,7 @@ function ensureModelImage(
     if (data) {
       try {
         if (map.hasImage(imageId)) map.updateImage(imageId, data);
-        else map.addImage(imageId, data, { pixelRatio: 1 });
-        map.triggerRepaint();
+        else { map.addImage(imageId, data, { pixelRatio: 1 }); notifyVisualReady(map); }
       } catch { /* style 未就绪：下一帧重试 */ }
     }
   })().finally(() => modelPending.delete(imageId));
@@ -752,7 +772,7 @@ function ensureGifFrame(
     if (data) {
       try {
         if (map.hasImage(imageId)) map.updateImage(imageId, data);
-        else map.addImage(imageId, data, { pixelRatio: 1 });
+        else { map.addImage(imageId, data, { pixelRatio: 1 }); notifyVisualReady(map); }
       } catch { /* style 未就绪 */ }
     }
     return;
@@ -764,7 +784,7 @@ function ensureGifFrame(
     const data = tintImageData(cached.frames[gifFrameAt(cached, ms)], color);
     try {
       if (map.hasImage(imageId)) map.updateImage(imageId, data);
-      else map.addImage(imageId, data, { pixelRatio: 1 });
+      else { map.addImage(imageId, data, { pixelRatio: 1 }); notifyVisualReady(map); }
     } catch { /* style 未就绪 */ }
     return;
   }
@@ -3026,7 +3046,7 @@ function ensureImageIcon(map: maplibregl.Map, imageId: string, url: string, _siz
       }
       const data = ctx.getImageData(0, 0, w, h);
       map.addImage(imageId, data, { pixelRatio: 1 });
-      map.triggerRepaint();
+      notifyVisualReady(map);
     } catch { /* 跨域等失败 */ }
   };
   img.onerror = () => customIconPending.delete(imageId);

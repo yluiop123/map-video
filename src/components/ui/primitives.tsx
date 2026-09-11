@@ -120,28 +120,6 @@ export function Toggle({ checked, onChange, label }: {
   );
 }
 
-export function Appearance({ color, onChange, palette }: {
-  color: string;
-  onChange: (c: string) => void;
-  palette: string[];
-}) {
-  return (
-    <div>
-      <div className="flex flex-wrap gap-1.5 mb-2">
-        {palette.map((c) => (
-          <button
-            key={c}
-            onClick={() => onChange(c)}
-            style={{ backgroundColor: c }}
-            className={`w-6 h-6 rounded-md border-2 ${color === c ? 'border-white/80' : 'border-white/20'}`}
-          />
-        ))}
-      </div>
-      <input type="color" value={color} onChange={(e) => onChange(e.target.value)} className="input-color" />
-    </div>
-  );
-}
-
 /** 右侧浮层面板头部：h-12 bg-white/5，左图标+标题，右关闭 */
 export function PanelHeader({ icon, title, onClose }: {
   icon?: React.ReactNode;
@@ -163,8 +141,22 @@ export function PanelHeader({ icon, title, onClose }: {
   );
 }
 
-/** 预设色板（全局统一） */
-export const COLOR_PALETTE = ['#FF4444', '#FF8800', '#FFD700', '#51CF66', '#4C9EFF', '#B197FC', '#FF6B9D', '#FFFFFF', '#111111'];
+/**
+ * 预设色板（全局统一，40 色 = 5 行 × 8 列）
+ * 排列顺序：红橙 → 黄绿 → 青蓝 → 紫粉 → 中性明暗；深浅成对，便于成体系地挑色。
+ */
+export const COLOR_PALETTE = [
+  // 红 / 橙
+  '#7F1D1D', '#B91C1C', '#DC2626', '#EF4444', '#F87171', '#FDA4AF', '#EA580C', '#F97316',
+  // 黄 / 绿
+  '#D97706', '#F59E0B', '#FBBF24', '#FDE68A', '#365314', '#4D7C0F', '#22C55E', '#4ADE80',
+  // 青 / 蓝
+  '#0F766E', '#14B8A6', '#06B6D4', '#22D3EE', '#1E3A8A', '#2563EB', '#3B82F6', '#60A5FA',
+  // 紫 / 粉
+  '#4C1D95', '#6D28D9', '#8B5CF6', '#C4B5FD', '#86198F', '#C026D3', '#DB2777', '#EC4899',
+  // 中性 / 明暗
+  '#000000', '#1F2937', '#374151', '#6B7280', '#9CA3AF', '#D1D5DB', '#F5F5F4', '#FFFFFF',
+];
 
 /** input[type=color] 只认 #rrggbb，把 8 位 hex / rgba 等归一化 */
 function toHex6(value: string): string {
@@ -212,8 +204,8 @@ export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled
         <span className="text-xs text-foreground/70 font-mono uppercase truncate">{value || '—'}</span>
       </button>
       {open && !disabled && (
-        <div className="absolute right-0 top-full mt-1 w-[190px] bg-card border border-white/10 rounded-xl shadow-2xl p-2.5 z-50">
-          <div className="grid grid-cols-5 gap-1.5">
+        <div className="absolute right-0 top-full mt-1 w-[300px] max-w-[86vw] bg-card border border-white/10 rounded-xl shadow-2xl p-2.5 z-50">
+          <div className="grid grid-cols-8 gap-1.5">
             {palette.map((c) => (
               <button
                 key={c}

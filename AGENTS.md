@@ -19,9 +19,14 @@
 ## 3. 常用命令
 
 ```bash
-npm run dev     # http://localhost:5173/map-video/ （vite base=/map-video/）
-npm run build   # tsc -b && vite build
+npm run dev            # http://localhost:5173/map-video/ （vite base=/map-video/）
+npm run build          # tsc -b && vite build（网页 Lite 产物）
+npm run build:desktop  # 桌面产物（相对路径 base=./）
+npm run electron:dev   # 桌面开发：vite 热更 + Electron 窗口
+npm run dist:win       # 打 Windows 包 → release/
 ```
+
+- **`release/` 产物说明**：`MapVideo Setup <v>.exe`（NSIS 安装版）与 `MapVideo <v>.exe`（Portable 免安装版）功能相同，二选一即可；`latest.yml` / `*.blockmap` 供 electron-updater 差分更新；`win-unpacked/` 是**中间产物**（内含真正的 `MapVideo.exe`），可删；只需留一份时删其余。
 
 - 无测试框架。回归验证靠：`npx tsc -b` + `npm run build` + `tools/*.mjs` 自动化（需本机 Chrome 开 `--remote-debugging-port=9222`，临时 profile：`C:\Users\23659\AppData\Local\Temp\opencode\mv-studio-profile`，配合 `playwright-core`）。
 - `tools/` 下脚本为自动化回归（test-* / verify-*），读文件头注释即可用；`pw-page.mjs` 是标签页复用助手（避免每次开新标签）。
@@ -65,6 +70,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **LabelConfig**：text/color/position(上左下右中)/bgColor(默认透明)/bgPadding/bgRadius/fontWeight。渲染=canvas 气泡位图（makeBubbleImageData，仅 BUBBLE 样式带尾巴）。
 - **PointElement 特有**：shape、emoji、scale(0.3–3 等比缩放点+label)、orientation(faceCam/flat)、rotation(贴地旋转)、iconUrl、label。
 - **坐标显示一律 5 位小数**（toFixed(5) + step=0.00001）；视角缩放显示 1 位小数。
+- **合集（Collection）**：项目之上的一层分组（`合集 ▸ 项目 ▸ 章节 ▸ 元素`）。`id = 'default'` 的**「默认合集」不可改名、不可删除**（名称由 `DEFAULT_COLLECTION_NAME` 常量决定）；新建项目 / 导入未指定归属时落默认合集；删合集只把项目移回默认合集，**不删项目**。
 
 ## 6. 血泪教训（改代码前必读，全部踩过）
 
@@ -83,6 +89,9 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 10. **地图事件 vs 播放循环**：`map.on('move')` 会 60fps 触发 `setCurrentCamera`→全订阅组件重渲染，属预期；不要在 move 回调里做重活。
 12. **Windows + Node 22 不能直接 spawn `.cmd`/`.bat`**（CVE-2024-27980，会 EINVAL）：必须 `shell: true` 或走真实 exe 路径（`scripts/dev-desktop.mjs` 已修：Electron 用 `require('electron')` 返回的真实路径）。
 13. **本机安全删除守卫**：批量删除 >50 项会被拦（典型场景：Vite 重建依赖缓存 `node_modules/.vite`、npm install 后的临时目录）。规避方式是 **mv 挪走而非删除**：`move node_modules\.vite node_modules\.vite.bak.%RANDOM%`。
+14. **全局宿主组件必须在所有布局分支挂载**：`<ConfirmHost />` 这类 zustand 驱动的全局 UI 宿主，若只挂在编辑器分支，项目列表页里的 `await confirm(...)` 会**永久挂起**（弹窗不渲染 → Promise 既不 resolve 也不 reject），表现是「点删除没反应」且**无任何报错**。新增整屏布局 / 提前 `return` 分支时，记得一并挂载。
+15. **异步资源位图首次就绪必须触发一次重渲染**：图片 / 动图 / 模型 / 图标库走异步 `addImage`，此前图层挂的是 `VIS_PLACEHOLDER`；只调 `map.triggerRepaint()` 不会改图层的 `icon-image`，表现为「点两次才显示」。现由 `setVisualReadyHandler` → 编辑器 `setStyleTick(+1)` 修正——**新增异步资源管线时，必须在「首次 addImage」分支（不是 `updateImage`）调 `notifyVisualReady`**，否则会陷入逐帧重渲染死循环或再次出现该 bug。
+16. **zustand 的 selector 绝不能返回新引用**：`useProjectStore((s) => s.project?.xxx || [])`、`.filter()`、`.map()` 每次都产生新数组，`useSyncExternalStore` 会判定快照已变 → **无限重渲染**（控制台报 `Maximum update depth exceeded`）。selector 只返回原值，空值兜底放组件外用模块级常量（如 `EMPTY_CUSTOM_IMAGES`）。
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
 
@@ -100,6 +109,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 8. 协作约定
 
+- **★ 不为兼容性牺牲设计（用户明确要求，2026-09-11）**：改造 / 重构时**不考虑向后兼容**——不做老存档迁移、不保留旧字段、不写双读分支、不堆 `normalize*` 兜底链、不为旧库加兼容性 `ALTER TABLE`；一律按「设计是否合理」决策，数据结构可以直改，老数据可丢弃或重新生成。若某处确实必须保留兼容，先与用户确认。
 - 与用户**中文交流**，回复精简；改动后提醒刷新（用户浏览器常需 Ctrl+F5 才拿最新包）。
 - 用户的真实测试数据在自己浏览器的 IndexedDB（如 test001 项目）；自动化调试 Chrome 的 profile 是隔离的——跨环境验证用「⚙️ 导出配置 json → 放项目根目录 → 脚本导入」的方式（参考 `tools/test-import.mjs`）。
 - 导出视频、播放、镜头插值等改动完成后，优先用 `tools/` 脚本做一次带截图的自动化回归。
@@ -107,7 +117,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 ## 9. 已知待办 / 弱项
 
 - ORIENTATION/点动画/移动点高亮圈等仅在编辑端验证过，导出端 MapScene 未逐项回归。
-- docs/ARCHITECTURE.md 已删除；数据库设计见 `docs/db-schema-v2.sql`（唯一事实源）+ `docs/db-tables.html`（速查页）；README「数据库设计」仍是 V1 描述，待重写。
+- docs/ARCHITECTURE.md 已删除；数据库设计见 `docs/db-schema-v2.sql`（唯一事实源）+ `docs/db-tables.md`（速查与字段字典）+ `docs/db-redesign.md`（设计依据）；README「数据库设计」仍是 V1 描述，待重写。
 - 3D(globe) 下 `pixelsToDegrees` 为墨卡托近似，高纬度箭头宽度略有偏差。
 - Region 数据源为世界国家级（英文属性名，内置 ~100 国中英映射）；省级需换 `setRegionSources` 数据源。
 
@@ -127,7 +137,8 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **改版的代价 —— 弱引用**：`element_route.from/to_element_id`（连接线端点）与 `element_keyframe.element_id` 无外键，靠 4 条 `trg_*_cleanup` 触发器 + `v_check_dangling` 视图兜底；疆域 JSON 内部一致性靠 `v_check_territory_ref`（`json_each`）。**新增跨表引用时必须重复这个模式**。
 - **能力矩阵三处联动，改一处必须同步另两处**：模型不可着色且不能贴地、GIF 不可着色 —— ① DDL 的 CHECK ② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键与触发器，**不要为性能删外键**（强制检查 ≈1µs/行）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
-- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（生成字段字典注入 `docs/db-tables.html`，`--check` 只校验）、`tools/db-field-notes.mjs`（334 字段中文说明词表，**新增字段漏补说明会直接报错**）、`tools/render-mermaid.mjs`（E-R 图预渲染注入报告）。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（334 字段中文说明词表，**新增字段漏补说明会直接报错**）。
+- **文档一律 Markdown**（2026-09-11 起）：`docs/` 下不再有 HTML，也不要用脚本生成 HTML；图用 ```mermaid 代码块内嵌（E-R 图源 `docs/db-er-diagram.mmd`），不再预渲染 SVG。
 
 ## 11. 标记（Pin）形态扩展的代码落点
 
