@@ -18,6 +18,7 @@ import { PanelHeader } from './components/ui/primitives';
 
 import { useProjectStore, isProjectDirty } from './stores/projectStore';
 import { useEditorStore } from './stores/editorStore';
+import { generateId, type MapElement } from './types';
 
 /** 自动保存：停止编辑这么久后静默落盘 */
 const AUTOSAVE_DELAY_MS = 5000;
@@ -46,11 +47,24 @@ export default function App() {
     mountPreviewAudio();
   }, []);
 
-  // 撤销/重做快捷键 (Ctrl+Z / Ctrl+Y 或 Ctrl+Shift+Z)
+  // 编辑器快捷键：Delete 删除 / Ctrl+D 复制 / Ctrl+S 保存 / Ctrl+Z 撤销 / Ctrl+Y(Shift+Z) 重做
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      const ed = useEditorStore.getState();
+      const chapterId = ed.selectedChapterId;
+      const elId = ed.selectedElementId;
+
+      // Delete / Backspace：删除选中元素（无需 Ctrl）
+      if ((e.key === 'Delete' || e.key === 'Backspace') && chapterId && elId) {
+        e.preventDefault();
+        useProjectStore.getState().deleteElement(chapterId, elId);
+        ed.selectElement(null);
+        return;
+      }
+
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) return;
       if (e.key === 'z' && !e.shiftKey) {
@@ -59,6 +73,20 @@ export default function App() {
       } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
         e.preventDefault();
         useProjectStore.getState().redo();
+      } else if (e.key === 's') {
+        e.preventDefault();
+        void useProjectStore.getState().saveProject();
+      } else if (e.key === 'd' && chapterId && elId) {
+        // 复制选中元素：新 id、位置相同，随后直接拖动即可
+        e.preventDefault();
+        const st = useProjectStore.getState();
+        const el = st.project?.chapters.find((c) => c.id === chapterId)?.elements.find((x) => x.id === elId);
+        if (el) {
+          const copy = JSON.parse(JSON.stringify(el)) as MapElement;
+          copy.id = generateId();
+          st.addElements(chapterId, [copy]);
+          ed.selectElement(copy.id);
+        }
       }
     };
     window.addEventListener('keydown', onKey);
