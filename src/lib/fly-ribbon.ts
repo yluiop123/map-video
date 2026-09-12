@@ -161,7 +161,8 @@ void main() {
   // 立体光照：固定光向（与相机无关），法向来自管面/挤出侧面 → 上亮下暗
   vec3 N = normalize(aNrm);
   vec3 L = normalize(vec3(0.42, -0.34, 0.84));
-  vShade = 0.46 + 0.54 * max(0.0, dot(N, L));
+  // 轻量光照：环境光占大头（0.78），法向贡献仅 0.22 —— 立体但不压暗整体颜色
+  vShade = 0.78 + 0.22 * max(0.0, dot(N, L));
   vDist = aDist;
 }
 `;
@@ -766,7 +767,9 @@ function drawRibbons(map: MaplibreMap, gl: WebGLRenderingContext | WebGL2Renderi
   g.useProgram(st.program);
   g.enable(g.BLEND);
   g.blendFuncSeparate(g.SRC_ALPHA, g.ONE_MINUS_SRC_ALPHA, g.ONE, g.ONE_MINUS_SRC_ALPHA);
-  try { g.disable(g.DEPTH_TEST); g.depthMask(false); g.disable(g.CULL_FACE); } catch { /* 状态不可用时忽略 */ }
+  // 3D 管的自身遮挡必须靠深度测试：否则远侧/内侧面按提交顺序覆盖近侧，出现"一段一段"的明暗斑块。
+  // 不启用背面剔除（三角绕向未统一保证），仅开深度写入。
+  try { g.enable(g.DEPTH_TEST); g.depthFunc(g.LEQUAL); g.depthMask(true); g.disable(g.CULL_FACE); } catch { /* 状态不可用时忽略 */ }
   g.uniform2f(st.uViewport as WebGLUniformLocation, canvas.clientWidth, canvas.clientHeight);
   // 投影 uniform（自定义图层路径下已缩放好：mercator z=米，globe=米）
   if (projData && st.uProjMatrix) {
@@ -829,6 +832,8 @@ function drawRibbons(map: MaplibreMap, gl: WebGLRenderingContext | WebGL2Renderi
     }
   }
   g.bindBuffer(g.ARRAY_BUFFER, null);
+  // 恢复默认状态，避免影响后续图层（marker 绘制会自行设置）
+  try { g.disable(g.DEPTH_TEST); g.depthMask(false); } catch { /* */ }
   flyRibbonDbg.drawn = drawn;
   flyRibbonDbg.glErr = glErr;
   flyRibbonDbg.lastVert = lastVert;
