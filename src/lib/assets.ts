@@ -29,6 +29,9 @@ export interface MediaItem {
   mime: string;
 }
 
+/** 素材类别：与标记设置的资源形态一一对应（落盘目录与素材库分类由此确定） */
+export type AssetKind = 'image' | 'gif' | 'model' | 'icon';
+
 const urlCache = new Map<string, string>();
 
 /**
@@ -48,48 +51,23 @@ function resolveMime(file: File | Blob): string {
   return MIME_BY_EXT[ext] || 'application/octet-stream';
 }
 
-/** 生成随机素材 id（16 位十六进制，前缀 a） */
-function newAssetId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(8));
-  return 'a' + Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** 上传素材 → 返回 assetId；素材进入**全局素材库**（跨项目可用），元素只需存这个 id */
-export async function uploadAsset(file: File | Blob): Promise<AssetRef> {
+/**
+ * 上传素材 → 返回 assetId；素材进入**全局素材库**（跨项目可用），元素只需存这个 id。
+ * **仅桌面端**：网页端定位为静态浏览形态，不支持上传（上传按钮在 UI 层隐藏，这里是最后防线）。
+ */
+export async function uploadAsset(file: File | Blob, kind: AssetKind): Promise<AssetRef> {
+  if (!IS_DESKTOP) throw new Error('上传功能仅桌面端支持');
   const buf = await file.arrayBuffer();
   const mime = resolveMime(file);
   const name = (file as File).name || '';
-
-  if (IS_DESKTOP) {
-    // 桌面端：主进程按「类型」分文件夹落盘（时间戳命名），并登记到 media/index.json
-    const r = await window.mapvideo!.assets.save({ mime, bytes: new Uint8Array(buf), name });
-    return { assetId: r.assetId, mime, byteSize: r.byteSize };
-  }
-
-  // 网页端：Dexie Blob；assetId 用随机 id。
-  // 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份（与桌面端时间戳命名语义一致）。
-  const assetId = newAssetId();
-  await dexie.saveAsset({
-    assetId,
-    projectId: '',
-    mime,
-    name,
-    byteSize: buf.byteLength,
-    blob: new Blob([buf], { type: mime }),
-    createdAt: Date.now(),
-  });
-  return { assetId, mime, byteSize: buf.byteLength };
+  const r = await window.mapvideo!.assets.save({ mime, bytes: new Uint8Array(buf), name, kind });
+  return { assetId: r.assetId, mime, byteSize: r.byteSize };
 }
 
 /** 列出全局素材库（kindPrefix 如 'image' / 'model' / 'audio'，按 mime 前缀过滤；不传返回全部） */
 export async function listMedia(kindPrefix?: string): Promise<MediaItem[]> {
-  const rows: { assetId: string; name: string; mime: string }[] = [];
-  if (IS_DESKTOP) {
-    rows.push(...(await window.mapvideo!.assets.list(kindPrefix)));
-  } else {
-    const all = await dexie.listAssets();
-    for (const r of all) rows.push({ assetId: r.assetId, name: r.name, mime: r.mime });
-  }
+  if (!IS_DESKTOP) return [];   // 网页端不支持上传 → 无本机素材库
+  const rows = await window.mapvideo!.assets.list(kindPrefix);
   return kindPrefix ? rows.filter((r) => r.mime.startsWith(kindPrefix)) : rows;
 }
 

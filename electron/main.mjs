@@ -298,12 +298,15 @@ function registerIpc() {
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   };
-  const kindDirOf = (mime) =>
-    mime.startsWith('image/') ? 'images'
+  // 类别 → 子目录：与前端 AssetKind 一一对应（图片/动图/模型/图标分开存放）
+  const KIND_DIR = { image: 'images', gif: 'gifs', model: 'models', icon: 'icons', audio: 'audio', video: 'video', font: 'fonts' };
+  const kindDirOf = (kind, mime) =>
+    KIND_DIR[kind] ||
+    (mime.startsWith('image/') ? 'images'
       : mime.startsWith('model/') ? 'models'
         : mime.startsWith('audio/') ? 'audio'
           : mime.startsWith('video/') ? 'video'
-            : mime.startsWith('font') ? 'fonts' : 'misc';
+            : mime.startsWith('font') ? 'fonts' : 'misc');
 
   const indexFile = () => path.join(mediaRoot(), 'index.json');
   const readIndex = () => {
@@ -311,13 +314,13 @@ function registerIpc() {
   };
   const writeIndex = (idx) => fs.writeFileSync(indexFile(), JSON.stringify(idx, null, 2));
 
-  ipcMain.handle('assets:save', (_e, { mime, bytes, name }) => {
+  ipcMain.handle('assets:save', (_e, { mime, bytes, name, kind }) => {
     const buf = Buffer.from(bytes);
     const assetId = 'a' + crypto.randomBytes(8).toString('hex');
     const now = new Date();
     const p2 = (n) => String(n).padStart(2, '0');
     const stamp = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`;
-    const dir = path.join(mediaRoot(), kindDirOf(String(mime || '')));
+    const dir = path.join(mediaRoot(), kindDirOf(String(kind || ''), String(mime || '')));
     fs.mkdirSync(dir, { recursive: true });
     const fileName = `${stamp}-${assetId}${EXT_BY_MIME[mime] || ''}`;
     fs.writeFileSync(path.join(dir, fileName), buf);

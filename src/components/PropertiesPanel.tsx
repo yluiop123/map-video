@@ -19,7 +19,8 @@ import type {
 import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES } from '../lib/builtin-assets';
 import { defaultVisualFor, getPinCapability } from '../lib/pin-visual';
 import { loadLucideIcons, filterExistingIcons, type IconComponent } from '../lib/icon-library';
-import { uploadAsset, getAssetUrl, removeAsset, listMedia, type MediaItem } from '../lib/assets';
+import { uploadAsset, getAssetUrl, removeAsset, listMedia, type MediaItem, type AssetKind } from '../lib/assets';
+import { IS_DESKTOP } from '../lib/backend';
 import { distributePointTimes, ensurePointTimes } from '../lib/route-time';
 
 type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'territory';
@@ -784,6 +785,11 @@ function ResourceUploadRow({ style, onLoaded }: {
       style === 'gif' ? t('GIF / 动态 WEBP', 'GIF / animated WEBP') :
         t('GLB / GLTF（建议 < 20MB）', 'GLB / GLTF (< 20MB recommended)');
 
+  // 网页端为静态浏览形态，不支持上传（定位见用户约定：仅桌面端上传）
+  if (!IS_DESKTOP) {
+    return <p className="mt-1.5 text-[10px] text-muted-foreground/70">{t('上传功能仅桌面端支持', 'Upload is desktop-only')}</p>;
+  }
+
   return (
     <div className="mt-1.5">
       <button
@@ -806,7 +812,9 @@ function ResourceUploadRow({ style, onLoaded }: {
           setErr(null);
           setBusy(true);
           try {
-            const ref = await uploadAsset(file);
+            // kind 由面板形态显式指定（图片 / 动图 / 模型），落盘目录与素材库分类随之确定
+            const kind: AssetKind = style === 'gif' ? 'gif' : style === 'model' ? 'model' : 'image';
+            const ref = await uploadAsset(file, kind);
             onLoaded(ref.assetId, file.name);
             // 素材进入**全局素材库**（跨项目可用），不属于任何项目 —— 无需写项目、无回滚问题
           } catch (e2) {

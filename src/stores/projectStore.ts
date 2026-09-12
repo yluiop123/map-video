@@ -8,7 +8,7 @@ import type {
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeTitleStyle, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
-import { releaseAssetUrls, getAssetBytes, uploadAsset } from '../lib/assets';
+import { releaseAssetUrls, getAssetBytes, uploadAsset, type AssetKind } from '../lib/assets';
 import { clearGifCache } from '../lib/gif-decoder';
 
 /** 兼容旧存档：疆域 display / 章节特效层 / 旧弹窗类型缺字段时补默认值（load/import 入口统一过一遍） */
@@ -234,6 +234,13 @@ interface ProjectState {
   // 撤回/重做
   undo: () => void;
   redo: () => void;
+}
+
+/** 导入的素材字节 → 素材类别（按 mime 推断；导出侧只收集图片 / GIF / 模型） */
+function mimeToAssetKind(mime: string): AssetKind {
+  return mime === 'image/gif' ? 'gif'
+    : mime.startsWith('model/') ? 'model'
+      : mime.startsWith('image/') ? 'image' : 'icon';
 }
 
 /** 导入后把项目里所有 assetId 旧引用换成新 id（素材 id 已改为随机，不再内容寻址） */
@@ -698,7 +705,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
             const bin = atob(a.dataUrl.split(',')[1] || '');
             const bytes = new Uint8Array(bin.length);
             for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            const ref = await uploadAsset(new Blob([bytes], { type: a.mime }));
+            const ref = await uploadAsset(new Blob([bytes], { type: a.mime }), mimeToAssetKind(a.mime));
             idMap[a.assetId] = ref.assetId;
           } catch { /* 单个素材失败不阻塞导入 */ }
         }

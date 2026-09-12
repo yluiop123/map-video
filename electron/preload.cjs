@@ -23,7 +23,7 @@ contextBridge.exposeInMainWorld('mapvideo', {
     setActive: (kind, id) => ipcRenderer.invoke('db:providers:setActive', { kind, id }),
   },
   assets: {
-    save: (p) => ipcRenderer.invoke('assets:save', p),
+    save: (p) => ipcRenderer.invoke('assets:save', p),   // p: { mime, bytes, name?, kind? }
     read: (assetId) => ipcRenderer.invoke('assets:read', assetId),
     remove: (assetId) => ipcRenderer.invoke('assets:remove', assetId),
     exists: (assetId) => ipcRenderer.invoke('assets:exists', assetId),

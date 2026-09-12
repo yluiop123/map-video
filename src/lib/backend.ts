@@ -32,7 +32,7 @@ declare global {
       };
       /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId = sha256） */
       assets: {
-        save: (p: { mime: string; bytes: Uint8Array; projectId?: string; name?: string }) => Promise<{ assetId: string; relPath: string; byteSize: number }>;
+        save: (p: { mime: string; bytes: Uint8Array; name?: string; kind?: string }) => Promise<{ assetId: string; relPath: string; byteSize: number }>;
         read: (assetId: string) => Promise<{ bytes: Uint8Array; mime?: string; name?: string } | null>;
         remove: (assetId: string) => Promise<{ ok: boolean }>;
         exists: (assetId: string) => Promise<boolean>;
