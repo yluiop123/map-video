@@ -129,7 +129,10 @@ export function getBuiltinAsset(id?: string | null): BuiltinAsset | undefined {
     let asset = MILSYM_CACHE.get(sidc);
     if (!asset) {
       try {
-        const svg = new ms.Symbol(sidc, { size: 64, fill: true }).asSVG();
+        // monoColor 白色线稿：与其它内置图集一致走 multiply 染色 ——
+        // 默认白色 = 不染色时保持线稿原样；改「图标颜色」即整体染色（标准渲染的
+        // 蓝底色与用户颜色 multiply 会得到脏色，这是军标颜色不一致的根因）。
+        const svg = new ms.Symbol(sidc, { size: 64, monoColor: '#FFFFFF' }).asSVG();
         asset = { id, kind: 'image', name: '军标', tags: ['军标'], tintable: true, src: `data:image/svg+xml,${encodeURIComponent(svg)}` };
       } catch {
         return undefined;

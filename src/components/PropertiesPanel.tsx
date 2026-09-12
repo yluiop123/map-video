@@ -1,4 +1,4 @@
-import { createElement, useRef, useState, useEffect, useMemo, useCallback } from 'react';
+import { createElement, useRef, useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { MapPin, Route as RouteIcon, Square, Trash2, Plus, Landmark, Crosshair } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
@@ -129,7 +129,8 @@ export function PropertiesPanel() {
         {cat === 'shape-special' && <SpecialShapeSettings element={element} patch={patch} />}
         {cat === 'territory' && <TerritorySettings element={element as TerritoryElement} patch={patch} project={project} />}
 
-        {cat !== 'pin' && cat !== 'route' && (
+        {/* 显示时间：标记（含军标 / 旗）与图形类都有；路线有自己的时长体系故不显示 */}
+        {cat !== 'route' && (
           <Section title={t('显示时间', 'Display Time')}>
             <DisplayTimeToggle element={element} patch={patch} project={project} />
           </Section>
@@ -521,65 +522,44 @@ function IconGrid({ activeName, onPick }: { activeName?: string; onPick: (name: 
   );
 }
 
-function PinResourcePicker({ element, style, patch }: {
-  element: PointElement;
-  style: PinStyle;
-  patch: (c: Partial<MapElement>) => void;
+/**
+ * 资源形态选择区（标记设置与路线「显示标记」共用）：内置图集 / 图标库 / 全局素材库 / 上传。
+ * value 抽出两侧共有的资源字段；onPatch 把选择写回各自容器（元素顶层 / moveIcon）。
+ * extraCells：插入在图集网格开头的额外单元格（标记为圆点 / 水滴针）。
+ */
+function VisualResourcePicker({ value, style, onPatch, extraCells }: {
+  value: { builtinId?: string; assetId?: string; iconLib?: string; iconName?: string };
+  style: 'image' | 'gif' | 'model' | 'icon';
+  onPatch: (c: Record<string, unknown>) => void;
+  extraCells?: ReactNode;
 }) {
   const t = useT();
-  const isIconStyle = style === 'icon';
-  const isResource = style === 'image' || style === 'gif' || style === 'model' || isIconStyle;
-
   // 全局图片素材库（跨项目可用）：列表 + 缩略图按 assetId 异步取 URL
   const { items: customImages, thumbs, refresh: refreshLibrary } = useImageLibrary(style === 'image');
   const deleteMedia = useDeleteMedia(refreshLibrary);
 
-  // 军标：按兵种 × 四阵营选符号（符号图由 milsymbol 生成，无上传）
-  if (style === 'milsym') {
-    return <MilSymGrid element={element} patch={patch} />;
-  }
-  if (!isResource) return null;
-
-  if (isIconStyle) {
+  if (style === 'icon') {
     return (
       <IconGrid
-        activeName={element.iconName}
-        onPick={(name) => patch({ iconLib: 'lucide', iconName: name } as Partial<MapElement>)}
+        activeName={value.iconName}
+        onPick={(name) => onPatch({ shape: 'icon', iconLib: 'lucide', iconName: name, builtinId: undefined, assetId: undefined })}
       />
     );
   }
 
   const list = style === 'image' ? BUILTIN_IMAGES : style === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
-  const resettable = { builtinId: undefined, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined } as Partial<MapElement>;
-  const isDot = !element.shape || element.shape === 'circle';
+  const resettable = { builtinId: undefined, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined };
   return (
     <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
-      {/* 内置图片：圆点 / 水滴针是内置图形，与内置图集同列（排在首位） */}
+      {/* 图集网格（extraCells：标记的圆点 / 水滴针插入在首位） */}
       <div className="grid grid-cols-4 gap-1.5 max-h-44 overflow-y-auto">
-        {style === 'image' && (
-          <>
-            <button
-              title={t('圆点', 'Dot')}
-              onClick={() => patch({ ...resettable, shape: 'circle', color: element.color || '#FF4444' } as Partial<MapElement>)}
-              className={`${CELL_BASE} h-12 ${isDot ? CELL_ON : CELL_OFF}`}
-            >
-              <span className="block w-4 h-4 rounded-full bg-white" />
-            </button>
-            <button
-              title={t('水滴针', 'Pin')}
-              onClick={() => patch({ ...resettable, shape: 'pin', color: element.color || '#FF4444' } as Partial<MapElement>)}
-              className={`${CELL_BASE} h-12 ${element.shape === 'pin' ? CELL_ON : CELL_OFF}`}
-            >
-              <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
-            </button>
-          </>
-        )}
+        {extraCells}
         {list.map((a) => (
           <button
             key={a.id}
             title={a.name}
-            onClick={() => patch({ ...resettable, shape: style as PointShape, builtinId: a.id } as Partial<MapElement>)}
-            className={`${CELL_BASE} h-12 px-1 text-[10px] leading-tight text-center ${element.builtinId === a.id ? CELL_ON : CELL_OFF}`}
+            onClick={() => onPatch({ ...resettable, shape: style, builtinId: a.id })}
+            className={`${CELL_BASE} h-12 px-1 text-[10px] leading-tight text-center ${value.builtinId === a.id ? CELL_ON : CELL_OFF}`}
           >
             {a.src
               ? <img src={a.src} alt={a.name} className="w-6 h-6 object-contain" />
@@ -596,16 +576,64 @@ function PinResourcePicker({ element, style, patch }: {
             <CustomImageGrid
               images={customImages}
               thumbs={thumbs}
-              activeId={element.assetId}
-              onPick={(assetId) => patch({ ...resettable, shape: 'image', assetId } as Partial<MapElement>)}
+              activeId={value.assetId}
+              onPick={(assetId) => onPatch({ ...resettable, shape: 'image', assetId })}
               onDelete={deleteMedia}
             />
           )}
-          <ResourceUploadRow style={style} onLoaded={(assetId) => { patch({ shape: 'image' as PointShape, ...resettable, assetId } as Partial<MapElement>); refreshLibrary(); }} />
+          <ResourceUploadRow style="image" onLoaded={(assetId) => { onPatch({ ...resettable, shape: 'image', assetId }); refreshLibrary(); }} />
         </>
       )}
-      {style !== 'image' && <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: style as PointShape, ...resettable, assetId } as Partial<MapElement>)} />}
+      {style !== 'image' && <ResourceUploadRow style={style} onLoaded={(assetId) => onPatch({ ...resettable, shape: style, assetId })} />}
     </div>
+  );
+}
+
+/** 标记的资源选择（军标网格 + 圆点 / 水滴针快捷项 + 公共资源选择区） */
+function PinResourcePicker({ element, style, patch }: {
+  element: PointElement;
+  style: PinStyle;
+  patch: (c: Partial<MapElement>) => void;
+}) {
+  const t = useT();
+  // 军标：按兵种 × 四阵营选符号（符号图由 milsymbol 生成，无上传）
+  if (style === 'milsym') {
+    return (
+      <MilSymGrid
+        activeSidc={element.builtinId?.startsWith('milsym:') ? element.builtinId.slice('milsym:'.length) : undefined}
+        onPick={(sidc) => patch({
+          shape: 'military_symbol' as PointShape, builtinId: `milsym:${sidc}`,
+          assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined,
+        } as Partial<MapElement>)}
+      />
+    );
+  }
+  if (style !== 'image' && style !== 'gif' && style !== 'model' && style !== 'icon') return null;
+  const isDot = !element.shape || element.shape === 'circle';
+  return (
+    <VisualResourcePicker
+      value={element}
+      style={style}
+      onPatch={(c) => patch(c as Partial<MapElement>)}
+      extraCells={style === 'image' ? (
+        <>
+          <button
+            title={t('圆点', 'Dot')}
+            onClick={() => patch({ builtinId: undefined, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined, shape: 'circle', color: element.color || '#FF4444' } as Partial<MapElement>)}
+            className={`${CELL_BASE} h-12 ${isDot ? CELL_ON : CELL_OFF}`}
+          >
+            <span className="block w-4 h-4 rounded-full bg-white" />
+          </button>
+          <button
+            title={t('水滴针', 'Pin')}
+            onClick={() => patch({ builtinId: undefined, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined, shape: 'pin', color: element.color || '#FF4444' } as Partial<MapElement>)}
+            className={`${CELL_BASE} h-12 ${element.shape === 'pin' ? CELL_ON : CELL_OFF}`}
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
+          </button>
+        </>
+      ) : undefined}
+    />
   );
 }
 
@@ -683,87 +711,40 @@ function useDeleteMedia(refresh: () => void) {
 }
 
 /** 路线「显示标记」的资源选择区（与标记的 PinResourcePicker 同构，选择写入 moveIcon） */
+/** 路线「显示标记」的资源选择：完全复用标记的 VisualResourcePicker（图集/图标库/素材库/上传） */
 function MoveResourcePicker({ mi, patch }: {
   mi: NonNullable<LineElement['moveIcon']>;
   patch: (c: Partial<MapElement>) => void;
 }) {
   const t = useT();
   const shape = mi.shape as 'image' | 'gif' | 'model' | 'icon';
-  const set = (c: Partial<NonNullable<LineElement['moveIcon']>>) =>
+  const set = (c: Record<string, unknown>) =>
     patch({ moveIcon: { ...mi, ...c } } as Partial<MapElement>);
-
-  // 全局图片素材库（与标记共用，跨项目可用）
-  const { items: customImages, thumbs, refresh: refreshLibrary } = useImageLibrary(shape === 'image');
-  const deleteMedia = useDeleteMedia(refreshLibrary);
-
-  if (shape === 'icon') {
-    return (
-      <IconGrid
-        activeName={mi.iconName}
-        onPick={(name) => set({ shape: 'icon', iconLib: 'lucide', iconName: name, builtinId: undefined, assetId: undefined })}
-      />
-    );
-  }
-
-  const list = shape === 'image' ? BUILTIN_IMAGES : shape === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
-  const miResettable = { builtinId: undefined, assetId: undefined, iconLib: undefined, iconName: undefined };
   const isDotMi = !mi.shape || mi.shape === 'dot';
   return (
-    <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
-      {/* 内置图片：圆点 / 水滴针与内置图集同列（与标记设置一致） */}
-      <div className="grid grid-cols-4 gap-1.5 max-h-44 overflow-y-auto">
-        {shape === 'image' && (
-          <>
-            <button
-              title={t('圆点', 'Dot')}
-              onClick={() => set({ ...miResettable, shape: 'dot', color: mi.color || '#FF6600' })}
-              className={`${CELL_BASE} h-12 ${isDotMi ? CELL_ON : CELL_OFF}`}
-            >
-              <span className="block w-4 h-4 rounded-full bg-white" />
-            </button>
-            <button
-              title={t('水滴针', 'Pin')}
-              onClick={() => set({ ...miResettable, shape: 'pin', color: mi.color || '#FF6600' })}
-              className={`${CELL_BASE} h-12 ${mi.shape === 'pin' ? CELL_ON : CELL_OFF}`}
-            >
-              <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
-            </button>
-          </>
-        )}
-        {list.map((a) => (
-          <button
-            key={a.id}
-            title={a.name}
-            onClick={() => set({ ...miResettable, shape: shape as 'image' | 'gif' | 'model', builtinId: a.id })}
-            className={`${CELL_BASE} h-12 px-1 text-[10px] leading-tight text-center ${mi.builtinId === a.id ? CELL_ON : CELL_OFF}`}
-          >
-            {a.src
-              ? <img src={a.src} alt={a.name} className="w-6 h-6 object-contain" />
-              : <span className="text-foreground/80">{a.name}</span>}
-          </button>
-        ))}
-      </div>
-
-      {/* 自定义图片：与标记共用同一个项目级图片库（上传一次，标记与路线都能用） */}
-      {shape === 'image' && (
+    <VisualResourcePicker
+      value={mi}
+      style={shape}
+      onPatch={set}
+      extraCells={shape === 'image' ? (
         <>
-          <p className="mt-2 mb-1 text-[10px] text-muted-foreground/70">{t('自定义图片', 'Custom images')}</p>
-          {customImages.length > 0 && (
-            <CustomImageGrid
-              images={customImages}
-              thumbs={thumbs}
-              activeId={mi.assetId}
-              onPick={(assetId) => set({ ...miResettable, shape: 'image', assetId })}
-              onDelete={deleteMedia}
-            />
-          )}
-          <ResourceUploadRow
-            style="image"
-            onLoaded={(assetId) => { set({ ...miResettable, shape: 'image', assetId }); refreshLibrary(); }}
-          />
+          <button
+            title={t('圆点', 'Dot')}
+            onClick={() => set({ builtinId: undefined, assetId: undefined, iconLib: undefined, iconName: undefined, shape: 'dot', color: mi.color || '#FF6600' })}
+            className={`${CELL_BASE} h-12 ${isDotMi ? CELL_ON : CELL_OFF}`}
+          >
+            <span className="block w-4 h-4 rounded-full bg-white" />
+          </button>
+          <button
+            title={t('水滴针', 'Pin')}
+            onClick={() => set({ builtinId: undefined, assetId: undefined, iconLib: undefined, iconName: undefined, shape: 'pin', color: mi.color || '#FF6600' })}
+            className={`${CELL_BASE} h-12 ${mi.shape === 'pin' ? CELL_ON : CELL_OFF}`}
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
+          </button>
         </>
-      )}
-    </div>
+      ) : undefined}
+    />
   );
 }
 
@@ -996,9 +977,9 @@ const milSymSidc = (aff: string, fid: string): string => `S${aff}G-${fid}`;
 /** 军标选择网格：每兵种一行 × [友好|敌对|中性|未知] 四阵营。
  *  选中写入 shape='military_symbol' + builtinId='milsym:<SIDC>'，
  *  符号图由 milsymbol 按官方规范生成；其余属性（大小/朝向/颜色/标签）与图片形态一致。 */
-function MilSymGrid({ element, patch }: {
-  element: PointElement;
-  patch: (c: Partial<MapElement>) => void;
+function MilSymGrid({ activeSidc, onPick }: {
+  activeSidc?: string;
+  onPick: (sidc: string) => void;
 }) {
   const t = useT();
   // SIDC → 预览 dataURL（一次生成；单个符号失败不影响其余）
@@ -1029,16 +1010,12 @@ function MilSymGrid({ element, patch }: {
             <span className="flex items-center text-[10px] text-foreground/80">{row.name}</span>
             {MILSYM_AFFS.map((a) => {
               const sidc = milSymSidc(a.aff, row.fid);
-              const active = element.builtinId === `milsym:${sidc}`;
+              const active = activeSidc === sidc;
               return (
                 <button
                   key={a.aff}
                   title={`${row.name} · ${a.name}`}
-                  onClick={() => patch({
-                    shape: 'military_symbol' as PointShape,
-                    builtinId: `milsym:${sidc}`,
-                    assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined,
-                  } as Partial<MapElement>)}
+                  onClick={() => onPick(sidc)}
                   className={`h-11 rounded-md border flex items-center justify-center transition-colors ${
                     active ? 'border-primary bg-accent' : 'border-white/10 bg-white/[0.03] hover:bg-accent'
                   }`}
@@ -1227,8 +1204,8 @@ function RouteSettings({ element, patch, chapter }: {
             { value: 'curved-arrow', label: t('➤ 箭头曲线', '➤ Curved Arrow') },
             { value: 'military-arrow', label: t('🏹 燕尾箭头', '🏹 Swallowtail') },
             { value: 'military-simple', label: t('⚔️ 行军箭头', '⚔️ March Arrow') },
-            { value: 'plain-straight', label: t('□ 无样式直线', '□ Plain Line') },
-            { value: 'plain-bezier', label: t('□ 无样式曲线', '□ Plain Curve') },
+            { value: 'plain-straight', label: t('➖ 无样式直线', '➖ Plain Line') },
+            { value: 'plain-bezier', label: t('〰️ 无样式曲线', '〰️ Plain Curve') },
           ]}
           onChange={setStyle}
         />
