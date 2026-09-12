@@ -22,6 +22,8 @@ declare global {
         save: (c: { id: string; name: string; order?: number }) => Promise<{ id: string }>;
         remove: (id: string) => Promise<{ ok: boolean; reason?: string }>;
       };
+      /** 清空项目数据：项目 + 合集 + 素材（保留 providers），与网页端 clearAll 同义 */
+      clearAll: () => Promise<{ ok: boolean }>;
       providers: {
         list: () => Promise<import('../types').ProviderConfig[]>;
         upsert: (cfg: import('../types').ProviderConfig) => Promise<{ ok: boolean }>;

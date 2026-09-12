@@ -14,6 +14,19 @@ export interface ProjectMeta {
   size?: number;
 }
 
+/**
+ * 在存储边界统一把时间字段 revive 成 Date。
+ * 桌面端 JSON.stringify 落盘会把 Date 变成 ISO 字符串，类型声明却是 Date ——
+ * 不归一化的话，桌面端读回的 `createdAt.getTime()` 直接抛错，两端行为分叉。
+ */
+function reviveProject(p: MapVideoProject): MapVideoProject {
+  return {
+    ...p,
+    createdAt: new Date(p.createdAt as unknown as string | Date),
+    updatedAt: new Date(p.updatedAt as unknown as string | Date),
+  };
+}
+
 export const storage = {
   async saveProject(project: MapVideoProject): Promise<void> {
     if (IS_DESKTOP) {
@@ -31,9 +44,10 @@ export const storage = {
   async getProject(id: string): Promise<MapVideoProject | undefined> {
     if (IS_DESKTOP) {
       const data = (await window.mapvideo!.projects.get(id)) as MapVideoProject | null;
-      return data ?? undefined;
+      return data ? reviveProject(data) : undefined;
     }
-    return await dexie.getProject(id);
+    const p = await dexie.getProject(id);
+    return p ? reviveProject(p) : undefined;
   },
 
   async deleteProject(id: string): Promise<void> {
@@ -52,22 +66,21 @@ export const storage = {
       for (const r of rows) {
         const data = (await window.mapvideo!.projects.get(r.id)) as MapVideoProject | null;
         if (data) {
-          out.push({
+          out.push(reviveProject({
             ...data,
-            updatedAt: new Date(r.updatedAt),
             collectionId: data.collectionId || r.collectionId || DEFAULT_COLLECTION_ID,
-          });
+          }));
         }
       }
       return out;
     }
-    return await dexie.listProjects();
+    return (await dexie.listProjects()).map(reviveProject);
   },
 
+  /** 清空项目数据：两端语义一致 —— 删全部项目 + 合集（含素材），保留应用配置（providers） */
   async clearAll(): Promise<void> {
     if (IS_DESKTOP) {
-      const rows = await window.mapvideo!.projects.list();
-      for (const r of rows) await window.mapvideo!.projects.remove(r.id);
+      await window.mapvideo!.clearAll();
       return;
     }
     await dexie.clearAll();

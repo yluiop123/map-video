@@ -3,11 +3,13 @@ import { storage } from '../lib/storage';
 import type {
   MapVideoProject, Chapter, MapElement, GlobalConfig, BaseMapConfig,
   ElevationMapConfig, CustomSymbol, CustomImage, OverlayItem, CameraKeyframe, TransitionConfig,
-  ChapterEffect, ProjectExport, ScreenFxItem,
+  ChapterEffect, ProjectExport, ScreenFxItem, ExportedAsset,
   NarrationEntry, NarrationStyle, MusicTrack, ConnectorElement
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeTitleStyle, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
+import { releaseAssetUrls, getAssetBytes, uploadAsset } from '../lib/assets';
+import { clearGifCache } from '../lib/gif-decoder';
 
 /** 兼容旧存档：疆域 display / 章节特效层 / 旧弹窗类型缺字段时补默认值（load/import 入口统一过一遍） */
 function normalizeChapters(chapters: Chapter[]): Chapter[] {
@@ -119,27 +121,26 @@ export function setHistoryMuted(v: boolean) {
   historyMuted = v;
 }
 
-let lastHistoryTime = 0;
-
-/** 已保存（写入 IndexedDB）项目的 JSON 快照，用于保存按钮的脏标记 */
-let savedProjectJSON = '';
-function markProjectSaved(p: MapVideoProject) { savedProjectJSON = JSON.stringify(p); }
+/**
+ * 脏标记基准：保存时记下**引用**。
+ * 项目走不可变更新（每次 set 都产生新对象），引用比较即 O(1) 判脏；
+ * 旧实现每次 isProjectDirty 都 JSON.stringify 整个项目（面板每敲一个字符都全量序列化）。
+ */
+let savedProjectRef: MapVideoProject | null = null;
+function markProjectSaved(p: MapVideoProject) { savedProjectRef = p; }
 /** 项目是否有未保存修改（内存 vs 最近一次落盘态） */
 export function isProjectDirty(p: MapVideoProject | null): boolean {
   if (!p) return false;
-  if (!savedProjectJSON) return true;
-  return JSON.stringify(p) !== savedProjectJSON;
+  return p !== savedProjectRef;
 }
-const HISTORY_THROTTLE_MS = 700;
 
-/** 立即压一次历史（不受节流和拖拽静音影响），用于拖拽开始前快照 */
+/** 立即压一次历史（不受拖拽静音影响），用于拖拽开始前快照 */
 export function snapshotHistory() {
   const store = useProjectStore.getState();
   if (!store.project) return;
   const next = [...store.history, store.project];
   if (next.length > HISTORY_LIMIT) next.shift();
   useProjectStore.setState({ history: next, future: [] });
-  lastHistoryTime = Date.now();
 }
 
 // ========== Store 接口 ==========
@@ -222,7 +223,8 @@ interface ProjectState {
 
   // 导入导出
   importProjectConfig: (data: ProjectExport, collectionId?: string) => Promise<void>;
-  createExport: () => ProjectExport;
+  /** 导出项目配置（含素材字节，自包含）；无项目时抛错 */
+  createExport: () => Promise<ProjectExport>;
   clear: () => void;
 
   // 撤回/重做
@@ -233,12 +235,14 @@ interface ProjectState {
 // ========== Store 实现 ==========
 
 export const useProjectStore = create<ProjectState>()((set, get) => {
-  /** 把当前项目压入历史栈（拖拽期间和 700ms 内的连续操作不计入） */
+  /**
+   * 把当前项目压入历史栈。
+   * 历史存的是**引用**（项目不可变更新，旧引用永不变化），零拷贝成本，
+   * 因此**不做时间节流** —— 节流会吞掉 700ms 窗口内第二次独立操作的快照，
+   * 造成一次 undo 连带回退两步。输入粒度由控件「失焦/回车才提交」保证。
+   */
   const commit = () => {
     if (historyMuted) return;
-    const now = Date.now();
-    if (now - lastHistoryTime < HISTORY_THROTTLE_MS) return;
-    lastHistoryTime = now;
     const { project, history } = get();
     if (!project) return;
     const next = [...history, project];
@@ -271,6 +275,11 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     },
 
     loadProject: async (id: string) => {
+      // 切项目：释放上一项目的素材 objectURL 与解码缓存（这些缓存只增不减，不清会长会话内存持续上涨）
+      releaseAssetUrls();
+      clearGifCache();
+      (await import('../lib/map-renderer')).clearRenderCaches();
+      (await import('../lib/model-renderer')).clearModelCaches();
       const project = await storage.getProject(id);
       if (project) {
         const normalized = { ...project, chapters: normalizeChapters(project.chapters) };
@@ -682,6 +691,17 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     },
 
     importProjectConfig: async (data: ProjectExport, collectionId?: string) => {
+      // 先还原内嵌素材（assetId = sha256 内容寻址，重复导入天然幂等覆盖同一份）
+      if (data.assets?.length) {
+        await Promise.all(data.assets.map(async (a) => {
+          try {
+            const bin = atob(a.dataUrl.split(',')[1] || '');
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            await uploadAsset(new Blob([bytes], { type: a.mime }), data.project.id);
+          } catch { /* 单个素材失败不阻塞导入 */ }
+        }));
+      }
       const project = {
         ...data.project,
         id: generateId(),
@@ -695,9 +715,36 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       markProjectSaved(project);
     },
 
-    createExport: () => {
+    createExport: async () => {
       const { project } = get();
-      return { version: 1, exportedAt: new Date(), project: project! };
+      if (!project) throw new Error('没有可导出的项目');
+      // 收集全部被引用的素材（point 元素 + 自定义图片库），内嵌为 base64 ——
+      // 否则导出的 JSON 在别的机器导入时，assetId 指向的本地素材不存在，全部裂图
+      const ids = new Set<string>();
+      for (const ch of project.chapters) {
+        for (const el of ch.elements) {
+          if (el.type === 'point' && el.assetId) ids.add(el.assetId);
+        }
+      }
+      for (const ci of project.customImages || []) ids.add(ci.assetId);
+      const assets: ExportedAsset[] = [];
+      for (const assetId of ids) {
+        const bytes = await getAssetBytes(assetId);
+        if (!bytes) continue; // 素材已缺失：跳过（导出其余，不让单个缺失阻塞整体）
+        // 分块转 base64，避免超大文件一次性 String.fromCharCode 爆栈
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        }
+        const b64 = btoa(bin);
+        const mime = bytes[0] === 0x89 && bytes[1] === 0x50 ? 'image/png'
+          : bytes[0] === 0x47 && bytes[1] === 0x49 ? 'image/gif'
+          : bytes[0] === 0xff && bytes[1] === 0xd8 ? 'image/jpeg'
+          : bytes[0] === 0x67 && bytes[1] === 0x6c ? 'model/gltf-binary'  // "glTF"
+          : 'application/octet-stream';
+        assets.push({ assetId, mime, byteSize: bytes.length, dataUrl: `data:${mime};base64,${b64}` });
+      }
+      return { version: 1, exportedAt: new Date(), project, assets };
     },
 
     clear: () => set({ project: null, history: [], future: [] }),

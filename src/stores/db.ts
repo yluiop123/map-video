@@ -81,6 +81,10 @@ export async function deleteCollection(id: string): Promise<void> {
 // ---------- 素材 ----------
 
 export async function saveAsset(row: AssetRow): Promise<void> {
+  // 已存在则不覆盖：素材是内容寻址（sha256 全局唯一），同一文件被第二个项目引用时
+  // 若直接 put 会改写 projectId 归属，让前一个项目失去归属记录（孤儿素材）。
+  const existing = await db.assets.get(row.assetId);
+  if (existing) return;
   await db.assets.put(row);
 }
 

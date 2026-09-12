@@ -172,6 +172,9 @@ function registerIpc() {
     return row ? JSON.parse(row.data) : null;
   });
   ipcMain.handle('db:projects:save', (_e, { id, name, data, collectionId }) => {
+    // 入参校验：渲染进程的数据一律不可信，缺失时给出明确错误，而不是 TypeError 静默 reject
+    if (typeof id !== 'string' || !id) throw new Error('projects.save: id 无效');
+    if (!data || typeof data !== 'object') throw new Error('projects.save: data 无效');
     const json = JSON.stringify(data);
     db.prepare(`
       INSERT INTO projects (id, name, data, size, updated_at, collection_id) VALUES (?, ?, ?, ?, ?, ?)
@@ -200,6 +203,22 @@ function registerIpc() {
     if (id === 'default') return { ok: false, reason: 'default-immutable' };
     db.prepare("UPDATE projects SET collection_id = 'default' WHERE collection_id = ?").run(id);
     db.prepare('DELETE FROM collections WHERE id = ?').run(id);
+    return { ok: true };
+  });
+
+  // 清空项目数据：项目 + 合集 + 素材文件（**保留**应用配置 providers），
+  // 与网页端 Dexie 的 clearAll 语义一致；旧实现只删 projects，会留下孤儿素材与空合集
+  ipcMain.handle('db:clearAll', () => {
+    db.exec('DELETE FROM projects; DELETE FROM collections;');
+    try {
+      const dir = assetsDir();
+      for (const f of fs.readdirSync(dir)) fs.unlinkSync(path.join(dir, f));
+    } catch { /* 素材目录不存在时忽略 */ }
+    const now = Date.now();
+    db.prepare(`
+      INSERT OR IGNORE INTO collections (id, name, ord, created_at, updated_at)
+      VALUES ('default', '默认合集', -1, ?, ?)
+    `).run(now, now);
     return { ok: true };
   });
 

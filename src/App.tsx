@@ -16,8 +16,11 @@ import { useProviderStore } from './stores/providerStore';
 import { ConfirmHost } from './components/ui/ConfirmHost';
 import { PanelHeader } from './components/ui/primitives';
 
-import { useProjectStore } from './stores/projectStore';
+import { useProjectStore, isProjectDirty } from './stores/projectStore';
 import { useEditorStore } from './stores/editorStore';
+
+/** 自动保存：停止编辑这么久后静默落盘 */
+const AUTOSAVE_DELAY_MS = 5000;
 
 export default function App() {
   const project = useProjectStore((s) => s.project);
@@ -60,6 +63,27 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // 自动保存：停止编辑 5s 后静默落盘。
+  // 视频编辑是长时创作，此前只能手动保存且无关闭保护 —— 崩溃/误关会丢掉全部未保存工作。
+  useEffect(() => {
+    if (!project) return;
+    const t = setTimeout(() => {
+      void useProjectStore.getState().saveProject().catch((err) => console.warn('[autosave] 保存失败:', err));
+    }, AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [project]);
+
+  // 未保存提醒：刷新 / 关闭窗口前拦截（自动保存已覆盖多数场景，这是最后一道保险）
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!isProjectDirty(useProjectStore.getState().project)) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, []);
 
   if (!project) {

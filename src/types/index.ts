@@ -61,7 +61,8 @@ export interface Resolution {
 export interface BaseMapConfig {
   id: string;
   name: string;
-  style: string;                 // MapLibre style URL 或内联样式对象
+  /** MapLibre style URL 或内联样式对象 */
+  style: string | import('maplibre-gl').StyleSpecification;
 }
 
 export interface ElevationMapConfig {
@@ -1096,8 +1097,18 @@ export function normalizeNarrationTrack(t?: NarrationTrack | null): NarrationTra
 
 // ========== 导出/导入格式 ==========
 
+/** 导出内嵌素材（base64 dataUrl）：让导出文件自包含，跨设备导入不裂图 */
+export interface ExportedAsset {
+  assetId: string;
+  mime: string;
+  byteSize: number;
+  dataUrl: string;
+}
+
 export interface ProjectExport {
   version: number;
   exportedAt: Date;
   project: MapVideoProject;
+  /** 项目引用的全部素材字节（导入时按 sha256 内容寻址幂等还原） */
+  assets?: ExportedAsset[];
 }

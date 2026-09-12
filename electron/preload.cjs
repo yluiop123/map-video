@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('mapvideo', {
     save: (c) => ipcRenderer.invoke('db:collections:save', c),
     remove: (id) => ipcRenderer.invoke('db:collections:remove', id),
   },
+  /** 清空项目数据（项目 + 合集 + 素材），保留应用配置 providers */
+  clearAll: () => ipcRenderer.invoke('db:clearAll'),
   providers: {
     list: () => ipcRenderer.invoke('db:providers:list'),
     upsert: (cfg) => ipcRenderer.invoke('db:providers:upsert', cfg),
