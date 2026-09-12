@@ -125,7 +125,9 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         map.jumpTo({ center: cam.center, zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 });
       }
       // 3D 球体投影（读全局配置最新值，避免闭包过期）
-      applyProjection(map, (useProjectStore.getState().project?.globalConfig.projection ?? 'mercator') === 'globe');
+      const st = useProjectStore.getState();
+      const chNow = st.project?.chapters.find((c) => c.id === chapter.id);
+      applyProjection(map, ((chNow?.projection ?? st.project?.globalConfig.projection) ?? 'mercator') === 'globe');
       // 元素刷新
       // 编辑端：传 interactive=true（绘制编辑辅助图形；导出端 MapScene 不传）
       renderElements(map, chapter.elements, currentFrame, project.globalConfig.defaultFPS, true);
@@ -223,8 +225,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (mode === 'add_region') loadRegionData().catch(() => { /* 点击时提示 */ });
   }, [mode]);
 
-  // ===== 3D 球体开关实时切换 =====
-  const globeOn = project.globalConfig.projection === 'globe';
+  // ===== 3D 球体开关实时切换（投影按章节绑定，缺省继承项目默认） =====
+  const globeOn = (chapter.projection ?? project.globalConfig.projection ?? 'mercator') === 'globe';
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;

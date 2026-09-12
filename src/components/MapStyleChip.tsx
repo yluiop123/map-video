@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Layers, Mountain, Globe, Grid2x2, Check } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
+import type { Chapter } from '../types';
 
 /**
  * 地图左下角底图芯片（对齐 Mapimator SATELLITE 样式）：
@@ -10,15 +11,21 @@ import { useEditorStore } from '../stores/editorStore';
 export function MapStyleChip() {
   const project = useProjectStore((s) => s.project);
   const isPlaying = useEditorStore((s) => s.isPlaying);
-  const setActiveBaseMap = useProjectStore((s) => s.setActiveBaseMap);
-  const setActiveElevationMap = useProjectStore((s) => s.setActiveElevationMap);
+  const chapterId = useEditorStore((s) => s.selectedChapterId);
+  const updateChapter = useProjectStore((s) => s.updateChapter);
   const updateElevationMap = useProjectStore((s) => s.updateElevationMap);
-  const updateGlobalConfig = useProjectStore((s) => s.updateGlobalConfig);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
+  // 底图 / 高程 / 投影**按章节绑定**：面板操作的是当前章节，
+  // 项目级的 activeBaseMapId / activeElevationMapId / globalConfig.projection 只作为新建章节的初始值
+  const chapter = useMemo(
+    () => (project ? project.chapters.find((c) => c.id === chapterId) ?? project.chapters[0] ?? null : null),
+    [project, chapterId],
+  );
+
   // 当前生效的高程源（'none' 或没有 url 视为平面）与其夸张系数草稿
-  const activeElevationId = project?.activeElevationMapId || 'none';
+  const activeElevationId = chapter?.elevationMapId ?? project?.activeElevationMapId ?? 'none';
   const activeElevation = project?.elevationMaps.find((e) => e.id === activeElevationId && e.url);
   const [exagDraft, setExagDraft] = useState(activeElevation?.exaggeration ?? 1.5);
   useEffect(() => {
@@ -48,8 +55,13 @@ export function MapStyleChip() {
 
   if (!project || isPlaying) return null;
 
-  const activeBaseMap = project.baseMaps.find((b) => b.id === project.activeBaseMapId);
-  const isGlobe = (project.globalConfig.projection || 'mercator') === 'globe';
+  if (!chapter) return null;
+
+  const activeBaseMapId = chapter.baseMapId ?? project.activeBaseMapId;
+  const activeBaseMap = project.baseMaps.find((b) => b.id === activeBaseMapId);
+  const isGlobe = (chapter.projection ?? project.globalConfig.projection ?? 'mercator') === 'globe';
+
+  const setChapterVisual = (c: Partial<Chapter>) => updateChapter(chapter.id, c);
 
   return (
     <div ref={boxRef} className="absolute left-3 bottom-3 z-20">
@@ -74,11 +86,11 @@ export function MapStyleChip() {
           {/* 底图 */}
           <p className="px-2 pt-1 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">底图</p>
           {project.baseMaps.map((bm) => {
-            const active = bm.id === project.activeBaseMapId;
+            const active = bm.id === activeBaseMapId;
             return (
               <button
                 key={bm.id}
-                onClick={() => setActiveBaseMap(bm.id)}
+                onClick={() => setChapterVisual({ baseMapId: bm.id })}
                 className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition-colors ${
                   active ? 'bg-brand/15 text-foreground' : 'text-foreground/80 hover:bg-white/[0.06]'
                 }`}
@@ -95,11 +107,11 @@ export function MapStyleChip() {
           {/* 高程（store 默认自带 id='none' 的无高程项） */}
           <p className="px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">高程</p>
           {project.elevationMaps.map((em) => {
-            const active = em.id === (project.activeElevationMapId || 'none');
+            const active = em.id === activeElevationId;
             return (
               <button
                 key={em.id || 'none'}
-                onClick={() => setActiveElevationMap(em.id === 'none' ? null : em.id)}
+                onClick={() => setChapterVisual({ elevationMapId: em.id === 'none' ? null : em.id })}
                 className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition-colors ${
                   active ? 'bg-brand/15 text-foreground' : 'text-foreground/80 hover:bg-white/[0.06]'
                 }`}
@@ -138,7 +150,7 @@ export function MapStyleChip() {
 
           {/* 3D 投影 */}
           <button
-            onClick={() => updateGlobalConfig({ projection: isGlobe ? 'mercator' : 'globe' })}
+            onClick={() => setChapterVisual({ projection: isGlobe ? 'mercator' : 'globe' })}
             className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition-colors ${
               isGlobe ? 'bg-brand/15 text-foreground' : 'text-foreground/80 hover:bg-white/[0.06]'
             }`}

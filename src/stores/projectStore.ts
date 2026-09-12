@@ -94,12 +94,28 @@ const DEFAULT_ELEVATION_MAPS: ElevationMapConfig[] = [
   { id: 'aws-terrain', name: '地形高程 (AWS Terrarium)', url: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png', encoding: 'terrarium', exaggeration: 1.5 },
 ];
 
-function createDefaultChapter(index = 0, startFrame = 0, duration = 3000): Chapter {
+/** 新建章节时从项目级默认值继承的「底图 / 高程 / 投影」 */
+interface ChapterVisualDefaults {
+  projection?: Chapter['projection'];
+  baseMapId?: string;
+  elevationMapId?: string | null;
+}
+
+function createDefaultChapter(
+  index = 0,
+  startFrame = 0,
+  duration = 3000,
+  defaults: ChapterVisualDefaults = {},
+): Chapter {
   const titles = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
   return {
     id: generateId(),
     title: `第${titles[Math.min(index, titles.length - 1)]}章`,
     order: index,
+    // 底图 / 高程 / 投影按章节绑定，初始值继承项目默认
+    projection: defaults.projection,
+    baseMapId: defaults.baseMapId,
+    elevationMapId: defaults.elevationMapId,
     startFrame,
     endFrame: startFrame + duration,
     elements: [],
@@ -261,7 +277,11 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         id: generateId(), name, collectionId: collectionId || DEFAULT_COLLECTION_ID,
         createdAt: new Date(), updatedAt: new Date(),
         globalConfig: { ...DEFAULT_GLOBAL_CONFIG },
-        chapters: [createDefaultChapter(0, 0, DEFAULT_GLOBAL_CONFIG.defaultDuration)],
+        chapters: [createDefaultChapter(0, 0, DEFAULT_GLOBAL_CONFIG.defaultDuration, {
+          projection: DEFAULT_GLOBAL_CONFIG.projection,
+          baseMapId: 'osm',
+          elevationMapId: 'none',
+        })],
         baseMaps: [...DEFAULT_BASE_MAPS],
         activeBaseMapId: 'osm',
         elevationMaps: [...DEFAULT_ELEVATION_MAPS],
@@ -312,7 +332,17 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         if (!state.project) return state;
         const last = state.project.chapters[state.project.chapters.length - 1];
         const idx = state.project.chapters.length;
-        const newCh = createDefaultChapter(idx, last ? last.endFrame : 0, state.project.globalConfig.defaultDuration);
+        // 底图 / 高程 / 投影按章节绑定：新章节继承项目级默认值作为初始值
+        const newCh = createDefaultChapter(
+          idx,
+          last ? last.endFrame : 0,
+          state.project.globalConfig.defaultDuration,
+          {
+            projection: state.project.globalConfig.projection,
+            baseMapId: state.project.activeBaseMapId,
+            elevationMapId: state.project.activeElevationMapId,
+          },
+        );
         if (title) newCh.title = title;
         return { project: { ...state.project, chapters: [...state.project.chapters, newCh] } };
       });

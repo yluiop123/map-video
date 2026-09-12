@@ -25,8 +25,10 @@ export interface MapVideoProject {
   globalConfig: GlobalConfig;
   chapters: Chapter[];
   baseMaps: BaseMapConfig[];
+  /** 新建章节的**默认底图**；实际生效的是章节上的 `chapter.baseMapId` */
   activeBaseMapId: string;
   elevationMaps: ElevationMapConfig[];
+  /** 新建章节的**默认高程**；实际生效的是章节上的 `chapter.elevationMapId` */
   activeElevationMapId: string | null;
   customSymbols: CustomSymbol[];
   /** 自定义图片库：用户上传的标记图片（二进制外置在 asset 表，这里只登记引用，供面板复用） */
@@ -46,7 +48,7 @@ export interface GlobalConfig {
   defaultFPS: number;
   defaultResolution: Resolution;
   defaultEasing: EasingType;
-  /** 地图投影：平面（默认）/ 3D 球体 */
+  /** 地图投影：平面（默认）/ 3D 球体 —— 仅作新建章节的默认值，实际生效的是 `chapter.projection` */
   projection?: 'mercator' | 'globe';
 }
 
@@ -100,8 +102,14 @@ export interface Chapter {
   /** 章节标题样式（导出与预览共用渲染）；缺省用默认样式 */
   titleStyle?: TitleStyle;
   transition?: TransitionConfig; // 进入本节的转场
-  baseMapId?: string;            // 可选覆盖底图
+  /**
+   * 底图 / 高程 / 投影 —— **按章节绑定**（不同章节可以不同底图、地形与 2D/3D 投影）。
+   * 为空时继承项目级默认值（`project.activeBaseMapId` / `activeElevationMapId` /
+   * `globalConfig.projection`），项目级那三个字段只作为「新建章节的初始值」，不直接生效。
+   */
+  baseMapId?: string;
   elevationMapId?: string | null;
+  projection?: 'mercator' | 'globe';
   /** 字幕/配音轨道（章内绝对帧） */
   narration?: NarrationTrack;
   /** 背景音乐段（章内绝对帧，可多段循环） */

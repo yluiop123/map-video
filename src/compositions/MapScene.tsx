@@ -43,7 +43,8 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
     map.on('load', () => {
       mapRef.current = map;
       try {
-        if ((project.globalConfig.projection ?? 'mercator') === 'globe') {
+        // 投影按章节绑定，缺省继承项目默认
+        if (((chapter.projection ?? project.globalConfig.projection) ?? 'mercator') === 'globe') {
           map.setProjection({ type: 'globe' });
         }
       } catch { /* */ }
