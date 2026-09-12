@@ -129,10 +129,13 @@ export function getBuiltinAsset(id?: string | null): BuiltinAsset | undefined {
     let asset = MILSYM_CACHE.get(sidc);
     if (!asset) {
       try {
-        // monoColor 白色线稿：与其它内置图集一致走 multiply 染色 ——
-        // 默认白色 = 不染色时保持线稿原样；改「图标颜色」即整体染色（标准渲染的
-        // 蓝底色与用户颜色 multiply 会得到脏色，这是军标颜色不一致的根因）。
-        const svg = new ms.Symbol(sidc, { size: 64, monoColor: '#FFFFFF' }).asSVG();
+        // 标准渲染（fill:true，框架有底色填充）+ 后处理：
+        //   填充色（各阵营底色）→ 白色，供位图管线 multiply 染成用户所选「图标颜色」；
+        //   黑色线条保留 —— 军标的黑线描边是规范图面的一部分，multiply 后仍为黑。
+        // 之前两种做法的问题：monoColor 全白线稿没有填充（只剩彩色边框）；
+        // 标准浅蓝底直接 multiply 用户色会得到脏色（颜色不一致的根因）。
+        const svg = new ms.Symbol(sidc, { size: 64, fill: true }).asSVG()
+          .replace(/fill="(?!none)[^"]*"/g, 'fill="#FFFFFF"');
         asset = { id, kind: 'image', name: '军标', tags: ['军标'], tintable: true, src: `data:image/svg+xml,${encodeURIComponent(svg)}` };
       } catch {
         return undefined;
