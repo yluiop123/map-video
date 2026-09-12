@@ -143,7 +143,12 @@ export interface MapElementBase {
     labelSize?: number;
     labelPadding?: number;
     labelRadius?: number;
+    /** @deprecated 旧位置枚举；新数据用 labelOffsetX / labelOffsetY（未设置偏移时兼容此字段） */
     labelPos?: string;
+    /** 标签水平偏移（像素，0 = 居中；负左正右）——与标记文案位置语义一致 */
+    labelOffsetX?: number;
+    /** 标签垂直偏移（像素，0 = 居中；**正值向上**，默认 40） */
+    labelOffsetY?: number;
     /** 旗帜文字 */
     flagText?: string;
     flagColor?: string;

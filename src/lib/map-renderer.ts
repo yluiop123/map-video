@@ -1215,7 +1215,15 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         map.addSource(iconSrcId, { type: 'geojson', data: iconData } as any);
         map.addLayer({
           id: iconLayerId, type: 'symbol', source: iconSrcId,
-          layout: { 'icon-image': mImgId, 'icon-size': mScale, 'icon-anchor': mShape === 'pin' ? 'bottom' : 'center', 'icon-offset': [0, 0] as any, 'icon-allow-overlap': true },
+          layout: {
+            'icon-image': mImgId, 'icon-size': mScale,
+            'icon-anchor': mShape === 'pin' ? 'bottom' : 'center',
+            'icon-offset': [0, 0] as any, 'icon-allow-overlap': true,
+            // 朝向：与标记设置一致（faceCam 面向镜头 / flat 贴地 + 地图空间旋转）
+            'icon-pitch-alignment': (mi?.orientation === 'flat' ? 'map' : 'viewport') as any,
+            'icon-rotation-alignment': (mi?.orientation === 'flat' ? 'map' : 'viewport') as any,
+            'icon-rotate': (mi?.orientation === 'flat' ? (mi?.rotation || 0) : 0) as any,
+          },
         });
       }
       if (map.getLayer(iconLayerId)) {
@@ -1223,6 +1231,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         map.setLayoutProperty(iconLayerId, 'icon-size', mScale);
         map.setLayoutProperty(iconLayerId, 'icon-anchor', mShape === 'pin' ? 'bottom' : 'center');
         map.setLayoutProperty(iconLayerId, 'icon-offset', [0, 0] as any);
+        map.setLayoutProperty(iconLayerId, 'icon-pitch-alignment', (mi?.orientation === 'flat' ? 'map' : 'viewport') as any);
+        map.setLayoutProperty(iconLayerId, 'icon-rotation-alignment', (mi?.orientation === 'flat' ? 'map' : 'viewport') as any);
+        map.setLayoutProperty(iconLayerId, 'icon-rotate', (mi?.orientation === 'flat' ? (mi?.rotation || 0) : 0) as any);
         map.setLayoutProperty(iconLayerId, 'visibility', 'visible');
       }
       // 标记标签：showLabel 开启且非 bubble/text 形状时，在标记旁显示文字气泡
@@ -1231,7 +1242,11 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         const lLayerId = `line-mlabel-${element.id}`;
         const lImgId = `pt-mlbl-${hashStr(mLabelText + mLabelColor + mLabelBg + mScale + (mi?.labelSize ?? 12) + (mi?.labelPadding ?? 4) + (mi?.labelRadius ?? 3))}`;
         ensureShapeImage(map, lImgId, getCached(lImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
-        const off: [number, number] = (mi?.labelPos || 'top') === 'top' ? [0, -28] : (mi?.labelPos || 'top') === 'left' ? [-40, 0] : (mi?.labelPos || 'top') === 'right' ? [40, 0] : [0, 26];
+        // 标签偏移：优先连续偏移（中心锚 + 像素，offsetY 正值向上）；未设置时回退旧位置枚举
+        const useLabelOff = typeof mi?.labelOffsetX === 'number' || typeof mi?.labelOffsetY === 'number';
+        const off: [number, number] = useLabelOff
+          ? [(mi?.labelOffsetX ?? 0) * mScale, -(mi?.labelOffsetY ?? 40) * mScale]
+          : ((mi?.labelPos || 'top') === 'top' ? [0, -28] : (mi?.labelPos || 'top') === 'left' ? [-40, 0] : (mi?.labelPos || 'top') === 'right' ? [40, 0] : [0, 26]);
         try {
           if (map.getSource(lSrcId)) {
             (map.getSource(lSrcId) as GeoJSONSource).setData(iconData);
@@ -2632,7 +2647,11 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         const lLayerId = `arrow-mlabel-${element.id}`;
         const lImgId = `pt-albl-${hashStr(mLabelText + mLabelColor + mLabelBg + mScale + (mi?.labelSize ?? 12))}`;
         ensureShapeImage(map, lImgId, getCached(lImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, 3, 4, false)));
-        const off: [number, number] = (mi?.labelPos || 'top') === 'top' ? [0, -28] : (mi?.labelPos || 'top') === 'left' ? [-40, 0] : (mi?.labelPos || 'top') === 'right' ? [40, 0] : [0, 26];
+        // 标签偏移：优先连续偏移（中心锚 + 像素，offsetY 正值向上）；未设置时回退旧位置枚举
+        const useLabelOff = typeof mi?.labelOffsetX === 'number' || typeof mi?.labelOffsetY === 'number';
+        const off: [number, number] = useLabelOff
+          ? [(mi?.labelOffsetX ?? 0) * mScale, -(mi?.labelOffsetY ?? 40) * mScale]
+          : ((mi?.labelPos || 'top') === 'top' ? [0, -28] : (mi?.labelPos || 'top') === 'left' ? [-40, 0] : (mi?.labelPos || 'top') === 'right' ? [40, 0] : [0, 26]);
         try {
           if (map.getSource(lSrcId)) {
             (map.getSource(lSrcId) as GeoJSONSource).setData(iconData);

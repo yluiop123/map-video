@@ -1509,55 +1509,62 @@ function RouteSettings({ element, patch, chapter }: {
               </div>
             </Field>
 
-            {/* 显示标签（仅 PIN/DOT/EMOJI 支持；参照标记 Label：位置、文字颜色、背景开关+背景色） */}
-            {(() => {
-              const mkShape = (element as LineElement).moveIcon?.shape || 'dot';
-              const canLabel = mkShape === 'dot' || mkShape === 'pin' || mkShape === 'emoji';
-              if (!canLabel) return null;
-              return (
-                <>
-            <div className="border-t border-white/[0.08] pt-2">
-              <Toggle
-                checked={!!(element as LineElement).moveIcon?.showLabel}
-                label={t('显示标签', 'Show Label')}
-                onChange={(v) => patch({ moveIcon: { ...(element as LineElement).moveIcon, showLabel: v } } as Partial<MapElement>)}
+            {/* 朝向：与标记设置一致（faceCam 面向镜头 / flat 贴地 + 旋转） */}
+            <Field label={t('朝向', 'Orientation')}>
+              <StyleGrid<'faceCam' | 'flat'>
+                value={(element as LineElement).moveIcon?.orientation ?? 'faceCam'}
+                options={[
+                  { value: 'faceCam', label: t('🎥 面向镜头', '🎥 Face Cam') },
+                  { value: 'flat', label: t('🗺 贴地', '🗺 Flat') },
+                ]}
+                onChange={(v) => patch({ moveIcon: { ...(element as LineElement).moveIcon, orientation: v, ...(v === 'faceCam' ? { rotation: 0 } : {}) } } as Partial<MapElement>)}
               />
-            </div>
-            {!!(element as LineElement).moveIcon?.showLabel && (
-              <>
-                <Field label={t('标记标签', 'Marker Label')}>
-                  <input type="text" className="input" value={(element as LineElement).moveIcon?.labelText ?? ''}
-                    onChange={(e) => patch({ moveIcon: { ...(element as LineElement).moveIcon, labelText: e.target.value } } as Partial<MapElement>)} />
-                </Field>
-                <Field label={t('标记文字颜色', 'Marker Text Color')}>
-                  <ColorPicker value={(element as LineElement).moveIcon?.labelColor || '#000000'} onChange={(c) => patch({ moveIcon: { ...(element as LineElement).moveIcon, labelColor: c } } as Partial<MapElement>)} />
-                </Field>
-                <Field label={t('标记位置', 'Marker Position')}>
-                  <OptionBlocks<'top' | 'bottom' | 'left' | 'right'>
-                    value={((element as LineElement).moveIcon?.labelPos || 'top') as 'top' | 'bottom' | 'left' | 'right'}
-                    onChange={(v) => patch({ moveIcon: { ...(element as LineElement).moveIcon, labelPos: v } } as Partial<MapElement>)}
-                    options={[
-                      { value: 'top', label: t('上', 'Top') },
-                      { value: 'bottom', label: t('下', 'Bottom') },
-                      { value: 'left', label: t('左', 'Left') },
-                      { value: 'right', label: t('右', 'Right') },
-                    ]}
-                  />
-                </Field>
-                <Field label={t('标记背景', 'Marker Background')}>
-                  <div className="space-y-2">
-                    <Toggle
-                      checked={((element as LineElement).moveIcon?.labelBg || '#FFFFFF') !== 'transparent' && ((element as LineElement).moveIcon?.labelBg || '#FFFFFF') !== 'rgba(0,0,0,0)'}
-                      label={t('显示背景', 'Show Background')}
-                      onChange={(v) => patch({ moveIcon: { ...(element as LineElement).moveIcon, labelBg: v ? '#FFFFFF' : 'transparent' } } as Partial<MapElement>)}
-                    />
-                    {((element as LineElement).moveIcon?.labelBg || '#FFFFFF') !== 'transparent' && ((element as LineElement).moveIcon?.labelBg || '#FFFFFF') !== 'rgba(0,0,0,0)' && (
-                      <ColorPicker value={(element as LineElement).moveIcon?.labelBg || '#FFFFFF'} onChange={(c) => patch({ moveIcon: { ...(element as LineElement).moveIcon, labelBg: c } } as Partial<MapElement>)} />
-                    )}
+              {((element as LineElement).moveIcon?.orientation ?? 'faceCam') === 'flat' && (
+                <Field label={t('旋转', 'Rotation')}>
+                  <div className="flex items-center gap-2">
+                    <input type="range" min={0} max={360} step={1} value={Math.round((element as LineElement).moveIcon?.rotation || 0)}
+                      onChange={(e) => patch({ moveIcon: { ...(element as LineElement).moveIcon, rotation: parseFloat(e.target.value) || 0 } } as Partial<MapElement>)}
+                      className="w-full" />
+                    <span className="text-xs w-10 text-right shrink-0">{Math.round((element as LineElement).moveIcon?.rotation || 0)}°</span>
                   </div>
                 </Field>
-              </>
-            )}
+              )}
+            </Field>
+
+            {/* 标签：与标记设置**复用同一 LabelStyleFields**（连续偏移滑块 + 文字颜色 + 背景）。
+                bubble/text 的文字随图形常驻（不显示开关）；旗有专属文字故排除。 */}
+            {(() => {
+              const miNow = (element as LineElement).moveIcon || {};
+              const mkShape = miNow.shape || 'dot';
+              if (mkShape === 'flag') return null;
+              const setMI = (patchMI: Record<string, unknown>) => patch({ moveIcon: { ...miNow, ...patchMI } } as Partial<MapElement>);
+              if (mkShape === 'bubble' || mkShape === 'text') {
+                return (
+                  <LabelStyleFields
+                    label={{ text: miNow.labelText || '', color: miNow.labelColor || '#FFFFFF', bgColor: miNow.labelBg }}
+                    fixedCenter
+                    onChange={(l: any) => setMI({ labelText: l.text, labelColor: l.color, labelBg: l.bgColor })}
+                  />
+                );
+              }
+              return (
+                <>
+                  <div className="border-t border-white/[0.08] pt-2">
+                    <Toggle
+                      checked={!!miNow.showLabel}
+                      label={t('显示标签', 'Show Label')}
+                      onChange={(v) => setMI({ showLabel: v })}
+                    />
+                  </div>
+                  {!!miNow.showLabel && (
+                    <LabelStyleFields
+                      label={{
+                        text: miNow.labelText || '', color: miNow.labelColor || '#000000',
+                        bgColor: miNow.labelBg, offsetX: miNow.labelOffsetX, offsetY: miNow.labelOffsetY,
+                      }}
+                      onChange={(l: any) => setMI({ labelText: l.text, labelColor: l.color, labelBg: l.bgColor, labelOffsetX: l.offsetX, labelOffsetY: l.offsetY })}
+                    />
+                  )}
                 </>
               );
             })()}

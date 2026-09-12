@@ -1095,8 +1095,9 @@ function drawMarkers(map: MaplibreMap, st: RibbonGlState): void {
       const ndcY = (y: number) => 1 - (y / h) * 2;
       const x0 = ndcX(left), x1 = ndcX(left + qw);
       const y0 = ndcY(top), y1 = ndcY(top + qh);
-      verts.push(x0, y0, 0, 1, x1, y0, 1, 1, x1, y1, 1, 0);
-      verts.push(x0, y0, 0, 1, x1, y1, 1, 0, x0, y1, 0, 0);
+      // 纹理 v=0 = 图像顶行；屏幕上方顶点必须配 v=0（此前 v 反向，导致贴图上下翻转）
+      verts.push(x0, y0, 0, 0, x1, y0, 1, 0, x1, y1, 1, 1);
+      verts.push(x0, y0, 0, 0, x1, y1, 1, 1, x0, y1, 0, 1);
       if (tex !== boundTex) {
         if (boundTex) {
           gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
