@@ -475,6 +475,49 @@ function PinStyleChooser({ element, patch }: {
 }
 
 /** 资源形态的资源选择区：内置网格（图片 / 动图 / 模型 / 图标库）；上传入口下一步接入 */
+/** 资源格子统一样式（标记 / 路线「显示标记」/ 自定义图片共用） */
+const CELL_BASE = 'flex items-center justify-center rounded border transition-colors';
+const CELL_ON = 'border-brand ring-2 ring-brand/60 bg-brand/20';
+const CELL_OFF = 'border-white/10 bg-white/[0.03] hover:bg-accent hover:border-white/20';
+
+/** lucide 图标网格（标记与路线「显示标记」共用；精选静态导入，同步可得） */
+function IconGrid({ activeName, onPick }: { activeName?: string; onPick: (name: string) => void }) {
+  const t = useT();
+  const icons = useMemo(() => {
+    const all = loadLucideIcons();
+    const picked: Record<string, IconComponent> = {};
+    for (const n of filterExistingIcons(BUILTIN_ICON_NAMES)) picked[n] = all[n];
+    return picked;
+  }, []);
+  const names = Object.keys(icons);
+  return (
+    <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
+      {names.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">{t('无可用图标', 'No icons available')}</p>
+      ) : (
+        <div className="grid grid-cols-8 gap-1 max-h-44 overflow-y-auto">
+          {names.map((name) => {
+            const Icon = icons[name];
+            return (
+              <button
+                key={name}
+                title={name}
+                onClick={() => onPick(name)}
+                className={`${CELL_BASE} h-7 ${activeName === name ? CELL_ON : CELL_OFF}`}
+              >
+                {createElement(Icon, { size: 14 })}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <p className="mt-1.5 text-[10px] text-muted-foreground/70">
+        {t(`内置 lucide 图标 ${names.length} 个`, `lucide icons (${names.length})`)}
+      </p>
+    </div>
+  );
+}
+
 function PinResourcePicker({ element, style, patch }: {
   element: PointElement;
   style: PinStyle;
@@ -483,15 +526,6 @@ function PinResourcePicker({ element, style, patch }: {
   const t = useT();
   const isIconStyle = style === 'icon';
   const isResource = style === 'image' || style === 'gif' || style === 'model' || isIconStyle;
-
-  // 精选图标静态导入（见 icon-library.ts），同步可得，不再有「正在加载」态
-  const icons = useMemo(() => {
-    if (!isIconStyle) return {} as Record<string, IconComponent>;
-    const all = loadLucideIcons();
-    const picked: Record<string, IconComponent> = {};
-    for (const n of filterExistingIcons(BUILTIN_ICON_NAMES)) picked[n] = all[n];
-    return picked;
-  }, [isIconStyle]);
 
   // 自定义图片库（项目级）：上传后登记，缩略图按 assetId 异步取 URL
   // 注意：selector 只能返回原值 —— `|| []` 每次产生新数组会让 useSyncExternalStore 判定快照变化，导致无限重渲染
@@ -514,37 +548,13 @@ function PinResourcePicker({ element, style, patch }: {
 
   if (!isResource) return null;
 
-  const cellBase = 'flex items-center justify-center rounded border transition-colors';
-  const cellOn = 'border-brand ring-2 ring-brand/60 bg-brand/20';
-  const cellOff = 'border-white/10 bg-white/[0.03] hover:bg-accent hover:border-white/20';
 
   if (isIconStyle) {
-    const names = Object.keys(icons);
     return (
-      <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
-        {names.length === 0 ? (
-          <p className="text-[11px] text-muted-foreground">{t('无可用图标', 'No icons available')}</p>
-        ) : (
-          <div className="grid grid-cols-8 gap-1 max-h-44 overflow-y-auto">
-            {names.map((name) => {
-              const Icon = icons[name];
-              return (
-                <button
-                  key={name}
-                  title={name}
-                  onClick={() => patch({ iconLib: 'lucide', iconName: name } as Partial<MapElement>)}
-                  className={`${cellBase} h-7 ${element.iconName === name ? cellOn : cellOff}`}
-                >
-                  {createElement(Icon, { size: 14 })}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        <p className="mt-1.5 text-[10px] text-muted-foreground/70">
-          {t(`内置 lucide 图标 ${names.length} 个`, `lucide icons (${names.length})`)}
-        </p>
-      </div>
+      <IconGrid
+        activeName={element.iconName}
+        onPick={(name) => patch({ iconLib: 'lucide', iconName: name } as Partial<MapElement>)}
+      />
     );
   }
 
@@ -560,14 +570,14 @@ function PinResourcePicker({ element, style, patch }: {
             <button
               title={t('圆点', 'Dot')}
               onClick={() => patch({ ...resettable, shape: 'circle', color: element.color || '#FF4444' } as Partial<MapElement>)}
-              className={`${cellBase} h-12 ${isDot ? cellOn : cellOff}`}
+              className={`${CELL_BASE} h-12 ${isDot ? CELL_ON : CELL_OFF}`}
             >
               <span className="block w-4 h-4 rounded-full bg-white" />
             </button>
             <button
               title={t('水滴针', 'Pin')}
               onClick={() => patch({ ...resettable, shape: 'pin', color: element.color || '#FF4444' } as Partial<MapElement>)}
-              className={`${cellBase} h-12 ${element.shape === 'pin' ? cellOn : cellOff}`}
+              className={`${CELL_BASE} h-12 ${element.shape === 'pin' ? CELL_ON : CELL_OFF}`}
             >
               <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
             </button>
@@ -578,7 +588,7 @@ function PinResourcePicker({ element, style, patch }: {
             key={a.id}
             title={a.name}
             onClick={() => patch({ ...resettable, shape: style as PointShape, builtinId: a.id } as Partial<MapElement>)}
-            className={`${cellBase} h-12 px-1 text-[10px] leading-tight text-center ${element.builtinId === a.id ? cellOn : cellOff}`}
+            className={`${CELL_BASE} h-12 px-1 text-[10px] leading-tight text-center ${element.builtinId === a.id ? CELL_ON : CELL_OFF}`}
           >
             {a.src
               ? <img src={a.src} alt={a.name} className="w-6 h-6 object-contain" />
@@ -616,9 +626,6 @@ function CustomImageGrid({ images, thumbs, activeId, onPick, onDelete }: {
   onPick: (assetId: string) => void;
   onDelete: (img: CustomImage) => void;
 }) {
-  const cellBase = 'flex items-center justify-center rounded border transition-colors';
-  const cellOn = 'border-brand ring-2 ring-brand/60 bg-brand/20';
-  const cellOff = 'border-white/10 bg-white/[0.03] hover:bg-accent hover:border-white/20';
   return (
     <div className="grid grid-cols-4 gap-1.5 mb-1.5">
       {images.map((ci) => (
@@ -626,7 +633,7 @@ function CustomImageGrid({ images, thumbs, activeId, onPick, onDelete }: {
           <button
             title={ci.name}
             onClick={() => onPick(ci.assetId)}
-            className={`${cellBase} h-12 w-full overflow-hidden ${activeId === ci.assetId ? cellOn : cellOff}`}
+            className={`${CELL_BASE} h-12 w-full overflow-hidden ${activeId === ci.assetId ? CELL_ON : CELL_OFF}`}
           >
             {thumbs[ci.assetId]
               ? <img src={thumbs[ci.assetId]} alt={ci.name} className="w-6 h-6 object-contain" />
@@ -665,9 +672,11 @@ function useDeleteCustomImage() {
         return e.assetId === img.assetId || e.moveIcon?.assetId === img.assetId;
       }),
     );
+    // 顺序：先写项目（移除引用）并落库，成功后再删素材字节 ——
+    // 反过来的话保存失败会留下「项目仍引用、素材已删」的裂图状态
     removeCustomImage(img.assetId);
-    if (!referenced) await removeAsset(img.assetId);
     await useProjectStore.getState().saveProject();
+    if (!referenced) await removeAsset(img.assetId);
   };
 }
 
@@ -680,13 +689,6 @@ function MoveResourcePicker({ mi, patch }: {
   const shape = mi.shape as 'image' | 'gif' | 'model' | 'icon';
   const set = (c: Partial<NonNullable<LineElement['moveIcon']>>) =>
     patch({ moveIcon: { ...mi, ...c } } as Partial<MapElement>);
-
-  const icons = useMemo(() => {
-    const all = loadLucideIcons();
-    const picked: Record<string, IconComponent> = {};
-    for (const n of filterExistingIcons(BUILTIN_ICON_NAMES)) picked[n] = all[n];
-    return picked;
-  }, []);
 
   // 自定义图片库与标记共用（项目级）；缩略图按 assetId 异步取 URL
   const customImages = useProjectStore((s) => s.project?.customImages) ?? EMPTY_CUSTOM_IMAGES;
@@ -706,33 +708,13 @@ function MoveResourcePicker({ mi, patch }: {
     return () => { alive = false; };
   }, [shape, customImages]);
 
-  const cellBase = 'flex items-center justify-center rounded border transition-colors';
-  const cellOn = 'border-brand ring-2 ring-brand/60 bg-brand/20';
-  const cellOff = 'border-white/10 bg-white/[0.03] hover:bg-accent hover:border-white/20';
 
   if (shape === 'icon') {
-    const names = Object.keys(icons);
     return (
-      <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
-        <div className="grid grid-cols-8 gap-1 max-h-44 overflow-y-auto">
-          {names.map((name) => {
-            const Icon = icons[name];
-            return (
-              <button
-                key={name}
-                title={name}
-                onClick={() => set({ shape: 'icon', iconLib: 'lucide', iconName: name, builtinId: undefined, assetId: undefined, symbolId: undefined })}
-                className={`${cellBase} h-7 ${mi.iconName === name ? cellOn : cellOff}`}
-              >
-                {createElement(Icon, { size: 14 })}
-              </button>
-            );
-          })}
-        </div>
-        <p className="mt-1.5 text-[10px] text-muted-foreground/70">
-          {t(`内置 lucide 图标 ${names.length} 个`, `lucide icons (${names.length})`)}
-        </p>
-      </div>
+      <IconGrid
+        activeName={mi.iconName}
+        onPick={(name) => set({ shape: 'icon', iconLib: 'lucide', iconName: name, builtinId: undefined, assetId: undefined, symbolId: undefined })}
+      />
     );
   }
 
@@ -748,14 +730,14 @@ function MoveResourcePicker({ mi, patch }: {
             <button
               title={t('圆点', 'Dot')}
               onClick={() => set({ ...miResettable, shape: 'dot', color: mi.color || '#FF6600' })}
-              className={`${cellBase} h-12 ${isDotMi ? cellOn : cellOff}`}
+              className={`${CELL_BASE} h-12 ${isDotMi ? CELL_ON : CELL_OFF}`}
             >
               <span className="block w-4 h-4 rounded-full bg-white" />
             </button>
             <button
               title={t('水滴针', 'Pin')}
               onClick={() => set({ ...miResettable, shape: 'pin', color: mi.color || '#FF6600' })}
-              className={`${cellBase} h-12 ${mi.shape === 'pin' ? cellOn : cellOff}`}
+              className={`${CELL_BASE} h-12 ${mi.shape === 'pin' ? CELL_ON : CELL_OFF}`}
             >
               <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
             </button>
@@ -766,7 +748,7 @@ function MoveResourcePicker({ mi, patch }: {
             key={a.id}
             title={a.name}
             onClick={() => set({ ...miResettable, shape: shape as 'image' | 'gif' | 'model', builtinId: a.id })}
-            className={`${cellBase} h-12 px-1 text-[10px] leading-tight text-center ${mi.builtinId === a.id ? cellOn : cellOff}`}
+            className={`${CELL_BASE} h-12 px-1 text-[10px] leading-tight text-center ${mi.builtinId === a.id ? CELL_ON : CELL_OFF}`}
           >
             {a.src
               ? <img src={a.src} alt={a.name} className="w-6 h-6 object-contain" />
@@ -857,7 +839,14 @@ function ResourceUploadRow({ style, onLoaded }: {
               });
             }
             // 素材上传属结构性变更：立即落库 —— 否则重开应用后「自定义图片库」与元素引用都会丢
-            await useProjectStore.getState().saveProject();
+            try {
+              await useProjectStore.getState().saveProject();
+            } catch (saveErr) {
+              // 补偿：保存失败则回滚刚上传的素材与图片库登记，避免留下没人引用的孤儿素材
+              if (style === 'image') useProjectStore.getState().removeCustomImage(ref.assetId);
+              await removeAsset(ref.assetId).catch(() => undefined);
+              throw saveErr;
+            }
           } catch (e2) {
             console.error('[asset] 上传失败', e2);
             setErr(String((e2 as Error)?.message || e2));
