@@ -1,14 +1,15 @@
 import { Composition } from 'remotion';
 import { MapVideo } from './MapVideo';
 import { useProjectStore } from '../stores/projectStore';
-import { calculateTotalDuration } from '../lib/keyframe-interpolation';
+import { projectContentDuration } from '../lib/chapter-duration';
 
 export const RemotionRoot: React.FC = () => {
   const project = useProjectStore((s) => s.project);
 
   if (!project) return null;
 
-  const totalFrames = calculateTotalDuration(project.chapters);
+  // 与导出一致：按内容结束帧，而不是章节 endFrame
+  const totalFrames = projectContentDuration(project.chapters);
 
   return (
     <Composition

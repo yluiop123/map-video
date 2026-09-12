@@ -3,11 +3,12 @@
  * 轨道行统一「左侧标签槽 + 右侧轨道区」结构，所有块按章节时长百分比定位；
  * 特效/弹窗块点击跳转并打开特效面板对应标签；元素按时间不重叠自动分道。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Play, Pause, SkipBack, SkipForward, ChevronsLeft, ChevronsRight, Layers, Keyboard, Sparkles } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { formatClock } from '../lib/time';
+import { chapterContentEndFrame } from '../lib/chapter-duration';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { WEATHERS, SCREEN_FXS, POPUP_TYPES } from './FxPanelBody';
 import type { CameraKeyframe, ScreenFxItem, OverlayItem } from '../types';
@@ -101,6 +102,9 @@ export function TimelineEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapter.id]);
 
+  // 播放终点 = 内容实际结束帧（与导出一致）：章节 endFrame 只是容器长度，尾部空白不播
+  const contentEnd = useMemo(() => chapterContentEndFrame(chapter), [chapter]);
+
   // 播放（仅当前章节内循环）
   useEffect(() => {
     if (!isPlaying) return;
@@ -111,8 +115,8 @@ export function TimelineEditor() {
       const dt = Math.max(0, Math.min(0.25, (now - last) / 1000));
       last = now;
       const next = useEditorStore.getState().currentFrame + dt * fps;
-      if (next >= chapterEnd) {
-        useEditorStore.getState().setCurrentFrame(chapterEnd);
+      if (next >= contentEnd) {
+        useEditorStore.getState().setCurrentFrame(contentEnd);
         useEditorStore.getState().setIsPlaying(false);
         return;
       }
@@ -121,7 +125,7 @@ export function TimelineEditor() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isPlaying, fps, chapterEnd]);
+  }, [isPlaying, fps, contentEnd]);
 
   const localFrame = Math.max(0, Math.min(chapterDur, currentFrame - chapterStart));
 

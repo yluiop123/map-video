@@ -173,9 +173,4 @@ export function interpolateCamera(
     easing: b.easing,
   };
 }
-// ========== 计算总帧数 ==========
-
-export function calculateTotalDuration(chapters: { startFrame: number; endFrame: number }[]): number {
-  if (chapters.length === 0) return 0;
-  return Math.max(...chapters.map((ch) => ch.endFrame));
-}
+// 注：总时长计算已迁到 lib/chapter-duration.ts（按内容结束帧，而非章节 endFrame）

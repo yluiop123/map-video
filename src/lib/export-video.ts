@@ -1,7 +1,7 @@
 import { renderMediaOnWeb, canRenderMediaOnWeb, type WebRendererContainer, type WebRendererVideoCodec, type WebRendererAudioCodec } from '@remotion/web-renderer';
 import { MapVideo } from '../compositions/MapVideo';
 import type { MapVideoProject } from '../types';
-import { calculateTotalDuration } from './keyframe-interpolation';
+import { projectContentDuration } from './chapter-duration';
 
 export interface ExportOptions {
   project: MapVideoProject;
@@ -43,7 +43,8 @@ export async function checkExportSupport(
 export async function exportVideo(options: ExportOptions): Promise<Blob> {
   const { project, container, videoCodec, onProgress, onArtifact, signal } = options;
 
-  const totalFrames = calculateTotalDuration(project.chapters);
+  // 导出长度按「内容实际结束帧」算，而不是章节手动设的 endFrame（可留白/定格）
+  const totalFrames = projectContentDuration(project.chapters);
   const fps = options.fps ?? project.globalConfig.defaultFPS;
   const width = options.width ?? project.globalConfig.defaultResolution.width;
   const height = options.height ?? project.globalConfig.defaultResolution.height;
