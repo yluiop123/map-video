@@ -902,7 +902,7 @@ export function ChapterTitleView({ chapter, frame }: { chapter: Chapter; frame: 
   const st: TitleStyle = normalizeTitleStyle(chapter.titleStyle);
   if (!st.show && !chapter.title) return null;
   if (st.show === false) return null;
-  if (!chapter.title && !chapter.subtitle) return null;
+  if (!chapter.title) return null;
   const local = frame - chapter.startFrame;
   const op = Math.max(0, Math.min(1, local / ANIM_DUR));
   if (op <= 0.01) return null;
@@ -941,14 +941,6 @@ export function ChapterTitleView({ chapter, frame }: { chapter: Chapter; frame: 
           }}>
             {chapter.title}
           </div>
-          {chapter.subtitle && (
-            <div style={{
-              fontFamily: st.fontFamily, color: hexToRgba(st.color, 0.78), fontSize: Math.max(14, st.fontSize * 0.5), fontWeight: 400,
-              marginTop: 6, textShadow: st.shadow ? '0 1px 8px rgba(0,0,0,0.7)' : undefined,
-            }}>
-              {chapter.subtitle}
-            </div>
-          )}
         </div>
       </div>
     </div>

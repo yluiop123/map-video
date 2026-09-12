@@ -87,7 +87,6 @@ export interface CustomSymbol {
 export interface Chapter {
   id: string;
   title: string;
-  subtitle?: string;
   order: number;
   startFrame: number;
   endFrame: number;
