@@ -60,19 +60,16 @@ export const storage = {
 
   async listProjects(): Promise<MapVideoProject[]> {
     if (IS_DESKTOP) {
+      // 列表页只展示名称 / 时间 / 所属合集：直接取元数据列，
+      // **不再逐条 get 整个 data 反序列化**（原实现 N+1，项目多或大时列表明显卡顿）。
+      // 返回的因此是「列表摘要」对象，完整数据请用 getProject。
       const rows = await window.mapvideo!.projects.list();
-      // 列表页需要完整 project（现有 UI 直接读字段）；按需全量拉取
-      const out: MapVideoProject[] = [];
-      for (const r of rows) {
-        const data = (await window.mapvideo!.projects.get(r.id)) as MapVideoProject | null;
-        if (data) {
-          out.push(reviveProject({
-            ...data,
-            collectionId: data.collectionId || r.collectionId || DEFAULT_COLLECTION_ID,
-          }));
-        }
-      }
-      return out;
+      return rows.map((r) => reviveProject({
+        id: r.id,
+        name: r.name,
+        updatedAt: new Date(r.updatedAt),
+        collectionId: r.collectionId || DEFAULT_COLLECTION_ID,
+      } as unknown as MapVideoProject));
     }
     return (await dexie.listProjects()).map(reviveProject);
   },
