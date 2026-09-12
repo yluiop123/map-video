@@ -27,17 +27,7 @@ PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
 -- -----------------------------------------------------------------------------
--- 1. 元数据
--- -----------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS schema_meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
--- 初始化：INSERT OR IGNORE INTO schema_meta(key,value) VALUES ('schema_version','2');
-
--- -----------------------------------------------------------------------------
--- 2. 合集与项目聚合根
+-- 1. 合集与项目聚合根
 -- -----------------------------------------------------------------------------
 
 -- 合集：项目之上的一层分组。
@@ -61,7 +51,16 @@ CREATE TABLE IF NOT EXISTS project (
   created_at            INTEGER NOT NULL,
   updated_at            INTEGER NOT NULL,
 
-  -- GlobalConfig 内联：仅 5 个标量，1:1 且恒定存在，独立成表只会徒增一次 JOIN
+  -- 当前生效的底图 / 高程图（循环外键，见文件末「已知约束」说明）
+  active_base_map_id      TEXT REFERENCES base_map(base_id)      ON DELETE SET NULL,
+  active_elevation_map_id TEXT REFERENCES elevation_map(emap_id) ON DELETE SET NULL
+);
+
+-- 项目级配置（GlobalConfig）：与 project 1:1，主键即外键。
+--   职责分离：project 只保留身份 / 归属 / 审计字段，配置独立成表 ——
+--   配置面板只读写这张表，互不干扰；新增配置项也不改动 project 结构。
+CREATE TABLE IF NOT EXISTS project_config (
+  project_id            TEXT PRIMARY KEY REFERENCES project(project_id) ON DELETE CASCADE,
   default_duration      INTEGER NOT NULL CHECK (default_duration > 0),
   default_fps           INTEGER NOT NULL CHECK (default_fps BETWEEN 1 AND 240),
   resolution_w          INTEGER NOT NULL CHECK (resolution_w > 0),
@@ -69,15 +68,11 @@ CREATE TABLE IF NOT EXISTS project (
   resolution_label      TEXT    NOT NULL,
   default_easing        TEXT    NOT NULL,
   projection            TEXT    NOT NULL DEFAULT 'mercator'
-                        CHECK (projection IN ('mercator','globe')),
-
-  -- 当前生效的底图 / 高程图（循环外键，见文件末「已知约束」说明）
-  active_base_map_id      TEXT REFERENCES base_map(base_id)      ON DELETE SET NULL,
-  active_elevation_map_id TEXT REFERENCES elevation_map(emap_id) ON DELETE SET NULL
+                        CHECK (projection IN ('mercator','globe'))
 );
 
 -- -----------------------------------------------------------------------------
--- 3. 资源与素材
+-- 2. 资源与素材
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS base_map (
@@ -147,7 +142,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_asset_content ON asset(project_id, sha256);
 CREATE INDEX        IF NOT EXISTS ix_asset_kind    ON asset(project_id, kind);
 
 -- -----------------------------------------------------------------------------
--- 4. 章节与时间轴
+-- 3. 章节与时间轴
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS chapter (
@@ -197,7 +192,7 @@ CREATE INDEX IF NOT EXISTS ix_camera_kf_chapter ON camera_keyframe(chapter_id, f
 CREATE INDEX IF NOT EXISTS ix_camera_kf_follow  ON camera_keyframe(follow_route_element_id);
 
 -- -----------------------------------------------------------------------------
--- 5. 元素表（4 张类别宽表）
+-- 4. 元素表（4 张类别宽表）
 --    公共列（每张表都有）：element_id / chapter_id / type / name / visible /
 --    locked / start_frame / end_frame / z_index / shape_category / anim_effect /
 --    fly_mode / show_icon / move_icon_json / move_start_frame / move_end_frame /
@@ -457,7 +452,7 @@ CREATE TABLE IF NOT EXISTS element_territory (
 CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(chapter_id, z_index, ord);
 
 -- -----------------------------------------------------------------------------
--- 6. 元素附属：动画关键帧
+-- 5. 元素附属：动画关键帧
 --    ★ 取消了 element 基表后，关键帧无法用外键指向「四张表之一」，故为弱引用：
 --      element_id 不加外键，元素删除时由 AFTER DELETE 清理触发器（第 11 节）删除；
 --      chapter_id 仍保留外键，保证「删章节」能级联清掉本章关键帧。
@@ -487,7 +482,7 @@ CREATE INDEX IF NOT EXISTS ix_element_kf   ON element_keyframe(element_id, prope
 CREATE INDEX IF NOT EXISTS ix_element_kf_ch ON element_keyframe(chapter_id);
 
 -- -----------------------------------------------------------------------------
--- 7. 叠加层（弹出元素）
+-- 6. 叠加层（弹出元素）
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS overlay (
@@ -552,7 +547,7 @@ CREATE TABLE IF NOT EXISTS person_block (
 CREATE INDEX IF NOT EXISTS ix_person_block ON person_block(overlay_id, ord);
 
 -- -----------------------------------------------------------------------------
--- 8. 章节级特效 / 字幕 / 配乐
+-- 7. 章节级特效 / 字幕 / 配乐
 -- -----------------------------------------------------------------------------
 
 -- ChapterEffect 判别联合：三个分支字段并入一张表，靠 type 约束分支必填项
@@ -631,7 +626,7 @@ CREATE TABLE IF NOT EXISTS music_track (
 CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(chapter_id, start_frame);
 
 -- -----------------------------------------------------------------------------
--- 9. 应用配置聚合（与项目内容解耦，Key 只存本机）
+-- 8. 应用配置聚合（与项目内容解耦，Key 只存本机）
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS provider (
@@ -655,7 +650,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_active
 CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 -- =============================================================================
--- 10. 外键支撑索引（FK 子表列必须建索引 —— SQLite 上外键唯一的真实成本来源）
+-- 9. 外键支撑索引（FK 子表列必须建索引 —— SQLite 上外键唯一的真实成本来源）
 -- =============================================================================
 -- 背景：SQLite 对外键的强制检查成本极低（实测 31k 行插入，FK 开/关仅差 ~1µs/行），
 --       但**父行被删除/更新时，若子表外键列没有索引，SQLite 必须全表扫描子表**。
@@ -686,7 +681,7 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 -- 注：project 只有一行，active_base_map_id 无需索引（全表扫描成本为常数 1 行）
 
 -- =============================================================================
--- 11. 完整性触发器
+-- 10. 完整性触发器
 -- =============================================================================
 
 -- 11.1 跟随机位必须引用同一章节内的路线元素
@@ -754,7 +749,7 @@ BEGIN
 END;
 
 -- =============================================================================
--- 12. 视图
+-- 11. 视图
 -- =============================================================================
 
 -- 12.1 跨类别元素索引：取消基表后，轨道 / 列表 / 计数查这里，不必手写 4 表 UNION

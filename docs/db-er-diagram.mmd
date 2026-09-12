@@ -12,7 +12,13 @@ erDiagram
     text collection_id FK
     text name
     text active_base_map_id FK
+  }
+  PROJECT_CONFIG {
+    text project_id PK
+    int default_duration
     int default_fps
+    text resolution_label
+    text default_easing
   }
   CHAPTER {
     text chapter_id PK
@@ -81,6 +87,7 @@ erDiagram
     int active
   }
   COLLECTION ||--o{ PROJECT : "1:N 项目"
+  PROJECT ||--|| PROJECT_CONFIG : "1:1 配置"
   PROJECT ||--o{ CHAPTER : "1:N 章节"
   PROJECT ||--o{ BASE_MAP : "1:N 底图"
   PROJECT ||--o{ ELEVATION_MAP : "1:N 高程"

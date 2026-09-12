@@ -33,17 +33,16 @@ const MARKER = 'FIELD-DICT';
 // 分组：与 db-tables.md §3 保持一致（顺序即输出顺序）
 // 元素部分按「工具条按钮」分类（见 docs/db-tables.md 第五节），而非按技术结构分类
 const GROUPS = [
-  ['组 1 · 元数据', ['schema_meta']],
-  ['组 2 · 合集与项目聚合根', ['collection', 'project']],
-  ['组 3 · 资源与素材', ['base_map', 'elevation_map', 'custom_symbol', 'asset']],
-  ['组 4 · 章节与时间轴', ['chapter', 'camera_keyframe', 'screen_fx', 'chapter_fx', 'narration', 'narration_entry', 'music_track']],
-  ['组 5 · 标记类元素（Pin 工具）', ['element_marker']],
-  ['组 6 · 路线类元素（Route 工具）', ['element_route']],
-  ['组 7 · 形状类元素（Shape 工具）', ['element_shape']],
-  ['组 8 · 疆域类元素（Terr 工具）', ['element_territory']],
-  ['组 9 · 元素附属（跨类别）', ['element_keyframe']],
-  ['组 10 · 叠加层（弹窗）', ['overlay', 'overlay_block', 'person_block']],
-  ['组 11 · 应用配置', ['provider']],
+  ['组 1 · 合集与项目（含配置）', ['collection', 'project', 'project_config']],
+  ['组 2 · 资源与素材', ['base_map', 'elevation_map', 'custom_symbol', 'asset']],
+  ['组 3 · 章节与时间轴', ['chapter', 'camera_keyframe', 'screen_fx', 'chapter_fx', 'narration', 'narration_entry', 'music_track']],
+  ['组 4 · 标记类元素（Pin 工具）', ['element_marker']],
+  ['组 5 · 路线类元素（Route 工具）', ['element_route']],
+  ['组 6 · 形状类元素（Shape 工具）', ['element_shape']],
+  ['组 7 · 疆域类元素（Terr 工具）', ['element_territory']],
+  ['组 8 · 元素附属（跨类别）', ['element_keyframe']],
+  ['组 9 · 叠加层（弹窗）', ['overlay', 'overlay_block', 'person_block']],
+  ['组 10 · 应用配置', ['provider']],
 ];
 
 // 元素表的「工具入口」标注（事实源：src/components/Toolbar.tsx 的 TOOLS / SHAPE_GROUPS / TERR_ITEMS

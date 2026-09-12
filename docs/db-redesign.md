@@ -193,7 +193,7 @@ Provider 配置存 `localStorage`。
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, frame)` 唯一性与时间轴语义，按 P2 建表。
 
-### 3.2 实体清单（23 张表，按结构分 11 组）
+### 3.2 实体清单（23 张表，按结构分 10 组）
 
 本节按**存储结构**分组（便于对照 DDL）。**改版后元素表按工具栏聚合为 4 张类别宽表**（标记 / 路线 / 形状 / 疆域，图片类已下线），若想按工具栏视角看这 23 张表与各自的工具入口，见 [`docs/db-tables.md`](db-tables.md) 第三节与第五节。
 
@@ -211,7 +211,13 @@ erDiagram
     text collection_id FK
     text name
     text active_base_map_id FK
+  }
+  PROJECT_CONFIG {
+    text project_id PK
+    int default_duration
     int default_fps
+    text resolution_label
+    text default_easing
   }
   CHAPTER {
     text chapter_id PK
@@ -280,6 +286,7 @@ erDiagram
     int active
   }
   COLLECTION ||--o{ PROJECT : "1:N 项目"
+  PROJECT ||--|| PROJECT_CONFIG : "1:1 配置"
   PROJECT ||--o{ CHAPTER : "1:N 章节"
   PROJECT ||--o{ BASE_MAP : "1:N 底图"
   PROJECT ||--o{ ELEVATION_MAP : "1:N 高程"
@@ -310,8 +317,8 @@ erDiagram
 
 | 组 | 表 | 说明 |
 |---|---|---|
-| 元数据 | `schema_meta` | 键值对，存 `schema_version`，替代 V1 无版本号的尴尬 |
-| 聚合根 | `project` | GlobalConfig 的 5 个标量直接内联（1:1 且恒存在，独立成表只增 JOIN） |
+| 聚合根 | `project` | 项目本体：身份 / 归属 / 审计字段 + 当前生效的底图与高程图 |
+| 项目配置 | `project_config` | GlobalConfig（默认时长 / 帧率 / 分辨率 / 缓动 / 投影）；与 project 1:1，配置面板只读写这张表 |
 | 资源素材 | `base_map`, `elevation_map`, `custom_symbol`, `asset` | `asset` 为新增，承担 P4 外置存储 |
 | 章节与时间 | `chapter`, `camera_keyframe`, `chapter_fx`, `screen_fx`, `narration`, `narration_entry`, `music_track` | 7 张，覆盖章节的 7 类子集合 |
 | 元素（CTI 父表） | `element` | 基类字段 + 判别列 `type` |
@@ -486,7 +493,7 @@ END;
 | 13 个子类各建一张表（CTI） | 字段数 3–19 且离散度大；STI 会产生 60+ 可空列并丧失子类必填约束；具体表继承会破坏「同构数组」心智 |
 | `element_keyframe` 单表承载 8 种 property | 6 组关键帧数组结构同构（frame + value + easing），唯一索引可统一施加；避免为每种类型建表 |
 | `element_label` 独立成表而非在 point/line 重复列 | 标签是可选 1:1 值对象，仅 2 类元素使用；重复列会让「标签逻辑」散落两处 |
-| GlobalConfig 内联进 `project` | 仅 5 个标量且恒存在，独立成表只增加一次无收益的 JOIN |
+| GlobalConfig 独立成 `project_config` | 配置与项目本体职责分离：`project` 只留身份 / 归属 / 审计字段，配置面板只读写配置表；将来新增配置项不改动 `project` 结构 |
 | `asset` 表承担 P4 外置 | base64 内嵌是当前最大的性能问题；内容寻址（sha256）顺带获得同图去重 |
 | 复合外键用于「同域/同章节」约束 | 把「只能引用同一集合内对象」这条业务规则下沉为结构约束，无需应用层校验 |
 | 样式标量走 P3 JSON | 固定形状、整体读写、不参与检索；列化它们会产生 100+ 张无意义的表 |
@@ -498,7 +505,7 @@ END;
 
 ### 5.1 V1 → V2 迁移步骤
 
-- **备份与版本标记。**把 `projects` 重命名为 `projects_v1_backup`（保留 `data` 列作回滚快照），新建 V2 表结构，写入 `schema_meta.schema_version = 2`。
+- **备份。**把 `projects` 重命名为 `projects_v1_backup`（保留 `data` 列作回滚快照），新建 V2 表结构。
 
 - **读取。**对每个 V1 项目行解析 `data` JSON，先过一遍现有 6 条 `normalize*` 迁移链——**这一步必须保留**，因为老存档可能仍是 v1 结构（旧 person / 旧 overlay / 旧 titleStyle）。
 
@@ -565,7 +572,7 @@ Dexie 是 IndexedDB 封装，**不支持 JOIN，也不支持外键级联**。三
 
 - **可查询：**「找所有引用了已删符号的元素」从内存全扫变为一条 SQL
 
-- **可演进：**`schema_meta.schema_version` 替代 6 条无版本的手工迁移链
+- **可演进：**结构变更不再散落成无版本的手工迁移链，改由集中式的一次性升级脚本处理
 
 - **可诊断：**3 个自检视图把「数据损坏」从隐性变为可检测
 
@@ -585,7 +592,7 @@ Dexie 是 IndexedDB 封装，**不支持 JOIN，也不支持外键级联**。三
 
 DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执行并跑完完整性用例：
 
-- 23 表创建成功
+- 22 表创建成功
 - 3 视图
 - 6 触发器
 - 17/17 用例通过

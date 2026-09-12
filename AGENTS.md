@@ -123,7 +123,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2 设计稿，尚未落地到运行时）
 
-**规模**：23 张表 / 3 视图 / 6 触发器 / 340 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：23 张表 / 3 视图 / 6 触发器 / 339 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **元素按工具栏聚合为 4 张类别宽表**，表内用 `type` 判别列区分子类型，**没有 `element` 基表**：
 

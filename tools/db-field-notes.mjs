@@ -13,11 +13,6 @@
  * 图片类下线、疆域内部实体 JSON 内联、label 内联、keyframe 改弱引用。
  */
 export default {
-  schema_meta: {
-    key: '配置项名（现只有 schema_version）',
-    value: '配置项值（结构版本号，供迁移判断）',
-  },
-
   collection: {
     collection_id: '合集 id（默认合集恒为 default，不可删除）',
     name: '合集名（默认合集名为「默认合集」，不可改名）',
@@ -33,6 +28,12 @@ export default {
     collection_id: '所属合集（默认 default）；删合集时其下项目回落到默认合集',
     created_at: '创建时间（毫秒时间戳）',
     updated_at: '最后保存时间（毫秒时间戳）',
+    active_base_map_id: '当前生效底图（删除该底图则置空）',
+    active_elevation_map_id: '当前生效高程图（删除则置空）',
+  },
+
+  project_config: {
+    project_id: '所属项目（1:1，主键即外键）',
     default_duration: '默认章节时长（帧）',
     default_fps: '默认帧率（1–240）',
     resolution_w: '默认导出宽度（px）',
@@ -40,8 +41,6 @@ export default {
     resolution_label: '分辨率标签（如 1080p）',
     default_easing: '默认缓动类型',
     projection: '地图投影：mercator 平面 / globe 3D 球体',
-    active_base_map_id: '当前生效底图（删除该底图则置空）',
-    active_elevation_map_id: '当前生效高程图（删除则置空）',
   },
 
   base_map: {

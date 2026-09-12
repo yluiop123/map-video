@@ -10,7 +10,7 @@
 
 - 一、23 张表从哪来
 - 二、V1 字段 → V2 表（完整对照）
-- 三、23 张表逐表速查（按 11 组）
+- 三、23 张表逐表速查（按 10 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
@@ -35,7 +35,7 @@
 - **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
 - **4 张**是「素材库」（底图、高程图、自定义图标、二进制素材）；
 - **3 张**是「弹窗内容块」；
-- **4 张**是合集、项目本体、元数据与应用配置。
+- **4 张**是合集、项目本体、项目配置与应用配置。
 
 ## 二、V1 字段 → V2 表（完整对照）
 
@@ -45,7 +45,7 @@
 |---|---|---|
 | （合集层级，V1 无对应字段） | `collection` + `project.collection_id` | 新增：项目之上加一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）；未指定归属时落默认合集 `default` |
 | `MapVideoProject.id / name / description / createdAt / updatedAt` | `project` | P1 列化 |
-| `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing / projection） | `project` 的内联列 | P3 的例外：只有 5 个标量且恒定存在，独立成表只增一次 JOIN |
+| `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing / projection） | `project_config` | P2 独立成表：配置与项目本体职责分离（1:1，主键即外键）；配置面板只读写这张表 |
 | `baseMaps[]` + `activeBaseMapId` | `base_map` + `project.active_base_map_id` | P2；循环外键用 `SET NULL` 断开 |
 | `elevationMaps[]` + `activeElevationMapId` | `elevation_map` + `project.active_elevation_map_id` | P2 |
 | `customSymbols[]`（`url` 可能是 data URL） | `custom_symbol` + `asset` | 元数据留表内，二进制走 P4 外置 新增 |
@@ -61,27 +61,21 @@
 | `chapters[].music[]` | `music_track` | P2；音频本体走 `asset` |
 | `territory` 元素内的 `countries / plots / events` | `element_territory` 的 `countries_json` / `plots_json` / `events_json` | P3 内联：疆域自包含、整体读写；代价是失去复合外键，由 `v_check_territory_ref` 视图兜底 |
 | — | `asset` | 新增 V1 把图片/音频以 base64 塞在 JSON 里，保存时全量重写 |
-| — | `schema_meta` | 新增 V1 没有结构版本号，迁移只能靠猜 |
 | `providers`（V1 就是独立表） | `provider` | 保持独立；新增「每 kind 至多一条 active」的部分唯一索引 |
 
-## 三、23 张表逐表速查（按 11 组）
+## 三、23 张表逐表速查（按 10 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。V1 已有 表示这张表 V1 就存在（仅 `projects` 与 `providers` 两张，其余都是新拆出来的）。
 
-### 组 1 · 元数据 1 张
-
-| 表 | 职责 | 主键 | 关键点 |
-|---|---|---|---|
-| `schema_meta` | 键值对，存 `schema_version` | `key` | 让「打开老存档要迁移几步」有据可依 |
-
-### 组 2 · 合集与项目聚合根 2 张
+### 组 1 · 合集与项目（含配置） 3 张
 
 | 表 | 职责 | 主键 | 关键点 |
 |---|---|---|---|
 | `collection` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素） | `collection_id` | 默认合集恒为 `default`：**不可改名、不可删除**；删其它合集时其下项目回落默认合集（**不删项目**） |
-| `project` | 项目本体 + 全局配置（时长/帧率/分辨率/缓动/投影）+ 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；只 1 行 `active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） |
+| `project` | 项目本体：身份 + 归属 + 审计字段 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） |
+| `project_config` | 项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 / 投影 | `project_id` | 与 `project` **1:1**（主键即外键）；配置独立成表，配置面板只读写这张表 |
 
-### 组 3 · 资源与素材 4 张
+### 组 2 · 资源与素材 4 张
 
 | 表 | 职责 | 主键 | 删除行为 |
 |---|---|---|---|
@@ -90,7 +84,7 @@
 | `custom_symbol` | 自定义图标库（icon / image / svg 的元数据） | `symbol_id` | 被元素占用时 **RESTRICT 拒绝删除**（旧实现会静默损坏图标） |
 | `asset` 新增 | 所有大体积二进制的唯一入口（图片/音频/视频/字体），按 `sha256` 去重 | `asset_id` | 孤儿回收是待办项（需定期清理或引用计数） |
 
-### 组 4 · 章节与时间轴 7 张
+### 组 3 · 章节与时间轴 7 张
 
 一个 `Chapter` 对象里的 7 类子集合，逐类一张表。
 
@@ -104,7 +98,7 @@
 | `narration_entry` | `narration.entries[]` | `entry_id` | 一条字幕 = 一行；音频走 `asset` |
 | `music_track` | `music[]` | `track_id` | 章内可多段；音频走 `asset` |
 
-### 组 5 · 标记类元素 1 张 Pin 工具
+### 组 4 · 标记类元素 1 张 Pin 工具
 
 工具条「标记」按钮的产出：一键在当前地图中心放置。三种标记形态（点 / 旗标 / 军标）**合并进同一张宽表**，用 `type` 判别列区分；公共字段（章节、时间轴、层级、可见性、标签、移动图标）每行都有。
 
@@ -114,7 +108,7 @@
 | `element_marker` | `flag` | `element_id` | 标记面板切到 Marker（原地改类型） | 位置、旗面文案（flag_text）、配色、字号、宽度 |
 | `element_marker` | `military_symbol` | `element_id` | **当前无入口**（导入 / 旧数据） | 军标 SIDC、位置、旋转、梯队、附加文字 |
 
-### 组 6 · 路线类元素 1 张 Route 工具
+### 组 5 · 路线类元素 1 张 Route 工具
 
 「路线」按钮的产出：进入绘制模式采点成线。线型（直线/贝塞尔/大圆弧）与路线特效都在右侧 Settings 里切换，不新增表。移动点与连接线也并入本表。
 
@@ -124,7 +118,7 @@
 | `element_route` | `moving_point` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 路径点数组、拖尾颜色/宽度/长度 |
 | `element_route` | `connector` | `element_id` | **当前无入口** | 起止端点（**弱引用**：元素已分表故无外键，删端点由清理触发器连带删除）、线宽/颜色/箭头 |
 
-### 组 7 · 形状类元素 1 张 Shape 工具
+### 组 6 · 形状类元素 1 张 Shape 工具
 
 「形状」按钮带下拉菜单，分三组共 19 项：多点绘制 / 两点绘制 / 特殊图形；五种形状**合并进同一张宽表**。**区域工具（Region）的行政区高亮也写这张表**——它的产物就是 `polygon`，因此不单列一组。
 
@@ -136,7 +130,7 @@
 | `element_shape` | `gathering` | `element_id` | Shape：集结点（两点绘制） | 中心、半径、颜色、脉冲、旋转 |
 | `element_shape` | `encirclement` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 中心、半径、填充与描边色 |
 
-### 组 8 · 疆域类元素 1 张 Terr 工具
+### 组 7 · 疆域类元素 1 张 Terr 工具
 
 「疆域」按钮带下拉菜单：新建疆域 / 导入 / 绘制地块 / 兼并。势力、地块、兼并事件**全部 JSON 内联**进本表（`countries_json` / `plots_json` / `events_json`），疆域自包含、整体读写。
 
@@ -144,7 +138,7 @@
 |---|---|---|---|
 | `element_territory` | `element_id` | Terr：新建疆域 / 绘制地块 / 兼并 | `display_json` 显示配置 + 三个 JSON 列承载原 `territory_*` 四张表的全部内容；`plot.ownerId` / `event.toCountryId` 的合法性由 `v_check_territory_ref` 视图校验 |
 
-### 组 9 · 元素附属（跨类别） 1 张 跨类别
+### 组 8 · 元素附属（跨类别） 1 张 跨类别
 
 取消 `element` 基表后，被所有元素共用的附属表只剩动画关键帧；标签已内联进各元素表的 `label_json` 列。
 
@@ -152,7 +146,7 @@
 |---|---|---|---|
 | `element_keyframe` | 元素动画关键帧 | `kf_id` | **所有元素共用**；8 种 property（透明度/缩放/旋转/绘制进度/路径进度/填充进度/morph）统一一张表；`element_id` 为**弱引用**（元素分属 4 张表），删元素由清理触发器连带删除；`chapter_id` 仍是外键 |
 
-### 组 10 · 叠加层（弹窗） 3 张
+### 组 9 · 叠加层（弹窗） 3 张
 
 | 表 | 职责 | 主键 | 关键点 |
 |---|---|---|---|
@@ -160,7 +154,7 @@
 | `overlay_block` | custom 类弹窗的内容块序列 | `block_id` | 只有需要逐块排序的弹窗才用 |
 | `person_block` | 人物卡片的内容块（头像/姓名/简介/引言/对白） | `block_id` | 5 种块类型，带版式配置 |
 
-### 组 11 · 应用配置 1 张 V1 已有
+### 组 10 · 应用配置 1 张 V1 已有
 
 | 表 | 职责 | 主键 | 关键点 |
 |---|---|---|---|
@@ -169,7 +163,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **23 张表 / 340 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，340 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **23 张表 / 339 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，339 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。
 
@@ -177,30 +171,18 @@
 
 #### 快速跳转
 
-- **组 1 · 元数据**：`schema_meta`
-- **组 2 · 合集与项目聚合根**：`collection` · `project`
-- **组 3 · 资源与素材**：`base_map` · `elevation_map` · `custom_symbol` · `asset`
-- **组 4 · 章节与时间轴**：`chapter` · `camera_keyframe` · `screen_fx` · `chapter_fx` · `narration` · `narration_entry` · `music_track`
-- **组 5 · 标记类元素（Pin 工具）**：`element_marker`
-- **组 6 · 路线类元素（Route 工具）**：`element_route`
-- **组 7 · 形状类元素（Shape 工具）**：`element_shape`
-- **组 8 · 疆域类元素（Terr 工具）**：`element_territory`
-- **组 9 · 元素附属（跨类别）**：`element_keyframe`
-- **组 10 · 叠加层（弹窗）**：`overlay` · `overlay_block` · `person_block`
-- **组 11 · 应用配置**：`provider`
+- **组 1 · 合集与项目（含配置）**：`collection` · `project` · `project_config`
+- **组 2 · 资源与素材**：`base_map` · `elevation_map` · `custom_symbol` · `asset`
+- **组 3 · 章节与时间轴**：`chapter` · `camera_keyframe` · `screen_fx` · `chapter_fx` · `narration` · `narration_entry` · `music_track`
+- **组 4 · 标记类元素（Pin 工具）**：`element_marker`
+- **组 5 · 路线类元素（Route 工具）**：`element_route`
+- **组 6 · 形状类元素（Shape 工具）**：`element_shape`
+- **组 7 · 疆域类元素（Terr 工具）**：`element_territory`
+- **组 8 · 元素附属（跨类别）**：`element_keyframe`
+- **组 9 · 叠加层（弹窗）**：`overlay` · `overlay_block` · `person_block`
+- **组 10 · 应用配置**：`provider`
 
-### 组 1 · 元数据
-
-#### schema_meta
-
-2 列 · 主键 `key`
-
-| 列 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `key` | TEXT | `PK` | 配置项名（现只有 schema_version） |
-| `value` | TEXT | `NOT NULL` | 配置项值（结构版本号，供迁移判断） |
-
-### 组 2 · 合集与项目聚合根
+### 组 1 · 合集与项目（含配置）
 
 #### collection
 
@@ -216,7 +198,7 @@
 
 #### project
 
-15 列 · 主键 `project_id`
+8 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -226,6 +208,16 @@
 | `collection_id` | TEXT | `NOT NULL` `FK → collection RESTRICT` | 所属合集（默认 default）；删合集时其下项目回落到默认合集 · 默认 `'default'` |
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后保存时间（毫秒时间戳） |
+| `active_base_map_id` | TEXT | `FK → base_map SET NULL` | 当前生效底图（删除该底图则置空） |
+| `active_elevation_map_id` | TEXT | `FK → elevation_map SET NULL` | 当前生效高程图（删除则置空） |
+
+#### project_config
+
+8 列 · 主键 `project_id`
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `project_id` | TEXT | `PK` `FK → project CASCADE` | 所属项目（1:1，主键即外键） |
 | `default_duration` | INTEGER | `NOT NULL` | 默认章节时长（帧） · `CHECK (default_duration > 0)` |
 | `default_fps` | INTEGER | `NOT NULL` | 默认帧率（1–240） · `CHECK (default_fps BETWEEN 1 AND 240)` |
 | `resolution_w` | INTEGER | `NOT NULL` | 默认导出宽度（px） · `CHECK (resolution_w > 0)` |
@@ -233,10 +225,8 @@
 | `resolution_label` | TEXT | `NOT NULL` | 分辨率标签（如 1080p） |
 | `default_easing` | TEXT | `NOT NULL` | 默认缓动类型 |
 | `projection` | TEXT | `NOT NULL` | 地图投影：mercator 平面 / globe 3D 球体 · 默认 `'mercator'` · `CHECK (projection IN ('mercator','globe'))` |
-| `active_base_map_id` | TEXT | `FK → base_map SET NULL` | 当前生效底图（删除该底图则置空） |
-| `active_elevation_map_id` | TEXT | `FK → elevation_map SET NULL` | 当前生效高程图（删除则置空） |
 
-### 组 3 · 资源与素材
+### 组 2 · 资源与素材
 
 #### base_map
 
@@ -312,7 +302,7 @@
 
 - `CHECK ((storage = 'file' AND rel_path IS NOT NULL) OR (storage = 'blob' AND blob IS NOT NULL))`
 
-### 组 4 · 章节与时间轴
+### 组 3 · 章节与时间轴
 
 #### chapter
 
@@ -456,7 +446,7 @@
 
 - `CHECK (end_frame >= start_frame)`
 
-### 组 5 · 标记类元素（Pin 工具）
+### 组 4 · 标记类元素（Pin 工具）
 
 #### element_marker
 
@@ -522,7 +512,7 @@
 - `CHECK (type <> 'flag' OR flag_text IS NOT NULL)`（模型不能贴地）
 - `CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)`
 
-### 组 6 · 路线类元素（Route 工具）
+### 组 5 · 路线类元素（Route 工具）
 
 #### element_route
 
@@ -577,7 +567,7 @@
 - `CHECK (type <> 'connector' OR (from_element_id IS NOT NULL AND to_element_id IS NOT NULL))`
 - `CHECK (from_element_id IS NULL OR to_element_id IS NULL OR from_element_id <> to_element_id)`
 
-### 组 7 · 形状类元素（Shape 工具）
+### 组 6 · 形状类元素（Shape 工具）
 
 #### element_shape
 
@@ -648,7 +638,7 @@
 - `CHECK (type <> 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 - `CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 
-### 组 8 · 疆域类元素（Terr 工具）
+### 组 7 · 疆域类元素（Terr 工具）
 
 #### element_territory
 
@@ -677,7 +667,7 @@
 
 - `CHECK (end_frame >= start_frame)`
 
-### 组 9 · 元素附属（跨类别）
+### 组 8 · 元素附属（跨类别）
 
 #### element_keyframe
 
@@ -701,7 +691,7 @@
 - `CHECK (value_num IS NOT NULL OR value_json IS NOT NULL)`
 - `UNIQUE (element_id, property, frame)`
 
-### 组 10 · 叠加层（弹窗）
+### 组 9 · 叠加层（弹窗）
 
 #### overlay
 
@@ -767,7 +757,7 @@
 | `mask` | TEXT | — | 头像遮罩：none / bottom / top / circle 圆形 / feather 羽化 · `CHECK (mask IS NULL OR mask IN ('none','bottom','top','circle','feather'))` |
 | `ord` | INTEGER | `NOT NULL` | 块顺序 · 默认 `0` |
 
-### 组 11 · 应用配置
+### 组 10 · 应用配置
 
 #### provider
 
@@ -859,7 +849,7 @@
 
 #### 打开项目（读）
 
-      - 读 `project` 一行 → 拿到全局配置与生效底图
+      - 读 `project`（身份 / 归属 / 生效底图）与 `project_config`（全局配置）各一行
 
       - 读 `chapter`（按 `order_index`）→ 章节列表与时间轴
 
@@ -873,7 +863,7 @@
 
       - 整个保存过程放在**一个事务**里（实测：逐条提交 vs 单事务差 63 倍）
 
-      - 先写父表（`project` → `chapter` → `元素类别表`），再写 `element_keyframe`；连接线端点、关键帧都是**弱引用**，须先建被引用元素
+      - 先写父表（`project` → `project_config` → `chapter` → `元素类别表`），再写 `element_keyframe`；连接线端点、关键帧都是**弱引用**，须先建被引用元素
 
       - 二进制素材先入 `asset`，业务表只写 `asset_id`
 
