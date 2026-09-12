@@ -141,6 +141,20 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **★ 不使用触发器（2026-09-12 起全部移除）**：数据库侧只有表 / 索引 / 视图，**没有触发器**。理由：网页端 Dexie（IndexedDB）没有触发器，数据库侧触发器只在桌面端生效 → 同一规则两套真相；且规则藏在表定义外、与写入端重复。
 - **改版的代价 —— 弱引用**：`element_route.from/to_element_id`（连接线端点）与 `element_keyframe.element_id` 无外键，**由应用层在删除元素时一并清理**（连接线端点 + 该元素的关键帧）；`camera_keyframe.follow_route_element_id` 只引用同章节路线也由写入端校验。数据库侧只留 `v_check_dangling`（悬空引用）与 `v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）两个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
+- **★ 新增/改动字段的同步清单（漏一步就会设计↔实现漂移）**：
+
+  1. `docs/db-schema-v2.sql`（唯一事实源）改 DDL
+  2. `tools/db-field-notes.mjs` 补/改字段中文说明 —— **漏补会直接报错**（生成器强制每列都有说明）
+  3. 若新增表：还要改 `tools/gen-db-field-dict.mjs` 的 `GROUPS`（否则该表不会输出）与 `TOOL_ENTRY`（元素表）
+  4. `node --experimental-sqlite tools/gen-db-field-dict.mjs` 重跑，把字段字典注入 `docs/db-tables.md`
+  5. 手工同步文档中**标记外**的部分：表数 / 列数（`db-tables.md`、`db-redesign.md`、`AGENTS.md` 本节的规模行）、`db-tables.md` 第二节字段归属表与第三节逐表速查、`db-redesign.md` 2.2 实体清单与资源层说明、`docs/db-er-diagram.mmd` E-R 图
+  6. 验证：`node --experimental-sqlite tools/gen-db-field-dict.mjs --check`（校验结构一致 + 说明全覆盖）
+
+- **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
+  - 地形夸张系数可调节 → 打破了「底图/高程图是代码常量，配置不入库」的前提，必须在 `project_config` 给它落库；
+  - 自定义图片库 `customImages` 运行时已有 → 设计稿却没有对应表，补了 `custom_image`。
+  - 判断口诀：**「用户能改」的值就必须能存**，凡是「XX 不入库」这类取舍，都要确认它的前提（配置是否真的固定）仍然成立。
+
 - **能力矩阵三处联动，改一处必须同步另两处**：模型不可着色且不能贴地、GIF 不可着色 —— ① DDL 的 CHECK ② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键（**不要为性能删外键**，强制检查 ≈1µs/行），但不使用触发器（见上一条）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
 - **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（334 字段中文说明词表，**新增字段漏补说明会直接报错**）。
