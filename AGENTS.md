@@ -22,7 +22,7 @@
 npm run dev            # http://localhost:5173/map-video/ （vite base=/map-video/）
 npm run build          # tsc -b && vite build（网页 Lite 产物）
 npm run build:desktop  # 桌面产物（相对路径 base=./）
-npm run electron:dev   # 桌面开发：vite 热更 + Electron 窗口
+npm run electron:dev   # 桌面开发：vite 热更 + Electron 窗口（日志自动写 logs/dev-vite.log · logs/dev-electron.log）
 npm run dist:win       # 打 Windows 包 → release/
 ```
 

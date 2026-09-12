@@ -1,6 +1,6 @@
 node_modules/
 dist/
-dev-server.log
+logs/
 tsconfig.tsbuildinfo
 test001-config.json
 .video_agent/
