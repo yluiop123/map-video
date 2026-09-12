@@ -32,6 +32,8 @@ export function getStyleUrl(project: MapVideoProject, chapter: Chapter): string 
         encoding: elevation.encoding || 'terrarium',
       },
     },
-    terrain: { source: 'elevation', exaggeration: elevation.exaggeration || 1.5 },
+    // 必须用 ?? 而不是 ||：exaggeration = 0（完全平坦）是**合法有效值**，
+    // 用 || 会把 0 当作「未设置」回退成 1.5 —— 表现为「设了 0 却仍有地形起伏」。
+    terrain: { source: 'elevation', exaggeration: elevation.exaggeration ?? 1.5 },
   } as StyleSpecification;
 }
