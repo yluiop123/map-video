@@ -365,7 +365,7 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   /** 资源形态（image / gif / model / icon） */
   const isResourceShape = cap.source !== 'none';
   /** 走位图管线的形态（model 走 3D custom layer，见渲染端模型章节） */
-  const isVisualShape = shape === 'image' || shape === 'gif' || shape === 'icon' || shape === 'model' || shape === 'military_symbol';
+  const isVisualShape = shape === 'image' || shape === 'gif' || shape === 'icon' || shape === 'model';
   const visualSrc = isResourceShape ? resolvePinVisualSource(element) : ({ type: 'none' } as const);
   const legacyIconUrl = element.iconUrl;
   const hasVisual = (isVisualShape && visualSrc.type !== 'none') || !!legacyIconUrl;
@@ -2915,10 +2915,11 @@ function renderMilitarySymbol(map: maplibregl.Map, element: MilitarySymbolElemen
   const sourceId = `mil-${element.id}`;
   const iconId = `mil-icon-${element.sidc}`;
   const layerId = `mil-layer-${element.id}`;
-  const labelLayerId = `mil-label-${element.id}`;
+  // 注意：军标不渲染界面标签（element.label / name）—— 标准符号自带文字修饰，
+  // 再叠加标签会与规范图面冲突（产品约定：军标无标签）。
 
   const geojson = turf.featureCollection([
-    turf.point(element.coordinates, { name: element.label || element.name }),
+    turf.point(element.coordinates, {}),
   ]);
 
   if (!map.getSource(sourceId)) {
@@ -2931,17 +2932,6 @@ function renderMilitarySymbol(map: maplibregl.Map, element: MilitarySymbolElemen
         'icon-rotate': element.rotation || 0,
         'icon-allow-overlap': true,
       },
-    });
-    map.addLayer({
-      id: labelLayerId, type: 'symbol', source: sourceId,
-      layout: {
-        'text-field': ['get', 'name'],
-        'text-size': 12,
-        'text-anchor': 'top',
-        'text-offset': [0, 1.2],
-        'text-max-width': 8,
-      },
-      paint: { 'text-color': '#FFF', 'text-halo-color': '#000', 'text-halo-width': 2 },
     });
   } else {
     (map.getSource(sourceId) as GeoJSONSource).setData(geojson);

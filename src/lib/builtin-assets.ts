@@ -103,53 +103,12 @@ export const BUILTIN_MODELS: BuiltinAsset[] = [
   { id: 'model:missile', kind: 'model', name: '导弹', tags: ['武器'], tintable: true, model: { kind: 'missile' }, sizeMeters: 100 },
 ];
 
-// ========== 内置军标（NATO APP-6 / MIL-STD-2525 联合军事符号，地面单元） ==========
-//
-// 形状依据 NATO Joint Military Symbology 规范（Wikipedia: APP-06 Ed.E）：
-//   框架：友军 = 矩形（约 1.5:1）· 敌军 = 菱形；框内为兵种符号。
-//   交叉线贯穿至框角（步兵）、装甲 = 椭圆（坦克履带）、机步 = X + 底部横线、
-//   炮兵 = 实心圆点（炮弹）、防空 = 穹顶拱、通信 = 闪电、侦察 = 单斜线（军刀背带）、
-//   后勤 = 扁平横线（道路侧视）、HQ = 框内空心矩形 + 左下角向下延伸线。
-// 全部为白色线稿 SVG（multiply 染色），元素侧存 builtinId（'milsym:*'），
-// 渲染走通用内置图集管线。
-
-/** 友军矩形框（friendly 单元框架，约 1.5:1） */
-const FRAME = '<rect x="3" y="6" width="18" height="12" fill="none" stroke="#FFFFFF" stroke-width="1.5"/>';
-/** 敌军菱形框（hostile 单元框架） */
-const DIAMOND = '<path d="M12 4 21 12 12 20 3 12Z" fill="none" stroke="#FFFFFF" stroke-width="1.5"/>';
-/** 组装军标 SVG：框 + 兵种符号 */
-const mil = (inner: string, hostile = false): string =>
-  S((hostile ? DIAMOND : FRAME) + inner);
-/** 线稿笔画（SVG 根 fill 不影响 stroke 元素，须显式声明） */
-const st = 'fill="none" stroke="#FFFFFF" stroke-width="1.5"';
-/** 步兵交叉对角线：贯穿至框角（X 象征交叉背带） */
-const INF_X = `<path d="M4.2 6.8 19.8 17.2M19.8 6.8 4.2 17.2" ${st}/>`;
-
-/** 内置军标（19 个：友军 15 + 敌军 4；全部可着色） */
-export const BUILTIN_MILSYMS: BuiltinAsset[] = [
-  { id: 'milsym:infantry', kind: 'image', name: '步兵', tags: ['军标', '友军'], tintable: true, src: mil(INF_X) },
-  { id: 'milsym:armor', kind: 'image', name: '装甲', tags: ['军标', '友军'], tintable: true, src: mil(`<ellipse cx="12" cy="12" rx="6" ry="4" ${st}/>`) },
-  { id: 'milsym:mech', kind: 'image', name: '机械化步兵', tags: ['军标', '友军'], tintable: true, src: mil(`${INF_X}<path d="M6.5 14.6h11" stroke="#FFFFFF" stroke-width="1.8"/>`) },
-  { id: 'milsym:artillery', kind: 'image', name: '炮兵', tags: ['军标', '友军'], tintable: true, src: mil('<circle cx="12" cy="12" r="2.8"/>') },
-  { id: 'milsym:airdef', kind: 'image', name: '防空', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M6.5 14a5.5 5.5 0 0 1 11 0" ${st}/>`) },
-  { id: 'milsym:heli', kind: 'image', name: '直升机', tags: ['军标', '友军', '航空'], tintable: true, src: mil(`<path d="M7 11.4a5 3.5 0 0 1 10 0" ${st}/><path d="M7 12.6a5 3.5 0 0 0 10 0" ${st}/>`) },
-  { id: 'milsym:fixedwing', kind: 'image', name: '固定翼', tags: ['军标', '友军', '航空'], tintable: true, src: mil(`<path d="M5.5 8.5Q12 11.2 18.5 14.5" ${st}/><path d="M5.5 14.5Q12 11.2 18.5 8.5" ${st}/>`) },
-  { id: 'milsym:medical', kind: 'image', name: '医疗', tags: ['军标', '友军'], tintable: true, src: mil('<path d="M11 8h2v3h3v2h-3v3h-2v-3H8v-2h3z"/>') },
-  { id: 'milsym:engineer', kind: 'image', name: '工程', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M9 8.5h6M9 12h5M9 15.5h6M9 8.5v7" ${st}/>`) },
-  { id: 'milsym:signal', kind: 'image', name: '通信', tags: ['军标', '友军'], tintable: true, src: mil('<path d="M13.2 7.8 9.2 13h2.5L10.6 16.6 15.2 11h-2.6Z"/>') },
-  { id: 'milsym:recon', kind: 'image', name: '侦察', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M5 17.5 19 6.5" stroke="#FFFFFF" stroke-width="2.2" fill="none"/>`) },
-  { id: 'milsym:radar', kind: 'image', name: '雷达', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M12 16V8.5" ${st}/><path d="M7.5 13.5a4.8 4.8 0 0 1 8.4-3.2" ${st}/>`) },
-  { id: 'milsym:missile', kind: 'image', name: '导弹', tags: ['军标', '友军', '武器'], tintable: true, src: mil('<path d="M12 6.5 14.8 13.2h-1.7v2.3h-2.2v-2.3H9.2Z"/>') },
-  { id: 'milsym:supply', kind: 'image', name: '后勤', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M6 13h12" stroke="#FFFFFF" stroke-width="2"/>`) },
-  { id: 'milsym:hq', kind: 'image', name: '指挥部', tags: ['军标', '友军'], tintable: true, src: mil(`<rect x="7.5" y="8.75" width="9" height="6" ${st}/><path d="M7.5 14.75V20.5" ${st}/>`) },
-  { id: 'milsym:h-infantry', kind: 'image', name: '敌步兵', tags: ['军标', '敌军'], tintable: true, src: mil(`<path d="M6.2 8.6 17.8 15.4M17.8 8.6 6.2 15.4" ${st}/>`, true) },
-  { id: 'milsym:h-armor', kind: 'image', name: '敌装甲', tags: ['军标', '敌军'], tintable: true, src: mil(`<ellipse cx="12" cy="12" rx="4.8" ry="3" ${st}/>`, true) },
-  { id: 'milsym:h-artillery', kind: 'image', name: '敌炮兵', tags: ['军标', '敌军'], tintable: true, src: mil('<circle cx="12" cy="12" r="2.2"/>', true) },
-  { id: 'milsym:h-airdef', kind: 'image', name: '敌防空', tags: ['军标', '敌军'], tintable: true, src: mil(`<path d="M8 14.2a4 4 0 0 1 8 0" ${st}/>`, true) },
-];
+// 军标不在此文件：它是独立元素类型（MilitarySymbolElement / type='military_symbol'），
+// 由 milsymbol 库（APP-6 / MIL-STD-2525 官方规范实现）按 SIDC 编码生成标准符号图，
+// 不走标记的 builtin 图集管线（见 PropertiesPanel 的 MilSymSettings 与 map-renderer 的 renderMilitarySymbol）。
 
 /** 全部内置资源（按 id 索引） */
-export const BUILTIN_ALL: BuiltinAsset[] = [...BUILTIN_IMAGES, ...BUILTIN_GIFS, ...BUILTIN_MODELS, ...BUILTIN_MILSYMS];
+export const BUILTIN_ALL: BuiltinAsset[] = [...BUILTIN_IMAGES, ...BUILTIN_GIFS, ...BUILTIN_MODELS];
 
 const BY_ID = new Map(BUILTIN_ALL.map((a) => [a.id, a]));
 

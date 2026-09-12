@@ -169,7 +169,9 @@ export interface MapElementBase {
   pointTimes?: number[];
 }
 
-/** 点的视觉形态（10 种）：5 种矢量基础形态 + 5 种资源形态 */
+/** 点的视觉形态（9 种）：5 种矢量基础形态 + 4 种资源形态。
+ *  军标不在此列 —— 它是独立元素类型 MilitarySymbolElement（type='military_symbol'），
+ *  由 milsymbol 库按 APP-6 规范渲染，不走标记的 shape 资源管线。 */
 export type PointShape =
   | 'circle'   // 圆点
   | 'text'     // 文字贴片
@@ -179,8 +181,7 @@ export type PointShape =
   | 'image'    // 图片（内置 SVG 图集 / 上传 png·jpg·webp·svg）
   | 'gif'      // 动图（内置程序化动画 / 上传 gif·webp）
   | 'model'    // 3D 模型（内置程序化简模 / 上传 glb·gltf；three.js + custom layer）
-  | 'icon'     // 图标库（lucide / react-icons / 自建库）
-  | 'military_symbol';  // 军标（内置简化 MIL-STD-2525 符号集，builtinId = 'milsym:*'）
+  | 'icon';    // 图标库（lucide / react-icons / 自建库）
 
 /** 形态专属表现参数（对应数据库 element_marker.visual_meta_json） */
 export interface VisualMeta {

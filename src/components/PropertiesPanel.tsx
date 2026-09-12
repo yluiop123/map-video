@@ -14,12 +14,13 @@ import type {
   MapElement, PointElement, LineElement,
   PolygonElement, ArrowElement, FlagElement,
   DoubleArrowElement, EncirclementElement, GatheringElement,
-  CameraKeyframe, TerritoryElement, PointShape,
+  CameraKeyframe, TerritoryElement, PointShape, MilitarySymbolElement,
 } from '../types';
-import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES, BUILTIN_MILSYMS } from '../lib/builtin-assets';
+import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES } from '../lib/builtin-assets';
 import { defaultVisualFor, getPinCapability } from '../lib/pin-visual';
 import { loadLucideIcons, filterExistingIcons, type IconComponent } from '../lib/icon-library';
 import { uploadAsset, getAssetUrl, removeAsset, listMedia, type MediaItem, type AssetKind } from '../lib/assets';
+import ms from 'milsymbol';
 import { IS_DESKTOP } from '../lib/backend';
 import { distributePointTimes, ensurePointTimes } from '../lib/route-time';
 
@@ -94,7 +95,8 @@ export function PropertiesPanel() {
       <PanelHeader icon={meta.icon} title={t(meta.zh, meta.en)} onClose={() => selectElement(null)} />
 
       <div className="p-3 space-y-3">
-        {/* 顶部 LABEL：point/line 写 label.text，flag 写 text（旗上文字） */}
+        {/* 顶部 LABEL：point/line 写 label.text，flag 写 text（旗上文字）；军标不显示标签 */}
+        {element.type !== 'military_symbol' && (
         <Section title={t('标签', 'Label')}>
           <input
             type="text"
@@ -120,8 +122,9 @@ export function PropertiesPanel() {
             placeholder="LabelText"
           />
         </Section>
+        )}
 
-        {cat === 'pin' && <PinSettings element={element as PointElement | FlagElement} patch={patch} />}
+        {cat === 'pin' && <PinSettings element={element as PointElement | FlagElement | MilitarySymbolElement} patch={patch} />}
         {cat === 'route' && <RouteSettings element={element} patch={patch} chapter={findChapterOf(project, element.id)!} />}
         {cat === 'shape-multi' && <MultiShapeSettings element={element} patch={patch} />}
         {cat === 'shape-two' && <TwoShapeSettings element={element} patch={patch} />}
@@ -253,14 +256,35 @@ type PinStyle = 'dot' | 'pin' | 'bubble' | 'emoji' | 'text' | 'flag' | 'image' |
 const EMOJI_CHOICES = ['📍', '🚩', '⚔️', '🏰', '🔥', '⭐', '✅', '❌', '💀', '🛡️', '⚓', '✈️', '🚀', '💥', '👑', '🎯', '🪖', '☢️', '🕊️', '🩸', '⚠️', '💤', '🧭', '📕'];
 
 function PinSettings({ element, patch }: {
-  element: PointElement | FlagElement;
+  element: PointElement | FlagElement | MilitarySymbolElement;
   patch: (changes: Partial<MapElement>) => void;
 }) {
   const pe = element as PointElement;
-  const style: PinStyle = element.type === 'flag' ? 'flag' : pinStyleOf(pe);
+  const style: PinStyle = element.type === 'flag' ? 'flag'
+    : element.type === 'military_symbol' ? 'milsym'
+      : pinStyleOf(pe);
   const coords = element.coordinates;
   const cap = getPinCapability(pe.shape);   // 能力矩阵：决定哪些控件可用
   const t = useT();
+
+  // 军标：标准阵营配色（不可着色）、无标签、不可上传 —— 只留样式/坐标/符号/大小/旋转
+  if (element.type === 'military_symbol') {
+    const mil = element as MilitarySymbolElement;
+    return (
+      <>
+        <PinStyleChooser element={element} patch={patch} />
+        <div className="grid grid-cols-2 gap-2">
+          <Field label={t('经度', 'Longitude')}>
+            <NumberInput value={coords[0].toFixed(5)} onCommit={(v) => patch({ coordinates: [v || 0, coords[1]] })} className="input" step="0.00001" />
+          </Field>
+          <Field label={t('纬度', 'Latitude')}>
+            <NumberInput value={coords[1].toFixed(5)} onCommit={(v) => patch({ coordinates: [coords[0], v || 0] })} className="input" step="0.00001" />
+          </Field>
+        </div>
+        <MilSymSettings element={mil} patch={patch} />
+      </>
+    );
+  }
 
   return (
     <>
@@ -343,7 +367,7 @@ function PinSettings({ element, patch }: {
         </Section>
       )}
 
-      {((['dot', 'pin', 'image', 'gif', 'model', 'icon', 'milsym'] as PinStyle[]).includes(style)) && cap.canTint && (
+      {((['dot', 'pin', 'image', 'gif', 'model', 'icon'] as PinStyle[]).includes(style)) && cap.canTint && (
         <Appearance color={pe.color || '#FF4444'} onChange={(c) => patch({ color: c })} />
       )}
 
@@ -394,7 +418,8 @@ function PinStyleChooser({ element, patch }: {
   const coords = (element as PointElement).coordinates;
   const pe = element as PointElement;
   const isFlag = element.type === 'flag';
-  const style: PinStyle = isFlag ? 'flag' : pinStyleOf(pe);
+  const isMil = element.type === 'military_symbol';
+  const style: PinStyle = isFlag ? 'flag' : isMil ? 'milsym' : pinStyleOf(pe);
   const t = useT();
 
   const setStyle = (s: PinStyle) => {
@@ -422,9 +447,19 @@ function PinStyleChooser({ element, patch }: {
         flagColor: leavingFlag ? '#E23B3B' : (pe.color || '#E23B3B'), textColor: lbl?.color || '#FFFFFF',
         fontSize: 28, flagWidth: 216, scale: 1,
       } as Partial<MapElement>);
-    } else if (s === 'image' || s === 'gif' || s === 'model' || s === 'icon' || s === 'milsym') {
+    } else if (s === 'milsym') {
+      // 军标 = 独立元素类型（military_symbol）：milsymbol 库按 APP-6 规范渲染，
+      // 标准阵营配色（不可着色）、无界面标签、不可上传。默认友军步兵。
+      patch({
+        type: 'military_symbol', coordinates: coords,
+        sidc: (element as MilitarySymbolElement).sidc || 'SFG-UCI----',
+        symbolSize: 32, rotation: 0, scale: 1,
+        color: undefined, label: undefined, shape: undefined, builtinId: undefined,
+        assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined, emoji: undefined,
+      } as unknown as Partial<MapElement>);
+    } else if (s === 'image' || s === 'gif' || s === 'model' || s === 'icon') {
       // 资源形态：交给能力矩阵补默认值，并清掉该形态不支持的字段（与数据库 CHECK 一致）
-      patch({ type: 'point', coordinates: coords, ...defaultVisualFor(s === 'milsym' ? 'military_symbol' : (s as PointShape), pe) } as Partial<MapElement>);
+      patch({ type: 'point', coordinates: coords, ...defaultVisualFor(s as PointShape, pe) } as Partial<MapElement>);
     }
   };
 
@@ -525,8 +560,7 @@ function PinResourcePicker({ element, style, patch }: {
 }) {
   const t = useT();
   const isIconStyle = style === 'icon';
-  const isMilStyle = style === 'milsym';
-  const isResource = style === 'image' || style === 'gif' || style === 'model' || isIconStyle || isMilStyle;
+  const isResource = style === 'image' || style === 'gif' || style === 'model' || isIconStyle;
 
   // 全局图片素材库（跨项目可用）：列表 + 缩略图按 assetId 异步取 URL
   const { items: customImages, thumbs, refresh: refreshLibrary } = useImageLibrary(style === 'image');
@@ -544,12 +578,7 @@ function PinResourcePicker({ element, style, patch }: {
     );
   }
 
-  const list = style === 'image' ? BUILTIN_IMAGES
-    : style === 'gif' ? BUILTIN_GIFS
-      : style === 'milsym' ? BUILTIN_MILSYMS
-        : BUILTIN_MODELS;
-  /** 面板样式 → 元素 shape（军标按钮对应 'military_symbol'，其余同名） */
-  const shapeOf = (s: PinStyle): PointShape => (s === 'milsym' ? 'military_symbol' : s as PointShape);
+  const list = style === 'image' ? BUILTIN_IMAGES : style === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
   const resettable = { builtinId: undefined, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined } as Partial<MapElement>;
   const isDot = !element.shape || element.shape === 'circle';
   return (
@@ -578,7 +607,7 @@ function PinResourcePicker({ element, style, patch }: {
           <button
             key={a.id}
             title={a.name}
-            onClick={() => patch({ ...resettable, shape: shapeOf(style), builtinId: a.id } as Partial<MapElement>)}
+            onClick={() => patch({ ...resettable, shape: style as PointShape, builtinId: a.id } as Partial<MapElement>)}
             className={`${CELL_BASE} h-12 px-1 text-[10px] leading-tight text-center ${element.builtinId === a.id ? CELL_ON : CELL_OFF}`}
           >
             {a.src
@@ -604,8 +633,7 @@ function PinResourcePicker({ element, style, patch }: {
           <ResourceUploadRow style={style} onLoaded={(assetId) => { patch({ shape: 'image' as PointShape, ...resettable, assetId } as Partial<MapElement>); refreshLibrary(); }} />
         </>
       )}
-      {/* 军标是内置符号集，不上传；gif / model 仍可上传自有文件 */}
-      {(style === 'gif' || style === 'model') && <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: shapeOf(style), ...resettable, assetId } as Partial<MapElement>)} />}
+      {style !== 'image' && <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: style as PointShape, ...resettable, assetId } as Partial<MapElement>)} />}
     </div>
   );
 }
@@ -949,11 +977,84 @@ function RangeInput({ value, min, max, step = 1, suffix = '', onChange }: {
   );
 }
 
+// ========== 军标（military_symbol 元素）==========
+
+/** 常用 APP-6 军标清单（SIDC 编码 + 中文名）。
+ *  预览图由 milsymbol 库按官方规范实时生成（与渲染端同一来源，非手绘），
+ *  阵营配色遵循标准：友军蓝框 / 敌军红菱形。 */
+const MILSYM_SIDCS: { sidc: string; name: string }[] = [
+  { sidc: 'SFG-UCI----', name: '步兵' },
+  { sidc: 'SFG-UCA----', name: '装甲' },
+  { sidc: 'SFG-UCU----', name: '炮兵' },
+  { sidc: 'SFG-UCS----', name: '防空' },
+  { sidc: 'SFG-UCX----', name: '工程' },
+  { sidc: 'SFG-UCV----', name: '直升机' },
+  { sidc: 'SFG-UCF----', name: '固定翼' },
+  { sidc: 'SFG-USM----', name: '医疗' },
+  { sidc: 'SHG-UCI----', name: '敌步兵' },
+  { sidc: 'SHG-UCA----', name: '敌装甲' },
+  { sidc: 'SHG-UCU----', name: '敌炮兵' },
+  { sidc: 'SHG-UCS----', name: '敌防空' },
+];
+
+/** 军标设置：符号选择网格 + 大小 + 旋转（无颜色 / 无标签 / 无上传，配色遵循标准） */
+function MilSymSettings({ element, patch }: {
+  element: MilitarySymbolElement;
+  patch: (c: Partial<MapElement>) => void;
+}) {
+  const t = useT();
+  // SIDC → 预览 dataURL（一次生成；单个符号失败不影响其余）
+  const previews = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of MILSYM_SIDCS) {
+      try { map.set(s.sidc, new ms.Symbol(s.sidc, { size: 32, fill: true }).toDataURL()); } catch { /* */ }
+    }
+    return map;
+  }, []);
+
+  return (
+    <>
+      <Section title={t('符号', 'Symbol')}>
+        <div className="grid grid-cols-4 gap-1.5">
+          {MILSYM_SIDCS.map((s) => (
+            <button
+              key={s.sidc}
+              title={s.name}
+              onClick={() => patch({ sidc: s.sidc } as Partial<MapElement>)}
+              className={`flex flex-col items-center gap-0.5 h-14 px-1 py-1 rounded-md border text-[10px] leading-tight transition-colors ${
+                element.sidc === s.sidc ? 'border-primary bg-accent text-foreground' : 'border-white/10 bg-white/[0.03] text-foreground/80 hover:bg-accent'
+              }`}
+            >
+              {previews.get(s.sidc) && <img src={previews.get(s.sidc)} alt={s.name} className="w-7 h-7 object-contain" />}
+              <span>{s.name}</span>
+            </button>
+          ))}
+        </div>
+      </Section>
+      <Section title={t('大小与旋转', 'Size & Rotation')}>
+        <Field label={t('符号大小（px）', 'Symbol size (px)')}>
+          <NumberInput
+            value={String(element.symbolSize ?? 32)}
+            onCommit={(v) => patch({ symbolSize: clamp(v || 32, 12, 128) } as Partial<MapElement>)}
+            className="input"
+          />
+        </Field>
+        <Field label={t('旋转（度）', 'Rotation (°)')}>
+          <NumberInput
+            value={String(Math.round(element.rotation ?? 0))}
+            onCommit={(v) => patch({ rotation: clamp(v || 0, 0, 360) } as Partial<MapElement>)}
+            className="input"
+          />
+        </Field>
+      </Section>
+    </>
+  );
+}
+
 function pinStyleOf(pe: PointElement): PinStyle {
   if (pe.shape === 'gif') return 'gif';
   if (pe.shape === 'model') return 'model';
   if (pe.shape === 'icon') return 'icon';
-  if (pe.shape === 'military_symbol') return 'milsym';
   if (pe.shape === 'text') return 'text';
   if (pe.shape === 'bubble') return 'bubble';
   if (pe.shape === 'emoji') return 'emoji';
