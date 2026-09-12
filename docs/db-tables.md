@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 23 张表、3 个视图、6 个触发器 —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 21 张表、3 个视图、6 个触发器 —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：23 张表 · 4 张元素类别宽表 · 3 个视图 · 6 个触发器 · 33 个外键（32 个有索引，1 个有意豁免）
+- **规模**：21 张表 · 4 张元素类别宽表 · 3 个视图 · 6 个触发器 · 28 个外键（全部有索引）
 
 **目录**
 
-- 一、23 张表从哪来
-- 二、V1 字段 → V2 表（完整对照）
-- 三、23 张表逐表速查（按 10 组）
+- 一、21 张表的构成与分流规则
+- 二、字段归属：TS 类型 → 数据库表
+- 三、21 张表逐表速查（按 10 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图与 6 个触发器
 
-## 一、23 张表从哪来
+## 一、21 张表的构成与分流规则
 
-先把最容易误解的一点说清楚：**23 张表不是 23 个新概念**。它们是同一个项目文档按「字段从哪来、怎么用」拆开的结果。V1 的库层只有两张表 —— `projects(id, name, data, size, updated_at)` 与 `providers`，其中 `data` 一列装着整个项目的 JSON；Dexie 端是一样的单表结构。所以 V2 的 23 张表，本质是把这个 JSON 的字段按下面四条规则分流：
+**21 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,31 +28,31 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`title_style_json`、`transition_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 23 张表的构成
+#### 一句话理解 21 张表的构成
 
 - **4 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；
 - **1 张**是「元素附属」：`element_keyframe`（所有元素共用的动画关键帧，按 `element_id` 弱引用）；
 - **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
-- **4 张**是「素材库」（底图、高程图、自定义图标、二进制素材）；
+- **2 张**是「素材库」（自定义图标、二进制素材）；
 - **3 张**是「弹窗内容块」；
 - **4 张**是合集、项目本体、项目配置与应用配置。
 
-## 二、V1 字段 → V2 表（完整对照）
+## 二、字段归属：TS 类型 → 数据库表
 
-下表左边是你在代码里看到的 `MapVideoProject` / `Chapter` 字段（`src/types/index.ts`），右边是它落到了哪张表。这是理解这套设计最直接的入口。
+下表左边是代码里的数据模型（`src/types/index.ts`），右边是它落到哪张表 —— 理解这套设计最直接的入口。
 
-| V1 结构（src/types/index.ts） | 落到 V2 | 处理方式与理由 |
+| TS 类型（src/types/index.ts） | 落到表 | 处理方式与理由 |
 |---|---|---|
-| （合集层级，V1 无对应字段） | `collection` + `project.collection_id` | 新增：项目之上加一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）；未指定归属时落默认合集 `default` |
+| （合集层级） | `collection` + `project.collection_id` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）；未指定归属时落默认合集 `default` |
 | `MapVideoProject.id / name / description / createdAt / updatedAt` | `project` | P1 列化 |
-| `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing / projection） | `project_config` | P2 独立成表：配置与项目本体职责分离（1:1，主键即外键）；配置面板只读写这张表 |
-| `baseMaps[]` + `activeBaseMapId` | `base_map` + `project.active_base_map_id` | P2；循环外键用 `SET NULL` 断开 |
-| `elevationMaps[]` + `activeElevationMapId` | `elevation_map` + `project.active_elevation_map_id` | P2 |
-| `customSymbols[]`（`url` 可能是 data URL） | `custom_symbol` + `asset` | 元数据留表内，二进制走 P4 外置 新增 |
+| `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing） | `project_config` | P2 独立成表：配置与项目本体职责分离（1:1，主键即外键）；配置面板只读写这张表 |
+| `globalConfig.projection` | `project` 的 `projection` 列 | P1 列化：地图投影是项目自身的属性（渲染方式），随项目走，不属于「默认值类」配置 |
+| `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | **不入库**：配置是代码内置常量，项目只存选中的 id 字符串 |
+| `customSymbols[]`（`url` 可能是 data URL） | `custom_symbol` + `asset` | 元数据留表内，二进制走 P4 外置 |
 | `chapters[]` | `chapter` | P1；`titleStyle` / `transition` 按 P3 留在 JSON 列 |
 | `chapters[].elements[]` | `element_marker` / `element_route` / `element_shape` / `element_territory`（4 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表） |
 | `elements[].style`（`Keyframe[]` 数组） | `element_keyframe` | P2：8 种 property 统一一张表，带时间轴语义与唯一约束 |
-| `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：取消基表后 1:1 附属表失去统一外键目标，改为内联 JSON 列 |
+| `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：1:1 且可选，跟随元素整体读写 |
 | `chapters[].camera[]` | `camera_keyframe` | P2；`followRoute.routeElementId` 变成外键（删路线 → 退化为固定视角） |
 | `chapters[].overlays[]` | `overlay` + `overlay_block` + `person_block` | P2：本体一张，两类内容块各一张 |
 | `chapters[].effects[]`（`ChapterEffect`） | `chapter_fx` | P2 |
@@ -60,27 +60,27 @@
 | `chapters[].narration`（`NarrationTrack`） | `narration` + `narration_entry` | P2：档（样式/1:1）+ 条目（1:N） |
 | `chapters[].music[]` | `music_track` | P2；音频本体走 `asset` |
 | `territory` 元素内的 `countries / plots / events` | `element_territory` 的 `countries_json` / `plots_json` / `events_json` | P3 内联：疆域自包含、整体读写；代价是失去复合外键，由 `v_check_territory_ref` 视图兜底 |
-| — | `asset` | 新增 V1 把图片/音频以 base64 塞在 JSON 里，保存时全量重写 |
-| `providers`（V1 就是独立表） | `provider` | 保持独立；新增「每 kind 至多一条 active」的部分唯一索引 |
+| （二进制素材） | `asset` | P4 外置存储：图片 / 音频 / 视频 / 字体统一入表，业务表只留 `asset_id` |
+| `providers` | `provider` | 独立聚合；「每 kind 至多一条 active」由部分唯一索引保证 |
 
-## 三、23 张表逐表速查（按 10 组）
+> 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目与章节只保存所选配置的 id 字符串（`project.active_base_map_id` / `chapter.base_map_id`）。
 
-读法：**表名** · 一句话职责 · 主键 · 删除行为。V1 已有 表示这张表 V1 就存在（仅 `projects` 与 `providers` 两张，其余都是新拆出来的）。
+## 三、21 张表逐表速查（按 10 组）
+
+读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
 ### 组 1 · 合集与项目（含配置） 3 张
 
 | 表 | 职责 | 主键 | 关键点 |
 |---|---|---|---|
 | `collection` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素） | `collection_id` | 默认合集恒为 `default`：**不可改名、不可删除**；删其它合集时其下项目回落默认合集（**不删项目**） |
-| `project` | 项目本体：身份 + 归属 + 审计字段 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） |
-| `project_config` | 项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 / 投影 | `project_id` | 与 `project` **1:1**（主键即外键）；配置独立成表，配置面板只读写这张表 |
+| `project` | 项目本体：身份 + 归属 + 审计字段 + 地图投影 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） |
+| `project_config` | 项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 | `project_id` | 与 `project` **1:1**（主键即外键）；配置独立成表，配置面板只读写这张表 |
 
-### 组 2 · 资源与素材 4 张
+### 组 2 · 资源与素材 2 张
 
 | 表 | 职责 | 主键 | 删除行为 |
 |---|---|---|---|
-| `base_map` | 底图配置（MapLibre style URL 或内联样式） | `base_id` | 删项目 → 级联 |
-| `elevation_map` | 高程/地形栅格源（含编码、夸张系数） | `emap_id` | 删项目 → 级联；被章节/项目引用则置空 |
 | `custom_symbol` | 自定义图标库（icon / image / svg 的元数据） | `symbol_id` | 被元素占用时 **RESTRICT 拒绝删除**（旧实现会静默损坏图标） |
 | `asset` 新增 | 所有大体积二进制的唯一入口（图片/音频/视频/字体），按 `sha256` 去重 | `asset_id` | 孤儿回收是待办项（需定期清理或引用计数） |
 
@@ -88,7 +88,7 @@
 
 一个 `Chapter` 对象里的 7 类子集合，逐类一张表。
 
-| 表 | 对应 V1 字段 | 主键 | 关键字段 / 行为 |
+| 表 | 内容 | 主键 | 关键字段 / 行为 |
 |---|---|---|---|
 | `chapter` | `Chapter` 本体 | `chapter_id` | 绝对帧区间；标题样式/转场按 P3 留在 JSON 列 |
 | `camera_keyframe` | `camera[]` | `kf_id` | `frame` 是**到达时间**，`move_duration` 是起飞提前量；`follow_route_element_id` 删路线后 `SET NULL`（退化为固定视角） |
@@ -154,7 +154,7 @@
 | `overlay_block` | custom 类弹窗的内容块序列 | `block_id` | 只有需要逐块排序的弹窗才用 |
 | `person_block` | 人物卡片的内容块（头像/姓名/简介/引言/对白） | `block_id` | 5 种块类型，带版式配置 |
 
-### 组 10 · 应用配置 1 张 V1 已有
+### 组 10 · 应用配置 1 张
 
 | 表 | 职责 | 主键 | 关键点 |
 |---|---|---|---|
@@ -163,7 +163,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **23 张表 / 339 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，339 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **21 张表 / 325 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，325 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。
 
@@ -172,7 +172,7 @@
 #### 快速跳转
 
 - **组 1 · 合集与项目（含配置）**：`collection` · `project` · `project_config`
-- **组 2 · 资源与素材**：`base_map` · `elevation_map` · `custom_symbol` · `asset`
+- **组 2 · 资源与素材**：`custom_symbol` · `asset`
 - **组 3 · 章节与时间轴**：`chapter` · `camera_keyframe` · `screen_fx` · `chapter_fx` · `narration` · `narration_entry` · `music_track`
 - **组 4 · 标记类元素（Pin 工具）**：`element_marker`
 - **组 5 · 路线类元素（Route 工具）**：`element_route`
@@ -198,7 +198,7 @@
 
 #### project
 
-8 列 · 主键 `project_id`
+9 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -208,12 +208,13 @@
 | `collection_id` | TEXT | `NOT NULL` `FK → collection RESTRICT` | 所属合集（默认 default）；删合集时其下项目回落到默认合集 · 默认 `'default'` |
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后保存时间（毫秒时间戳） |
-| `active_base_map_id` | TEXT | `FK → base_map SET NULL` | 当前生效底图（删除该底图则置空） |
-| `active_elevation_map_id` | TEXT | `FK → elevation_map SET NULL` | 当前生效高程图（删除则置空） |
+| `projection` | TEXT | `NOT NULL` | 地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走） · 默认 `'mercator'` · `CHECK (projection IN ('mercator','globe'))` |
+| `active_base_map_id` | TEXT | — | 当前生效底图的配置 id（底图是代码内置常量，不入库） |
+| `active_elevation_map_id` | TEXT | — | 当前生效高程图的配置 id（同上） |
 
 #### project_config
 
-8 列 · 主键 `project_id`
+7 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -224,36 +225,8 @@
 | `resolution_h` | INTEGER | `NOT NULL` | 默认导出高度（px） · `CHECK (resolution_h > 0)` |
 | `resolution_label` | TEXT | `NOT NULL` | 分辨率标签（如 1080p） |
 | `default_easing` | TEXT | `NOT NULL` | 默认缓动类型 |
-| `projection` | TEXT | `NOT NULL` | 地图投影：mercator 平面 / globe 3D 球体 · 默认 `'mercator'` · `CHECK (projection IN ('mercator','globe'))` |
 
 ### 组 2 · 资源与素材
-
-#### base_map
-
-5 列 · 主键 `base_id`
-
-| 列 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `base_id` | TEXT | `PK` | 底图 id |
-| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
-| `name` | TEXT | `NOT NULL` | 底图名 |
-| `style` | TEXT | `NOT NULL` | MapLibre style URL 或内联样式 JSON |
-| `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
-
-#### elevation_map
-
-8 列 · 主键 `emap_id`
-
-| 列 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `emap_id` | TEXT | `PK` | 高程图 id |
-| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
-| `name` | TEXT | `NOT NULL` | 高程图名 |
-| `url` | TEXT | `NOT NULL` | 高程栅格瓦片 URL（terrain-rgb / terrarium） · 默认 `''` |
-| `encoding` | TEXT | — | 高程编码格式：mapbox / terrarium · `CHECK (encoding IS NULL OR encoding IN ('mapbox','terrarium'))` |
-| `exaggeration` | REAL | — | 地形夸张系数 |
-| `style` | TEXT | — | 可选的关联底图样式 |
-| `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
 #### custom_symbol
 
@@ -267,7 +240,7 @@
 | `ns` | TEXT | `NOT NULL` | 命名空间 / 自建库名（内置 lucide·react-icons 不进库；用户自建库写这里，默认 custom） · 默认 `'custom'` |
 | `kind` | TEXT | `NOT NULL` | 图标类型：icon 图标 / image 图片 / svg 矢量 / gif 动图 · `CHECK (kind IN ('icon','image','svg','gif'))` |
 | `asset_id` | TEXT | `FK → asset RESTRICT` | 图标二进制素材（V2 外置存储） |
-| `url` | TEXT | — | 兼容字段：外链地址或 data URL（旧数据） |
+| `url` | TEXT | — | 外链地址或 data URL |
 | `width` | INTEGER | `NOT NULL` | 原始宽度（px，统一规范为 64×64） · 默认 `64` · `CHECK (width > 0)` |
 | `height` | INTEGER | `NOT NULL` | 原始高度（px） · 默认 `64` · `CHECK (height > 0)` |
 | `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
@@ -306,19 +279,18 @@
 
 #### chapter
 
-11 列 · 主键 `chapter_id`
+10 列 · 主键 `chapter_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `chapter_id` | TEXT | `PK` | 章节 id |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `title` | TEXT | `NOT NULL` | 章节标题 · 默认 `''` |
-| `subtitle` | TEXT | — | 章节副标题 |
 | `order_index` | INTEGER | `NOT NULL` | 章节顺序（决定时间线页签次序） · 默认 `0` |
 | `start_frame` | INTEGER | `NOT NULL` | 起始帧（绝对帧） · `CHECK (start_frame >= 0)` |
 | `end_frame` | INTEGER | `NOT NULL` | 结束帧（绝对帧） |
-| `base_map_id` | TEXT | `FK → base_map SET NULL` | 本节覆盖底图（删除则置空，回落到项目底图） |
-| `elevation_map_id` | TEXT | `FK → elevation_map SET NULL` | 本节覆盖高程图（删除则置空） |
+| `base_map_id` | TEXT | — | 本节覆盖底图的配置 id（空则跟随项目） |
+| `elevation_map_id` | TEXT | — | 本节覆盖高程图的配置 id（空则跟随项目） |
 | `title_style_json` | TEXT | — | 标题样式配置块（字号/配色/预设） · `CHECK (title_style_json IS NULL OR json_valid(title_style_json))` |
 | `transition_json` | TEXT | — | 进入本节的转场（类型 + 时长） · `CHECK (transition_json IS NULL OR json_valid(transition_json))` |
 
@@ -472,7 +444,7 @@
 | `move_end_frame` | INTEGER | — | 移动图标到达帧 |
 | `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
 | `point_times_json` | TEXT | — | 各路径点到达帧数组（非匀速时使用） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
-| `label_json` | TEXT | — | 元素标签（原 element_label 内联）：{text,fontSize,color,position,bgColor,bgPadding,bgRadius,fontWeight} · `CHECK (label_json IS NULL OR json_valid(label_json))` |
+| `label_json` | TEXT | — | 元素标签：{text,fontSize,color,position,bgColor,bgPadding,bgRadius,fontWeight} · `CHECK (label_json IS NULL OR json_valid(label_json))` |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 | `lng` | REAL | `NOT NULL` | 经度（三类标记都落在单点） |
 | `lat` | REAL | `NOT NULL` | 纬度 |
@@ -482,7 +454,7 @@
 | `scale` | REAL | — | 等比缩放（0.3–3，同时影响点与标签字号） · `CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3))` |
 | `orientation` | TEXT | — | 朝向：faceCam 面向镜头 / flat 贴地（shape=model 不能贴地，CHECK 保证） · `CHECK (orientation IS NULL OR orientation IN ('faceCam','flat'))` |
 | `color` | TEXT | — | 可着色形态的主色（shape=model / gif 时禁用，CHECK 保证） |
-| `icon` | TEXT | — | 历史内置图标名（兼容旧数据；新逻辑走 icon_lib + icon_name） |
+| `icon` | TEXT | — | 内置图标名（图标形态以 icon_lib + icon_name 为准） |
 | `icon_size` | REAL | — | 自定义图标的显示尺寸（px） |
 | `asset_id` | TEXT | `FK → asset SET NULL` | 用户上传的图片 / GIF / 模型素材（删除素材则置空） |
 | `builtin_id` | TEXT | — | 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin |
@@ -659,9 +631,9 @@
 | `label_json` | TEXT | — | 元素标签（内联） · `CHECK (label_json IS NULL OR json_valid(label_json))` |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 | `display_json` | TEXT | `NOT NULL` | 显示配置：势力边界/地块边界/线宽/填充透明度/标签开关/标签朝向与缩放 · `CHECK (json_valid(display_json))` |
-| `countries_json` | TEXT | — | 势力数组（JSON 内联，原 territory_country 表）：[{countryId,name,color,ord}] · `CHECK (countries_json IS NULL OR json_valid(countries_json))` |
-| `plots_json` | TEXT | — | 地块数组（JSON 内联，原 territory_plot 表）：[{plotId,name,rings,ownerId,ord}]；ownerId 须能在 countries_json 中命中（由 v_check_territory_ref 校验） · `CHECK (plots_json IS NULL OR json_valid(plots_json))` |
-| `events_json` | TEXT | — | 兼并事件数组（JSON 内联，原 territory_event / event_plot 表）：[{eventId,frame,toCountryId,preset,duration,highlight,plotIds[],ord}]；toCountryId 同上 · `CHECK (events_json IS NULL OR json_valid(events_json))` |
+| `countries_json` | TEXT | — | 势力数组：[{countryId,name,color,ord}] · `CHECK (countries_json IS NULL OR json_valid(countries_json))` |
+| `plots_json` | TEXT | — | 地块数组：[{plotId,name,rings,ownerId,ord}]；ownerId 须能在 countries_json 中命中（由 v_check_territory_ref 校验） · `CHECK (plots_json IS NULL OR json_valid(plots_json))` |
+| `events_json` | TEXT | — | 兼并事件数组：[{eventId,frame,toCountryId,preset,duration,highlight,plotIds[],ord}]；toCountryId 同上 · `CHECK (events_json IS NULL OR json_valid(events_json))` |
 
 **表级约束**
 
@@ -716,7 +688,7 @@
 | `payload_json` | TEXT | — | 类型专属内容块（图表数据、时间线条目、对话列表等固定形状配置） · `CHECK (payload_json IS NULL OR json_valid(payload_json))` |
 | `person_layout_json` | TEXT | — | 人物卡版式：图片方位/对齐/间距/卡片宽/名言样式/叠图 · `CHECK (person_layout_json IS NULL OR json_valid(person_layout_json))` |
 | `audio_asset_id` | TEXT | `FK → asset SET NULL` | 背景语音（卡片可见时播放；导出混流待支持） |
-| `parent_overlay_id` | TEXT | `FK → overlay CASCADE` | 父弹窗（兼容旧 group 嵌套结构） |
+| `parent_overlay_id` | TEXT | `FK → overlay CASCADE` | 父弹窗（group 嵌套结构） |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 
 **表级约束**
@@ -871,9 +843,9 @@
 
       - 保存后跑一遍一致性自检视图（`v_check_dangling` / `v_check_territory_ref`），应全部返回 0 行
 
-#### 注意：这是设计稿，还没落地到代码
+#### 注意：本文是设计稿
 
-当前 `electron/main.mjs` 与 `src/stores/db.ts` 仍然是 V1 的两张表结构（`projects.data` 一列 JSON）。落地需要新增承载「多表 ↔ `MapVideoProject`」双向映射的模块，并由它保持**导出格式不变**（仍输出 V1 结构的 JSON），这样老存档与网页端零改动。具体迁移步骤与 5 个未决问题见 `docs/db-redesign.html` 第七节。
+本文描述的是**目标结构**；`electron/main.mjs` 与 `src/stores/db.ts` 目前是「项目 JSON + 合集 + 素材」的简化实现，尚未按本设计的多表结构落地。落地需要一个承载「多表 ↔ `MapVideoProject`」双向映射的模块。未决问题见 `docs/db-redesign.md` 末节。
 
 ## 附：3 个视图与 6 个触发器是什么
 

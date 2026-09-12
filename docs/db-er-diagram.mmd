@@ -11,7 +11,8 @@ erDiagram
     text project_id PK
     text collection_id FK
     text name
-    text active_base_map_id FK
+    text projection
+    text active_base_map_id
   }
   PROJECT_CONFIG {
     text project_id PK
@@ -89,8 +90,6 @@ erDiagram
   COLLECTION ||--o{ PROJECT : "1:N 项目"
   PROJECT ||--|| PROJECT_CONFIG : "1:1 配置"
   PROJECT ||--o{ CHAPTER : "1:N 章节"
-  PROJECT ||--o{ BASE_MAP : "1:N 底图"
-  PROJECT ||--o{ ELEVATION_MAP : "1:N 高程"
   PROJECT ||--o{ CUSTOM_SYMBOL : "1:N 自定义符号"
   PROJECT ||--o{ ASSET : "1:N 素材"
   CHAPTER ||--o{ ELEMENT_MARKER : "1:N 标记(Pin)"

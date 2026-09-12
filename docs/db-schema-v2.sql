@@ -4,7 +4,7 @@
 -- 命名约定：表名与 TS 实体同名并转 snake_case（elementMarker ↔ element_marker），
 --          主键统一 <实体>_id，时间统一 *_frame（帧）/ *_at（epoch ms）
 -- 字符集：UTF-8；时间单位：帧（整数），基准帧率见 project.default_fps
--- 规模：23 张表 / 3 视图 / 6 触发器
+-- 规模：21 张表 / 3 视图 / 6 触发器
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -51,9 +51,13 @@ CREATE TABLE IF NOT EXISTS project (
   created_at            INTEGER NOT NULL,
   updated_at            INTEGER NOT NULL,
 
-  -- 当前生效的底图 / 高程图（循环外键，见文件末「已知约束」说明）
-  active_base_map_id      TEXT REFERENCES base_map(base_id)      ON DELETE SET NULL,
-  active_elevation_map_id TEXT REFERENCES elevation_map(emap_id) ON DELETE SET NULL
+  -- 地图投影：渲染方式，属于项目本身（随项目走，与内容类配置分离）
+  projection            TEXT    NOT NULL DEFAULT 'mercator'
+                        CHECK (projection IN ('mercator','globe')),
+
+  -- 当前生效的底图 / 高程图：存内置配置的 id 字符串（如 'osm' / 'none'），配置本身在代码里
+  active_base_map_id      TEXT,
+  active_elevation_map_id TEXT
 );
 
 -- 项目级配置（GlobalConfig）：与 project 1:1，主键即外键。
@@ -66,35 +70,18 @@ CREATE TABLE IF NOT EXISTS project_config (
   resolution_w          INTEGER NOT NULL CHECK (resolution_w > 0),
   resolution_h          INTEGER NOT NULL CHECK (resolution_h > 0),
   resolution_label      TEXT    NOT NULL,
-  default_easing        TEXT    NOT NULL,
-  projection            TEXT    NOT NULL DEFAULT 'mercator'
-                        CHECK (projection IN ('mercator','globe'))
+  default_easing        TEXT    NOT NULL
 );
 
 -- -----------------------------------------------------------------------------
 -- 2. 资源与素材
 -- -----------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS base_map (
-  base_id    TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  name       TEXT NOT NULL,
-  style      TEXT NOT NULL,            -- MapLibre style URL 或内联样式 JSON
-  ord        INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS ix_base_map_project ON base_map(project_id, ord);
-
-CREATE TABLE IF NOT EXISTS elevation_map (
-  emap_id      TEXT PRIMARY KEY,
-  project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  name         TEXT NOT NULL,
-  url          TEXT NOT NULL DEFAULT '',
-  encoding     TEXT CHECK (encoding IS NULL OR encoding IN ('mapbox','terrarium')),
-  exaggeration REAL,
-  style        TEXT,
-  ord          INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS ix_elevation_map_project ON elevation_map(project_id, ord);
+-- 【底图 / 高程图不入库】
+-- 它们是代码内置的常量配置（BUILTIN_BASE_MAPS / BUILTIN_ELEVATION_MAPS），
+-- 项目与章节只保存所选配置的 id 字符串（project.active_base_map_id / chapter.base_map_id）。
+-- 取舍：省掉两张表与两处外键（连带消除原本的循环外键问题）；
+--       代价是底图 / 高程图配置不可由用户在运行时增删改。
 
 -- 用户图标库：图标 / 图片 / SVG / 动图；ns 为命名空间，支持「可扩展图标库」
 -- （内置 lucide / react-icons 不进库，用 element_marker.icon_lib + icon_name 引用；
@@ -149,12 +136,11 @@ CREATE TABLE IF NOT EXISTS chapter (
   chapter_id     TEXT PRIMARY KEY,
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   title          TEXT NOT NULL DEFAULT '',
-  subtitle       TEXT,
   order_index    INTEGER NOT NULL DEFAULT 0,
   start_frame    INTEGER NOT NULL CHECK (start_frame >= 0),
   end_frame      INTEGER NOT NULL,
-  base_map_id    TEXT REFERENCES base_map(base_id)          ON DELETE SET NULL,
-  elevation_map_id TEXT REFERENCES elevation_map(emap_id)   ON DELETE SET NULL,
+  base_map_id      TEXT,              -- 章节级覆盖：存内置底图 id，空则跟随项目
+  elevation_map_id TEXT,              -- 同上
   title_style_json TEXT CHECK (title_style_json IS NULL OR json_valid(title_style_json)),
   transition_json  TEXT CHECK (transition_json  IS NULL OR json_valid(transition_json)),
   CHECK (end_frame > start_frame)
@@ -674,11 +660,8 @@ CREATE INDEX IF NOT EXISTS ix_music_audio_asset     ON music_track(audio_asset_i
 --    （element_id 是弱引用、无 FK，索引 ix_element_kf 见第 6 节）
 
 -- ③ 底图 / 高程图 / 合集被引用（删父行走 SET NULL / RESTRICT，低频但同样应避免扫描）
-CREATE INDEX IF NOT EXISTS ix_chapter_base_map     ON chapter(base_map_id)          WHERE base_map_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ix_chapter_emap         ON chapter(elevation_map_id)     WHERE elevation_map_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ix_project_active_emap  ON project(active_elevation_map_id) WHERE active_elevation_map_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
--- 注：project 只有一行，active_base_map_id 无需索引（全表扫描成本为常数 1 行）
+-- 注：底图 / 高程图列已不是外键（配置在代码里），无需外键支撑索引
 
 -- =============================================================================
 -- 10. 完整性触发器
@@ -823,9 +806,8 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
 -- =============================================================================
 -- 已知约束与设计取舍
 -- =============================================================================
--- 1) project.active_base_map_id 与 base_map.project_id 互为循环外键。
---    写入顺序：先插 project（active 置 NULL）→ 插 base_map → UPDATE project 回填。
---    删除走 ON DELETE SET NULL，不会形成删除死锁。
+-- 1) 底图 / 高程图不入库：配置是代码内置常量，project / chapter 只存 id 字符串。
+--    理由：配置数量固定、无需用户自定义，入库只会多出两张表与两处外键（还曾形成循环）。
 -- 2) 【本版最大取舍】取消 element 基表后，跨表弱引用失去数据库级外键：
 --    · connector.from/to（可指向任意类别元素）→ 靠 11.2 清理触发器 + 12.2 自检视图
 --    · element_keyframe.element_id        → 同上
