@@ -368,10 +368,20 @@ export interface MilitarySymbolElement extends MapElementBase {
   coordinates: [number, number];
   /** 方向箭头角度（0-359 度；未定义 = 不画箭头）——milsymbol direction */
   direction?: number;
-  /** 数量标注（军标文本字段 A；空 = 不显示）——milsymbol quantity */
+  /** 数量（标准字段 A；空 = 不显示）——milsymbol quantity */
   quantity?: string;
-  /** 唯一编号（军标文本字段 T）——milsymbol uniqueDesignation */
+  /** 唯一编号（标准字段 T）——milsymbol uniqueDesignation */
   uniqueDesignation?: string;
+  /** 装备/单位类型（标准字段 V）——milsymbol type（元素 type 为判别字段，故改名） */
+  equipmentType?: string;
+  /** 附加信息（标准字段 D）——milsymbol additionalInformation */
+  additionalInformation?: string;
+  /** 参谋备注（标准字段 C）——milsymbol staffComments */
+  staffComments?: string;
+  /** 日期时间组（标准字段 W）——milsymbol dtg */
+  dtg?: string;
+  /** 位置标注（标准字段 Y）——milsymbol location */
+  locationText?: string;
   /** 是否绘制外框（默认 true）——milsymbol frame */
   frame?: boolean;
   /** 是否填充阵营色（默认 true）——milsymbol fill */

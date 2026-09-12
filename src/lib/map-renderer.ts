@@ -2913,8 +2913,8 @@ const milIconPending = new Set<string>();
 
 function renderMilitarySymbol(map: maplibregl.Map, element: MilitarySymbolElement) {
   const sourceId = `mil-${element.id}`;
-  // 图标缓存键必须包含全部影响图面的属性（含框架/填色/方向箭头/数量/编号），否则切换后不刷新
-  const iconId = `mil-icon-${element.sidc}|q:${element.quantity || ''}|d:${element.direction ?? ''}|f:${element.frame !== false}|u:${element.fill !== false}|t:${element.uniqueDesignation || ''}`;
+  // 图标缓存键必须包含全部影响图面的属性（标准文本字段 / 箭头 / 框架 / 填色），否则切换后不刷新
+  const iconId = `mil-icon-${element.sidc}|q:${element.quantity || ''}|d:${element.direction ?? ''}|f:${element.frame !== false}|u:${element.fill !== false}|t:${element.uniqueDesignation || ''}|v:${element.equipmentType || ''}|c:${element.staffComments || ''}|i:${element.additionalInformation || ''}|w:${element.dtg || ''}|y:${element.locationText || ''}`;
   const layerId = `mil-layer-${element.id}`;
   // 注意：军标不渲染界面标签（element.label / name）—— 标准符号自带文字修饰，
   // 再叠加标签会与规范图面冲突（产品约定：军标无标签）。
@@ -2954,6 +2954,11 @@ function ensureMilIcon(map: maplibregl.Map, iconId: string, element: MilitarySym
       quantity: element.quantity || undefined,
       direction: element.direction,
       uniqueDesignation: element.uniqueDesignation || undefined,
+      type: element.equipmentType || undefined,
+      staffComments: element.staffComments || undefined,
+      additionalInformation: element.additionalInformation || undefined,
+      dtg: element.dtg || undefined,
+      location: element.locationText || undefined,
     });
     const url = sym.toDataURL();
     const img = new Image();

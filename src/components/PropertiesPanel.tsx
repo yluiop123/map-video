@@ -453,7 +453,9 @@ function PinStyleChooser({ element, patch }: {
       patch({
         type: 'military_symbol', coordinates: coords,
         sidc: (element as MilitarySymbolElement).sidc || milSymSidc('F', 'UCI---'),
-        direction: undefined, quantity: undefined, uniqueDesignation: undefined, frame: undefined, fill: undefined,
+        direction: undefined, quantity: undefined, uniqueDesignation: undefined, equipmentType: undefined,
+        additionalInformation: undefined, staffComments: undefined, dtg: undefined, locationText: undefined,
+        frame: undefined, fill: undefined,
         color: undefined, label: undefined, shape: undefined, builtinId: undefined,
         assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined, emoji: undefined,
       } as unknown as Partial<MapElement>);
@@ -1091,13 +1093,59 @@ function MilSymSettings({ element, patch }: {
             <span className="text-xs w-8 text-right shrink-0">{Number(element.quantity || 0) || '—'}</span>
           </div>
         </Field>
-        <Field label={t('唯一编号', 'Unique designation')}>
+        <Field label={t('唯一编号（T）', 'Unique designation (T)')}>
           <input
             type="text"
             value={element.uniqueDesignation || ''}
             onChange={(e) => patch({ uniqueDesignation: e.target.value || undefined } as Partial<MapElement>)}
             className="input"
             placeholder="T-72 / 3rd Bn"
+          />
+        </Field>
+        <Field label={t('装备/单位类型（V）', 'Equipment type (V)')}>
+          <input
+            type="text"
+            value={element.equipmentType || ''}
+            onChange={(e) => patch({ equipmentType: e.target.value || undefined } as Partial<MapElement>)}
+            className="input"
+            placeholder="MACHINE GUN"
+          />
+        </Field>
+        <Field label={t('附加信息（D）', 'Additional info (D)')}>
+          <input
+            type="text"
+            value={element.additionalInformation || ''}
+            onChange={(e) => patch({ additionalInformation: e.target.value || undefined } as Partial<MapElement>)}
+            className="input"
+          />
+        </Field>
+      </Section>
+
+      <Section title={t('备注（标准字段）', 'Remarks (standard fields)')}>
+        <Field label={t('参谋备注（C）', 'Staff comments (C)')}>
+          <input
+            type="text"
+            value={element.staffComments || ''}
+            onChange={(e) => patch({ staffComments: e.target.value || undefined } as Partial<MapElement>)}
+            className="input"
+          />
+        </Field>
+        <Field label={t('日期时间组（W）', 'Date-time group (W)')}>
+          <input
+            type="text"
+            value={element.dtg || ''}
+            onChange={(e) => patch({ dtg: e.target.value || undefined } as Partial<MapElement>)}
+            className="input"
+            placeholder="30140000ZSEP97"
+          />
+        </Field>
+        <Field label={t('位置标注（Y）', 'Location (Y)')}>
+          <input
+            type="text"
+            value={element.locationText || ''}
+            onChange={(e) => patch({ locationText: e.target.value || undefined } as Partial<MapElement>)}
+            className="input"
+            placeholder="0900000.0E570306.0N"
           />
         </Field>
       </Section>
