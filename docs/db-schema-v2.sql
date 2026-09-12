@@ -5,7 +5,7 @@
 --          主键统一 <实体>_id，时间统一 *_sec（秒，REAL）/ *_at（epoch ms，仅审计字段用）
 -- 字符集：UTF-8；时间单位：**秒**（REAL，存用户输入的原值）；
 --          渲染 / 导出时按 project_config.default_fps 换算为帧（帧是派生量，不入库）
--- 规模：19 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
+-- 规模：18 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -217,7 +217,6 @@ CREATE TABLE IF NOT EXISTS element_marker (
   scale          REAL CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3)),
   orientation    TEXT CHECK (orientation IS NULL OR orientation IN ('faceCam','flat')),
   color          TEXT,                                                  -- 可着色形态的主色（model / gif 禁用）
-  icon           TEXT,                                                  -- 历史内置图标名（兼容旧数据）
   icon_size      REAL,
   asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,    -- 用户上传的图片 / GIF / 模型
   builtin_id     TEXT,                                                  -- 内置资源 id（打包进应用、不入库）：'image:flag-red' / 'gif:radar' / 'model:drone' / 'icon:lucide:MapPin'
@@ -507,23 +506,8 @@ CREATE INDEX IF NOT EXISTS ix_person_block ON person_block(overlay_id, ord);
 -- -----------------------------------------------------------------------------
 -- 7. 章节级特效 / 字幕 / 配乐
 -- -----------------------------------------------------------------------------
-
--- ChapterEffect 判别联合：三个分支字段并入一张表，靠 type 约束分支必填项
-CREATE TABLE IF NOT EXISTS chapter_fx (
-  fx_id      TEXT PRIMARY KEY,
-  chapter_id TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
-  type       TEXT NOT NULL CHECK (type IN ('cursor_track','focus_glow','scan_line')),
-  path_json  TEXT CHECK (path_json IS NULL OR json_valid(path_json)),
-  color      TEXT,
-  frame_step INTEGER,
-  center_lng REAL,
-  center_lat REAL,
-  radius     REAL,
-  direction  TEXT CHECK (direction IS NULL OR direction IN ('horizontal','vertical')),
-  ord        INTEGER NOT NULL DEFAULT 0,
-  CHECK (type IS NOT 'scan_line' OR direction IS NOT NULL)
-);
-CREATE INDEX IF NOT EXISTS ix_chapter_fx ON chapter_fx(chapter_id, ord);
+-- 注：原 chapter_fx（游标轨迹/聚焦辉光/扫描线）已删除 —— 该功能从未实现渲染与 UI，
+--     属设计遗留；将来要做类似效果时按实际需求重新设计。
 
 -- 特效窗口：天气 / 画面特效（屏幕空间），两分支字段并存
 CREATE TABLE IF NOT EXISTS screen_fx (

@@ -3,7 +3,7 @@ import { storage } from '../lib/storage';
 import type {
   MapVideoProject, Chapter, MapElement, GlobalConfig, BaseMapConfig,
   ElevationMapConfig, OverlayItem, CameraKeyframe, TransitionConfig,
-  ChapterEffect, ProjectExport, ScreenFxItem, ExportedAsset,
+  ProjectExport, ScreenFxItem, ExportedAsset,
   NarrationEntry, NarrationStyle, MusicTrack, ConnectorElement
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeTitleStyle, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
@@ -121,7 +121,6 @@ function createDefaultChapter(
     elements: [],
     camera: [{ frame: startFrame, center: [104.0, 35.0], zoom: 4 }],
     overlays: [],
-    effects: [],
     fx: [],
     narration: { entries: [], style: defaultNarrationStyle() },
     music: [],
@@ -211,10 +210,6 @@ interface ProjectState {
 
   // 转场操作
   setChapterTransition: (chapterId: string, transition: TransitionConfig | undefined) => void;
-
-  // 特效操作
-  addChapterEffect: (chapterId: string, effect: ChapterEffect) => void;
-  removeChapterEffect: (chapterId: string, effectIndex: number) => void;
 
   // 底图操作
   setActiveBaseMap: (id: string) => void;
@@ -637,20 +632,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       commit();
       set((state) => state.project
         ? { project: { ...state.project, chapters: state.project.chapters.map((c) => c.id === chapterId ? { ...c, transition } : c) } }
-        : state);
-    },
-
-    addChapterEffect: (chapterId: string, effect: ChapterEffect) => {
-      commit();
-      set((state) => state.project
-        ? { project: { ...state.project, chapters: state.project.chapters.map((c) => c.id === chapterId ? { ...c, effects: [...c.effects, effect] } : c) } }
-        : state);
-    },
-
-    removeChapterEffect: (chapterId: string, effectIndex: number) => {
-      commit();
-      set((state) => state.project
-        ? { project: { ...state.project, chapters: state.project.chapters.map((c) => c.id === chapterId ? { ...c, effects: c.effects.filter((_, i) => i !== effectIndex) } : c) } }
         : state);
     },
 

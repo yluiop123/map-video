@@ -542,7 +542,7 @@ function PinResourcePicker({ element, style, patch }: {
   }
 
   const list = style === 'image' ? BUILTIN_IMAGES : style === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
-  const resettable = { builtinId: undefined, assetId: undefined, symbolId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined } as Partial<MapElement>;
+  const resettable = { builtinId: undefined, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined } as Partial<MapElement>;
   const isDot = !element.shape || element.shape === 'circle';
   return (
     <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">
@@ -692,13 +692,13 @@ function MoveResourcePicker({ mi, patch }: {
     return (
       <IconGrid
         activeName={mi.iconName}
-        onPick={(name) => set({ shape: 'icon', iconLib: 'lucide', iconName: name, builtinId: undefined, assetId: undefined, symbolId: undefined })}
+        onPick={(name) => set({ shape: 'icon', iconLib: 'lucide', iconName: name, builtinId: undefined, assetId: undefined })}
       />
     );
   }
 
   const list = shape === 'image' ? BUILTIN_IMAGES : shape === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
-  const miResettable = { builtinId: undefined, assetId: undefined, symbolId: undefined, iconLib: undefined, iconName: undefined };
+  const miResettable = { builtinId: undefined, assetId: undefined, iconLib: undefined, iconName: undefined };
   const isDotMi = !mi.shape || mi.shape === 'dot';
   return (
     <div className="mt-2 rounded-md border border-white/10 bg-white/[0.02] p-2">

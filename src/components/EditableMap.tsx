@@ -5,7 +5,7 @@ import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import * as turf from '@turf/turf';
 import {
-  renderElements, setCustomSymbols, setRenderFps, setVisualReadyHandler,
+  renderElements, setRenderFps, setVisualReadyHandler,
   buildArrowGeometry, buildSelectionFeature, pixelsToDegrees, rotatePt, resolveFollowCam, resolveOrbitCam,
 } from '../lib/map-renderer';
 import { buildDoubleArrow, buildGatheringPlace } from '../lib/military-plots';
@@ -61,9 +61,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
   const [viewSaved, setViewSaved] = useState(false);
   const [viewBarHidden, setViewBarHidden] = useState(false);
 
-  // 注入自定义符号表（供 renderer 加载上传图标）+ 渲染帧率（GIF 逐帧 / 模型自转基准）
+  // 渲染帧率注入（GIF 逐帧 / 模型自转基准）
   useEffect(() => {
-    setCustomSymbols([]);   // 自定义符号库当前无 UI 入口（全局素材库规划中），注册空集
     setRenderFps(project.globalConfig?.defaultFPS ?? 30);
   }, [project.globalConfig?.defaultFPS]);
 

@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：19 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：18 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -115,13 +115,12 @@
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（19 张表，按结构分 10 组）
+### 2.2 实体清单（18 张表，按结构分 10 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
 | **1. 合集与项目** | `collection`、`project`、`project_config` | 合集是项目之上的分组；`project` 只留身份 / 归属 / 审计与生效底图；`project_config` 承载 GlobalConfig（1:1，主键即外键） |
 | **2. 资源与素材** | `asset` | 唯一素材存储，承担 P4 外置存储；按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重）；底图 / 高程图不入库（代码内置常量，项目只存 id，但**地形夸张覆盖值**存 `project_config`） |
-| **3. 章节与时间轴** | `chapter`、`camera_keyframe`、`screen_fx`、`chapter_fx`、`narration`、`narration_entry`、`music_track` | 章节的 7 类子集合，逐类一张表 |
 | **4. 标记类元素** | `element_marker` | type ∈ point / flag / military_symbol |
 | **5. 路线类元素** | `element_route` | type ∈ line / moving_point / connector |
 | **6. 形状类元素** | `element_shape` | type ∈ polygon / arrow / double_arrow / gathering / encirclement |
@@ -300,7 +299,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执行并跑完完整性用例：
 
-- 19 表创建成功
+- 18 表创建成功
 - 3 视图
 - 0 触发器（不使用触发器）
 - 17/17 用例通过

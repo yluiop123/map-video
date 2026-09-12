@@ -35,7 +35,7 @@ const MARKER = 'FIELD-DICT';
 const GROUPS = [
   ['组 1 · 合集与项目（含配置）', ['collection', 'project', 'project_config']],
   ['组 2 · 资源与素材', ['asset']],
-  ['组 3 · 章节与时间轴', ['chapter', 'camera_keyframe', 'screen_fx', 'chapter_fx', 'narration', 'narration_entry', 'music_track']],
+  ['组 3 · 章节与时间轴', ['chapter', 'camera_keyframe', 'screen_fx', 'narration', 'narration_entry', 'music_track']],
   ['组 4 · 标记类元素（Pin 工具）', ['element_marker']],
   ['组 5 · 路线类元素（Route 工具）', ['element_route']],
   ['组 6 · 形状类元素（Shape 工具）', ['element_shape']],
@@ -68,7 +68,6 @@ const TABLE_FRONTEND = {
   chapter: { role: '章节本体：时间轴 / 标题样式 / 转场 / 本章底图·高程·投影', fe: '顶部章节页签 + 时间轴章节条（TimelineEditor.tsx）；底图/高程/3D 在左下角芯片（MapStyleChip.tsx）' },
   camera_keyframe: { role: '视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）', fe: '「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）' },
   screen_fx: { role: '屏幕空间特效窗口（天气 / 画面叠加，非地图元素）', fe: '右侧「特效」面板（FxPanelBody.tsx）+ 时间轴特效轨道' },
-  chapter_fx: { role: '章节级特效（游标轨迹 / 聚焦辉光 / 扫描线预设）', fe: '右侧「特效」面板（FxPanelBody.tsx）' },
   narration: { role: '字幕 / 配音档（样式部分，1:1）', fe: '右侧「字幕」面板（FxPanelBody.tsx）' },
   narration_entry: { role: '字幕条：文本 + 配音音频 + 显示时长', fe: '时间轴「🎙 配音」轨道（TimelineEditor.tsx）+ 字幕面板逐条编辑 / TTS / 导入 SRT' },
   music_track: { role: '背景音乐段（可多段、循环、淡入淡出）', fe: '时间轴「BGM」轨道（TimelineEditor.tsx）+ 音乐面板上传' },

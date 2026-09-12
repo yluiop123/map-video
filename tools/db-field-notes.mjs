@@ -112,20 +112,6 @@ export default {
     ord: '同章节内排序',
   },
 
-  chapter_fx: {
-    fx_id: '特效 id',
-    chapter_id: '所属章节',
-    type: '特效类型：cursor_track 指针轨迹 / focus_glow 区域渐显 / scan_line 扫描线',
-    path_json: '指针轨迹的地理路径（cursor_track 用）',
-    color: '特效颜色',
-    frame_step: '推进步长（帧）',
-    center_lng: '中心经度（focus_glow 用）',
-    center_lat: '中心纬度（focus_glow 用）',
-    radius: '半径（focus_glow 用）',
-    direction: '扫描方向：horizontal 横向 / vertical 纵向（scan_line 用）',
-    ord: '同章节内排序',
-  },
-
   narration: {
     chapter_id: '章节 id（本章一份配音档，1:1）',
     style_json: '字幕样式：字号/颜色/描边/底色/距底位置/最大宽度',
@@ -185,7 +171,6 @@ export default {
     lng: '经度（三类标记都落在单点）',
     lat: '纬度',
     rotation: '贴地旋转角（0–360 度）',
-    icon: '内置图标名（图标形态以 icon_lib + icon_name 为准）',
     icon_size: '自定义图标的显示尺寸（px）',
     color: '可着色形态的主色（shape=model / gif 时禁用，CHECK 保证）',
     shape: '点呈现形态（9 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库',

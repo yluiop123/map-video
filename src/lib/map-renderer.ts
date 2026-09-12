@@ -34,23 +34,7 @@ export function setRenderFps(fps: number): void {
   renderFps = fps > 0 ? fps : 30;
 }
 
-// ========== 自定义符号注册表 ==========
-
-/** 自定义符号（全局素材库中 kind='icon' 的条目；当前无 UI 入口，注册空集） */
-interface CustomSymbolLike { id: string; name: string; type: string; url: string; width: number; height: number }
-let customSymbolsRegistry: CustomSymbolLike[] = [];
-export function setCustomSymbols(list: CustomSymbolLike[]): void {
-  customSymbolsRegistry = list || [];
-}
-export function getCustomSymbols(): CustomSymbolLike[] {
-  return customSymbolsRegistry;
-}
-
 // ========== 主渲染函数 ==========
-
-export interface RenderOpts {
-  customSymbols?: CustomSymbolLike[];
-}
 
 // 记录每个 map 上已被渲染的元素 ID 与类型签名（类型切换时需整体重建图层）
 const renderedByMap = new WeakMap<maplibregl.Map, Set<string>>();
@@ -733,7 +717,7 @@ function ensureModelImage(
 
 /**
  * 路线/箭头「显示标记」的资源来源解析（与 point 的 resolvePinVisualSource 同构；
- * 优先级：图标库 → 内置资源 → 上传素材 → 旧上传图标 symbolId）。
+ * 优先级：图标库 → 内置资源 → 上传素材）。
  */
 function moveIconVisualSrc(mi: LineElement['moveIcon']): ReturnType<typeof resolvePinVisualSource> {
   if (!mi) return { type: 'none' };
@@ -741,10 +725,6 @@ function moveIconVisualSrc(mi: LineElement['moveIcon']): ReturnType<typeof resol
   const builtin = getBuiltinAsset(mi.builtinId);
   if (builtin) return { type: 'builtin', asset: builtin };
   if (mi.assetId) return { type: 'asset', assetId: mi.assetId };
-  if (mi.symbolId) {
-    const sym = customSymbolsRegistry.find((x) => x.id === mi.symbolId);
-    if (sym?.url) return { type: 'legacy-url', url: sym.url };
-  }
   return { type: 'none' };
 }
 
@@ -1183,7 +1163,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         : mShape === 'flag'
           ? `pt-mflag-${hashStr((mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
           : (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon')
-            ? `pt-mvis-${hashStr(mShape + (mi?.builtinId || '') + (mi?.assetId || '') + (mi?.symbolId || '') + (mi?.iconLib || '') + (mi?.iconName || '') + mColor)}`
+            ? `pt-mvis-${hashStr(mShape + (mi?.builtinId || '') + (mi?.assetId || '') + (mi?.iconLib || '') + (mi?.iconName || '') + mColor)}`
             : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
   const inDisplay = frame >= element.startFrame && frame <= element.endFrame;
   const beforeAnim = inDisplay && hasAnim && frame < animStart;
@@ -1214,7 +1194,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       else if (mShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
       else if (mShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
       else if (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon') {
-        // 资源形态：与标记共用资源管线（内置 / 上传素材 / 图标库；symbolId 为旧上传图标入口）
+        // 资源形态：与标记共用资源管线（内置 / 上传素材 / 图标库）
         const vsrc = moveIconVisualSrc(mi);
         if (mShape === 'gif') {
           ensureGifFrame(map, { startFrame: element.startFrame }, mImgId, `gif:${vsrc.type === 'asset' ? vsrc.assetId : vsrc.type === 'builtin' ? vsrc.asset.id : element.id}`, vsrc, frame, mColor);
@@ -2598,7 +2578,7 @@ setFlyRibbon(map, `${element.id}|astroke`, {
     const mLabelColor = mi?.labelColor || '#000000';
     const mLabelBg = (mi?.labelBg || '#FFFFFF') !== 'transparent' && (mi?.labelBg || '#FFFFFF') !== 'rgba(0,0,0,0)' ? (mi?.labelBg || '#FFFFFF') : 'rgba(0,0,0,0)';
     const mEffShape = (mShape === 'bubble' || mShape === 'text') && !mLabelText ? 'dot' : mShape;
-    const mVisKey = `${mi?.builtinId || ''}|${mi?.assetId || ''}|${mi?.symbolId || ''}|${mi?.iconLib || ''}:${mi?.iconName || ''}`;
+    const mVisKey = `${mi?.builtinId || ''}|${mi?.assetId || ''}|${mi?.iconLib || ''}:${mi?.iconName || ''}`;
     const mImgId = mEffShape === 'emoji'
       ? 'pt-emoji-' + Array.from(String(mi?.emoji || '📍')).map((c) => (c as string).codePointAt(0)!.toString(16)).join('-')
       : mEffShape === 'bubble'

@@ -76,7 +76,6 @@ export interface Chapter {
   elements: MapElement[];
   camera?: CameraKeyframe[];
   overlays: OverlayItem[];
-  effects: ChapterEffect[];
   /** 特效窗口：天气/画面特效层（屏幕空间，非地图元素），startFrame/endFrame 为绝对帧 */
   fx?: ScreenFxItem[];
   /** 章节标题样式（导出与预览共用渲染）；缺省用默认样式 */
@@ -148,8 +147,6 @@ export interface MapElementBase {
     /** 旗帜文字 */
     flagText?: string;
     flagColor?: string;
-    /** 自定义图标 symbolId（上传入口，保留兼容） */
-    symbolId?: string;
     /** 资源来源（与标记的 element.builtinId/assetId/iconLib+iconName 语义一致） */
     builtinId?: string;
     assetId?: string;
@@ -211,7 +208,6 @@ export interface VisualMeta {
 export interface PointElement extends MapElementBase {
   type: 'point';
   coordinates: [number, number];
-  icon?: string;
   iconSize?: number;
   color?: string;
   label?: LabelConfig;
@@ -815,27 +811,6 @@ export type AnimationPreset =
   | 'slideInLeft' | 'slideInRight'
   | 'slideInTop' | 'slideInBottom'
   | 'scaleIn' | 'scaleOut';
-
-// ========== 章节特效 ==========
-
-export type ChapterEffect =
-  | {
-      type: 'cursor_track';      // 鼠标指针轨迹（引导观众视线）
-      path: [number, number][];  // 地理路径（可选）
-      color: string;
-      frameStep: number;
-    }
-  | {
-      type: 'focus_glow';        // 区域渐显高亮
-      center: [number, number];
-      radius: number;
-      color: string;
-    }
-  | {
-      type: 'scan_line';         // 扫描线
-      direction: 'horizontal' | 'vertical';
-      color: string;
-    };
 
 // ========== 特效窗口：天气 / 画面特效（屏幕空间层） ==========
 

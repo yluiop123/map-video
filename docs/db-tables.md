@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 19 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 18 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：19 张表 · 4 张元素类别宽表 · 3 个视图 · 0 个触发器 · 24 个外键（全部有索引）
+- **规模**：18 张表 · 4 张元素类别宽表 · 3 个视图 · 0 个触发器 · 23 个外键（全部有索引）
 
 **目录**
 
-- 一、19 张表的构成与分流规则
+- 一、18 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、19 张表逐表速查（按 10 组）
+- 三、18 张表逐表速查（按 10 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图，以及为什么没有触发器
 
-## 一、19 张表的构成与分流规则
+## 一、18 张表的构成与分流规则
 
-**19 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**18 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,7 +28,7 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`title_style_json`、`transition_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 19 张表的构成
+#### 一句话理解 18 张表的构成
 
 - **4 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
 - **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
@@ -55,7 +55,6 @@
 | `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：1:1 且可选，跟随元素整体读写 |
 | `chapters[].camera[]` | `camera_keyframe` | P2；`followRoute.routeElementId` 变成外键（删路线 → 退化为固定视角） |
 | `chapters[].overlays[]` | `overlay` + `overlay_block` + `person_block` | P2：本体一张，两类内容块各一张 |
-| `chapters[].effects[]`（`ChapterEffect`） | `chapter_fx` | P2 |
 | `chapters[].fx[]`（`ScreenFxItem`） | `screen_fx` | P2：屏幕空间特效窗口，与地图元素区分 |
 | `chapters[].narration`（`NarrationTrack`） | `narration` + `narration_entry` | P2：档（样式/1:1）+ 条目（1:N） |
 | `chapters[].music[]` | `music_track` | P2；音频本体走 `asset` |
@@ -66,7 +65,7 @@
 > 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目与章节只保存所选配置的 id 字符串（`project.active_base_map_id` / `chapter.base_map_id`）。
 > **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project_config.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、19 张表逐表速查（按 10 组）
+## 三、18 张表逐表速查（按 10 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
@@ -93,7 +92,6 @@
 | `chapter` | `Chapter` 本体 | `chapter_id` | 起止时间（`start_sec` / `end_sec`，秒）；标题样式/转场按 P3 留在 JSON 列 | 顶部章节页签 + 时间轴章节条（`TimelineEditor.tsx`）；底图/高程/3D 在底图芯片（`MapStyleChip.tsx`） |
 | `camera_keyframe` | `camera[]` | `kf_id` | `frame` 是**到达时间**，`move_duration` 是起飞提前量；`follow_route_element_id` 删路线后 `SET NULL`（退化为固定视角） | 「视角」面板（`KeyframePanel.tsx` / `CameraEditor.tsx`） |
 | `screen_fx` | `fx[]` | `fx_id` | 屏幕空间特效窗口（天气/画面），与地图元素分离 | 「特效」面板（`FxPanelBody.tsx`）+ 时间轴特效轨道 |
-| `chapter_fx` | `effects[]` | `fx_id` | 章节级特效（动画预设等） | 「特效」面板（`FxPanelBody.tsx`） |
 | `narration` | `narration` 的样式部分 | `chapter_id` | 1:1，主键即外键 | 「字幕」面板（`FxPanelBody.tsx`） |
 | `narration_entry` | `narration.entries[]` | `entry_id` | 一条字幕 = 一行；音频走 `asset` | 时间轴「🎙 配音」轨道 + 字幕面板（TTS / 导入 SRT） |
 | `music_track` | `music[]` | `track_id` | 章内可多段；音频走 `asset` | 时间轴「BGM」轨道 + 音乐面板上传 |
@@ -159,7 +157,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **19 张表 / 309 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，309 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **18 张表 / 297 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，297 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。
 
@@ -169,7 +167,7 @@
 
 - **组 1 · 合集与项目（含配置）**：`collection` · `project` · `project_config`
 - **组 2 · 资源与素材**：`asset`
-- **组 3 · 章节与时间轴**：`chapter` · `camera_keyframe` · `screen_fx` · `chapter_fx` · `narration` · `narration_entry` · `music_track`
+- **组 3 · 章节与时间轴**：`chapter` · `camera_keyframe` · `screen_fx` · `narration` · `narration_entry` · `music_track`
 - **组 4 · 标记类元素（Pin 工具）**：`element_marker`
 - **组 5 · 路线类元素（Route 工具）**：`element_route`
 - **组 6 · 形状类元素（Shape 工具）**：`element_shape`
@@ -335,30 +333,6 @@
 - `CHECK (end_sec >= start_sec)`
 - `CHECK ((kind = 'weather' AND weather_type IS NOT NULL) OR (kind = 'screen' AND effect_type IS NOT NULL))`
 
-#### chapter_fx
-
-**职责**：章节级特效（游标轨迹 / 聚焦辉光 / 扫描线预设）　**前端**：右侧「特效」面板（FxPanelBody.tsx）
-
-11 列 · 主键 `fx_id`
-
-| 列 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `fx_id` | TEXT | `PK` | 特效 id |
-| `chapter_id` | TEXT | `NOT NULL` `FK → chapter CASCADE` | 所属章节 |
-| `type` | TEXT | `NOT NULL` | 特效类型：cursor_track 指针轨迹 / focus_glow 区域渐显 / scan_line 扫描线 · `CHECK (type IN ('cursor_track','focus_glow','scan_line'))` |
-| `path_json` | TEXT | — | 指针轨迹的地理路径（cursor_track 用） · `CHECK (path_json IS NULL OR json_valid(path_json))` |
-| `color` | TEXT | — | 特效颜色 |
-| `frame_step` | INTEGER | — | 推进步长（帧） |
-| `center_lng` | REAL | — | 中心经度（focus_glow 用） |
-| `center_lat` | REAL | — | 中心纬度（focus_glow 用） |
-| `radius` | REAL | — | 半径（focus_glow 用） |
-| `direction` | TEXT | — | 扫描方向：horizontal 横向 / vertical 纵向（scan_line 用） · `CHECK (direction IS NULL OR direction IN ('horizontal','vertical'))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
-
-**表级约束**
-
-- `CHECK (type IS NOT 'scan_line' OR direction IS NOT NULL)`
-
 #### narration
 
 **职责**：字幕 / 配音档（样式部分，1:1）　**前端**：右侧「字幕」面板（FxPanelBody.tsx）
@@ -419,7 +393,7 @@
 
 **职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，9 种视觉形态）
 
-45 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
+44 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -452,7 +426,6 @@
 | `scale` | REAL | — | 等比缩放（0.3–3，同时影响点与标签字号） · `CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3))` |
 | `orientation` | TEXT | — | 朝向：faceCam 面向镜头 / flat 贴地（shape=model 不能贴地，CHECK 保证） · `CHECK (orientation IS NULL OR orientation IN ('faceCam','flat'))` |
 | `color` | TEXT | — | 可着色形态的主色（shape=model / gif 时禁用，CHECK 保证） |
-| `icon` | TEXT | — | 内置图标名（图标形态以 icon_lib + icon_name 为准） |
 | `icon_size` | REAL | — | 自定义图标的显示尺寸（px） |
 | `asset_id` | TEXT | `FK → asset SET NULL` | 用户上传的图片 / GIF / 模型素材（删除素材则置空） |
 | `builtin_id` | TEXT | — | 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin |
@@ -806,7 +779,6 @@
 | `label_json` vs `keyframes_json`（都是元素表内的一列） | 前者是**文字气泡内容**，后者是**动画曲线**（8 种属性的关键帧数组）—— 都作为一列 JSON 跟随元素一起读写，不再独立成表 |
 | `narration` vs `narration_entry` | 前者是「这一章的配音档」（样式、总开关，1:1）；后者是「档里的一条条字幕」（1:N） |
 | `overlay` vs `overlay_block` / `person_block` | 前者是弹窗本体；后两者是弹窗**内部**的内容块，且只有 custom / person 两类弹窗才需要 |
-| `screen_fx` vs `chapter_fx` | 前者是**屏幕空间**的特效窗口（天气、画面叠加，有起止时间 `start_sec` / `end_sec`）；后者是**章节级**特效配置（动画预设、转场风格） |
 
 ## 七、一次「打开」与一次「保存」
 
