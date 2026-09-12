@@ -12,9 +12,28 @@ export function MapStyleChip() {
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const setActiveBaseMap = useProjectStore((s) => s.setActiveBaseMap);
   const setActiveElevationMap = useProjectStore((s) => s.setActiveElevationMap);
+  const updateElevationMap = useProjectStore((s) => s.updateElevationMap);
   const updateGlobalConfig = useProjectStore((s) => s.updateGlobalConfig);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+
+  // 当前生效的高程源（'none' 或没有 url 视为平面）与其夸张系数草稿
+  const activeElevationId = project?.activeElevationMapId || 'none';
+  const activeElevation = project?.elevationMaps.find((e) => e.id === activeElevationId && e.url);
+  const [exagDraft, setExagDraft] = useState(activeElevation?.exaggeration ?? 1.5);
+  useEffect(() => {
+    setExagDraft(activeElevation?.exaggeration ?? 1.5);
+  }, [activeElevationId, activeElevation?.exaggeration]);
+
+  /**
+   * 拖动中只更新草稿，松手 / 失焦才写 store。
+   * 原因：地形夸张变化会让 EditableMap 的 styleUrl 重算并重建地图，
+   * 若每次 onChange 都提交，拖动过程会连续重建地图造成卡顿。
+   */
+  const commitExag = () => {
+    if (!activeElevation) return;
+    updateElevationMap(activeElevation.id, { exaggeration: exagDraft });
+  };
 
   // 点击外部关闭
   useEffect(() => {
@@ -91,6 +110,29 @@ export function MapStyleChip() {
               </button>
             );
           })}
+
+          {/* 地形夸张：仅选中真实高程源时出现 */}
+          {activeElevation && (
+            <div className="px-2 pb-1.5">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] text-muted-foreground">地形夸张</span>
+                <span className="text-[10px] font-mono text-foreground/80">{exagDraft.toFixed(1)}×</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={5}
+                step={0.1}
+                value={exagDraft}
+                onChange={(e) => setExagDraft(Number(e.target.value))}
+                onPointerUp={commitExag}
+                onKeyUp={commitExag}
+                onBlur={commitExag}
+                className="w-full h-1 appearance-none rounded-full bg-white/15 cursor-pointer accent-brand [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white"
+              />
+              <p className="mt-1 text-[9px] text-muted-foreground/70">0 = 平坦 · 1 = 真实比例 · 松手后应用到地形</p>
+            </div>
+          )}
 
           <div className="h-px bg-white/[0.06] my-1.5" />
 

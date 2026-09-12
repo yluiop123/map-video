@@ -207,6 +207,8 @@ interface ProjectState {
   // 高程图操作
   setActiveElevationMap: (id: string | null) => void;
   addElevationMap: (e: ElevationMapConfig) => void;
+  /** 更新某条高程图配置（如调节地形夸张系数） */
+  updateElevationMap: (id: string, patch: Partial<ElevationMapConfig>) => void;
   // 自定义符号
   addCustomSymbol: (symbol: CustomSymbol) => void;
   removeCustomSymbol: (id: string) => void;
@@ -611,6 +613,18 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     addElevationMap: (e: ElevationMapConfig) => {
       commit();
       set((state) => state.project ? { project: { ...state.project, elevationMaps: [...state.project.elevationMaps, e] } } : state);
+    },
+
+    updateElevationMap: (id: string, patch: Partial<ElevationMapConfig>) => {
+      commit();
+      set((state) => state.project
+        ? {
+            project: {
+              ...state.project,
+              elevationMaps: state.project.elevationMaps.map((e) => (e.id === id ? { ...e, ...patch } : e)),
+            },
+          }
+        : state);
     },
 
     addCustomSymbol: (symbol: CustomSymbol) => {
