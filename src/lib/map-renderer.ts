@@ -1160,7 +1160,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         ? `pt-mtxt-${hashStr(mLabelText + mLabelColor + mScale + (mi?.labelSize ?? 13))}`
         : mShape === 'flag'
           ? `pt-mflag-${hashStr((mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
-          : (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon')
+          : (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon' || mShape === 'military_symbol')
             ? `pt-mvis-${hashStr(mShape + (mi?.builtinId || '') + (mi?.assetId || '') + (mi?.iconLib || '') + (mi?.iconName || '') + mColor)}`
             : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
   const inDisplay = frame >= element.startFrame && frame <= element.endFrame;
@@ -1191,7 +1191,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       else if (mShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 6, mi?.labelPadding ?? 8, false)));
       else if (mShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
       else if (mShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
-      else if (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon') {
+      else if (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon' || mShape === 'military_symbol') {
         // 资源形态：与标记共用资源管线（内置 / 上传素材 / 图标库）
         const vsrc = moveIconVisualSrc(mi);
         if (mShape === 'gif') {
@@ -2585,7 +2585,7 @@ setFlyRibbon(map, `${element.id}|astroke`, {
           ? `pt-atxt-${hashStr(mLabelText + mLabelColor + mScale + (mi?.labelSize ?? 13))}`
           : mEffShape === 'flag'
             ? `pt-aflag-${hashStr((mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
-            : (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon')
+            : (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon' || mEffShape === 'military_symbol')
               ? `pt-mvis-${hashStr(mEffShape + mVisKey + mColor)}`
               : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
     try {
@@ -2594,7 +2594,7 @@ setFlyRibbon(map, `${element.id}|astroke`, {
       else if (mEffShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 6, mi?.labelPadding ?? 8, false)));
       else if (mEffShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
       else if (mEffShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
-      else if (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon') {
+      else if (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon' || mEffShape === 'military_symbol') {
         // 资源形态：与标记/路线共用资源管线
         const vsrc = moveIconVisualSrc(mi);
         if (mEffShape === 'gif') {

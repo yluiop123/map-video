@@ -133,7 +133,7 @@ export interface MapElementBase {
   showIcon?: boolean;
   /** 移动标记样式（与标记 Pin 相同的形态集合与样式项：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库） */
   moveIcon?: {
-    shape?: 'dot' | 'pin' | 'emoji' | 'bubble' | 'text' | 'flag' | 'image' | 'gif' | 'model' | 'icon';
+    shape?: 'dot' | 'pin' | 'emoji' | 'bubble' | 'text' | 'flag' | 'image' | 'gif' | 'model' | 'icon' | 'military_symbol';
     color?: string;
     emoji?: string;
     scale?: number;

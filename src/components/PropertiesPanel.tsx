@@ -711,16 +711,28 @@ function useDeleteMedia(refresh: () => void) {
 }
 
 /** 路线「显示标记」的资源选择区（与标记的 PinResourcePicker 同构，选择写入 moveIcon） */
-/** 路线「显示标记」的资源选择：完全复用标记的 VisualResourcePicker（图集/图标库/素材库/上传） */
+/** 路线「显示标记」的资源选择：完全复用标记的 VisualResourcePicker（图集/图标库/素材库/上传/军标网格） */
 function MoveResourcePicker({ mi, patch }: {
   mi: NonNullable<LineElement['moveIcon']>;
   patch: (c: Partial<MapElement>) => void;
 }) {
   const t = useT();
-  const shape = mi.shape as 'image' | 'gif' | 'model' | 'icon';
+  const shape = mi.shape as 'image' | 'gif' | 'model' | 'icon' | 'military_symbol';
   const set = (c: Record<string, unknown>) =>
     patch({ moveIcon: { ...mi, ...c } } as Partial<MapElement>);
   const isDotMi = !mi.shape || mi.shape === 'dot';
+
+  // 军标：与标记共用同一选择网格（写入 moveIcon.shape + builtinId）
+  if (shape === 'military_symbol') {
+    const sidc = mi.builtinId?.startsWith('milsym:') ? mi.builtinId.slice('milsym:'.length) : undefined;
+    return (
+      <MilSymGrid
+        activeSidc={sidc}
+        onPick={(s) => set({ shape: 'military_symbol', builtinId: `milsym:${s}`, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined })}
+      />
+    );
+  }
+
   return (
     <VisualResourcePicker
       value={mi}
@@ -1401,13 +1413,14 @@ function RouteSettings({ element, patch, chapter }: {
                   </button>
                 ))}
               </div>
-              {/* 资源形态（与标记设置一致：图片 / 动图 / 模型 / 图标库） */}
-              <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+              {/* 资源形态（与标记设置一致：图片 / 动图 / 模型 / 图标库 / 军标） */}
+              <div className="grid grid-cols-5 gap-1.5 mt-1.5">
                 {([
                   { value: 'image', label: t('🖼 图片', '🖼 IMAGE') },
                   { value: 'gif', label: t('🎞 动图', '🎞 GIF') },
                   { value: 'model', label: t('🧊 模型', '🧊 MODEL') },
                   { value: 'icon', label: t('🔷 图标', '🔷 ICON') },
+                  { value: 'military_symbol', label: t('🎖 军标', '🎖 MIL') },
                 ] as { value: NonNullable<LineElement['moveIcon']>['shape']; label: string }[]).map((o) => (
                   <button
                     key={o.value}
@@ -1420,7 +1433,7 @@ function RouteSettings({ element, patch, chapter }: {
               </div>
             </Field>
 
-            {['image', 'gif', 'model', 'icon'].includes((element as LineElement).moveIcon?.shape || '') && (
+            {['image', 'gif', 'model', 'icon', 'military_symbol'].includes((element as LineElement).moveIcon?.shape || '') && (
               <MoveResourcePicker
                 mi={(element as LineElement).moveIcon || { shape: 'image' }}
                 patch={patch}
