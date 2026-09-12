@@ -101,7 +101,7 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
     if (!map) return;
 
     const h = delayRender('Rendering frame...');
-    setCustomSymbols(project.customSymbols);
+    setCustomSymbols([]);
     setRenderFps(fps);   // GIF 逐帧 / 模型自转的时间基准（双端一致）
 
     // 无论渲染成功与否都必须放行 continueRender：否则一次异常 / idle 不来 → 整次导出永久挂起

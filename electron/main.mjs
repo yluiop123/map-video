@@ -211,7 +211,7 @@ function registerIpc() {
   ipcMain.handle('db:clearAll', () => {
     db.exec('DELETE FROM projects; DELETE FROM collections;');
     try {
-      const root = projectsRoot();
+      const root = mediaRoot();
       for (const f of fs.readdirSync(root)) {
         const p = path.join(root, f);
         if (f === 'index.json') { fs.writeFileSync(p, '{}'); continue; }
@@ -283,9 +283,9 @@ function registerIpc() {
     userData: app.getPath('userData'),
   }));
 
-  // 素材（asset）：按**项目分文件夹、按类型分子目录、时间戳命名**（保留原格式扩展名）：
-  //   userData/projects/<projectId>/<images|models|audio|video|fonts>/<YYYYMMDD-HHmmss>-<assetId><ext>
-  // assetId 是**随机 id**（与文件名解耦，改名不影响引用）；assetId → 文件的映射存在 projects/index.json。
+  // 素材（asset）：**用户级全局资源**（跨项目可用），按**类型分子目录、时间戳命名**（保留原格式扩展名）：
+  //   userData/media/<images|models|audio|video|fonts>/<YYYYMMDD-HHmmss>-<assetId><ext>
+  // assetId 是**随机 id**（与文件名解耦，改名不影响引用）；assetId → 文件的映射存在 media/index.json。
   // 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份（时间戳命名永不重名）。
   const EXT_BY_MIME = {
     'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif',
@@ -293,8 +293,8 @@ function registerIpc() {
     'model/gltf-binary': '.glb', 'model/gltf+json': '.gltf', 'model/obj': '.obj',
     'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'video/mp4': '.mp4',
   };
-  const projectsRoot = () => {
-    const dir = path.join(app.getPath('userData'), 'projects');
+  const mediaRoot = () => {
+    const dir = path.join(app.getPath('userData'), 'media');
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   };
@@ -305,32 +305,32 @@ function registerIpc() {
           : mime.startsWith('video/') ? 'video'
             : mime.startsWith('font') ? 'fonts' : 'misc';
 
-  const indexFile = () => path.join(projectsRoot(), 'index.json');
+  const indexFile = () => path.join(mediaRoot(), 'index.json');
   const readIndex = () => {
     try { return JSON.parse(fs.readFileSync(indexFile(), 'utf8')); } catch { return {}; }
   };
   const writeIndex = (idx) => fs.writeFileSync(indexFile(), JSON.stringify(idx, null, 2));
 
-  ipcMain.handle('assets:save', (_e, { mime, bytes, projectId, name }) => {
+  ipcMain.handle('assets:save', (_e, { mime, bytes, name }) => {
     const buf = Buffer.from(bytes);
     const assetId = 'a' + crypto.randomBytes(8).toString('hex');
     const now = new Date();
     const p2 = (n) => String(n).padStart(2, '0');
     const stamp = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`;
-    const dir = path.join(projectsRoot(), String(projectId || 'default'), kindDirOf(String(mime || '')));
+    const dir = path.join(mediaRoot(), kindDirOf(String(mime || '')));
     fs.mkdirSync(dir, { recursive: true });
     const fileName = `${stamp}-${assetId}${EXT_BY_MIME[mime] || ''}`;
     fs.writeFileSync(path.join(dir, fileName), buf);
-    const rel = path.relative(projectsRoot(), path.join(dir, fileName)).replace(/\\/g, '/');
+    const rel = path.relative(mediaRoot(), path.join(dir, fileName)).replace(/\\/g, '/');
     const idx = readIndex();
-    idx[assetId] = { rel, mime, byteSize: buf.length, name: String(name || ''), projectId: String(projectId || '') };
+    idx[assetId] = { rel, mime, byteSize: buf.length, name: String(name || '') };
     writeIndex(idx);
     return { assetId, relPath: rel, byteSize: buf.length };
   });
   ipcMain.handle('assets:read', (_e, assetId) => {
     const meta = readIndex()[String(assetId || '')];
     if (!meta) return null;
-    const abs = path.join(projectsRoot(), meta.rel);
+    const abs = path.join(mediaRoot(), meta.rel);
     if (!fs.existsSync(abs)) return null;
     return { bytes: new Uint8Array(fs.readFileSync(abs)), mime: meta.mime, name: meta.name };
   });
@@ -338,7 +338,7 @@ function registerIpc() {
     const idx = readIndex();
     const meta = idx[String(assetId || '')];
     if (meta) {
-      const abs = path.join(projectsRoot(), meta.rel);
+      const abs = path.join(mediaRoot(), meta.rel);
       if (fs.existsSync(abs)) fs.unlinkSync(abs);
       delete idx[String(assetId)];
       writeIndex(idx);
@@ -346,9 +346,15 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle('assets:exists', (_e, assetId) => !!readIndex()[String(assetId || '')]);
+  /** 全局素材库列表（可选 mime 类型前缀过滤，供面板浏览选择） */
+  ipcMain.handle('assets:list', (_e, kindPrefix) => {
+    const idx = readIndex();
+    const out = Object.entries(idx).map(([assetId, m]) => ({ assetId, name: m.name || '', mime: m.mime || '' }));
+    return kindPrefix ? out.filter((m) => m.mime.startsWith(String(kindPrefix))) : out;
+  });
   /** 孤儿素材扫描：递归统计文件数与总字节数（供设置页/维护用） */
   ipcMain.handle('assets:stat', () => {
-    const root = projectsRoot();
+    const root = mediaRoot();
     let count = 0;
     let bytes = 0;
     const walk = (d) => {

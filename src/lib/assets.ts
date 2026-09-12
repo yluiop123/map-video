@@ -1,9 +1,11 @@
 /**
  * assets.ts — 素材仓库门面（双端统一）
  *
+ * **素材是用户级全局资源**：跨项目、跨章节可用，不属于任何一个项目。
+ *
  * assetId = **随机 id**（与文件名/内容解耦，改名不影响引用）
- *   · 桌面端：Electron IPC → userData/projects/<projectId>/<类型>/<时间戳>-<assetId><ext>
- *     （按项目分文件夹、按类型分子目录、时间戳命名；assetId→文件映射在 projects/index.json）
+ *   · 桌面端：Electron IPC → userData/media/<类型>/<时间戳>-<assetId><ext>
+ *     （按类型分文件夹、时间戳命名；assetId→文件映射在 media/index.json）
  *   · 网页端：Dexie `assets` 表（Blob，无文件系统）
  *
  * 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份。
@@ -18,6 +20,13 @@ export interface AssetRef {
   assetId: string;
   mime: string;
   byteSize: number;
+}
+
+/** 素材库列表项（全局，供面板浏览选择） */
+export interface MediaItem {
+  assetId: string;
+  name: string;
+  mime: string;
 }
 
 const urlCache = new Map<string, string>();
@@ -45,15 +54,15 @@ function newAssetId(): string {
   return 'a' + Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** 上传素材 → 返回 assetId；元素只需存这个 id */
-export async function uploadAsset(file: File | Blob, projectId = ''): Promise<AssetRef> {
+/** 上传素材 → 返回 assetId；素材进入**全局素材库**（跨项目可用），元素只需存这个 id */
+export async function uploadAsset(file: File | Blob): Promise<AssetRef> {
   const buf = await file.arrayBuffer();
   const mime = resolveMime(file);
   const name = (file as File).name || '';
 
   if (IS_DESKTOP) {
-    // 桌面端：主进程按「项目 / 类型」分文件夹落盘（时间戳命名），并登记到 projects/index.json
-    const r = await window.mapvideo!.assets.save({ mime, bytes: new Uint8Array(buf), projectId, name });
+    // 桌面端：主进程按「类型」分文件夹落盘（时间戳命名），并登记到 media/index.json
+    const r = await window.mapvideo!.assets.save({ mime, bytes: new Uint8Array(buf), name });
     return { assetId: r.assetId, mime, byteSize: r.byteSize };
   }
 
@@ -62,7 +71,7 @@ export async function uploadAsset(file: File | Blob, projectId = ''): Promise<As
   const assetId = newAssetId();
   await dexie.saveAsset({
     assetId,
-    projectId,
+    projectId: '',
     mime,
     name,
     byteSize: buf.byteLength,
@@ -70,6 +79,18 @@ export async function uploadAsset(file: File | Blob, projectId = ''): Promise<As
     createdAt: Date.now(),
   });
   return { assetId, mime, byteSize: buf.byteLength };
+}
+
+/** 列出全局素材库（kindPrefix 如 'image' / 'model' / 'audio'，按 mime 前缀过滤；不传返回全部） */
+export async function listMedia(kindPrefix?: string): Promise<MediaItem[]> {
+  const rows: { assetId: string; name: string; mime: string }[] = [];
+  if (IS_DESKTOP) {
+    rows.push(...(await window.mapvideo!.assets.list(kindPrefix)));
+  } else {
+    const all = await dexie.listAssets();
+    for (const r of all) rows.push({ assetId: r.assetId, name: r.name, mime: r.mime });
+  }
+  return kindPrefix ? rows.filter((r) => r.mime.startsWith(kindPrefix)) : rows;
 }
 
 async function readBlob(assetId: string): Promise<Blob | null> {

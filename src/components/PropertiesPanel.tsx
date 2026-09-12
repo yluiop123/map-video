@@ -1,4 +1,4 @@
-import { createElement, useRef, useState, useEffect, useMemo } from 'react';
+import { createElement, useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import { MapPin, Route as RouteIcon, Square, Trash2, Plus, Landmark, Crosshair } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
@@ -14,12 +14,12 @@ import type {
   MapElement, PointElement, LineElement,
   PolygonElement, ArrowElement, FlagElement,
   DoubleArrowElement, EncirclementElement, GatheringElement,
-  CameraKeyframe, TerritoryElement, PointShape, CustomImage,
+  CameraKeyframe, TerritoryElement, PointShape,
 } from '../types';
 import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES } from '../lib/builtin-assets';
 import { defaultVisualFor, getPinCapability } from '../lib/pin-visual';
 import { loadLucideIcons, filterExistingIcons, type IconComponent } from '../lib/icon-library';
-import { uploadAsset, getAssetUrl, removeAsset } from '../lib/assets';
+import { uploadAsset, getAssetUrl, removeAsset, listMedia, type MediaItem } from '../lib/assets';
 import { distributePointTimes, ensurePointTimes } from '../lib/route-time';
 
 type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'territory';
@@ -58,9 +58,6 @@ function categoryOf(el: MapElement): Category {
 }
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
-
-/** 稳定的空数组常量：zustand selector 里绝不能现造 `|| []`，否则快照每次都变 → 无限重渲染 */
-const EMPTY_CUSTOM_IMAGES: CustomImage[] = [];
 
 export function PropertiesPanel() {
   const t = useT();
@@ -528,24 +525,9 @@ function PinResourcePicker({ element, style, patch }: {
   const isIconStyle = style === 'icon';
   const isResource = style === 'image' || style === 'gif' || style === 'model' || isIconStyle;
 
-  // 自定义图片库（项目级）：上传后登记，缩略图按 assetId 异步取 URL
-  // 注意：selector 只能返回原值 —— `|| []` 每次产生新数组会让 useSyncExternalStore 判定快照变化，导致无限重渲染
-  const customImages = useProjectStore((s) => s.project?.customImages) ?? EMPTY_CUSTOM_IMAGES;
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  const deleteCustomImage = useDeleteCustomImage();
-  useEffect(() => {
-    if (style !== 'image' || customImages.length === 0) return;
-    let alive = true;
-    void (async () => {
-      const next: Record<string, string> = {};
-      for (const ci of customImages) {
-        const u = await getAssetUrl(ci.assetId);
-        if (u) next[ci.assetId] = u;
-      }
-      if (alive) setThumbs(next);
-    })();
-    return () => { alive = false; };
-  }, [style, customImages]);
+  // 全局图片素材库（跨项目可用）：列表 + 缩略图按 assetId 异步取 URL
+  const { items: customImages, thumbs, refresh: refreshLibrary } = useImageLibrary(style === 'image');
+  const deleteMedia = useDeleteMedia(refreshLibrary);
 
   if (!isResource) return null;
 
@@ -598,20 +580,20 @@ function PinResourcePicker({ element, style, patch }: {
         ))}
       </div>
 
-      {/* 自定义图片：上传后登记进项目 customImages，之后可随时复用 */}
+      {/* 自定义图片：全局素材库（跨项目可用），上传后即可复用 */}
       {style === 'image' && (
         <>
-          <p className="mt-2 mb-1 text-[10px] text-muted-foreground/70">{t('自定义图片', 'Custom images')}</p>
+          <p className="mt-2 mb-1 text-[10px] text-muted-foreground/70">{t('自定义图片（全局素材库）', 'Custom images (global library)')}</p>
           {customImages.length > 0 && (
             <CustomImageGrid
               images={customImages}
               thumbs={thumbs}
               activeId={element.assetId}
               onPick={(assetId) => patch({ ...resettable, shape: 'image', assetId } as Partial<MapElement>)}
-              onDelete={deleteCustomImage}
+              onDelete={deleteMedia}
             />
           )}
-          <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: 'image' as PointShape, ...resettable, assetId } as Partial<MapElement>)} />
+          <ResourceUploadRow style={style} onLoaded={(assetId) => { patch({ shape: 'image' as PointShape, ...resettable, assetId } as Partial<MapElement>); refreshLibrary(); }} />
         </>
       )}
       {style !== 'image' && <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: style as PointShape, ...resettable, assetId } as Partial<MapElement>)} />}
@@ -619,13 +601,13 @@ function PinResourcePicker({ element, style, patch }: {
   );
 }
 
-/** 自定义图片网格（标记与路线共用）：缩略图 + 悬停删除 */
+/** 自定义图片网格（标记与路线共用，数据源为**全局素材库**）：缩略图 + 悬停删除 */
 function CustomImageGrid({ images, thumbs, activeId, onPick, onDelete }: {
-  images: CustomImage[];
+  images: MediaItem[];
   thumbs: Record<string, string>;
   activeId?: string;
   onPick: (assetId: string) => void;
-  onDelete: (img: CustomImage) => void;
+  onDelete: (item: MediaItem) => void;
 }) {
   return (
     <div className="grid grid-cols-4 gap-1.5 mb-1.5">
@@ -651,33 +633,44 @@ function CustomImageGrid({ images, thumbs, activeId, onPick, onDelete }: {
   );
 }
 
+/** 全局图片素材库（跨项目可用）：列表 + 缩略图 URL；enabled 时加载 */
+function useImageLibrary(enabled: boolean) {
+  const [items, setItems] = useState<MediaItem[]>([]);
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const refresh = useCallback(() => {
+    void (async () => {
+      const items = await listMedia('image');
+      setItems(items);
+      const next: Record<string, string> = {};
+      for (const it of items) {
+        const u = await getAssetUrl(it.assetId);
+        if (u) next[it.assetId] = u;
+      }
+      setThumbs(next);
+    })();
+  }, []);
+  useEffect(() => {
+    if (enabled) refresh();
+  }, [enabled, refresh]);
+  return { items, thumbs, refresh };
+}
+
 /**
- * 删除自定义图片：移除登记 +（若已无任何元素引用）清理素材二进制 + 立即落库。
- * 素材是内容寻址共享的，仍被元素引用时只移除列表项、保留文件。
+ * 删除全局素材：素材是**用户级资源**（跨项目共享），删除后所有项目都不再显示该条目。
+ * 仍被元素引用时会有裂图风险，因此弹确认框由用户决定。
  */
-function useDeleteCustomImage() {
+function useDeleteMedia(refresh: () => void) {
   const confirm = useConfirm();
   const t = useT();
-  const removeCustomImage = useProjectStore((s) => s.removeCustomImage);
-  return async (img: CustomImage) => {
+  return async (item: MediaItem) => {
     const ok = await confirm({
-      message: `${t('删除自定义图片', 'Delete image')}「${img.name}」？`,
+      message: `${t('从素材库删除', 'Delete from library')}「${item.name}」？${t('该素材将从所有项目中移除。', 'It will disappear from all projects.')}`,
       danger: true,
       confirmText: t('删除', 'Delete'),
     });
     if (!ok) return;
-    const project = useProjectStore.getState().project;
-    const referenced = (project?.chapters || []).some((ch) =>
-      ch.elements.some((el) => {
-        const e = el as { assetId?: string; moveIcon?: { assetId?: string } };
-        return e.assetId === img.assetId || e.moveIcon?.assetId === img.assetId;
-      }),
-    );
-    // 顺序：先写项目（移除引用）并落库，成功后再删素材字节 ——
-    // 反过来的话保存失败会留下「项目仍引用、素材已删」的裂图状态
-    removeCustomImage(img.assetId);
-    await useProjectStore.getState().saveProject();
-    if (!referenced) await removeAsset(img.assetId);
+    await removeAsset(item.assetId);
+    refresh();
   };
 }
 
@@ -691,24 +684,9 @@ function MoveResourcePicker({ mi, patch }: {
   const set = (c: Partial<NonNullable<LineElement['moveIcon']>>) =>
     patch({ moveIcon: { ...mi, ...c } } as Partial<MapElement>);
 
-  // 自定义图片库与标记共用（项目级）；缩略图按 assetId 异步取 URL
-  const customImages = useProjectStore((s) => s.project?.customImages) ?? EMPTY_CUSTOM_IMAGES;
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  const deleteCustomImage = useDeleteCustomImage();
-  useEffect(() => {
-    if (shape !== 'image' || customImages.length === 0) return;
-    let alive = true;
-    void (async () => {
-      const next: Record<string, string> = {};
-      for (const ci of customImages) {
-        const u = await getAssetUrl(ci.assetId);
-        if (u) next[ci.assetId] = u;
-      }
-      if (alive) setThumbs(next);
-    })();
-    return () => { alive = false; };
-  }, [shape, customImages]);
-
+  // 全局图片素材库（与标记共用，跨项目可用）
+  const { items: customImages, thumbs, refresh: refreshLibrary } = useImageLibrary(shape === 'image');
+  const deleteMedia = useDeleteMedia(refreshLibrary);
 
   if (shape === 'icon') {
     return (
@@ -768,12 +746,12 @@ function MoveResourcePicker({ mi, patch }: {
               thumbs={thumbs}
               activeId={mi.assetId}
               onPick={(assetId) => set({ ...miResettable, shape: 'image', assetId })}
-              onDelete={deleteCustomImage}
+              onDelete={deleteMedia}
             />
           )}
           <ResourceUploadRow
             style="image"
-            onLoaded={(assetId) => set({ ...miResettable, shape: 'image', assetId })}
+            onLoaded={(assetId) => { set({ ...miResettable, shape: 'image', assetId }); refreshLibrary(); }}
           />
         </>
       )}
@@ -828,26 +806,9 @@ function ResourceUploadRow({ style, onLoaded }: {
           setErr(null);
           setBusy(true);
           try {
-            const projectId = useProjectStore.getState().project?.id || '';
-            const ref = await uploadAsset(file, projectId);
+            const ref = await uploadAsset(file);
             onLoaded(ref.assetId, file.name);
-            // 图片形态：登记进「自定义图片」库（内容寻址去重），供之后复用
-            if (style === 'image') {
-              useProjectStore.getState().addCustomImage({
-                assetId: ref.assetId,
-                name: file.name.replace(/\.[^.]+$/, '') || '图片',
-                createdAt: new Date(),
-              });
-            }
-            // 素材上传属结构性变更：立即落库 —— 否则重开应用后「自定义图片库」与元素引用都会丢
-            try {
-              await useProjectStore.getState().saveProject();
-            } catch (saveErr) {
-              // 补偿：保存失败则回滚刚上传的素材与图片库登记，避免留下没人引用的孤儿素材
-              if (style === 'image') useProjectStore.getState().removeCustomImage(ref.assetId);
-              await removeAsset(ref.assetId).catch(() => undefined);
-              throw saveErr;
-            }
+            // 素材进入**全局素材库**（跨项目可用），不属于任何项目 —— 无需写项目、无回滚问题
           } catch (e2) {
             console.error('[asset] 上传失败', e2);
             setErr(String((e2 as Error)?.message || e2));

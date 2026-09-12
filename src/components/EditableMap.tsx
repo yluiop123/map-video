@@ -63,9 +63,9 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
 
   // 注入自定义符号表（供 renderer 加载上传图标）+ 渲染帧率（GIF 逐帧 / 模型自转基准）
   useEffect(() => {
-    setCustomSymbols(project.customSymbols);
+    setCustomSymbols([]);   // 自定义符号库当前无 UI 入口（全局素材库规划中），注册空集
     setRenderFps(project.globalConfig?.defaultFPS ?? 30);
-  }, [project.customSymbols, project.globalConfig?.defaultFPS]);
+  }, [project.globalConfig?.defaultFPS]);
 
   // 稳定 styleUrl 引用：对象样式+高程合并时 getStyleUrl 每次渲染都返回新对象，
   // 若直接作 effect 依赖，地图 move → setCurrentCamera → 重渲染 → 重建地图，无限循环狂闪。

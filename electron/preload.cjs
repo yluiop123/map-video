@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('mapvideo', {
     read: (assetId) => ipcRenderer.invoke('assets:read', assetId),
     remove: (assetId) => ipcRenderer.invoke('assets:remove', assetId),
     exists: (assetId) => ipcRenderer.invoke('assets:exists', assetId),
+    list: (kindPrefix) => ipcRenderer.invoke('assets:list', kindPrefix),
     stat: () => ipcRenderer.invoke('assets:stat'),
   },
   aiChat: (config, system, user) => ipcRenderer.invoke('ai:chat', { config, system, user }),

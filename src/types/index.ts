@@ -30,17 +30,6 @@ export interface MapVideoProject {
   elevationMaps: ElevationMapConfig[];
   /** 新建章节的**默认高程**；实际生效的是章节上的 `chapter.elevationMapId` */
   activeElevationMapId: string | null;
-  customSymbols: CustomSymbol[];
-  /** 自定义图片库：用户上传的标记图片（二进制外置在 asset 表，这里只登记引用，供面板复用） */
-  customImages: CustomImage[];
-}
-
-/** 自定义图片库条目：指向 asset 表里的图片素材 */
-export interface CustomImage {
-  assetId: string;
-  /** 展示名（默认取文件名） */
-  name: string;
-  createdAt: Date;
 }
 
 export interface GlobalConfig {
@@ -74,15 +63,6 @@ export interface ElevationMapConfig {
   encoding?: 'mapbox' | 'terrarium';
   exaggeration?: number;         // 地形夸张系数
   style?: string;                // 可选的关联底图样式
-}
-
-export interface CustomSymbol {
-  id: string;
-  name: string;
-  type: 'icon' | 'image' | 'svg';
-  url: string;                   // 图片/svg 地址或 data URL
-  width: number;
-  height: number;
 }
 
 // ========== 章节类型 ==========

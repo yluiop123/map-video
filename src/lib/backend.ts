@@ -36,6 +36,7 @@ declare global {
         read: (assetId: string) => Promise<{ bytes: Uint8Array; mime?: string; name?: string } | null>;
         remove: (assetId: string) => Promise<{ ok: boolean }>;
         exists: (assetId: string) => Promise<boolean>;
+        list: (kindPrefix?: string) => Promise<{ assetId: string; name: string; mime: string }[]>;
         stat: () => Promise<{ count: number; bytes: number; dir: string }>;
       };
       aiChat: (config: import('../types').ProviderConfig, system: string, user: string) => Promise<{ content?: string; error?: string }>;

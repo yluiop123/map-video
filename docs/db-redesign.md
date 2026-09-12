@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：20 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：19 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -109,13 +109,13 @@
 | 级别 | 判定标准 | 处理方式 | 典型字段 |
 |---|---|---|---|
 | **P1** 必列化 | 身份、时间轴、以及构成引用图的字段 —— 约束与查询都依赖它们 | 独立列 + 主键 / 外键 / CHECK | `id`、`start_sec`、`end_sec`、`chapter_id`、`from_element_id` |
-| **P2** 独立成表 | 子结构自身有 id 或顺序语义，需被单独约束或寻址 | 1:N 子表 | `element_keyframe`、`overlay_block`、`person_block`、`narration_entry` |
+| **P2** 独立成表 | 子结构自身有 id 或顺序语义，需被单独约束或寻址 | 1:N 子表 | `overlay_block`、`person_block`、`narration_entry` |
 | **P3** 保留 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` 约束 | `display_json`、`front_style_json`、`route_effect_json`、`label_json`、`countries_json` / `plots_json` / `events_json` |
 | **P4** 外置存储 | 大体积二进制内容 | 独立 `asset` 表，业务表只留 `asset_id` | 图片、音频、视频、模型、字体 |
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（20 张表，按结构分 10 组）
+### 2.2 实体清单（19 张表，按结构分 10 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
@@ -126,9 +126,8 @@
 | **5. 路线类元素** | `element_route` | type ∈ line / moving_point / connector |
 | **6. 形状类元素** | `element_shape` | type ∈ polygon / arrow / double_arrow / gathering / encirclement |
 | **7. 疆域类元素** | `element_territory` | type = territory；势力 / 地块 / 兼并事件 JSON 内联 |
-| **8. 元素附属** | `element_keyframe` | 所有元素共用的动画关键帧（`element_id` 弱引用） |
-| **9. 叠加层** | `overlay`、`overlay_block`、`person_block` | overlay 承载 10 类弹窗，仅 custom / person 需要子表 |
-| **10. 应用配置** | `provider` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证 |
+| **8. 叠加层** | `overlay`、`overlay_block`、`person_block` | overlay 承载 10 类弹窗，仅 custom / person 需要子表 |
+| **9. 应用配置** | `provider` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证 |
 
 ### 2.3 元素建模：按工具栏聚合的 4 张类别宽表
 
@@ -192,29 +191,11 @@ CREATE TABLE element_route (
 );
 ```
 
-端点用**弱引用**：删除端点元素时，由 `trg_route_cleanup` 连带删除以它为端点的连接线。
+端点用**弱引用**：删除端点元素时，由应用层连带删除以它为端点的连接线。
 
-#### element_keyframe —— 8 种动画曲线统一成一张表
+#### 动画关键帧 —— 内联进类别表的 `keyframes_json`
 
-```sql
-CREATE TABLE element_keyframe (
-  kf_id        TEXT PRIMARY KEY,
-  element_id   TEXT NOT NULL,          -- 弱引用：元素分属 4 张表，无外键目标
-  element_type TEXT,                   -- 冗余记录所属类别，便于自检与调试
-  chapter_id   TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
-  property     TEXT NOT NULL CHECK (property IN (
-    'opacity','scale','rotation','draw_progress','progress',
-    'path_progress','fill_progress','morph')),
-  sec          REAL    NOT NULL CHECK (sec >= 0),
-  easing       TEXT,
-  value_num    REAL,                   -- 标量快路径
-  value_json   TEXT,                   -- morph 用（rings 数组）
-  CHECK (value_num IS NOT NULL OR value_json IS NOT NULL),
-  UNIQUE (element_id, property, frame)
-);
-```
-
-透明度、缩放、旋转、绘制进度、路径进度、填充进度、morph 等曲线结构同构，统一用 `property` 区分；`(element_id, property, sec)` 唯一索引防止同一时刻重复定义。
+透明度、缩放、旋转、绘制进度、路径进度、填充进度、morph 等曲线结构同构，作为 `keyframes_json` 列内联在 4 张类别宽表里（`[{property, sec, easing, value_num, value_json}]`）。运行时元素对象本就内联关键帧数组，独立成表反而需要「元素 ↔ 关键帧」的弱引用维护；「同一时刻同一属性不得重复」由应用层在写入时去重。
 
 ### 2.5 引用完整性策略
 
@@ -225,13 +206,11 @@ CREATE TABLE element_keyframe (
 | `project.collection_id` → `collection` | N:1 | **RESTRICT** | 删合集前须先把其下项目迁移到默认合集（应用层负责） |
 | `project_config` → `project` | 1:1 | **CASCADE** | 配置随项目消亡 |
 | 元素类别表 → `chapter` | N:1 | **CASCADE** | 章节是元素的生命周期边界 |
-| `element_keyframe` → `chapter` | N:1 | **CASCADE** | 关键帧随章节消亡 |
 | `camera_keyframe.follow_route_element_id` → `element_route` | N:1 | **SET NULL** | 路线被删时视角退化为固定镜头 |
 | `asset` 内部（`kind='icon'` 被元素引用） | N:1 | 应用层检查 | 三表合并后图标与素材同行，删除被引用素材由引用检查保护 |
 | `element_marker.asset_id` → `asset` | N:1 | **SET NULL** | 素材被删则元素退回内置或空态 |
 | `overlay_block` / `person_block` → `overlay` | N:1 | **CASCADE** | 内容块随弹窗消亡 |
 | **`connector` 端点（`from` / `to`）** | N:1 ×2 | **弱引用 + 应用层清理** | 元素已分表，无外键目标 |
-| **`element_keyframe.element_id`** | N:1 | **弱引用 + 应用层清理** | 同上 |
 
 #### 弱引用的补偿机制
 
@@ -283,7 +262,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 | 设计决策 | 依据 |
 |---|---|
 | 元素按工具栏聚合为 4 张类别宽表 | 12 个子类型专有字段 3–47 个、离散度极大：单表继承会产出 60+ 可空列并丧失子类必填约束；按类型逐张拆表则表数最多且需额外维护判别列与具化行的一致性 |
-| `element_keyframe` 单表承载 8 种 property | 关键帧数组结构同构（sec + value + easing），唯一索引可统一施加；避免为每种类型建表 |
+| 动画关键帧内联为 `keyframes_json` | 运行时元素对象本就内联关键帧数组，独立成表需要弱引用维护；P3 内联跟随元素整体读写（原独立表已取消） |
 | 元素标签内联为 `label_json` | 标签是可选 1:1 值对象；元素已分表，独立成表会失去统一的外键目标 |
 | GlobalConfig 独立成 `project_config` | 配置与项目本体职责分离：`project` 只留身份 / 归属 / 审计字段，配置面板只读写配置表；将来新增配置项不改动 `project` 结构 |
 | `asset` 表承担 P4 外置 | base64 内嵌是当前最大的性能问题；内容寻址（sha256）顺带获得同图去重 |
@@ -321,7 +300,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执行并跑完完整性用例：
 
-- 20 表创建成功
+- 19 表创建成功
 - 3 视图
 - 0 触发器（不使用触发器）
 - 17/17 用例通过
@@ -334,7 +313,7 @@ DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执�
 | 4 | CHECK：flag 必须给 `flag_text` | 通过 被拒 |
 | 5 | CHECK：connector 端点不得自环 | 通过 被拒 |
 | 6 | CHECK：connector 必须给两端 | 通过 被拒 |
-| 7 | `element_keyframe` 弱引用插入正常 | 通过 |
+| 7 | `keyframes_json` 内联插入正常（合法 JSON） | 通过 |
 | 8 | 删章节 → 元素与关键帧级联清理 | 通过 |
 | 9 | **删元素 → 以它为端点的 connector 由应用层清理** | 通过 1 → 0（应用层） |
 | 10 | 删元素 → 它名下的 keyframe 自动清理 | 通过 |
@@ -352,12 +331,12 @@ DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执�
 
 | # | 问题 | 说明 |
 |---|---|---|
-| Q1 | 是否需要为 `element_keyframe` 建「同一时刻重复定义」的软校验 | 已有 `UNIQUE(element_id, property, sec)` 硬约束；写入端需自行去重（同一时刻多个关键帧只保留最后一个），否则会撞唯一键 |
+| Q1 | `keyframes_json` 的「同一时刻重复定义」校验 | 内联后无数据库唯一索引，写入端需自行去重（同 property 同时刻只保留最后一个） |
 | Q2 | `chapter` 时间跨度的重叠约束 | 当前只加了 `ux_chapter_span(project_id, start_sec)`（起点不重复）。是否允许章节时间区间重叠需与产品确认，若不允许需由应用层校验 |
 | Q3 | 素材文件的生命周期与垃圾回收 | 元素被删后 `asset` 行仍在（无反向引用）。需要定期「孤儿素材清理」任务，或改用引用计数 |
 | Q4 | `move_icon_json` 内的 `symbolId` 是弱引用 | P3 JSON 内的符号引用无法用外键约束。可选：把 `moveIcon` 提升为独立表以换取约束能力，但会为各类元素都增加一次 JOIN |
 | Q5 | 撤销/重做（50 步历史栈）与数据库的关系 | 历史栈完全在内存（快照式）；数据库只承载「已保存」状态，这是有意的边界 |
-| Q6 | 弱引用的一致性兜底策略 | `connector` 端点与 `element_keyframe.element_id` 无外键目标，现由**应用层清理** + `v_check_dangling` 兜底（无触发器）。**待定：是否在保存 / 导入后强制跑一次自检，非 0 行即回滚？** |
+| Q6 | 弱引用的一致性兜底策略 | `connector` 端点无外键目标，现由**应用层清理** + `v_check_dangling` 兜底（无触发器；关键帧已内联进元素表，不再有该弱引用）。**待定：是否在保存 / 导入后强制跑一次自检，非 0 行即回滚？** |
 | Q7 | 疆域 JSON 内联后的一致性校验时机 | `plots_json.ownerId` / `events_json.toCountryId` 的合法性由 `v_check_territory_ref` 校验（`json_each` 实现）。待定：是否前置为写路径硬校验（保存前跑），避免脏数据入库 |
 | Q8 | 图标库（原 `custom_symbol`）的 UI 入口 | 三表合并后图标库条目 = `asset(kind='icon')`；当前仍无上传/管理面板，待确认是否补入口或下线该能力 |
 

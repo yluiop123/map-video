@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { storage } from '../lib/storage';
 import type {
   MapVideoProject, Chapter, MapElement, GlobalConfig, BaseMapConfig,
-  ElevationMapConfig, CustomSymbol, CustomImage, OverlayItem, CameraKeyframe, TransitionConfig,
+  ElevationMapConfig, OverlayItem, CameraKeyframe, TransitionConfig,
   ChapterEffect, ProjectExport, ScreenFxItem, ExportedAsset,
   NarrationEntry, NarrationStyle, MusicTrack, ConnectorElement
 } from '../types';
@@ -226,13 +226,6 @@ interface ProjectState {
   addElevationMap: (e: ElevationMapConfig) => void;
   /** 更新某条高程图配置（如调节地形夸张系数） */
   updateElevationMap: (id: string, patch: Partial<ElevationMapConfig>) => void;
-  // 自定义符号
-  addCustomSymbol: (symbol: CustomSymbol) => void;
-  removeCustomSymbol: (id: string) => void;
-
-  // 自定义图片库（上传后登记，供面板复用）
-  addCustomImage: (img: CustomImage) => void;
-  removeCustomImage: (assetId: string) => void;
 
   // 全局配置（如 3D 球体投影开关）
   updateGlobalConfig: (changes: Partial<GlobalConfig>) => void;
@@ -253,10 +246,6 @@ function remapAssetIds(project: MapVideoProject, map: Record<string, string>): M
   if (!Object.keys(map).length) return project;
   return {
     ...project,
-    customImages: (project.customImages || []).map((ci) => ({
-      ...ci,
-      assetId: map[ci.assetId] || ci.assetId,
-    })),
     chapters: project.chapters.map((ch) => ({
       ...ch,
       elements: ch.elements.map((el) => {
@@ -314,8 +303,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         activeBaseMapId: 'osm',
         elevationMaps: [...DEFAULT_ELEVATION_MAPS],
         activeElevationMapId: 'none',
-        customSymbols: [],
-        customImages: [],
       };
       set({ project, history: [], future: [] });
       await storage.saveProject(project);
@@ -712,35 +699,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         : state);
     },
 
-    addCustomSymbol: (symbol: CustomSymbol) => {
-      commit();
-      set((state) => state.project ? { project: { ...state.project, customSymbols: [...state.project.customSymbols, symbol] } } : state);
-    },
-
-    removeCustomSymbol: (id: string) => {
-      commit();
-      set((state) => state.project
-        ? { project: { ...state.project, customSymbols: state.project.customSymbols.filter((s) => s.id !== id) } }
-        : state);
-    },
-
-    addCustomImage: (img: CustomImage) => {
-      commit();
-      set((state) => {
-        if (!state.project) return state;
-        const list = state.project.customImages || [];
-        if (list.some((x) => x.assetId === img.assetId)) return state;  // 内容寻址：同一张图不重复登记
-        return { project: { ...state.project, customImages: [...list, img] } };
-      });
-    },
-
-    removeCustomImage: (assetId: string) => {
-      commit();
-      set((state) => state.project
-        ? { project: { ...state.project, customImages: (state.project.customImages || []).filter((x) => x.assetId !== assetId) } }
-        : state);
-    },
-
     updateGlobalConfig: (changes: Partial<GlobalConfig>) => {
       commit();
       set((state) => state.project
@@ -759,7 +717,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
             const bin = atob(a.dataUrl.split(',')[1] || '');
             const bytes = new Uint8Array(bin.length);
             for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            const ref = await uploadAsset(new Blob([bytes], { type: a.mime }), data.project.id);
+            const ref = await uploadAsset(new Blob([bytes], { type: a.mime }));
             idMap[a.assetId] = ref.assetId;
           } catch { /* 单个素材失败不阻塞导入 */ }
         }
@@ -771,7 +729,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         collectionId: collectionId || DEFAULT_COLLECTION_ID,
         updatedAt: new Date(),
         chapters: normalizeChapters(imported.project.chapters),
-        customImages: imported.project.customImages ?? [],
       };
       set({ project, history: [], future: [] });
       await storage.saveProject(project);
@@ -789,7 +746,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
           if (el.type === 'point' && el.assetId) ids.add(el.assetId);
         }
       }
-      for (const ci of project.customImages || []) ids.add(ci.assetId);
       const assets: ExportedAsset[] = [];
       for (const assetId of ids) {
         const bytes = await getAssetBytes(assetId);

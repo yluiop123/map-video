@@ -16,7 +16,7 @@ import type {
   MapElement, PointElement, MovingPointElement, LineElement,
   PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
   GatheringElement, MilitarySymbolElement, ConnectorElement,
-  FlagElement, CustomSymbol, CameraKeyframe,
+  FlagElement, CameraKeyframe,
   TerritoryElement,
 } from '../types';
 import { getPinCapability, resolvePinVisualSource } from './pin-visual';
@@ -36,18 +36,20 @@ export function setRenderFps(fps: number): void {
 
 // ========== 自定义符号注册表 ==========
 
-let customSymbolsRegistry: CustomSymbol[] = [];
-export function setCustomSymbols(list: CustomSymbol[]): void {
+/** 自定义符号（全局素材库中 kind='icon' 的条目；当前无 UI 入口，注册空集） */
+interface CustomSymbolLike { id: string; name: string; type: string; url: string; width: number; height: number }
+let customSymbolsRegistry: CustomSymbolLike[] = [];
+export function setCustomSymbols(list: CustomSymbolLike[]): void {
   customSymbolsRegistry = list || [];
 }
-export function getCustomSymbols(): CustomSymbol[] {
+export function getCustomSymbols(): CustomSymbolLike[] {
   return customSymbolsRegistry;
 }
 
 // ========== 主渲染函数 ==========
 
 export interface RenderOpts {
-  customSymbols?: CustomSymbol[];
+  customSymbols?: CustomSymbolLike[];
 }
 
 // 记录每个 map 上已被渲染的元素 ID 与类型签名（类型切换时需整体重建图层）

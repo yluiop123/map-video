@@ -40,9 +40,8 @@ const GROUPS = [
   ['组 5 · 路线类元素（Route 工具）', ['element_route']],
   ['组 6 · 形状类元素（Shape 工具）', ['element_shape']],
   ['组 7 · 疆域类元素（Terr 工具）', ['element_territory']],
-  ['组 8 · 元素附属（跨类别）', ['element_keyframe']],
-  ['组 9 · 叠加层（弹窗）', ['overlay', 'overlay_block', 'person_block']],
-  ['组 10 · 应用配置', ['provider']],
+  ['组 8 · 叠加层（弹窗）', ['overlay', 'overlay_block', 'person_block']],
+  ['组 9 · 应用配置', ['provider']],
 ];
 
 // 元素表的「工具入口」标注（事实源：src/components/Toolbar.tsx 的 TOOLS / SHAPE_GROUPS / TERR_ITEMS
@@ -77,7 +76,6 @@ const TABLE_FRONTEND = {
   element_route: { role: '路线类元素：line / moving_point / connector', fe: '工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）' },
   element_shape: { role: '形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）', fe: '工具条「形状」下拉 + 形状属性面板' },
   element_territory: { role: '疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含', fe: '工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）' },
-  element_keyframe: { role: '元素动画关键帧（8 种 property，跨 4 张类别表共用，弱引用）', fe: '属性面板各动画数值（透明度 / 缩放 / 旋转 / 绘制·路径·填充进度）；无独立关键帧面板' },
   overlay: { role: '弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）', fe: '右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView' },
   overlay_block: { role: 'custom 类弹窗的内容块序列（逐块排序）', fe: '弹窗面板「自定义」类型的块编辑（FxPanelBody.tsx）' },
   person_block: { role: '人物卡片内容块（头像 / 姓名 / 简介 / 引言 / 对白 5 种）', fe: '弹窗面板「人物」类型的块编辑（FxPanelBody.tsx）' },

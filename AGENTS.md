@@ -123,7 +123,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2 设计稿，尚未落地到运行时）
 
-**规模**：20 张表 / 3 视图 / **0 触发器** / 316 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：19 张表 / 3 视图 / **0 触发器** / 309 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
 - **★ 只存输入原值，不存派生 / 换算值**：凡是能从别处算出来的都不入库或存为可空覆盖值 —— 例如字幕时长有配音时随音频（不落库）、无配音时才存估算值，`music_track` 的结束时间同理。典型反面：`FrameTimeField` 曾把「秒」输入换算成帧入库，改 fps 后用户输入就永久丢失了。
@@ -140,7 +140,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   | `element_territory` | territory（势力/地块/事件 JSON 内联） | Terr |
 
 - **★ 不使用触发器（2026-09-12 起全部移除）**：数据库侧只有表 / 索引 / 视图，**没有触发器**。理由：网页端 Dexie（IndexedDB）没有触发器，数据库侧触发器只在桌面端生效 → 同一规则两套真相；且规则藏在表定义外、与写入端重复。
-- **改版的代价 —— 弱引用**：`element_route.from/to_element_id`（连接线端点）与 `element_keyframe.element_id` 无外键，**由应用层在删除元素时一并清理**（连接线端点 + 该元素的关键帧）；`camera_keyframe.follow_route_element_id` 只引用同章节路线也由写入端校验。数据库侧只留 `v_check_dangling`（悬空引用）与 `v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）两个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
+- **改版的代价 —— 弱引用**：仅剩 `element_route.from/to_element_id`（连接线端点）无外键，**由应用层在删除元素时一并删除以它为端点的连接线**（动画关键帧已内联进各类别表的 `keyframes_json`，随元素生灭，无此弱引用）；`camera_keyframe.follow_route_element_id` 只引用同章节路线也由写入端校验。数据库侧只留 `v_check_dangling`（悬空引用）与 `v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）两个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
 - **★ 新增/改动字段的同步清单（漏一步就会设计↔实现漂移）**：
 
   1. `docs/db-schema-v2.sql`（唯一事实源）改 DDL

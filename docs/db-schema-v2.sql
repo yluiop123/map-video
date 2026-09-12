@@ -5,7 +5,7 @@
 --          主键统一 <实体>_id，时间统一 *_sec（秒，REAL）/ *_at（epoch ms，仅审计字段用）
 -- 字符集：UTF-8；时间单位：**秒**（REAL，存用户输入的原值）；
 --          渲染 / 导出时按 project_config.default_fps 换算为帧（帧是派生量，不入库）
--- 规模：20 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
+-- 规模：19 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -99,7 +99,6 @@ CREATE TABLE IF NOT EXISTS project_config (
 -- 由 kind 区分：icon 即原图标库条目，image 即原图片库条目。
 CREATE TABLE IF NOT EXISTS asset (
   asset_id      TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   kind          TEXT NOT NULL CHECK (kind IN ('image','gif','model','audio','video','font','icon')),
   name          TEXT NOT NULL DEFAULT '',  -- 原文件名 / 展示名
   mime          TEXT NOT NULL,
@@ -118,8 +117,8 @@ CREATE TABLE IF NOT EXISTS asset (
   CHECK ((storage = 'file' AND rel_path IS NOT NULL)
       OR (storage = 'blob' AND blob      IS NOT NULL))
 );
-CREATE INDEX IF NOT EXISTS ix_asset_kind ON asset(project_id, kind);
-CREATE INDEX IF NOT EXISTS ix_asset_name ON asset(project_id, name);
+CREATE INDEX IF NOT EXISTS ix_asset_kind ON asset(kind);
+CREATE INDEX IF NOT EXISTS ix_asset_name ON asset(name);
 
 -- -----------------------------------------------------------------------------
 -- 3. 章节与时间轴
@@ -201,6 +200,7 @@ CREATE TABLE IF NOT EXISTS element_marker (
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
   label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),  -- 原 element_label 内联
+  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联：[{property,sec,easing,value_num,value_json}]
   ord            INTEGER NOT NULL DEFAULT 0,
 
   -- 位置（三类标记都落在单点）
@@ -284,6 +284,7 @@ CREATE TABLE IF NOT EXISTS element_route (
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
   label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
+  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
   ord            INTEGER NOT NULL DEFAULT 0,
 
   -- line / moving_point 路径（line_type=bezier 时为控制点，arc 时为大圆弧端点）
@@ -347,6 +348,7 @@ CREATE TABLE IF NOT EXISTS element_shape (
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
   label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
+  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
   ord            INTEGER NOT NULL DEFAULT 0,
 
   -- polygon 专属
@@ -419,6 +421,7 @@ CREATE TABLE IF NOT EXISTS element_territory (
   z_index        INTEGER NOT NULL DEFAULT 0,
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
   label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
+  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
   ord            INTEGER NOT NULL DEFAULT 0,
 
   display_json   TEXT NOT NULL CHECK (json_valid(display_json)),   -- 显示配置：边界/线宽/透明度/标签
@@ -431,34 +434,10 @@ CREATE TABLE IF NOT EXISTS element_territory (
 CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(chapter_id, z_index, ord);
 
 -- -----------------------------------------------------------------------------
--- 5. 元素附属：动画关键帧
---    ★ 取消了 element 基表后，关键帧无法用外键指向「四张表之一」，故为弱引用：
---      element_id 不加外键，元素删除时由应用层一并删除它的关键帧（不使用触发器，见第 10 节）；
---      chapter_id 仍保留外键，保证「删章节」能级联清掉本章关键帧。
+-- 5. 元素动画关键帧：**已内联**进 4 张类别表的 keyframes_json（P3）
+--    运行时元素对象本就内联关键帧数组（drawProgress / morphKeyframes 等），
+--    独立成表反而需要「元素 ↔ 关键帧」的弱引用维护，故取消该表。
 -- -----------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS element_keyframe (
-  kf_id       TEXT PRIMARY KEY,
-  element_id  TEXT NOT NULL,                     -- 弱引用（元素分属 4 张表）
-  element_type TEXT NOT NULL CHECK (element_type IN (
-                'point','flag','military_symbol',
-                'line','moving_point','connector',
-                'polygon','arrow','double_arrow','gathering','encirclement',
-                'territory')),
-  chapter_id  TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
-  property    TEXT NOT NULL CHECK (property IN (
-                'opacity','scale','rotation','draw_progress','progress',
-                'path_progress','fill_progress','morph')),
-  sec       REAL NOT NULL CHECK (sec >= 0),
-  easing      TEXT,
-  value_num   REAL,                                    -- 标量快路径
-  value_json  TEXT CHECK (value_json IS NULL OR json_valid(value_json)),  -- morph 用 rings
-  ord         INTEGER NOT NULL DEFAULT 0,
-  CHECK (value_num IS NOT NULL OR value_json IS NOT NULL),
-  UNIQUE (element_id, property, sec)
-);
-CREATE INDEX IF NOT EXISTS ix_element_kf   ON element_keyframe(element_id, property, sec);
-CREATE INDEX IF NOT EXISTS ix_element_kf_ch ON element_keyframe(chapter_id);
 
 -- -----------------------------------------------------------------------------
 -- 6. 叠加层（弹出元素）
@@ -715,14 +694,6 @@ SELECT 'connector.to', r.element_id, r.to_element_id
       UNION ALL SELECT 1 FROM element_shape     WHERE element_id = r.to_element_id
       UNION ALL SELECT 1 FROM element_territory WHERE element_id = r.to_element_id)
 UNION ALL
-SELECT 'keyframe.element', k.kf_id, k.element_id
-  FROM element_keyframe k
-  WHERE NOT EXISTS (
-      SELECT 1 FROM element_marker    WHERE element_id = k.element_id
-      UNION ALL SELECT 1 FROM element_route     WHERE element_id = k.element_id
-      UNION ALL SELECT 1 FROM element_shape     WHERE element_id = k.element_id
-      UNION ALL SELECT 1 FROM element_territory WHERE element_id = k.element_id)
-UNION ALL
 SELECT 'camera.follow_route', k.kf_id, k.follow_route_element_id
   FROM camera_keyframe k
   WHERE k.follow_route_element_id IS NOT NULL
@@ -752,7 +723,7 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
 --    理由：配置数量固定、无需用户自定义，入库只会多出两张表与两处外键（还曾形成循环）。
 -- 2) 【本版最大取舍】取消 element 基表后，跨表弱引用失去数据库级外键：
 --    · connector.from/to（可指向任意类别元素）→ 应用层清理 + 自检视图
---    · element_keyframe.element_id        → 同上
+--    · element_keyframe 表已取消（关键帧内联进类别表 keyframes_json），不再有此弱引用
 --    代价：写入侧需保证「先建元素、再建引用它的连接线 / 关键帧」，
 --          且删除元素时要一并清理引用它的连接线与关键帧（无触发器兜底，见第 10 节）。
 --    收益：元素表数量 14 → 4，模块边界与工具栏一致，读写路径更直观。

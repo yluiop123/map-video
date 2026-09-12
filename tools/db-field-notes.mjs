@@ -48,7 +48,6 @@ export default {
 
   asset: {
     asset_id: '素材 id（随机生成，与文件名/内容解耦，改名不影响引用）',
-    project_id: '所属项目',
     kind: '素材种类：image 图片 / gif 动图 / model 3D 模型 / audio 音频 / video 视频 / font 字体 / icon 用户图标库条目（合并了原 custom_symbol / custom_image）',
     name: '原文件名 / 展示名',
     mime: 'MIME 类型（如 image/png）',
@@ -181,6 +180,7 @@ export default {
     uniform_move: '是否全程匀速（0 则按各路径点自定义到达时间）',
     point_times_json: '各路径点到达时间数组（秒，非匀速时使用）',
     label_json: '元素标签：{text,fontSize,color,position,bgColor,bgPadding,bgRadius,fontWeight}',
+    keyframes_json: '动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复',
     ord: '同章节内排序',
     lng: '经度（三类标记都落在单点）',
     lat: '纬度',
@@ -228,6 +228,7 @@ export default {
     uniform_move: '是否全程匀速（0 则按各路径点自定义到达时间）',
     point_times_json: '各路径点到达时间数组（秒）',
     label_json: '元素标签（内联）：{text,fontSize,color,position,bgColor,bgPadding,bgRadius,fontWeight}',
+    keyframes_json: '动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复',
     ord: '同章节内排序',
     coords_json: '路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填）',
     line_width: '线宽（px）',
@@ -268,6 +269,7 @@ export default {
     uniform_move: '是否全程匀速（0 则按各路径点自定义到达时间）',
     point_times_json: '各路径点到达时间数组（秒）',
     label_json: '元素标签（内联）',
+    keyframes_json: '动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复',
     ord: '同章节内排序',
     rings_json: '多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填）',
     fill_color: '填充色',
@@ -315,19 +317,7 @@ export default {
     countries_json: '势力数组：[{countryId,name,color,ord}]',
     plots_json: '地块数组：[{plotId,name,rings,ownerId,ord}]；ownerId 须能在 countries_json 中命中（由 v_check_territory_ref 校验）',
     events_json: '兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上',
-  },
-
-  element_keyframe: {
-    kf_id: '关键帧 id',
-    element_id: '所属元素 id（弱引用：元素分属 4 张表，无外键；删元素时由应用层连带删除本行）',
-    element_type: '所属元素的具体类型（point / line / polygon / territory 等 12 种，便于定位与统计）',
-    chapter_id: '所属章节（外键，删章节时级联清理本章全部关键帧）',
-    property: '动画属性：opacity / scale / rotation / draw_progress / progress / path_progress / fill_progress / morph',
-    sec: '时间（秒，章内绝对时间轴）',
-    easing: '缓动类型',
-    value_num: '数值（标量属性的快路径）',
-    value_json: 'JSON 值（morph 的环数据）',
-    ord: '同元素同属性内排序',
+    keyframes_json: '动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复',
   },
 
   overlay: {
