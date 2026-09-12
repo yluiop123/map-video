@@ -169,9 +169,9 @@ export interface MapElementBase {
   pointTimes?: number[];
 }
 
-/** 点的视觉形态（9 种）：5 种矢量基础形态 + 4 种资源形态。
- *  军标不在此列 —— 它是独立元素类型 MilitarySymbolElement（type='military_symbol'），
- *  由 milsymbol 库按 APP-6 规范渲染，不走标记的 shape 资源管线。 */
+/** 点的视觉形态（10 种）：5 种矢量基础形态 + 5 种资源形态。
+ *  军标（military_symbol）与图片/图标同属资源形态：符号图由 milsymbol 按 APP-6
+ *  规范生成（builtinId = 'milsym:<SIDC>'），属性（大小/朝向/颜色/标签）与图片完全一致。 */
 export type PointShape =
   | 'circle'   // 圆点
   | 'text'     // 文字贴片
@@ -181,7 +181,8 @@ export type PointShape =
   | 'image'    // 图片（内置 SVG 图集 / 上传 png·jpg·webp·svg）
   | 'gif'      // 动图（内置程序化动画 / 上传 gif·webp）
   | 'model'    // 3D 模型（内置程序化简模 / 上传 glb·gltf；three.js + custom layer）
-  | 'icon';    // 图标库（lucide / react-icons / 自建库）
+  | 'icon'     // 图标库（lucide / react-icons / 自建库）
+  | 'military_symbol';  // 军标（milsymbol 标准符号，四阵营框架由 SIDC 身份码决定）
 
 /** 形态专属表现参数（对应数据库 element_marker.visual_meta_json） */
 export interface VisualMeta {
@@ -362,33 +363,6 @@ export interface GatheringElement extends MapElementBase {
   rotation?: number;
 }
 
-export interface MilitarySymbolElement extends MapElementBase {
-  type: 'military_symbol';
-  sidc: string;
-  coordinates: [number, number];
-  /** 方向箭头角度（0-359 度；未定义 = 不画箭头）——milsymbol direction */
-  direction?: number;
-  /** 数量（标准字段 A；空 = 不显示）——milsymbol quantity */
-  quantity?: string;
-  /** 唯一编号（标准字段 T）——milsymbol uniqueDesignation */
-  uniqueDesignation?: string;
-  /** 装备/单位类型（标准字段 V）——milsymbol type（元素 type 为判别字段，故改名） */
-  equipmentType?: string;
-  /** 附加信息（标准字段 D）——milsymbol additionalInformation */
-  additionalInformation?: string;
-  /** 参谋备注（标准字段 C）——milsymbol staffComments */
-  staffComments?: string;
-  /** 日期时间组（标准字段 W）——milsymbol dtg */
-  dtg?: string;
-  /** 位置标注（标准字段 Y）——milsymbol location */
-  locationText?: string;
-  /** 是否绘制外框（默认 true）——milsymbol frame */
-  frame?: boolean;
-  /** 是否填充阵营色（默认 true）——milsymbol fill */
-  fill?: boolean;
-  label?: string;
-}
-
 export interface ConnectorElement extends MapElementBase {
   type: 'connector';
   fromElementId: string;
@@ -474,7 +448,6 @@ export type MapElement =
   | DoubleArrowElement
   | EncirclementElement
   | GatheringElement
-  | MilitarySymbolElement
   | ConnectorElement
   | FlagElement
   | TerritoryElement;

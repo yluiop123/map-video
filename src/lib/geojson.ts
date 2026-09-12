@@ -77,7 +77,6 @@ export function elementToFeature(element: MapElement): GeoFeature | null {
     case 'arrow':
     case 'encirclement':
     case 'gathering':
-    case 'military_symbol':
       return null;
 
     default:

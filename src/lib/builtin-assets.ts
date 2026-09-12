@@ -112,8 +112,32 @@ export const BUILTIN_ALL: BuiltinAsset[] = [...BUILTIN_IMAGES, ...BUILTIN_GIFS, 
 
 const BY_ID = new Map(BUILTIN_ALL.map((a) => [a.id, a]));
 
+// ========== 军标（milsymbol 动态生成） ==========
+//
+// builtinId = 'milsym:<SIDC>'（如 milsym:SFG-UCI---），不落在静态图集里：
+// 首次访问时用 milsymbol（APP-6 / MIL-STD-2525 官方规范实现）渲染 64px SVG 并缓存。
+// 元素属性（大小/朝向/颜色/标签）与图片形态完全一致，复用标记的位图管线。
+
+import ms from 'milsymbol';
+
+const MILSYM_CACHE = new Map<string, BuiltinAsset>();
+
 /** 按 id 取内置资源；不存在返回 undefined（渲染端需自行回退） */
 export function getBuiltinAsset(id?: string | null): BuiltinAsset | undefined {
+  if (id && id.startsWith('milsym:')) {
+    const sidc = id.slice('milsym:'.length);
+    let asset = MILSYM_CACHE.get(sidc);
+    if (!asset) {
+      try {
+        const svg = new ms.Symbol(sidc, { size: 64, fill: true }).asSVG();
+        asset = { id, kind: 'image', name: '军标', tags: ['军标'], tintable: true, src: `data:image/svg+xml,${encodeURIComponent(svg)}` };
+      } catch {
+        return undefined;
+      }
+      MILSYM_CACHE.set(sidc, asset);
+    }
+    return asset;
+  }
   return id ? BY_ID.get(id) : undefined;
 }
 

@@ -2072,7 +2072,7 @@ function moveElementTo(chapter: Chapter, elementId: string, lngLat: [number, num
   const el = chapter.elements.find((e) => e.id === elementId);
   if (!el) return;
 
-  if (el.type === 'point' || el.type === 'military_symbol' || el.type === 'flag') {
+  if (el.type === 'point' || el.type === 'flag') {
     useProjectStore.getState().updateElement(chapter.id, elementId, { coordinates: lngLat });
   } else if (el.type === 'moving_point') {
     useProjectStore.getState().updateElement(chapter.id, elementId, { path: [lngLat, ...el.path.slice(1)] });

@@ -1,6 +1,5 @@
 import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
 import * as turf from '@turf/turf';
-import ms from 'milsymbol';
 import { interpolateKeyframes, interpolatePath } from './keyframe-interpolation';
 import { setFlyRibbon, clearFlyRibbons, flyHeight01, projectLifted, flyLiftMeters, setFlyMarker, clearFlyMarkers } from './fly-ribbon';
 import {
@@ -15,7 +14,7 @@ import type { TerritoryLabelStyle } from './territory';
 import type {
   MapElement, PointElement, MovingPointElement, LineElement,
   PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
-  GatheringElement, MilitarySymbolElement, ConnectorElement,
+  GatheringElement, ConnectorElement,
   FlagElement, CameraKeyframe,
   TerritoryElement,
 } from '../types';
@@ -190,7 +189,6 @@ export function renderElements(
       case 'double_arrow': renderDoubleArrow(map, element, frame); break;
       case 'encirclement': renderEncirclement(map, element, frame); break;
       case 'gathering': renderGathering(map, element, frame); break;
-      case 'military_symbol': renderMilitarySymbol(map, element); break;
       case 'connector': renderConnector(map, element); break;
       case 'flag': renderFlag(map, element); break;
       case 'territory': renderTerritory(map, element as TerritoryElement, frame); break;
@@ -365,7 +363,7 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   /** 资源形态（image / gif / model / icon） */
   const isResourceShape = cap.source !== 'none';
   /** 走位图管线的形态（model 走 3D custom layer，见渲染端模型章节） */
-  const isVisualShape = shape === 'image' || shape === 'gif' || shape === 'icon' || shape === 'model';
+  const isVisualShape = shape === 'image' || shape === 'gif' || shape === 'icon' || shape === 'model' || shape === 'military_symbol';
   const visualSrc = isResourceShape ? resolvePinVisualSource(element) : ({ type: 'none' } as const);
   const legacyIconUrl = element.iconUrl;
   const hasVisual = (isVisualShape && visualSrc.type !== 'none') || !!legacyIconUrl;
@@ -2907,74 +2905,12 @@ function renderGathering(map: maplibregl.Map, element: GatheringElement, frame: 
   }
 }
 
-// ========== 渲染：军事符号（milsymbol APP-6） ==========
-
-const milIconPending = new Set<string>();
-
-function renderMilitarySymbol(map: maplibregl.Map, element: MilitarySymbolElement) {
-  const sourceId = `mil-${element.id}`;
-  // 图标缓存键必须包含全部影响图面的属性（标准文本字段 / 箭头 / 框架 / 填色），否则切换后不刷新
-  const iconId = `mil-icon-${element.sidc}|q:${element.quantity || ''}|d:${element.direction ?? ''}|f:${element.frame !== false}|u:${element.fill !== false}|t:${element.uniqueDesignation || ''}|v:${element.equipmentType || ''}|c:${element.staffComments || ''}|i:${element.additionalInformation || ''}|w:${element.dtg || ''}|y:${element.locationText || ''}`;
-  const layerId = `mil-layer-${element.id}`;
-  // 注意：军标不渲染界面标签（element.label / name）—— 标准符号自带文字修饰，
-  // 再叠加标签会与规范图面冲突（产品约定：军标无标签）。
-
-  const geojson = turf.featureCollection([
-    turf.point(element.coordinates, {}),
-  ]);
-
-  if (!map.getSource(sourceId)) {
-    map.addSource(sourceId, { type: 'geojson', data: geojson });
-    map.addLayer({
-      id: layerId, type: 'symbol', source: sourceId,
-      layout: {
-        'icon-image': iconId,
-        'icon-allow-overlap': true,
-      },
-    });
-  } else {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
-    // 切换符号 / 属性：图层已存在时同步 icon-image（否则地图上的图标不随面板更新）
-    if (map.getLayer(layerId)) {
-      map.setLayoutProperty(layerId, 'icon-image', iconId);
-    }
-  }
-
-  ensureMilIcon(map, iconId, element);
-}
-
-function ensureMilIcon(map: maplibregl.Map, iconId: string, element: MilitarySymbolElement) {
-  if (map.hasImage(iconId) || milIconPending.has(iconId)) return;
-  milIconPending.add(iconId);
-  try {
-    const sym = new ms.Symbol(element.sidc, {
-      size: 64,
-      fill: element.fill !== false,
-      frame: element.frame !== false,
-      quantity: element.quantity || undefined,
-      direction: element.direction,
-      uniqueDesignation: element.uniqueDesignation || undefined,
-      type: element.equipmentType || undefined,
-      staffComments: element.staffComments || undefined,
-      additionalInformation: element.additionalInformation || undefined,
-      dtg: element.dtg || undefined,
-      location: element.locationText || undefined,
-    });
-    const url = sym.toDataURL();
-    const img = new Image();
-    img.onload = () => {
-      milIconPending.delete(iconId);
-      if (!map.hasImage(iconId)) {
-        try { map.addImage(iconId, img as any, { pixelRatio: 1 }); } catch { /* */ }
-      }
-      map.triggerRepaint();
-    };
-    img.onerror = () => milIconPending.delete(iconId);
-    img.src = url;
-  } catch {
-    milIconPending.delete(iconId);
-  }
-}
+// ========== 渲染：军事符号（已并入标记 shape 管线） ==========
+//
+// military_symbol 现在是 PointShape 的一种资源形态（与图片/图标一致）：
+// 符号图由 builtin-assets 的 getBuiltinAsset('milsym:<SIDC>') 调用 milsymbol
+// 按官方规范生成，走通用位图管线（renderPoint），属性（大小/朝向/颜色/标签）
+// 与图片形态完全一致。旧的独立元素渲染（renderMilitarySymbol）已移除。
 
 // ========== 渲染：连线 ==========
 
@@ -3203,7 +3139,6 @@ function renderFlag(map: maplibregl.Map, element: FlagElement) {
 export function buildSelectionFeature(element: MapElement): any | null {
   switch (element.type) {
     case 'point':
-    case 'military_symbol':
     case 'flag':
       return turf.point((element as any).coordinates);
     case 'moving_point':

@@ -40,6 +40,7 @@ export const PIN_CAPABILITIES: Record<PointShape, PinCapability> = {
   gif: { label: '动图', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'media', metaFields: ['fps', 'loop'] },
   model: { label: '模型', canTint: true, canFlat: false, canRotate: true, canScale: true, source: 'media', metaFields: ['altitude', 'autoRotate', 'spin', 'pitchAlign', 'animation'] },
   icon: { label: '图标库', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'icon', metaFields: ['strokeWidth'] },
+  military_symbol: { label: '军标', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'media', metaFields: ['fit', 'tintable'] },
 };
 
 export const ALL_POINT_SHAPES = Object.keys(PIN_CAPABILITIES) as PointShape[];
@@ -148,6 +149,9 @@ export function defaultVisualFor(shape: PointShape, el: PointElement): Partial<P
         iconName: el.iconName || 'MapPin',
         color: el.color || '#FFFFFF',
       };
+    case 'military_symbol':
+      // 军标：milsymbol 按官方规范生成（默认友军步兵），默认白色 = 标准阵营配色不被染色
+      return { ...base, iconUrl: undefined, emoji: undefined, builtinId: 'milsym:SFG-UCI---', color: el.color || '#FFFFFF' };
     default:
       return base;
   }
