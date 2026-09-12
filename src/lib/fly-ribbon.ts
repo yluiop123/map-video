@@ -1,9 +1,15 @@
 /**
- * 飞行拱形 Ribbon 自定义图层（原生 WebGL Custom Layer，earcut 仅用于多边形三角化）。
+ * 飞行拱形自定义图层（原生 WebGL Custom Layer，earcut 用于多边形三角化）。
  *
- * 真 3D「加高程」方案：路线各点按拱形剖面（起点贴地→抬升→巡航→降落回贴地）在
- * 世界空间给予高程（米），经 MapLibre v5 的 projectTileFor3D 投影到屏幕——mercator
- * 与 globe（3D 球体）均正确，抬升锚定在地图世界空间（相机旋转/俯仰不贴屏幕）。
+ * **真 3D 几何**：路线在 CPU 端构建成世界空间 3D 网格，经 MapLibre v5 的
+ * projectTileFor3D 投影——mercator 与 globe（3D 球体）均正确。
+ *  · 直线/曲线 → **圆柱管**：沿路径每采样点生成 8 边形圆截面环（半径 = 线宽/2，
+ *    按 zoom 换算成米），开放路径两端加圆盘端帽；
+ *  · 箭头填充 → **挤出立体块**：顶面（earcut）/ 底面 / 侧墙（鞋带公式定绕向，
+ *    外法向朝外），半厚度 = EXTRUDE_HALF_PX 屏幕像素换算成米；
+ *  · 立体感：顶点带法向，片元做固定光向的 Lambert 光照（相机无关），上亮下暗；
+ *  · 高度：由路径总长度决定（flyArcHeightMeters，data.heightM），世界坐标固定米数——
+ *    缩放/俯仰/旋转都不改变弧线（历史实现曾按相机换算拱高并叠加屏幕兜底抬升，已移除）。
  *  - 高程语义：自定义图层路径下 elevation=米（mercator 内部按 z=meters/(R·cos lat) 换算，
  *    globe 直接米，shader 内逐顶点换算）；**拱高由路径总长度决定**（flyArcHeightMeters，
  *    世界坐标固定米数）——缩放/俯仰/旋转都不改变弧线高度，不再做屏幕空间兜底抬升；
@@ -70,8 +76,13 @@ export interface FlyRibbonDataPoly {
 export type FlyRibbonData = FlyRibbonDataLine | FlyRibbonDataPoly;
 
 const LAYER_ID = 'fly-ribbons';
-const VERT_STRIDE = 10; // aPos(2) + aPrev(2) + aNext(2) + aSide + aLift + aAlong + aDist
+/** 顶点布局：aPos(3: merc x, y, zElev) + aNrm(3: 法向，光照用) + aDist(1: 沿线屏幕弧长，虚线用) */
+const VERT_STRIDE = 7;
 const MAX_PTS = 600; // 每条路径采样上限（不足时按弧长加密）
+/** 管截面边数（8 边形视觉上即圆柱） */
+const TUBE_SIDES = 8;
+/** 箭头挤出的半厚度（屏幕 px，随 zoom 换算成米） */
+const EXTRUDE_HALF_PX = 1.6;
 /** 拱形视觉高度（屏幕 px）——仅兜底换算用（flyLiftMeters），正常路径高度见 flyArcHeightMeters */
 export const FLY_VISUAL_PX = 96;
 
@@ -105,11 +116,7 @@ interface RibbonGlState {
   program: WebGLProgram | null;
   variantName: string;
   aPos: number;
-  aPrev: number;
-  aNext: number;
-  aSide: number;
-  aLift: number;
-  aAlong: number;
+  aNrm: number;
   aDist: number;
   uViewport: WebGLUniformLocation | null;
   uColor: WebGLUniformLocation | null;
@@ -142,46 +149,20 @@ const glStateByMap = new WeakMap<MaplibreMap, RibbonGlState>();
 const VERT_SRC = (prelude: string, define: string) => `
 ${prelude}
 ${define}
-uniform vec2 uViewport;
-uniform float uWidthPx;
-uniform float uLiftM;
-uniform float uScreenLift;
-uniform float uZIsMercator;
-attribute vec2 aPos;
-attribute vec2 aPrev;
-attribute vec2 aNext;
-attribute float aSide;
-attribute float aLift;
-attribute float aAlong;
+attribute vec3 aPos;
+attribute vec3 aNrm;
 attribute float aDist;
 varying float vDist;
-varying float vSide;
-varying float vAlong;
+varying float vShade;
 void main() {
-  // mercator：elevation 单位=mercator z（meters/(R·cos lat)，逐顶点换算）；globe：直接米
-  float elev;
-  if (uZIsMercator > 0.5) {
-    float lat = 2.0 * atan(exp(3.141592653589793 * (1.0 - 2.0 * aPos.y))) - 1.5707963267948966;
-    elev = aLift * uLiftM / (6378137.0 * cos(lat));
-  } else {
-    elev = aLift * uLiftM;
-  }
-  vec4 cp = projectTileFor3D(aPos, elev);
-  vec4 cprev = projectTile(aPrev);
-  vec4 cnext = projectTile(aNext);
-  vec2 p0 = cprev.xy / cprev.w;
-  vec2 p1 = cnext.xy / cnext.w;
-  vec2 dir = p1 - p0;
-  float len = length(dir);
-  dir = len > 1e-6 ? dir / len : vec2(1.0, 0.0);
-  vec2 nrm = vec2(-dir.y, dir.x);
-  // 线宽/端帽屏幕扩展 + 低俯仰兜底：世界高程屏幕位移不足部分用屏幕空间上移补足（+y NDC = 屏幕向上）
-  vec2 offPx = nrm * (aSide * uWidthPx * 0.5) + dir * (aAlong * uWidthPx * 0.5);
-  offPx.y += aLift * uScreenLift;
-  gl_Position = vec4(cp.xy + offPx * 2.0 / uViewport * cp.w, 0.0, cp.w);
+  // aPos.xy = 归一化 mercator；aPos.z = 高程（CPU 端已按投影换算：mercator=米/(R·cosLat)，globe=米）
+  vec4 cp = projectTileFor3D(aPos.xy, aPos.z);
+  gl_Position = vec4(cp.xy, 0.0, cp.w);
+  // 立体光照：固定光向（与相机无关），法向来自管面/挤出侧面 → 上亮下暗
+  vec3 N = normalize(aNrm);
+  vec3 L = normalize(vec3(0.42, -0.34, 0.84));
+  vShade = 0.46 + 0.54 * max(0.0, dot(N, L));
   vDist = aDist;
-  vSide = aSide;
-  vAlong = aAlong;
 }
 `;
 
@@ -189,14 +170,11 @@ const FRAG_SRC = `
 precision highp float;
 uniform vec4 uColor;
 uniform float uOpacity;
-uniform float uWidthPx;
-uniform float uEdgeAA;
 uniform float uDashTotal;
 uniform float uDashCount;
 uniform float uDash[6];
 varying float vDist;
-varying float vSide;
-varying float vAlong;
+varying float vShade;
 void main() {
   float alpha = 1.0;
   if (uDashTotal > 0.0) {
@@ -216,12 +194,8 @@ void main() {
     }
     alpha = aD * (1.0 - smoothstep(0.0, 1.0, edge));
   }
-  float aa = 2.0 / max(uWidthPx, 1.0);
-  float sAA = 1.0 - smoothstep(1.0 - aa * 1.5, 1.0, abs(vSide));
-  float aAA = 1.0 - smoothstep(1.0 - aa * 1.5, 1.0, abs(vAlong));
-  alpha *= mix(1.0, sAA * aAA, uEdgeAA);
   if (alpha <= 0.003) discard;
-  gl_FragColor = vec4(uColor.rgb, uColor.a * uOpacity * alpha);
+  gl_FragColor = vec4(uColor.rgb * vShade, uColor.a * uOpacity * alpha);
 }
 `;
 
@@ -405,46 +379,108 @@ export function flyScreenLiftPx(_map: MaplibreMap): number {
   return 0;
 }
 
-/** 单条路径 → 交错顶点数组（线模式每段两个三角形；poly 用 earcut 索引；位置=mercator，aLift=0..1） */
+/** 归一化 mercator → 经纬度（半径换算与屏幕弧长需要真实纬度） */
+function mercToLngLat(m: [number, number]): [number, number] {
+  const lng = m[0] * 360 - 180;
+  const lat = (Math.atan(Math.sinh(Math.PI * (1 - 2 * m[1]))) * 180) / Math.PI;
+  return [lng, lat];
+}
+
+/**
+ * 多边形（箭头填充）→ 沿法向挤出的立体块：
+ * 顶面（+z 法向）/ 底面（-z 法向）/ 侧墙（水平外法向，用鞋带公式定绕向），
+ * 半厚度 = EXTRUDE_HALF_PX 屏幕像素按 zoom 换算成米 —— 箭头因此有真实厚度与棱面。
+ */
+function buildExtrudedPoly(
+  data: FlyRibbonDataPoly,
+  isGlobe: boolean,
+  zoom: number,
+  push: (p: [number, number, number], nrm: [number, number, number], dist: number) => void
+): void {
+  const heightM = data.heightM ?? 0;
+  for (const ring of data.rings) {
+    if (!ring.coords || ring.coords.length < 3) continue;
+    const dens = densifyMerc(
+      ring.coords.map(lnglatToMerc),
+      ring.f,
+      true,
+      Math.min(MAX_PTS, Math.max(240, ring.coords.length))
+    );
+    const merc = dens.pts;
+    const n = merc.length;
+    if (n < 3) continue;
+    const f = (dens.f as number[]) || [];
+    const lat0 = mercToLngLat(merc[0])[1];
+    const tz = pxToMercRadii(lat0, zoom, EXTRUDE_HALF_PX, isGlobe)[2];
+    // 每个顶点的上下表面 z
+    const zTop: number[] = [];
+    const zBot: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const lat = mercToLngLat(merc[i])[1];
+      const cos = Math.max(0.01, Math.cos((lat * Math.PI) / 180));
+      const z = isGlobe ? (f[i] ?? 0) * heightM : ((f[i] ?? 0) * heightM) / (EARTH_R * cos);
+      zTop.push(z + tz);
+      zBot.push(z - tz);
+    }
+    const flat: number[] = [];
+    for (const p of merc) flat.push(p[0], p[1]);
+    const idx = earcut(flat);
+    for (let t = 0; t + 2 < idx.length; t += 3) {
+      const i0 = idx[t];
+      const i1 = idx[t + 1];
+      const i2 = idx[t + 2];
+      push([merc[i0][0], merc[i0][1], zTop[i0]], [0, 0, 1], 0);
+      push([merc[i1][0], merc[i1][1], zTop[i1]], [0, 0, 1], 0);
+      push([merc[i2][0], merc[i2][1], zTop[i2]], [0, 0, 1], 0);
+      push([merc[i0][0], merc[i0][1], zBot[i0]], [0, 0, -1], 0);
+      push([merc[i2][0], merc[i2][1], zBot[i2]], [0, 0, -1], 0);
+      push([merc[i1][0], merc[i1][1], zBot[i1]], [0, 0, -1], 0);
+    }
+    // 侧墙：鞋带面积定绕向 → 外法向统一朝外
+    let area = 0;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      area += merc[i][0] * merc[j][1] - merc[j][0] * merc[i][1];
+    }
+    const flip = area >= 0 ? 1 : -1;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const ex = merc[j][0] - merc[i][0];
+      const ey = merc[j][1] - merc[i][1];
+      const l = Math.hypot(ex, ey) || 1;
+      const N: [number, number, number] = [(flip * ey) / l, (-flip * ex) / l, 0];
+      const A: [number, number, number] = [merc[i][0], merc[i][1], zTop[i]];
+      const B: [number, number, number] = [merc[j][0], merc[j][1], zTop[j]];
+      const C: [number, number, number] = [merc[j][0], merc[j][1], zBot[j]];
+      const D: [number, number, number] = [merc[i][0], merc[i][1], zBot[i]];
+      push(A, N, 0);
+      push(B, N, 0);
+      push(C, N, 0);
+      push(A, N, 0);
+      push(C, N, 0);
+      push(D, N, 0);
+    }
+  }
+}
+
+/** 单条路径 → 交错顶点数组（线模式=3D 圆柱管；poly=沿法向挤出的立体块；位置=mercator XYZ） */
 function buildVertices(
   map: MaplibreMap,
   data: FlyRibbonData
 ): { arr: Float32Array; count: number } | null {
-  const project = (lnglat: [number, number]) => {
-    const p = map.project(lnglat as any);
-    return [p.x, p.y] as [number, number];
-  };
+  const isGlobe = (map as any)?.getProjection?.()?.type === 'globe';
+  const zoom = map.getZoom();
   const verts: number[] = [];
-  const pushVert = (pos: [number, number], prev: [number, number], next: [number, number], side: number, liftM: number, along: number, dist: number) => {
-    verts.push(pos[0], pos[1], prev[0], prev[1], next[0], next[1], side, liftM, along, dist);
+  const push = (p: [number, number, number], nrm: [number, number, number], dist: number) => {
+    verts.push(p[0], p[1], p[2], nrm[0], nrm[1], nrm[2], dist);
   };
 
   if (data.kind === 'poly') {
-    for (const ring of data.rings) {
-      if (!ring.coords || ring.coords.length < 3) continue;
-      const dens = densifyMerc(
-        ring.coords.map(lnglatToMerc),
-        ring.f,
-        true,
-        Math.min(MAX_PTS, Math.max(240, ring.coords.length))
-      );
-      const merc = dens.pts;
-      const n = merc.length;
-      if (n < 3) continue;
-      const flat: number[] = [];
-      for (const p of merc) flat.push(p[0], p[1]);
-      const idx = earcut(flat);
-      for (let k = 0; k + 2 < idx.length; k += 3) {
-        for (let j = 0; j < 3; j++) {
-          const vi = idx[k + j];
-          pushVert(merc[vi], merc[vi], merc[vi], 0, flyHeight01((dens.f as number[])[vi] ?? 0), 0, 0);
-        }
-      }
-    }
+    buildExtrudedPoly(data, isGlobe, zoom, push);
     return verts.length > 0 ? { arr: new Float32Array(verts), count: verts.length / VERT_STRIDE } : null;
   }
 
-  // 线模式
+  // ===== 线模式：圆柱管 =====
   for (const path of data.paths) {
     if (!path.coords || path.coords.length < 2) continue;
     const lifts = path.lifts && path.lifts.length === path.coords.length ? path.lifts : null;
@@ -454,18 +490,12 @@ function buildVertices(
           path.coords.map(lnglatToMerc),
           path.f ?? null,
           !!path.closed,
-          MAX_PTS
+          Math.min(400, Math.max(180, path.coords.length * 10))
         );
     const merc = dens.pts;
     const n = merc.length;
     if (n < 2) continue;
-    // aDist：地面投影屏幕弧长（虚线沿路径推进；抬升后略短但可忽略）
-    const px = merc.map((_, i) => project(dens.pts[i] as unknown as [number, number]));
-    const dist: number[] = new Array(n);
-    dist[0] = 0;
-    for (let i = 1; i < n; i++) {
-      dist[i] = dist[i - 1] + Math.hypot(px[i][0] - px[i - 1][0], px[i][1] - px[i - 1][1]);
-    }
+    const heightM = data.heightM ?? 0;
     const closed = !!path.closed;
     const fArr = dens.f;
     const fOf = (i: number): number => {
@@ -476,23 +506,114 @@ function buildVertices(
     };
     const liftOf = (i: number): number =>
       lifts ? Math.max(0, Math.min(1, lifts[Math.min(i, lifts.length - 1)] ?? 0)) : flyHeight01(fOf(i));
-    // 顶点自身的前/后邻居（闭合环环绕取值）；开放路径两端出端帽（along=±1）
-    const prevOf = (v: number) => (closed ? (v - 1 + n) % n : Math.max(0, v - 1));
-    const nextOf = (v: number) => (closed ? (v + 1) % n : Math.min(n - 1, v + 1));
-    const alongOf = (v: number) => (!closed && (v === 0 || v === n - 1)) ? (v === 0 ? -1 : 1) : 0;
+
+    // 中心线 3D 点 + 沿管虚线距离（用真实经纬反算的屏幕弧长）
+    const center: Array<[number, number, number]> = [];
+    const dist: number[] = new Array(n);
+    let prevPx: { x: number; y: number } | null = null;
+    for (let i = 0; i < n; i++) {
+      const lngLat = mercToLngLat(merc[i]);
+      const cos = Math.cos((lngLat[1] * Math.PI) / 180);
+      const z = isGlobe ? liftOf(i) * heightM : (liftOf(i) * heightM) / (EARTH_R * cos);
+      center.push([merc[i][0], merc[i][1], z]);
+      const px = map.project(lngLat as any);
+      dist[i] = prevPx ? dist[i - 1] + Math.hypot(px.x - prevPx.x, px.y - prevPx.y) : 0;
+      prevPx = px;
+    }
+    // 切线（中心差分）+ 环截面
+    const rings: Array<Array<[number, number, number]>> = [];
+    const nrms: Array<Array<[number, number, number]>> = [];
+    for (let i = 0; i < n; i++) {
+      const a = center[Math.max(0, i - 1)];
+      const b = center[Math.min(n - 1, i + 1)];
+      const T = norm3([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+      let S = cross3(T, [0, 0, 1]);
+      if (len3(S) < 1e-9) S = [1, 0, 0];
+      S = norm3(S);
+      const V = norm3(cross3(S, T));
+      const lat = mercToLngLat(merc[i])[1];
+      const [rx, ry, rz] = pxToMercRadii(lat, zoom, Math.max(0.5, data.widthPx) / 2, isGlobe);
+      const ring: Array<[number, number, number]> = [];
+      const rn: Array<[number, number, number]> = [];
+      for (let k = 0; k < TUBE_SIDES; k++) {
+        const th = (k / TUBE_SIDES) * Math.PI * 2;
+        const ct = Math.cos(th);
+        const st2 = Math.sin(th);
+        const d: [number, number, number] = [
+          S[0] * ct + V[0] * st2,
+          S[1] * ct + V[1] * st2,
+          S[2] * ct + V[2] * st2,
+        ];
+        ring.push([
+          center[i][0] + d[0] * rx,
+          center[i][1] + d[1] * ry,
+          center[i][2] + d[2] * rz,
+        ]);
+        rn.push(norm3(d));
+      }
+      rings.push(ring);
+      nrms.push(rn);
+    }
+    // 管身：相邻环连三角带
     const edges = closed ? n : n - 1;
     for (let i = 0; i < edges; i++) {
-      const iA = i;
-      const iB = (i + 1) % n;
-      pushVert(merc[iA], merc[prevOf(iA)], merc[nextOf(iA)], -1, liftOf(iA), alongOf(iA), dist[iA]);
-      pushVert(merc[iA], merc[prevOf(iA)], merc[nextOf(iA)], 1, liftOf(iA), alongOf(iA), dist[iA]);
-      pushVert(merc[iB], merc[prevOf(iB)], merc[nextOf(iB)], 1, liftOf(iB), alongOf(iB), dist[iB]);
-      pushVert(merc[iA], merc[prevOf(iA)], merc[nextOf(iA)], -1, liftOf(iA), alongOf(iA), dist[iA]);
-      pushVert(merc[iB], merc[prevOf(iB)], merc[nextOf(iB)], 1, liftOf(iB), alongOf(iB), dist[iB]);
-      pushVert(merc[iB], merc[prevOf(iB)], merc[nextOf(iB)], -1, liftOf(iB), alongOf(iB), dist[iB]);
+      const j = (i + 1) % n;
+      for (let k = 0; k < TUBE_SIDES; k++) {
+        const k2 = (k + 1) % TUBE_SIDES;
+        push(rings[i][k], nrms[i][k], dist[i]);
+        push(rings[j][k], nrms[j][k], dist[j]);
+        push(rings[j][k2], nrms[j][k2], dist[j]);
+        push(rings[i][k], nrms[i][k], dist[i]);
+        push(rings[j][k2], nrms[j][k2], dist[j]);
+        push(rings[i][k2], nrms[i][k2], dist[i]);
+      }
+    }
+    // 端帽：开放路径起终点圆盘（法向沿切线）
+    if (!closed) {
+      const cap = (idx: number, sign: number) => {
+        const C = center[idx];
+        const T = norm3([
+          (center[Math.min(n - 1, idx + 1)][0] - center[Math.max(0, idx - 1)][0]) * sign,
+          (center[Math.min(n - 1, idx + 1)][1] - center[Math.max(0, idx - 1)][1]) * sign,
+          (center[Math.min(n - 1, idx + 1)][2] - center[Math.max(0, idx - 1)][2]) * sign,
+        ]);
+        for (let k = 0; k < TUBE_SIDES; k++) {
+          const k2 = (k + 1) % TUBE_SIDES;
+          push(C, T, dist[idx]);
+          push(rings[idx][k2], T, dist[idx]);
+          push(rings[idx][k], T, dist[idx]);
+        }
+      };
+      cap(0, -1);
+      cap(n - 1, 1);
     }
   }
   return verts.length > 0 ? { arr: new Float32Array(verts), count: verts.length / VERT_STRIDE } : null;
+}
+
+/** 向量工具（3D 管/挤出几何用） */
+function norm3(v: [number, number, number]): [number, number, number] {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+}
+function cross3(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+function len3(v: [number, number, number]): number {
+  return Math.hypot(v[0], v[1], v[2]);
+}
+
+/** 该点纬度 / 当前 zoom 下，屏幕像素半径 → mercator 空间三分量半径（x/y 水平，z 高程） */
+function pxToMercRadii(lat: number, zoom: number, rPx: number, isGlobe: boolean): [number, number, number] {
+  const cos = Math.max(0.01, Math.cos((lat * Math.PI) / 180));
+  const worldMeters = 40075016.686 * cos;
+  const metersPerPx = worldMeters / (512 * Math.pow(2, zoom));
+  const rM = rPx * metersPerPx;
+  return [
+    rM / worldMeters,                                  // mercator x
+    rM / 40075016.686,                                 // mercator y
+    isGlobe ? rM : rM / (EARTH_R * cos),               // 高程（globe=米，mercator=z 单位）
+  ];
 }
 
 function dataSig(data: FlyRibbonData): string {
@@ -558,11 +679,7 @@ function ensureGlState(
     program,
     variantName,
     aPos: gl.getAttribLocation(program, 'aPos'),
-    aPrev: gl.getAttribLocation(program, 'aPrev'),
-    aNext: gl.getAttribLocation(program, 'aNext'),
-    aSide: gl.getAttribLocation(program, 'aSide'),
-    aLift: gl.getAttribLocation(program, 'aLift'),
-    aAlong: gl.getAttribLocation(program, 'aAlong'),
+    aNrm: gl.getAttribLocation(program, 'aNrm'),
     aDist: gl.getAttribLocation(program, 'aDist'),
     uViewport: gl.getUniformLocation(program, 'uViewport'),
     uColor: gl.getUniformLocation(program, 'uColor'),
@@ -680,7 +797,7 @@ function drawRibbons(map: MaplibreMap, gl: WebGLRenderingContext | WebGL2Renderi
     g.bindBuffer(g.ARRAY_BUFFER, entry.buffer);
     const bytes = VERT_STRIDE * 4;
     const strideAttrs: [number, number, number][] = [
-      [st.aPos, 2, 0], [st.aPrev, 2, 8], [st.aNext, 2, 16], [st.aSide, 1, 24], [st.aLift, 1, 28], [st.aAlong, 1, 32], [st.aDist, 1, 36],
+      [st.aPos, 3, 0], [st.aNrm, 3, 12], [st.aDist, 1, 24],
     ];
     for (const [loc, size, off] of strideAttrs) {
       if (loc >= 0) { g.enableVertexAttribArray(loc); g.vertexAttribPointer(loc, size, g.FLOAT, false, bytes, off); }
@@ -689,12 +806,7 @@ function drawRibbons(map: MaplibreMap, gl: WebGLRenderingContext | WebGL2Renderi
     g.uniform4f(st.uColor as WebGLUniformLocation, rgba[0], rgba[1], rgba[2], rgba[3]);
     g.uniform1f(st.uOpacity as WebGLUniformLocation, data.opacity ?? 1);
     const isPoly = data.kind === 'poly';
-    g.uniform1f(st.uWidthPx as WebGLUniformLocation, isPoly ? 1 : Math.max(0.5, data.widthPx));
-    // 高度：由路径总长度决定（data.heightM，与相机无关）；uScreenLift 恒 0（不再做屏幕空间兜底抬升）
-    g.uniform1f(st.uLiftM as WebGLUniformLocation, data.heightM ?? flyLiftMeters(map));
-    g.uniform1f(st.uScreenLift as WebGLUniformLocation, 0);
-    g.uniform1f(st.uZIsMercator as WebGLUniformLocation, (map as any).getProjection?.()?.type === 'globe' ? 0 : 1);
-    g.uniform1f(st.uEdgeAA as WebGLUniformLocation, isPoly ? 0 : 1);
+    // 几何已含高程与厚度（世界空间），高度不再经 uniform —— 相机无关
     const dash = !isPoly && data.dash ? (data.dash as number[]).filter((v) => v > 0).map((v) => v * Math.max(0.5, data.widthPx)) : [];
     if (dash.length >= 2) {
       const total = dash.reduce((a, b) => a + b, 0);
