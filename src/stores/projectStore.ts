@@ -93,11 +93,10 @@ const DEFAULT_ELEVATION_MAPS: ElevationMapConfig[] = [
 ];
 
 function createDefaultChapter(index = 0, startFrame = 0, duration = 3000): Chapter {
-const titles = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+  const titles = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
   return {
     id: generateId(),
-title: `第${titles[Math.min(index, titles.length - 1)]}章`,
-    subtitle: '',
+    title: `第${titles[Math.min(index, titles.length - 1)]}章`,
     order: index,
     startFrame,
     endFrame: startFrame + duration,
