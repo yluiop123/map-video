@@ -384,8 +384,10 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   const circleVisible = !hasVisual && !isTextPin && !useShapeImg && !isEmoji;
   const labelHidden = element.label?.text === '';
   const hasLabel = (!!element.label?.text || isTextPin) && !labelHidden && shape !== 'bubble';
-  // text 钉固定居中：忽略历史存量里可能残留的 bottom 等位置；pin/dot/emoji 默认标签在上方
-  const labelPos = isTextPin ? 'center' : (element.label?.position || 'top');
+  // 文案偏移：优先连续偏移（offsetX / offsetY，0 = 居中，向上/左为负）；
+  // 未设置时回退旧的位置枚举（兼容存量数据）；text 钉固定居中
+  const hasCustomOffset = typeof element.label?.offsetX === 'number' || typeof element.label?.offsetY === 'number';
+  const labelPos = hasCustomOffset || isTextPin ? 'center' : (element.label?.position || 'top');
   const emojiChar = element.emoji || '📍';
   const emojiImgId = 'pt-emoji-' + Array.from(emojiChar).map((c) => c.codePointAt(0)!.toString(16)).join('-');
   const scale = element.scale ?? 1;
@@ -414,8 +416,10 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   const labelFg = element.label?.color || '#FFFFFF';
   const labelSize = 13 * scale;
   const labelImgId = `pt-lbl-${hashStr(labelText + labelBg + labelFg + labelSize + (element.label?.bgRadius ?? 6) + (element.label?.bgPadding ?? 6) + shape)}`;
-  // 防遮挡偏移：label 根据位置避开水滴/圆点本体
-  const labelOffsetPx = getLabelPixelOffset(shape, labelPos, scale);
+  // 偏移：自定义偏移（中心锚 + 像素偏移，0 居中；默认位于上方 -20）；否则按位置避让本体
+  const labelOffsetPx: [number, number] = hasCustomOffset
+    ? [(element.label?.offsetX ?? 0) * scale, (element.label?.offsetY ?? -20) * scale]
+    : getLabelPixelOffset(shape, labelPos, scale);
   // ORIENTATION：faceCam=始终面向摄像机（默认）；flat=贴地 + 地图空间旋转
   const flat = element.orientation === 'flat';
   const pitchAlign = flat ? 'map' as const : 'viewport' as const;
@@ -491,6 +495,8 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         if (!map.hasImage(labelImgId)) ensureShapeImage(map, labelImgId, getCached(labelImgId, () => makeBubbleImageData(labelText, labelBg, labelFg, labelSize, element.label?.bgRadius ?? 6, element.label?.bgPadding ?? 6, false)));
         map.setLayoutProperty(labelLayerId, 'icon-image', labelImgId);
         map.setLayoutProperty(labelLayerId, 'icon-anchor', getIconAnchor(labelPos) as any);
+        // 位置/偏移变化需同步（否则拖动位置滑块地图不更新）
+        map.setLayoutProperty(labelLayerId, 'icon-offset', labelOffsetPx as any);
         map.setPaintProperty(labelLayerId, 'icon-opacity', opacity);
       }
     }

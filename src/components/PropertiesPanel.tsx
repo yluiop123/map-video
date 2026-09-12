@@ -142,15 +142,22 @@ export function PropertiesPanel() {
           const st = pinStyleOf(pe);
           // 所有点形态（含图片/动图/模型/图标）都支持标签，与 PIN/DOT 一致
           const fixedCenter = st === 'text' || st === 'bubble';
+          // bubble / text：文字随图形常驻 → 不提供「显示标签」开关，标签属性一直显示
+          if (fixedCenter) {
+            const lbl = pe.label;
+            return (
+              <LabelStyleFields
+                label={lbl || { text: element.name || '', fontSize: 13, color: '#000000' }}
+                fixedCenter
+                onChange={(l) => patch({ label: { ...l, position: 'center', offsetX: 0, offsetY: 0 } })}
+              />
+            );
+          }
           return (
             <>
               <ShowLabelToggle element={pe} patch={patch} />
               {pe.label?.text && (
-                <LabelStyleFields
-                  label={pe.label}
-                  fixedCenter={fixedCenter}
-                  onChange={(l) => patch({ label: fixedCenter ? { ...l, position: 'center' } : l })}
-                />
+                <LabelStyleFields label={pe.label} onChange={(l) => patch({ label: l })} />
               )}
             </>
           );
@@ -196,31 +203,45 @@ function Appearance({ color, onChange }: { color: string; onChange: (c: string) 
 }
 
 /** 文案样式字段（文本输入在面板顶部 LABEL；此处只管样式） */
-function LabelStyleFields({ label, onChange, allowCenter, fixedCenter }: {
-  label: { text: string; fontSize?: number; color?: string; position?: string; bgColor?: string; bgPadding?: number; bgRadius?: number; fontWeight?: string };
+function LabelStyleFields({ label, onChange, fixedCenter }: {
+  label: { text: string; fontSize?: number; color?: string; position?: string; offsetX?: number; offsetY?: number; bgColor?: string; bgPadding?: number; bgRadius?: number; fontWeight?: string };
   onChange: (l: any) => void;
-  allowCenter?: boolean;
   fixedCenter?: boolean;
 }) {
   const transparent = label.bgColor === 'transparent' || /rgba\([^)]*,\s*0\)\s*$/.test(label.bgColor || 'transparent');
   const hasBg = !transparent;
   const t = useT();
+  // 连续偏移（0 = 居中；水平默认居中、垂直默认在上方 -20）
+  const offX = label.offsetX ?? 0;
+  const offY = label.offsetY ?? -20;
   return (
     <Section>
       {!fixedCenter && (
-        <Field label={t('文案位置', 'Text Position')}>
-          <OptionBlocks<'top' | 'bottom' | 'left' | 'right' | 'center'>
-            value={(label.position || 'top') as any}
-            onChange={(v) => onChange({ ...label, position: v })}
-            options={[
-              { value: 'top', label: t('上', 'Top') },
-              { value: 'bottom', label: t('下', 'Bottom') },
-              { value: 'left', label: t('左', 'Left') },
-              { value: 'right', label: t('右', 'Right') },
-              ...(allowCenter ? [{ value: 'center' as const, label: t('居中', 'Center') }] : []),
-            ]}
-          />
-        </Field>
+        <>
+          <Field label={t('水平位置', 'Horizontal')}>
+            <div className="flex items-center gap-2">
+              <input
+                type="range" min={-150} max={150} step={1} value={offX}
+                onChange={(e) => onChange({ ...label, offsetX: parseInt(e.target.value, 10) || 0 })}
+                className="w-full"
+              />
+              <span className="text-xs w-12 text-right shrink-0">{offX}</span>
+            </div>
+          </Field>
+          <Field label={t('垂直位置', 'Vertical')}>
+            <div className="flex items-center gap-2">
+              <input
+                type="range" min={-150} max={150} step={1} value={offY}
+                onChange={(e) => onChange({ ...label, offsetY: parseInt(e.target.value, 10) || 0 })}
+                className="w-full"
+              />
+              <span className="text-xs w-12 text-right shrink-0">{offY}</span>
+            </div>
+          </Field>
+          <p className="text-[10px] text-muted-foreground/70 -mt-1">
+            {t('0 = 居中；负值向上 / 向左', '0 = centered; negative = up / left')}
+          </p>
+        </>
       )}
       <Field label={t('文字颜色', 'Text Color')}>
         <ColorPicker value={label.color || '#000000'} onChange={(c) => onChange({ ...label, color: c })} />

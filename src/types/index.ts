@@ -470,7 +470,12 @@ export interface LabelConfig {
   text: string;
   fontSize?: number;
   color?: string;
+  /** @deprecated 旧的位置枚举；新数据用 offsetX / offsetY 连续偏移（未设置偏移时仍兼容此字段） */
   position?: 'top' | 'bottom' | 'left' | 'right' | 'center';
+  /** 水平偏移（像素，0 = 水平居中；负左正右），随标记缩放 */
+  offsetX?: number;
+  /** 垂直偏移（像素，0 = 垂直居中；负上正下），随标记缩放 */
+  offsetY?: number;
   /** 文案背景 */
   bgColor?: string;
   bgPadding?: number;
