@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS project_config (
   resolution_h          INTEGER NOT NULL CHECK (resolution_h > 0),
   resolution_label      TEXT    NOT NULL,
   default_easing        TEXT    NOT NULL,
-  -- 地形夸张：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例）
-  elevation_exaggeration REAL
+  -- 地形夸张：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例，面板范围 0–50）
+  elevation_exaggeration REAL CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)
 );
 
 -- -----------------------------------------------------------------------------
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS project_config (
 -- 项目与章节只保存所选配置的 id 字符串（project.active_base_map_id / chapter.base_map_id）。
 -- 取舍：省掉两张表与两处外键（连带消除原本的循环外键问题）；
 --       代价是底图 / 高程图配置不可由用户在运行时增删改。
--- 例外：**地形夸张系数用户可调**（面板滑动条 0–5），因此作为「对当前生效高程图的覆盖值」
+-- 例外：**地形夸张系数用户可调**（面板滑动条 0–50），因此作为「对当前生效高程图的覆盖值」
 --       落在 project_config.elevation_exaggeration（NULL = 沿用内置默认的 1.5）。
 
 -- 用户图标库：图标 / 图片 / SVG / 动图；ns 为命名空间，支持「可扩展图标库」

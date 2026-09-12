@@ -48,7 +48,7 @@
 | `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing） | `project_config` | P2 独立成表：配置与项目本体职责分离（1:1，主键即外键）；配置面板只读写这张表 |
 | `globalConfig.projection` | `project` 的 `projection` 列 | P1 列化：地图投影是项目自身的属性（渲染方式），随项目走，不属于「默认值类」配置 |
 | `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | **不入库**：配置是代码内置常量，项目只存选中的 id 字符串 |
-| `elevationMaps[].exaggeration`（面板滑动条可调） | `project_config.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–5，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
+| `elevationMaps[].exaggeration`（面板滑动条可调） | `project_config.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–50，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
 | `customSymbols[]`（`url` 可能是 data URL） | `custom_symbol` + `asset` | 元数据留表内，二进制走 P4 外置 |
 | `customImages[]`（上传后登记，供复用） | `custom_image` + `asset` | 项目级图片库；素材本体走 P4 外置，这里只登记「本项目收录了哪些图片」 |
 | `chapters[]` | `chapter` | P1；`titleStyle` / `transition` 按 P3 留在 JSON 列 |
@@ -66,7 +66,7 @@
 | `providers` | `provider` | 独立聚合；「每 kind 至多一条 active」由部分唯一索引保证 |
 
 > 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目与章节只保存所选配置的 id 字符串（`project.active_base_map_id` / `chapter.base_map_id`）。
-> **例外**：「地形夸张系数」用户在面板可调（0–5，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project_config.elevation_exaggeration`（为空则用内置默认）。
+> **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project_config.elevation_exaggeration`（为空则用内置默认）。
 
 ## 三、22 张表逐表速查（按 10 组）
 
@@ -229,7 +229,7 @@
 | `resolution_h` | INTEGER | `NOT NULL` | 默认导出高度（px） · `CHECK (resolution_h > 0)` |
 | `resolution_label` | TEXT | `NOT NULL` | 分辨率标签（如 1080p） |
 | `default_easing` | TEXT | `NOT NULL` | 默认缓动类型 |
-| `elevation_exaggeration` | REAL | — | 地形夸张系数：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例），空=用内置默认 |
+| `elevation_exaggeration` | REAL | — | 地形夸张系数：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例），空=用内置默认 · `CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)` |
 
 ### 组 2 · 资源与素材
 

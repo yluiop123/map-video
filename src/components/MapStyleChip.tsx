@@ -121,7 +121,7 @@ export function MapStyleChip() {
               <input
                 type="range"
                 min={0}
-                max={5}
+                max={50}
                 step={0.1}
                 value={exagDraft}
                 onChange={(e) => setExagDraft(Number(e.target.value))}
