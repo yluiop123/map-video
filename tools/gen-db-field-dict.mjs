@@ -56,6 +56,36 @@ const TOOL_ENTRY = {
   element_keyframe: '跨类别（所有元素共用，按 element_id 弱引用）',
 };
 
+/**
+ * 每张表「职责 + 对应的前端元素」（工具栏按钮 / 组件文件 / TS 类型）。
+ * 字段字典每表头部输出一行，速查页第三节的手工表格与此保持同源语义。
+ * 标注「当前无 UI 入口」的表 = store/DDL 已支持但面板尚未接入。
+ */
+const TABLE_FRONTEND = {
+  collection: { role: '合集：项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）', fe: '项目列表页左栏合集列表（ProjectManager.tsx）' },
+  project: { role: '项目本体：身份 / 归属 / 审计 / 投影与生效底图的**默认值**引用', fe: '项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project' },
+  project_config: { role: '项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 + 地形夸张覆盖值', fe: '导出对话框（ExportDialog.tsx，分辨率/帧率导出时选）；地形夸张在底图芯片面板（MapStyleChip.tsx 滑动条）；GlobalConfig 暂无独立设置 UI' },
+  custom_symbol: { role: '用户自建图标 / 符号库（ns 命名空间，可被 icon_lib+icon_name 引用）', fe: '**当前无 UI 入口**（store 有 addCustomSymbol，面板未接入；军标导入等场景预留）' },
+  asset: { role: '素材仓库：所有大体积二进制（图片 / GIF / 模型 / 音频）按 sha256 内容寻址', fe: '属性面板上传行（PropertiesPanel ResourceUploadRow）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）' },
+  custom_image: { role: '项目级自定义图片库登记（供标记「图片」形态跨元素复用）', fe: '标记面板「自定义图片」网格（PropertiesPanel CustomImageGrid，悬停可删除）' },
+  chapter: { role: '章节本体：时间轴 / 标题样式 / 转场 / 本章底图·高程·投影', fe: '顶部章节页签 + 时间轴章节条（TimelineEditor.tsx）；底图/高程/3D 在左下角芯片（MapStyleChip.tsx）' },
+  camera_keyframe: { role: '视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）', fe: '「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）' },
+  screen_fx: { role: '屏幕空间特效窗口（天气 / 画面叠加，非地图元素）', fe: '右侧「特效」面板（FxPanelBody.tsx）+ 时间轴特效轨道' },
+  chapter_fx: { role: '章节级特效（游标轨迹 / 聚焦辉光 / 扫描线预设）', fe: '右侧「特效」面板（FxPanelBody.tsx）' },
+  narration: { role: '字幕 / 配音档（样式部分，1:1）', fe: '右侧「字幕」面板（FxPanelBody.tsx）' },
+  narration_entry: { role: '字幕条：文本 + 配音音频 + 显示时长', fe: '时间轴「🎙 配音」轨道（TimelineEditor.tsx）+ 字幕面板逐条编辑 / TTS / 导入 SRT' },
+  music_track: { role: '背景音乐段（可多段、循环、淡入淡出）', fe: '时间轴「BGM」轨道（TimelineEditor.tsx）+ 音乐面板上传' },
+  element_marker: { role: '标记类元素：Pin 工具产出，3 种 type 合并一张宽表', fe: '工具条「标记」按钮 + 标记属性面板（PropertiesPanel，9 种视觉形态）' },
+  element_route: { role: '路线类元素：line / moving_point / connector', fe: '工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）' },
+  element_shape: { role: '形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）', fe: '工具条「形状」下拉 + 形状属性面板' },
+  element_territory: { role: '疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含', fe: '工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）' },
+  element_keyframe: { role: '元素动画关键帧（8 种 property，跨 4 张类别表共用，弱引用）', fe: '属性面板各动画数值（透明度 / 缩放 / 旋转 / 绘制·路径·填充进度）；无独立关键帧面板' },
+  overlay: { role: '弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）', fe: '右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView' },
+  overlay_block: { role: 'custom 类弹窗的内容块序列（逐块排序）', fe: '弹窗面板「自定义」类型的块编辑（FxPanelBody.tsx）' },
+  person_block: { role: '人物卡片内容块（头像 / 姓名 / 简介 / 引言 / 对白 5 种）', fe: '弹窗面板「人物」类型的块编辑（FxPanelBody.tsx）' },
+  provider: { role: 'LLM / TTS 服务商配置（Key 只存本机，与项目内容解耦）', fe: '字幕面板的 AI 供应商设置对话框（FxPanelBody.tsx）' },
+};
+
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // ---------- 解析 DDL ----------
@@ -296,7 +326,9 @@ for (const [g, list] of GROUPS) {
     const tb = tables.get(t);
     const pkCols = tb.cols.filter((c) => c.pk).map((c) => c.name).join(' + ');
     const entry = TOOL_ENTRY[t];
+    const fe = TABLE_FRONTEND[t];
     out.push(`#### ${t}${tb.comment ? ` — ${tb.comment}` : ''}\n`);
+    if (fe) out.push(`**职责**：${fe.role}　**前端**：${fe.fe}\n`);
     out.push(`${tb.cols.length} 列 · 主键 ${pkCols ? '`' + pkCols + '`' : '—'}${entry ? ` · 工具入口：${entry}` : ''}\n`);
     out.push('| 列 | 类型 | 约束 | 说明 |');
     out.push('|---|---|---|---|');

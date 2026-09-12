@@ -74,37 +74,38 @@
 
 ### 组 1 · 合集与项目（含配置） 3 张
 
-| 表 | 职责 | 主键 | 关键点 |
-|---|---|---|---|
-| `collection` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素） | `collection_id` | 默认合集恒为 `default`：**不可改名、不可删除**；删其它合集时其下项目回落默认合集（**不删项目**） |
-| `project` | 项目本体：身份 + 归属 + 审计字段 + 地图投影 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） |
-| `project_config` | 项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 **+ 地形夸张覆盖值** | `project_id` | 与 `project` **1:1**（主键即外键）；配置独立成表，配置面板只读写这张表 |
+| 表 | 职责 | 主键 | 关键点 | 前端对应 |
+|---|---|---|---|---|
+| `collection` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素） | `collection_id` | 默认合集恒为 `default`：**不可改名、不可删除**；删其它合集时其下项目回落默认合集（**不删项目**） | 项目列表页左栏合集列表（`ProjectManager.tsx`） |
+| `project` | 项目本体：身份 + 归属 + 审计字段 + 地图投影 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） | 项目卡片（`ProjectManager.tsx`）；运行时即 `projectStore.project` |
+| `project_config` | 项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 **+ 地形夸张覆盖值** | `project_id` | 与 `project` **1:1**（主键即外键）；配置独立成表，配置面板只读写这张表 | 导出对话框（`ExportDialog.tsx`）选分辨率/帧率；地形夸张在底图芯片（`MapStyleChip.tsx` 滑动条） |
 
 ### 组 2 · 资源与素材 3 张
 
-| 表 | 职责 | 主键 | 删除行为 |
-|---|---|---|---|
-| `custom_symbol` | 自定义图标库（icon / image / svg 的元数据） | `symbol_id` | 被元素占用时 **RESTRICT 拒绝删除**（旧实现会静默损坏图标） |
-| `asset` 新增 | 所有大体积二进制的唯一入口（图片/音频/视频/字体），按 `sha256` 去重 | `asset_id` | 孤儿回收是待办项（需定期清理或引用计数） |
-| `custom_image` | 自定义图片库：项目收录的图片（素材本体在 `asset`），供标记「图片」形态跨元素复用 | `project_id` + `asset_id`（复合主键） | 随项目 **CASCADE**；`asset_id` 为 RESTRICT（素材被引用时不允许删） |
+| 表 | 职责 | 主键 | 删除行为 | 前端对应 |
+|---|---|---|---|---|
+| `custom_symbol` | 自定义图标库（icon / image / svg 的元数据） | `symbol_id` | 被元素占用时 **RESTRICT 拒绝删除**（旧实现会静默损坏图标） | **当前无 UI 入口**（store 有 `addCustomSymbol`，面板未接入） |
+| `asset` 新增 | 所有大体积二进制的唯一入口（图片/音频/视频/字体），按 `sha256` 去重 | `asset_id` | 孤儿回收是待办项（需定期清理或引用计数） | 属性面板上传行（`ResourceUploadRow`）、字幕/配乐音频上传（`lib/assets.ts`） |
+| `custom_image` | 自定义图片库：项目收录的图片（素材本体在 `asset`），供标记「图片」形态跨元素复用 | `project_id` + `asset_id`（复合主键） | 随项目 **CASCADE**；`asset_id` 为 RESTRICT（素材被引用时不允许删） | 标记面板「自定义图片」网格（`CustomImageGrid`，悬停可删除） |
 
 ### 组 3 · 章节与时间轴 7 张
 
 一个 `Chapter` 对象里的 7 类子集合，逐类一张表。
 
-| 表 | 内容 | 主键 | 关键字段 / 行为 |
-|---|---|---|---|
-| `chapter` | `Chapter` 本体 | `chapter_id` | 起止时间（`start_sec` / `end_sec`，秒）；标题样式/转场按 P3 留在 JSON 列 |
-| `camera_keyframe` | `camera[]` | `kf_id` | `frame` 是**到达时间**，`move_duration` 是起飞提前量；`follow_route_element_id` 删路线后 `SET NULL`（退化为固定视角） |
-| `screen_fx` | `fx[]` | `fx_id` | 屏幕空间特效窗口（天气/画面），与地图元素分离 |
-| `chapter_fx` | `effects[]` | `fx_id` | 章节级特效（动画预设等） |
-| `narration` | `narration` 的样式部分 | `chapter_id` | 1:1，主键即外键 |
-| `narration_entry` | `narration.entries[]` | `entry_id` | 一条字幕 = 一行；音频走 `asset` |
-| `music_track` | `music[]` | `track_id` | 章内可多段；音频走 `asset` |
+| 表 | 内容 | 主键 | 关键字段 / 行为 | 前端对应 |
+|---|---|---|---|---|
+| `chapter` | `Chapter` 本体 | `chapter_id` | 起止时间（`start_sec` / `end_sec`，秒）；标题样式/转场按 P3 留在 JSON 列 | 顶部章节页签 + 时间轴章节条（`TimelineEditor.tsx`）；底图/高程/3D 在底图芯片（`MapStyleChip.tsx`） |
+| `camera_keyframe` | `camera[]` | `kf_id` | `frame` 是**到达时间**，`move_duration` 是起飞提前量；`follow_route_element_id` 删路线后 `SET NULL`（退化为固定视角） | 「视角」面板（`KeyframePanel.tsx` / `CameraEditor.tsx`） |
+| `screen_fx` | `fx[]` | `fx_id` | 屏幕空间特效窗口（天气/画面），与地图元素分离 | 「特效」面板（`FxPanelBody.tsx`）+ 时间轴特效轨道 |
+| `chapter_fx` | `effects[]` | `fx_id` | 章节级特效（动画预设等） | 「特效」面板（`FxPanelBody.tsx`） |
+| `narration` | `narration` 的样式部分 | `chapter_id` | 1:1，主键即外键 | 「字幕」面板（`FxPanelBody.tsx`） |
+| `narration_entry` | `narration.entries[]` | `entry_id` | 一条字幕 = 一行；音频走 `asset` | 时间轴「🎙 配音」轨道 + 字幕面板（TTS / 导入 SRT） |
+| `music_track` | `music[]` | `track_id` | 章内可多段；音频走 `asset` | 时间轴「BGM」轨道 + 音乐面板上传 |
 
 ### 组 4 · 标记类元素 1 张 Pin 工具
 
 工具条「标记」按钮的产出：一键在当前地图中心放置。三种标记形态（点 / 旗标 / 军标）**合并进同一张宽表**，用 `type` 判别列区分；公共字段（章节、时间轴、层级、可见性、标签、移动图标）每行都有。
+属性面板：`PropertiesPanel.tsx` 标记设置区（9 种视觉形态 + 资源选择 + 标签）。
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
@@ -115,6 +116,7 @@
 ### 组 5 · 路线类元素 1 张 Route 工具
 
 「路线」按钮的产出：进入绘制模式采点成线。线型（直线/贝塞尔/大圆弧）与路线特效都在右侧 Settings 里切换，不新增表。移动点与连接线也并入本表。
+属性面板：`PropertiesPanel.tsx` 路线设置区（均匀移动 / 逐点到达时间 / 动画起止 / 显示标记）。
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
@@ -125,6 +127,7 @@
 ### 组 6 · 形状类元素 1 张 Shape 工具
 
 「形状」按钮带下拉菜单，分三组共 19 项：多点绘制 / 两点绘制 / 特殊图形；五种形状**合并进同一张宽表**。**区域工具（Region）的行政区高亮也写这张表**——它的产物就是 `polygon`，因此不单列一组。
+属性面板：`PropertiesPanel.tsx` 形状设置区。
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
@@ -137,6 +140,7 @@
 ### 组 7 · 疆域类元素 1 张 Terr 工具
 
 「疆域」按钮带下拉菜单：新建疆域 / 导入 / 绘制地块 / 兼并。势力、地块、兼并事件**全部 JSON 内联**进本表（`countries_json` / `plots_json` / `events_json`），疆域自包含、整体读写。
+面板：`TerritoryImportDialog.tsx`（导入）+ `PropertiesPanel.tsx` 疆域设置区。
 
 | 表 | 主键 | 工具入口 | 职责 |
 |---|---|---|---|
@@ -146,23 +150,23 @@
 
 取消 `element` 基表后，被所有元素共用的附属表只剩动画关键帧；标签已内联进各元素表的 `label_json` 列。
 
-| 表 | 职责 | 主键 | 关键点 |
-|---|---|---|---|
-| `element_keyframe` | 元素动画关键帧 | `kf_id` | **所有元素共用**；8 种 property（透明度/缩放/旋转/绘制进度/路径进度/填充进度/morph）统一一张表；`element_id` 为**弱引用**（元素分属 4 张表），删元素时由应用层连带清理；`chapter_id` 仍是外键 |
+| 表 | 职责 | 主键 | 关键点 | 前端对应 |
+|---|---|---|---|---|
+| `element_keyframe` | 元素动画关键帧 | `kf_id` | **所有元素共用**；8 种 property（透明度/缩放/旋转/绘制进度/路径进度/填充进度/morph）统一一张表；`element_id` 为**弱引用**（元素分属 4 张表），删元素时由应用层连带清理；`chapter_id` 仍是外键 | 属性面板各动画数值（透明度/缩放/旋转/绘制·路径·填充进度）；无独立关键帧面板 |
 
 ### 组 9 · 叠加层（弹窗） 3 张
 
-| 表 | 职责 | 主键 | 关键点 |
-|---|---|---|---|
-| `overlay` | 弹窗本体（10 类：文本/图片/图表/人物/对话…） | `overlay_id` | 图表/时间轴/对话等内容按 P3 留在 `payload_json` |
-| `overlay_block` | custom 类弹窗的内容块序列 | `block_id` | 只有需要逐块排序的弹窗才用 |
-| `person_block` | 人物卡片的内容块（头像/姓名/简介/引言/对白） | `block_id` | 5 种块类型，带版式配置 |
+| 表 | 职责 | 主键 | 关键点 | 前端对应 |
+|---|---|---|---|---|
+| `overlay` | 弹窗本体（10 类：文本/图片/图表/人物/对话…） | `overlay_id` | 图表/时间轴/对话等内容按 P3 留在 `payload_json` | 「弹窗」面板（`FxPanelBody.tsx`）+ 画面渲染 `fx/FxRender.tsx` OverlayContentView |
+| `overlay_block` | custom 类弹窗的内容块序列 | `block_id` | 只有需要逐块排序的弹窗才用 | 弹窗面板「自定义」类型的块编辑（`FxPanelBody.tsx`） |
+| `person_block` | 人物卡片的内容块（头像/姓名/简介/引言/对白） | `block_id` | 5 种块类型，带版式配置 | 弹窗面板「人物」类型的块编辑（`FxPanelBody.tsx`） |
 
 ### 组 10 · 应用配置 1 张
 
-| 表 | 职责 | 主键 | 关键点 |
-|---|---|---|---|
-| `provider` | LLM / TTS 服务商配置 | `provider_id` | 与项目内容解耦（Key 只存本机）；`ux_provider_active` 保证每个 kind 至多一条生效 |
+| 表 | 职责 | 主键 | 关键点 | 前端对应 |
+|---|---|---|---|---|
+| `provider` | LLM / TTS 服务商配置 | `provider_id` | 与项目内容解耦（Key 只存本机）；`ux_provider_active` 保证每个 kind 至多一条生效 | 字幕面板的 AI 供应商设置对话框（`FxPanelBody.tsx`） |
 
 ## 四、每张表的字段（字段字典）
 
@@ -190,6 +194,8 @@
 
 #### collection
 
+**职责**：合集：项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）　**前端**：项目列表页左栏合集列表（ProjectManager.tsx）
+
 5 列 · 主键 `collection_id`
 
 | 列 | 类型 | 约束 | 说明 |
@@ -201,6 +207,8 @@
 | `updated_at` | INTEGER | `NOT NULL` | 最后修改时间（毫秒时间戳） |
 
 #### project
+
+**职责**：项目本体：身份 / 归属 / 审计 / 投影与生效底图的**默认值**引用　**前端**：项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project
 
 9 列 · 主键 `project_id`
 
@@ -218,6 +226,8 @@
 
 #### project_config
 
+**职责**：项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 + 地形夸张覆盖值　**前端**：导出对话框（ExportDialog.tsx，分辨率/帧率导出时选）；地形夸张在底图芯片面板（MapStyleChip.tsx 滑动条）；GlobalConfig 暂无独立设置 UI
+
 8 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
@@ -234,6 +244,8 @@
 ### 组 2 · 资源与素材
 
 #### custom_symbol
+
+**职责**：用户自建图标 / 符号库（ns 命名空间，可被 icon_lib+icon_name 引用）　**前端**：**当前无 UI 入口**（store 有 addCustomSymbol，面板未接入；军标导入等场景预留）
 
 10 列 · 主键 `symbol_id`
 
@@ -256,6 +268,8 @@
 - `UNIQUE (project_id, ns, name)`
 
 #### asset
+
+**职责**：素材仓库：所有大体积二进制（图片 / GIF / 模型 / 音频）按 sha256 内容寻址　**前端**：属性面板上传行（PropertiesPanel ResourceUploadRow）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）
 
 14 列 · 主键 `asset_id`
 
@@ -282,6 +296,8 @@
 
 #### custom_image
 
+**职责**：项目级自定义图片库登记（供标记「图片」形态跨元素复用）　**前端**：标记面板「自定义图片」网格（PropertiesPanel CustomImageGrid，悬停可删除）
+
 4 列 · 主键 —
 
 | 列 | 类型 | 约束 | 说明 |
@@ -298,6 +314,8 @@
 ### 组 3 · 章节与时间轴
 
 #### chapter
+
+**职责**：章节本体：时间轴 / 标题样式 / 转场 / 本章底图·高程·投影　**前端**：顶部章节页签 + 时间轴章节条（TimelineEditor.tsx）；底图/高程/3D 在左下角芯片（MapStyleChip.tsx）
 
 10 列 · 主键 `chapter_id`
 
@@ -319,6 +337,8 @@
 - `CHECK (end_sec > start_sec)`
 
 #### camera_keyframe
+
+**职责**：视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）　**前端**：「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）
 
 18 列 · 主键 `kf_id`
 
@@ -345,6 +365,8 @@
 
 #### screen_fx
 
+**职责**：屏幕空间特效窗口（天气 / 画面叠加，非地图元素）　**前端**：右侧「特效」面板（FxPanelBody.tsx）+ 时间轴特效轨道
+
 13 列 · 主键 `fx_id`
 
 | 列 | 类型 | 约束 | 说明 |
@@ -370,6 +392,8 @@
 
 #### chapter_fx
 
+**职责**：章节级特效（游标轨迹 / 聚焦辉光 / 扫描线预设）　**前端**：右侧「特效」面板（FxPanelBody.tsx）
+
 11 列 · 主键 `fx_id`
 
 | 列 | 类型 | 约束 | 说明 |
@@ -392,6 +416,8 @@
 
 #### narration
 
+**职责**：字幕 / 配音档（样式部分，1:1）　**前端**：右侧「字幕」面板（FxPanelBody.tsx）
+
 2 列 · 主键 `chapter_id`
 
 | 列 | 类型 | 约束 | 说明 |
@@ -400,6 +426,8 @@
 | `style_json` | TEXT | `NOT NULL` | 字幕样式：字号/颜色/描边/底色/距底位置/最大宽度 · `CHECK (json_valid(style_json))` |
 
 #### narration_entry
+
+**职责**：字幕条：文本 + 配音音频 + 显示时长　**前端**：时间轴「🎙 配音」轨道（TimelineEditor.tsx）+ 字幕面板逐条编辑 / TTS / 导入 SRT
 
 10 列 · 主键 `entry_id`
 
@@ -417,6 +445,8 @@
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 
 #### music_track
+
+**职责**：背景音乐段（可多段、循环、淡入淡出）　**前端**：时间轴「BGM」轨道（TimelineEditor.tsx）+ 音乐面板上传
 
 11 列 · 主键 `track_id`
 
@@ -441,6 +471,8 @@
 ### 组 4 · 标记类元素（Pin 工具）
 
 #### element_marker
+
+**职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，9 种视觉形态）
 
 44 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
 
@@ -508,6 +540,8 @@
 
 #### element_route
 
+**职责**：路线类元素：line / moving_point / connector　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
+
 37 列 · 主键 `element_id` · 工具入口：Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表；连接线无工具入口
 
 | 列 | 类型 | 约束 | 说明 |
@@ -562,6 +596,8 @@
 ### 组 6 · 形状类元素（Shape 工具）
 
 #### element_shape
+
+**职责**：形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
 47 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
@@ -634,6 +670,8 @@
 
 #### element_territory
 
+**职责**：疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含　**前端**：工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）
+
 16 列 · 主键 `element_id` · 工具入口：Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）
 
 | 列 | 类型 | 约束 | 说明 |
@@ -663,6 +701,8 @@
 
 #### element_keyframe
 
+**职责**：元素动画关键帧（8 种 property，跨 4 张类别表共用，弱引用）　**前端**：属性面板各动画数值（透明度 / 缩放 / 旋转 / 绘制·路径·填充进度）；无独立关键帧面板
+
 10 列 · 主键 `kf_id` · 工具入口：跨类别（所有元素共用，按 element_id 弱引用）
 
 | 列 | 类型 | 约束 | 说明 |
@@ -686,6 +726,8 @@
 ### 组 9 · 叠加层（弹窗）
 
 #### overlay
+
+**职责**：弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）　**前端**：右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView
 
 19 列 · 主键 `overlay_id`
 
@@ -717,6 +759,8 @@
 
 #### overlay_block
 
+**职责**：custom 类弹窗的内容块序列（逐块排序）　**前端**：弹窗面板「自定义」类型的块编辑（FxPanelBody.tsx）
+
 11 列 · 主键 `block_id`
 
 | 列 | 类型 | 约束 | 说明 |
@@ -735,6 +779,8 @@
 
 #### person_block
 
+**职责**：人物卡片内容块（头像 / 姓名 / 简介 / 引言 / 对白 5 种）　**前端**：弹窗面板「人物」类型的块编辑（FxPanelBody.tsx）
+
 9 列 · 主键 `block_id`
 
 | 列 | 类型 | 约束 | 说明 |
@@ -752,6 +798,8 @@
 ### 组 10 · 应用配置
 
 #### provider
+
+**职责**：LLM / TTS 服务商配置（Key 只存本机，与项目内容解耦）　**前端**：字幕面板的 AI 供应商设置对话框（FxPanelBody.tsx）
 
 12 列 · 主键 `provider_id`
 
