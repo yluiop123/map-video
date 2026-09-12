@@ -20,6 +20,7 @@ import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES } from
 import { defaultVisualFor, getPinCapability } from '../lib/pin-visual';
 import { loadLucideIcons, filterExistingIcons, type IconComponent } from '../lib/icon-library';
 import { uploadAsset, getAssetUrl, removeAsset } from '../lib/assets';
+import { distributePointTimes, ensurePointTimes } from '../lib/route-time';
 
 type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'territory';
 
@@ -1229,11 +1230,17 @@ function RouteSettings({ element, patch, chapter }: {
               <Toggle
                 checked={(element as LineElement).uniformMove !== false}
                 label={t('均匀移动', 'Uniform Move')}
-                onChange={(v) => patch({ uniformMove: v, ...(!v ? { pointTimes: undefined } : {}) } as Partial<MapElement>)}
+                onChange={(v) => {
+                  if (v) return void patch({ uniformMove: true } as Partial<MapElement>);
+                  // 关闭：按路径长度比例生成各点到达时间作为初始值（等价于匀速，之后可逐点微调）
+                  const s = (element as LineElement).moveStartFrame ?? element.startFrame;
+                  const e = (element as LineElement).moveEndFrame ?? element.endFrame;
+                  patch({ uniformMove: false, pointTimes: distributePointTimes(coords, s, e) } as Partial<MapElement>);
+                }}
               />
             </div>
           )}
-          {((element as LineElement).uniformMove !== false) && !!((element as LineElement).animEffect) && (
+          {((element as LineElement).uniformMove !== false) && (
             <div className="mb-2 space-y-2 border-t border-white/[0.08] pt-2">
               <div className="grid grid-cols-2 gap-2">
                 <Field label={t('动画开始时间', 'Anim Start')}>
@@ -1243,7 +1250,7 @@ function RouteSettings({ element, patch, chapter }: {
                   <FrameTimeField value={(element as LineElement).moveEndFrame ?? element.endFrame} fps={fps} onFrameChange={(f) => patch({ moveEndFrame: Math.max(element.startFrame, Math.min(element.endFrame, f)) } as Partial<MapElement>)} />
                 </Field>
               </div>
-              <p className="text-[10px] text-muted-foreground">必须在显示时间区间内</p>
+              <p className="text-[10px] text-muted-foreground">必须在显示时间区间内；由「路线移动」动画使用</p>
             </div>
           )}
           <div className="flex gap-1.5 mb-1.5">
@@ -1262,8 +1269,8 @@ function RouteSettings({ element, patch, chapter }: {
           <div className="max-h-44 overflow-y-auto">
             {coords.map((coord, i) => {
               const le = element as LineElement;
-              const showTimes = !!le.animEffect && le.uniformMove === false;
-              const times = le.pointTimes || [];
+              const showTimes = le.uniformMove === false;
+              const times = ensurePointTimes(coords, le.pointTimes, le.moveStartFrame ?? element.startFrame, le.moveEndFrame ?? element.endFrame);
               const ptTime = times[i] ?? (i === 0 ? (le.moveStartFrame ?? element.startFrame) : (le.moveEndFrame ?? element.endFrame));
               return (
               <div key={i} className="flex items-center gap-1 mb-1">
@@ -1283,7 +1290,7 @@ function RouteSettings({ element, patch, chapter }: {
                       value={round2(frameToSeconds(ptTime, fps))}
                       onCommit={(v) => {
                         // 保留已设置的其他点到达时间，仅更新当前行（面板以秒显示，内部存帧）
-                        const arr = coords.map((_, x) => times[x] ?? (x === 0 ? (le.moveStartFrame ?? element.startFrame) : (le.moveEndFrame ?? element.endFrame)));
+                        const arr = ensurePointTimes(coords, le.pointTimes, le.moveStartFrame ?? element.startFrame, le.moveEndFrame ?? element.endFrame);
                         arr[i] = secondsToFrame(v || 0, fps);
                         patch({ pointTimes: arr } as Partial<MapElement>);
                       }} />
@@ -1291,7 +1298,12 @@ function RouteSettings({ element, patch, chapter }: {
                 <button onClick={() => {
                   if (coords.length <= 2) return;
                   const c = coords.filter((_, x) => x !== i);
-                  patch(pathField === 'coordinates' ? { coordinates: c } : { [pathField]: c } as Partial<MapElement>);
+                  const base = pathField === 'coordinates' ? { coordinates: c } : { [pathField]: c };
+                  // 非匀速：删点后到达时间数组要跟着重排（否则点数与时间数组错位）
+                  const extra = le.uniformMove === false
+                    ? { pointTimes: distributePointTimes(c, le.moveStartFrame ?? element.startFrame, le.moveEndFrame ?? element.endFrame) }
+                    : {};
+                  patch({ ...base, ...extra } as Partial<MapElement>);
                 }} className="text-xs text-red-500 disabled:opacity-30" disabled={coords.length <= 2}>×</button>
               </div>
               );
