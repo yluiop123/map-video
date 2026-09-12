@@ -979,25 +979,37 @@ function RangeInput({ value, min, max, step = 1, suffix = '', onChange }: {
 
 // ========== 军标（military_symbol 元素）==========
 
-/** 常用 APP-6 军标清单（SIDC 编码 + 中文名）。
- *  预览图由 milsymbol 库按官方规范实时生成（与渲染端同一来源，非手绘），
- *  阵营配色遵循标准：友军蓝框 / 敌军红菱形。 */
-const MILSYM_SIDCS: { sidc: string; name: string }[] = [
-  { sidc: 'SFG-UCI----', name: '步兵' },
-  { sidc: 'SFG-UCA----', name: '装甲' },
-  { sidc: 'SFG-UCU----', name: '炮兵' },
-  { sidc: 'SFG-UCS----', name: '防空' },
-  { sidc: 'SFG-UCX----', name: '工程' },
-  { sidc: 'SFG-UCV----', name: '直升机' },
-  { sidc: 'SFG-UCF----', name: '固定翼' },
-  { sidc: 'SFG-USM----', name: '医疗' },
-  { sidc: 'SHG-UCI----', name: '敌步兵' },
-  { sidc: 'SHG-UCA----', name: '敌装甲' },
-  { sidc: 'SHG-UCU----', name: '敌炮兵' },
-  { sidc: 'SHG-UCS----', name: '敌防空' },
+/** 四种阵营（SIDC 身份码，位置 2）：框架形状与配色由 milsymbol 按标准自动生成 */
+const MILSYM_AFFS = [
+  { aff: 'F', name: '友好' },   // 蓝色矩形
+  { aff: 'H', name: '敌对' },   // 红色菱形
+  { aff: 'N', name: '中性' },   // 绿色方形
+  { aff: 'U', name: '未知' },   // 黄色四叶
+] as const;
+
+/** 地面单元主图标表（MIL-STD-2525C 附录 A；code = 位置 6-7 的类别+兵种码）。
+ *  SIDC = S<身份>G-U<code>----，预览由 milsymbol 按官方规范生成（与渲染端同源）。 */
+const MILSYM_ICONS: { code: string; name: string }[] = [
+  { code: 'CI', name: '步兵' },
+  { code: 'CA', name: '装甲' },
+  { code: 'CU', name: '炮兵' },
+  { code: 'CS', name: '防空' },
+  { code: 'CV', name: '直升机' },
+  { code: 'CF', name: '固定翼' },
+  { code: 'CX', name: '工程' },
+  { code: 'CR', name: '侦察' },
+  { code: 'CW', name: '通信' },
+  { code: 'SM', name: '医疗' },
+  { code: 'SV', name: '补给' },
+  { code: 'SR', name: '维护' },
+  { code: 'ST', name: '运输' },
 ];
 
-/** 军标设置：符号选择网格 + 大小 + 旋转（无颜色 / 无标签 / 无上传，配色遵循标准） */
+/** 由「身份 + 兵种码」拼 SIDC（2525C，10+2 位） */
+const milSymSidc = (aff: string, code: string): string => `S${aff}G-U${code}----`;
+
+/** 军标设置：每兵种一行 × [友好|敌对|中性|未知] 四阵营 + 大小 + 旋转
+ *  （无颜色 / 无标签 / 无上传，框架与配色遵循标准） */
 function MilSymSettings({ element, patch }: {
   element: MilitarySymbolElement;
   patch: (c: Partial<MapElement>) => void;
@@ -1006,8 +1018,11 @@ function MilSymSettings({ element, patch }: {
   // SIDC → 预览 dataURL（一次生成；单个符号失败不影响其余）
   const previews = useMemo(() => {
     const map = new Map<string, string>();
-    for (const s of MILSYM_SIDCS) {
-      try { map.set(s.sidc, new ms.Symbol(s.sidc, { size: 32, fill: true }).toDataURL()); } catch { /* */ }
+    for (const row of MILSYM_ICONS) {
+      for (const a of MILSYM_AFFS) {
+        const sidc = milSymSidc(a.aff, row.code);
+        try { map.set(sidc, new ms.Symbol(sidc, { size: 28, fill: true }).toDataURL()); } catch { /* */ }
+      }
     }
     return map;
   }, []);
@@ -1015,19 +1030,35 @@ function MilSymSettings({ element, patch }: {
   return (
     <>
       <Section title={t('符号', 'Symbol')}>
-        <div className="grid grid-cols-4 gap-1.5">
-          {MILSYM_SIDCS.map((s) => (
-            <button
-              key={s.sidc}
-              title={s.name}
-              onClick={() => patch({ sidc: s.sidc } as Partial<MapElement>)}
-              className={`flex flex-col items-center gap-0.5 h-14 px-1 py-1 rounded-md border text-[10px] leading-tight transition-colors ${
-                element.sidc === s.sidc ? 'border-primary bg-accent text-foreground' : 'border-white/10 bg-white/[0.03] text-foreground/80 hover:bg-accent'
-              }`}
-            >
-              {previews.get(s.sidc) && <img src={previews.get(s.sidc)} alt={s.name} className="w-7 h-7 object-contain" />}
-              <span>{s.name}</span>
-            </button>
+        {/* 阵营列头 */}
+        <div className="grid grid-cols-[56px_repeat(4,1fr)] gap-1 mb-1">
+          <span />
+          {MILSYM_AFFS.map((a) => (
+            <span key={a.aff} className="text-center text-[10px] text-muted-foreground">{t(a.name, a.name)}</span>
+          ))}
+        </div>
+        {/* 每兵种一行：行首中文名 + 四阵营符号 */}
+        <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+          {MILSYM_ICONS.map((row) => (
+            <div key={row.code} className="grid grid-cols-[56px_repeat(4,1fr)] gap-1">
+              <span className="flex items-center text-[10px] text-foreground/80">{row.name}</span>
+              {MILSYM_AFFS.map((a) => {
+                const sidc = milSymSidc(a.aff, row.code);
+                const active = element.sidc === sidc;
+                return (
+                  <button
+                    key={a.aff}
+                    title={`${row.name} · ${a.name}`}
+                    onClick={() => patch({ sidc } as Partial<MapElement>)}
+                    className={`h-11 rounded-md border flex items-center justify-center transition-colors ${
+                      active ? 'border-primary bg-accent' : 'border-white/10 bg-white/[0.03] hover:bg-accent'
+                    }`}
+                  >
+                    {previews.get(sidc) && <img src={previews.get(sidc)} alt={`${row.name} ${a.name}`} className="w-7 h-7 object-contain" />}
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </div>
       </Section>
