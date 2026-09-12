@@ -1,10 +1,10 @@
 # MapVideo V2 表清单速查
 
-> 21 张表、3 个视图、6 个触发器 —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 21 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：21 张表 · 4 张元素类别宽表 · 3 个视图 · 6 个触发器 · 28 个外键（全部有索引）
+- **规模**：21 张表 · 4 张元素类别宽表 · 3 个视图 · 0 个触发器 · 28 个外键（全部有索引）
 
 **目录**
 
@@ -15,7 +15,7 @@
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
-- 附：3 个视图与 6 个触发器
+- 附：3 个视图，以及为什么没有触发器
 
 ## 一、21 张表的构成与分流规则
 
@@ -90,7 +90,7 @@
 
 | 表 | 内容 | 主键 | 关键字段 / 行为 |
 |---|---|---|---|
-| `chapter` | `Chapter` 本体 | `chapter_id` | 绝对帧区间；标题样式/转场按 P3 留在 JSON 列 |
+| `chapter` | `Chapter` 本体 | `chapter_id` | 起止时间（`start_sec` / `end_sec`，秒）；标题样式/转场按 P3 留在 JSON 列 |
 | `camera_keyframe` | `camera[]` | `kf_id` | `frame` 是**到达时间**，`move_duration` 是起飞提前量；`follow_route_element_id` 删路线后 `SET NULL`（退化为固定视角） |
 | `screen_fx` | `fx[]` | `fx_id` | 屏幕空间特效窗口（天气/画面），与地图元素分离 |
 | `chapter_fx` | `effects[]` | `fx_id` | 章节级特效（动画预设等） |
@@ -116,7 +116,7 @@
 |---|---|---|---|---|
 | `element_route` | `line` | `element_id` | Route 工具；Shape 下菜单里的直线/曲线/带箭头/战线/行军箭头也写这张表 | 路径数组（coords_json）、线型、线宽虚线、路线特效、流动速度、无样式路线、战线梳齿 |
 | `element_route` | `moving_point` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 路径点数组、拖尾颜色/宽度/长度 |
-| `element_route` | `connector` | `element_id` | **当前无入口** | 起止端点（**弱引用**：元素已分表故无外键，删端点由清理触发器连带删除）、线宽/颜色/箭头 |
+| `element_route` | `connector` | `element_id` | **当前无入口** | 起止端点（**弱引用**：元素已分表故无外键，删元素时由应用层连带清理本行）、线宽/颜色/箭头 |
 
 ### 组 6 · 形状类元素 1 张 Shape 工具
 
@@ -144,7 +144,7 @@
 
 | 表 | 职责 | 主键 | 关键点 |
 |---|---|---|---|
-| `element_keyframe` | 元素动画关键帧 | `kf_id` | **所有元素共用**；8 种 property（透明度/缩放/旋转/绘制进度/路径进度/填充进度/morph）统一一张表；`element_id` 为**弱引用**（元素分属 4 张表），删元素由清理触发器连带删除；`chapter_id` 仍是外键 |
+| `element_keyframe` | 元素动画关键帧 | `kf_id` | **所有元素共用**；8 种 property（透明度/缩放/旋转/绘制进度/路径进度/填充进度/morph）统一一张表；`element_id` 为**弱引用**（元素分属 4 张表），删元素时由应用层连带清理；`chapter_id` 仍是外键 |
 
 ### 组 9 · 叠加层（弹窗） 3 张
 
@@ -219,7 +219,7 @@
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `project_id` | TEXT | `PK` `FK → project CASCADE` | 所属项目（1:1，主键即外键） |
-| `default_duration` | INTEGER | `NOT NULL` | 默认章节时长（帧） · `CHECK (default_duration > 0)` |
+| `default_duration_sec` | REAL | `NOT NULL` | 默认章节时长（秒） · `CHECK (default_duration_sec > 0)` |
 | `default_fps` | INTEGER | `NOT NULL` | 默认帧率（1–240） · `CHECK (default_fps BETWEEN 1 AND 240)` |
 | `resolution_w` | INTEGER | `NOT NULL` | 默认导出宽度（px） · `CHECK (resolution_w > 0)` |
 | `resolution_h` | INTEGER | `NOT NULL` | 默认导出高度（px） · `CHECK (resolution_h > 0)` |
@@ -267,7 +267,7 @@
 | `blob` | BLOB | — | 内联方式下的小文件二进制 |
 | `width` | INTEGER | — | 图片宽度（px） |
 | `height` | INTEGER | — | 图片高度（px） |
-| `duration_ms` | INTEGER | — | 音视频时长（毫秒） |
+| `duration_sec` | REAL | — | 音视频时长（毫秒） |
 | `meta_json` | TEXT | — | 媒体元信息（免下载即可预览/校验）：model={bbox,animations,triangles}；gif={frames,fps,loop} · `CHECK (meta_json IS NULL OR json_valid(meta_json))` |
 | `created_at` | INTEGER | `NOT NULL` | 入库时间（毫秒时间戳） |
 
@@ -287,8 +287,8 @@
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `title` | TEXT | `NOT NULL` | 章节标题 · 默认 `''` |
 | `order_index` | INTEGER | `NOT NULL` | 章节顺序（决定时间线页签次序） · 默认 `0` |
-| `start_frame` | INTEGER | `NOT NULL` | 起始帧（绝对帧） · `CHECK (start_frame >= 0)` |
-| `end_frame` | INTEGER | `NOT NULL` | 结束帧（绝对帧） |
+| `start_sec` | REAL | `NOT NULL` | 起始时间（秒，项目绝对时间轴） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 结束时间（秒，项目绝对时间轴） |
 | `base_map_id` | TEXT | — | 本节覆盖底图的配置 id（空则跟随项目） |
 | `elevation_map_id` | TEXT | — | 本节覆盖高程图的配置 id（空则跟随项目） |
 | `title_style_json` | TEXT | — | 标题样式配置块（字号/配色/预设） · `CHECK (title_style_json IS NULL OR json_valid(title_style_json))` |
@@ -296,7 +296,7 @@
 
 **表级约束**
 
-- `CHECK (end_frame > start_frame)`
+- `CHECK (end_sec > start_sec)`
 
 #### camera_keyframe
 
@@ -306,21 +306,21 @@
 |---|---|---|---|
 | `kf_id` | TEXT | `PK` | 视角关键帧 id |
 | `chapter_id` | TEXT | `NOT NULL` `FK → chapter CASCADE` | 所属章节 |
-| `frame` | INTEGER | `NOT NULL` | 到达时间（绝对帧）—— 语义为「停留 → 飞行 → 落位」的落位时刻 · `CHECK (frame >= 0)` |
+| `sec` | REAL | `NOT NULL` | 到达时间（秒，项目绝对时间轴）—— 语义为「停留 → 飞行 → 落位」的落位时刻 · `CHECK (sec >= 0)` |
 | `center_lng` | REAL | `NOT NULL` | 视角中心经度 |
 | `center_lat` | REAL | `NOT NULL` | 视角中心纬度 |
 | `zoom` | REAL | `NOT NULL` | 缩放级别 |
 | `pitch` | REAL | — | 俯仰角（度） |
 | `bearing` | REAL | — | 方向角（度） |
 | `easing` | TEXT | — | 飞行缓动类型 |
-| `move_duration` | INTEGER | — | 起飞提前量（帧，默认 2×fps） · `CHECK (move_duration IS NULL OR move_duration >= 0)` |
+| `move_duration_sec` | REAL | — | 起飞提前量（秒，默认 2 秒） · `CHECK (move_duration_sec IS NULL OR move_duration_sec >= 0)` |
 | `camera_type` | TEXT | — | 视角类型：fixed 固定 / follow 跟随 / orbit 环绕 · `CHECK (camera_type IS NULL OR camera_type IN ('fixed','follow','orbit'))` |
 | `follow_route_element_id` | TEXT | `FK → element_route SET NULL` | 跟随的路线元素（外键指向 element_route，只能是 line / moving_point；删除后置空，退化为固定视角） |
 | `follow_direction` | INTEGER | — | 跟随视角是否按路线切线自动定向 · `CHECK (follow_direction IS NULL OR follow_direction IN (0,1))` |
-| `follow_start_frame` | INTEGER | — | 跟随动画开始帧（默认取路线显示起点） |
-| `follow_end_frame` | INTEGER | — | 跟随动画结束帧（默认取路线显示终点） |
+| `follow_start_sec` | REAL | — | 跟随动画开始时间（秒，默认取路线显示起点） |
+| `follow_end_sec` | REAL | — | 跟随动画结束时间（秒，默认取路线显示终点） |
 | `orbit_speed` | REAL | — | 环绕速度（度/秒） |
-| `orbit_duration` | REAL | — | 环绕时长（秒） |
+| `orbit_duration_sec` | REAL | — | 环绕时长（秒） |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 
 #### screen_fx
@@ -333,8 +333,8 @@
 | `chapter_id` | TEXT | `NOT NULL` `FK → chapter CASCADE` | 所属章节 |
 | `kind` | TEXT | `NOT NULL` | 类别：weather 天气 / screen 画面特效 · `CHECK (kind IN ('weather','screen'))` |
 | `name` | TEXT | `NOT NULL` | 显示名（时间线轨道上展示） · 默认 `''` |
-| `start_frame` | INTEGER | `NOT NULL` | 起始帧（绝对帧） · `CHECK (start_frame >= 0)` |
-| `end_frame` | INTEGER | `NOT NULL` | 结束帧（绝对帧） |
+| `start_sec` | REAL | `NOT NULL` | 起始时间（秒，项目绝对时间轴） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 结束时间（秒，项目绝对时间轴） |
 | `weather_type` | TEXT | — | 天气类型：rain 雨 / snow 雪 / lightning 闪电 / fog 雾 · `CHECK (weather_type IS NULL OR weather_type IN ('rain','snow','lightning','fog'))` |
 | `intensity` | REAL | — | 强度（0–1） · `CHECK (intensity IS NULL OR intensity BETWEEN 0 AND 1)` |
 | `wind` | REAL | — | 风向风力（-1..1，向右为正） · `CHECK (wind IS NULL OR wind BETWEEN -1 AND 1)` |
@@ -345,7 +345,7 @@
 
 **表级约束**
 
-- `CHECK (end_frame >= start_frame)`
+- `CHECK (end_sec >= start_sec)`
 - `CHECK ((kind = 'weather' AND weather_type IS NOT NULL) OR (kind = 'screen' AND effect_type IS NOT NULL))`
 
 #### chapter_fx
@@ -389,8 +389,8 @@
 | `chapter_id` | TEXT | `NOT NULL` `FK → chapter CASCADE` | 所属章节 |
 | `text` | TEXT | `NOT NULL` | 字幕文本（同时也是配音朗读文本） · 默认 `''` |
 | `audio_asset_id` | TEXT | `FK → asset SET NULL` | 配音音频（TTS 生成或导入） |
-| `duration_frames` | INTEGER | `NOT NULL` | 字幕显示时长（帧；无音频时按字数估算） · `CHECK (duration_frames >= 1)` |
-| `start_frame` | INTEGER | `NOT NULL` | 章内起始帧（默认自动顺排） · `CHECK (start_frame >= 0)` |
+| `duration_sec` | REAL | `NOT NULL` | 字幕显示时长（秒）；有配音时长随音频，无配音按字数估算，均可手动覆盖 · `CHECK (duration_sec >= 1)` |
+| `start_sec` | REAL | `NOT NULL` | 章内起始时间（秒，默认自动顺排） · `CHECK (start_sec >= 0)` |
 | `locked` | INTEGER | `NOT NULL` | 手动定位后锁定，不再参与自动顺排 · 默认 `0` · `CHECK (locked IN (0,1))` |
 | `status` | TEXT | — | 配音状态：none / pending / ready / error · `CHECK (status IS NULL OR status IN ('none','pending','ready','error'))` |
 | `error` | TEXT | — | 配音失败原因 |
@@ -406,8 +406,8 @@
 | `chapter_id` | TEXT | `NOT NULL` `FK → chapter CASCADE` | 所属章节 |
 | `name` | TEXT | `NOT NULL` | 曲目名 · 默认 `''` |
 | `audio_asset_id` | TEXT | `FK → asset SET NULL` | 音频素材 |
-| `start_frame` | INTEGER | `NOT NULL` | 起效起始帧（章内绝对帧） · `CHECK (start_frame >= 0)` |
-| `end_frame` | INTEGER | `NOT NULL` | 起效结束帧（章内绝对帧） |
+| `start_sec` | REAL | `NOT NULL` | 起效起始时间（秒，章内绝对时间轴） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 起效结束时间（秒，章内绝对时间轴） |
 | `volume` | REAL | `NOT NULL` | 音量（0–1） · 默认 `1` · `CHECK (volume BETWEEN 0 AND 1)` |
 | `loop` | INTEGER | `NOT NULL` | 是否循环播放 · 默认 `0` · `CHECK (loop IN (0,1))` |
 | `fade_in` | REAL | `NOT NULL` | 淡入时长（秒） · 默认 `0` · `CHECK (fade_in >= 0)` |
@@ -416,7 +416,7 @@
 
 **表级约束**
 
-- `CHECK (end_frame >= start_frame)`
+- `CHECK (end_sec >= start_sec)`
 
 ### 组 4 · 标记类元素（Pin 工具）
 
@@ -432,18 +432,18 @@
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `locked` | INTEGER | `NOT NULL` | 是否锁定（0/1，锁定后不可拖动） · 默认 `0` · `CHECK (locked IN (0,1))` |
-| `start_frame` | INTEGER | `NOT NULL` | 出现帧（绝对帧） · `CHECK (start_frame >= 0)` |
-| `end_frame` | INTEGER | `NOT NULL` | 消失帧（绝对帧） |
+| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `z_index` | INTEGER | `NOT NULL` | 层级（越大越靠上） · 默认 `0` |
 | `shape_category` | TEXT | — | 来源分类：multi 多点 / two 两点 / special 特殊 / route 路线（决定属性面板形态） · `CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route'))` |
 | `anim_effect` | TEXT | — | 动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进 · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式：按高度剖面离地显示 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
 | `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
 | `move_icon_json` | TEXT | — | 移动图标样式配置块（dot/pin/emoji/bubble/text/flag + 标签） · `CHECK (move_icon_json IS NULL OR json_valid(move_icon_json))` |
-| `move_start_frame` | INTEGER | — | 移动图标出发帧 |
-| `move_end_frame` | INTEGER | — | 移动图标到达帧 |
+| `move_start_sec` | REAL | — | 移动图标出发时间（秒） |
+| `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
 | `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
-| `point_times_json` | TEXT | — | 各路径点到达帧数组（非匀速时使用） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
+| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒，非匀速时使用） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
 | `label_json` | TEXT | — | 元素标签：{text,fontSize,color,position,bgColor,bgPadding,bgRadius,fontWeight} · `CHECK (label_json IS NULL OR json_valid(label_json))` |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 | `lng` | REAL | `NOT NULL` | 经度（三类标记都落在单点） |
@@ -473,8 +473,8 @@
 
 **表级约束**
 
-- `CHECK (end_frame >= start_frame)`
-- `CHECK (move_end_frame IS NULL OR move_start_frame IS NULL OR move_end_frame > move_start_frame)`
+- `CHECK (end_sec >= start_sec)`
+- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)`
 - `CHECK (type <> 'point' OR shape IS NULL OR shape IN ('circle','text','pin','bubble','emoji') OR asset_id IS NOT NULL OR builtin_id IS NOT NULL)`（媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin）
 - `CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL)`
@@ -498,18 +498,18 @@
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `locked` | INTEGER | `NOT NULL` | 是否锁定（0/1） · 默认 `0` · `CHECK (locked IN (0,1))` |
-| `start_frame` | INTEGER | `NOT NULL` | 出现帧（绝对帧） · `CHECK (start_frame >= 0)` |
-| `end_frame` | INTEGER | `NOT NULL` | 消失帧（绝对帧） |
+| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `z_index` | INTEGER | `NOT NULL` | 层级（越大越靠上） · 默认 `0` |
 | `shape_category` | TEXT | — | 来源分类：multi / two / special / route · `CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route'))` |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式：路线与图标按高度剖面离地显示 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
 | `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
 | `move_icon_json` | TEXT | — | 移动图标样式配置块 · `CHECK (move_icon_json IS NULL OR json_valid(move_icon_json))` |
-| `move_start_frame` | INTEGER | — | 移动图标出发帧 |
-| `move_end_frame` | INTEGER | — | 移动图标到达帧 |
+| `move_start_sec` | REAL | — | 移动图标出发时间（秒） |
+| `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
 | `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
-| `point_times_json` | TEXT | — | 各路径点到达帧数组 · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
+| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
 | `label_json` | TEXT | — | 元素标签（内联）：{text,fontSize,color,position,bgColor,bgPadding,bgRadius,fontWeight} · `CHECK (label_json IS NULL OR json_valid(label_json))` |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
@@ -525,15 +525,15 @@
 | `trail_color` | TEXT | — | 拖尾颜色（type=moving_point） |
 | `trail_width` | REAL | — | 拖尾宽度（px） |
 | `trail_length` | INTEGER | — | 拖尾长度（帧） |
-| `from_element_id` | TEXT | — | 连接线起点元素（弱引用：可指向任意类别元素，元素已分表故无外键；删端点由清理触发器连带删除本行） |
+| `from_element_id` | TEXT | — | 连接线起点元素（弱引用：可指向任意类别元素，元素已分表故无外键；删元素时由应用层连带删除本行） |
 | `to_element_id` | TEXT | — | 连接线终点元素（弱引用；与起点不得相同） |
 | `animated` | INTEGER | — | 连接线是否流动动画（0/1） · `CHECK (animated IS NULL OR animated IN (0,1))` |
 | `arrowhead` | INTEGER | — | 连接线是否显示末端箭头（0/1） · `CHECK (arrowhead IS NULL OR arrowhead IN (0,1))` |
 
 **表级约束**
 
-- `CHECK (end_frame >= start_frame)`
-- `CHECK (move_end_frame IS NULL OR move_start_frame IS NULL OR move_end_frame > move_start_frame)`
+- `CHECK (end_sec >= start_sec)`
+- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (type <> 'line' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'connector' OR (from_element_id IS NOT NULL AND to_element_id IS NOT NULL))`
@@ -553,18 +553,18 @@
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `locked` | INTEGER | `NOT NULL` | 是否锁定（0/1） · 默认 `0` · `CHECK (locked IN (0,1))` |
-| `start_frame` | INTEGER | `NOT NULL` | 出现帧（绝对帧） · `CHECK (start_frame >= 0)` |
-| `end_frame` | INTEGER | `NOT NULL` | 消失帧（绝对帧） |
+| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `z_index` | INTEGER | `NOT NULL` | 层级（越大越靠上） · 默认 `0` |
 | `shape_category` | TEXT | — | 来源分类：multi 多点 / two 两点 / special 特殊 / route 路线 · `CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route'))` |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
 | `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
 | `move_icon_json` | TEXT | — | 移动图标样式配置块 · `CHECK (move_icon_json IS NULL OR json_valid(move_icon_json))` |
-| `move_start_frame` | INTEGER | — | 移动图标出发帧 |
-| `move_end_frame` | INTEGER | — | 移动图标到达帧 |
+| `move_start_sec` | REAL | — | 移动图标出发时间（秒） |
+| `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
 | `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
-| `point_times_json` | TEXT | — | 各路径点到达帧数组 · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
+| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
 | `label_json` | TEXT | — | 元素标签（内联） · `CHECK (label_json IS NULL OR json_valid(label_json))` |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
@@ -597,8 +597,8 @@
 
 **表级约束**
 
-- `CHECK (end_frame >= start_frame)`
-- `CHECK (move_end_frame IS NULL OR move_start_frame IS NULL OR move_end_frame > move_start_frame)`
+- `CHECK (end_sec >= start_sec)`
+- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (radius IS NULL OR radius > 0)`
 - `CHECK (type <> 'polygon' OR rings_json IS NOT NULL)`
 - `CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR circle_meta_json IS NOT NULL)`
@@ -624,8 +624,8 @@
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `locked` | INTEGER | `NOT NULL` | 是否锁定（0/1） · 默认 `0` · `CHECK (locked IN (0,1))` |
-| `start_frame` | INTEGER | `NOT NULL` | 出现帧（绝对帧） · `CHECK (start_frame >= 0)` |
-| `end_frame` | INTEGER | `NOT NULL` | 消失帧（绝对帧） |
+| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `z_index` | INTEGER | `NOT NULL` | 层级（越大越靠上） · 默认 `0` |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `label_json` | TEXT | — | 元素标签（内联） · `CHECK (label_json IS NULL OR json_valid(label_json))` |
@@ -633,11 +633,11 @@
 | `display_json` | TEXT | `NOT NULL` | 显示配置：势力边界/地块边界/线宽/填充透明度/标签开关/标签朝向与缩放 · `CHECK (json_valid(display_json))` |
 | `countries_json` | TEXT | — | 势力数组：[{countryId,name,color,ord}] · `CHECK (countries_json IS NULL OR json_valid(countries_json))` |
 | `plots_json` | TEXT | — | 地块数组：[{plotId,name,rings,ownerId,ord}]；ownerId 须能在 countries_json 中命中（由 v_check_territory_ref 校验） · `CHECK (plots_json IS NULL OR json_valid(plots_json))` |
-| `events_json` | TEXT | — | 兼并事件数组：[{eventId,frame,toCountryId,preset,duration,highlight,plotIds[],ord}]；toCountryId 同上 · `CHECK (events_json IS NULL OR json_valid(events_json))` |
+| `events_json` | TEXT | — | 兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上 · `CHECK (events_json IS NULL OR json_valid(events_json))` |
 
 **表级约束**
 
-- `CHECK (end_frame >= start_frame)`
+- `CHECK (end_sec >= start_sec)`
 
 ### 组 8 · 元素附属（跨类别）
 
@@ -648,11 +648,11 @@
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `kf_id` | TEXT | `PK` | 关键帧 id |
-| `element_id` | TEXT | `NOT NULL` | 所属元素 id（弱引用：元素分属 4 张表，无外键；删元素由 AFTER DELETE 清理触发器连带删除本行） |
+| `element_id` | TEXT | `NOT NULL` | 所属元素 id（弱引用：元素分属 4 张表，无外键；删元素时由应用层连带删除本行） |
 | `element_type` | TEXT | `NOT NULL` | 所属元素的具体类型（point / line / polygon / territory 等 12 种，便于定位与统计） · `CHECK (element_type IN ( 'point','flag','military_symbol', 'line','moving_point','connector', 'polygon','arrow','double_arrow','gathering','encirclement', 'territory'))` |
 | `chapter_id` | TEXT | `NOT NULL` `FK → chapter CASCADE` | 所属章节（外键，删章节时级联清理本章全部关键帧） |
 | `property` | TEXT | `NOT NULL` | 动画属性：opacity / scale / rotation / draw_progress / progress / path_progress / fill_progress / morph · `CHECK (property IN ( 'opacity','scale','rotation','draw_progress','progress', 'path_progress','fill_progress','morph'))` |
-| `frame` | INTEGER | `NOT NULL` | 时间（绝对帧） · `CHECK (frame >= 0)` |
+| `sec` | REAL | `NOT NULL` | 时间（秒，章内绝对时间轴） · `CHECK (sec >= 0)` |
 | `easing` | TEXT | — | 缓动类型 |
 | `value_num` | REAL | — | 数值（标量属性的快路径） |
 | `value_json` | TEXT | — | JSON 值（morph 的环数据） · `CHECK (value_json IS NULL OR json_valid(value_json))` |
@@ -661,7 +661,7 @@
 **表级约束**
 
 - `CHECK (value_num IS NOT NULL OR value_json IS NOT NULL)`
-- `UNIQUE (element_id, property, frame)`
+- `UNIQUE (element_id, property, sec)`
 
 ### 组 9 · 叠加层（弹窗）
 
@@ -676,8 +676,8 @@
 | `type` | TEXT | `NOT NULL` | 弹窗类型：custom / chart / person / report / timeline / quote / compare / counter / dialogue / place · `CHECK (type IN ( 'custom','chart','person','report','timeline','quote','compare', 'counter','dialogue','place'))` |
 | `name` | TEXT | `NOT NULL` | 显示名（时间线轨道上展示） · 默认 `''` |
 | `position` | TEXT | `NOT NULL` | 九宫格位置：top / topLeft / center / bottomRight 等 9 种 · `CHECK (position IN ( 'top','bottom','left','right','center', 'topLeft','topRight','bottomLeft','bottomRight'))` |
-| `start_frame` | INTEGER | `NOT NULL` | 出现帧（绝对帧） · `CHECK (start_frame >= 0)` |
-| `end_frame` | INTEGER | `NOT NULL` | 消失帧（绝对帧） |
+| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `animation` | TEXT | — | 入场动画预设 |
 | `exit_animation` | TEXT | — | 退场动画预设（结束前 20 帧播放） |
 | `scale` | REAL | — | 整体缩放 |
@@ -693,7 +693,7 @@
 
 **表级约束**
 
-- `CHECK (end_frame >= start_frame)`
+- `CHECK (end_sec >= start_sec)`
 
 #### overlay_block
 
@@ -815,7 +815,7 @@
 | `label_json`（元素表内的一列） vs `element_keyframe`（独立表） | 前者是**文字气泡内容**，作为一列 JSON 跟随元素一起读写（取消基表后不再独立成表）；后者是**动画曲线**（1:N，8 种属性，按 `element_id` 弱引用） |
 | `narration` vs `narration_entry` | 前者是「这一章的配音档」（样式、总开关，1:1）；后者是「档里的一条条字幕」（1:N） |
 | `overlay` vs `overlay_block` / `person_block` | 前者是弹窗本体；后两者是弹窗**内部**的内容块，且只有 custom / person 两类弹窗才需要 |
-| `screen_fx` vs `chapter_fx` | 前者是**屏幕空间**的特效窗口（天气、画面叠加，有起止帧）；后者是**章节级**特效配置（动画预设、转场风格） |
+| `screen_fx` vs `chapter_fx` | 前者是**屏幕空间**的特效窗口（天气、画面叠加，有起止时间 `start_sec` / `end_sec`）；后者是**章节级**特效配置（动画预设、转场风格） |
 
 ## 七、一次「打开」与一次「保存」
 
@@ -847,9 +847,9 @@
 
 本文描述的是**目标结构**；`electron/main.mjs` 与 `src/stores/db.ts` 目前是「项目 JSON + 合集 + 素材」的简化实现，尚未按本设计的多表结构落地。落地需要一个承载「多表 ↔ `MapVideoProject`」双向映射的模块。未决问题见 `docs/db-redesign.md` 末节。
 
-## 附：3 个视图与 6 个触发器是什么
+## 附：3 个视图，以及为什么没有触发器
 
-表之外还有两组对象，它们不是表，但看 DDL 时会遇到，一并说清。
+表之外原本还有触发器；本设计**不定义任何触发器**，理由见本节末尾。
 
 ### 3 个视图（不存数据，只是固化查询）
 
@@ -859,12 +859,23 @@
 | `v_check_dangling` | 一致性自检 | 查悬空引用：连接线指向已删除的元素、关键帧挂在已删除的元素上、跟随机位指向已删除的路线。迁移后与老库体检用，正常应返回 0 行 |
 | `v_check_territory_ref` | 一致性自检 | 疆域 JSON 内部一致性：`plots_json` 的 `ownerId`、`events_json` 的 `toCountryId` 必须能在 `countries_json` 中命中（复合外键被 JSON 化后的补偿） |
 
-### 6 个触发器（补外键表达不了的规则）
+### 为什么没有触发器（原 6 条已全部移除）
 
-| 触发器 | 数量 | 补的是什么规则 |
-|---|---|---|
-| `trg_camera_follow_chapter_ins` / `_upd` | 2 | 跟随机位只能引用**同一章节**内的路线元素（不能改用复合外键：`SET NULL` 会连带清空 NOT NULL 的 `chapter_id`） |
-| `trg_marker_cleanup` / `trg_route_cleanup` / `trg_shape_cleanup` / `trg_territory_cleanup` | 4 | **弱引用反向清理**：删除任一元素时，连带删除以它为端点的连接线、以及挂在它名下的动画关键帧。这是「取消基表后连接线 / 关键帧无法用外键 CASCADE」这一取舍的补偿 |
+原本 6 个触发器补的是外键表达不了的两类规则：`trg_camera_follow_chapter_ins/_upd`（跟随机位只能引用同一章节内的路线元素）、`trg_marker/route/shape/territory_cleanup`（弱引用反向清理）。**2026-09-12 起全部移除**，原因：
 
-  MapVideo V2 表清单速查 · 由 docs/db-schema-v2.sql 与 src/types/index.ts 的实际定义整理，表名、主键、外键均取自 DDL 实测解析结果
-  配套文件：docs/db-redesign.html（设计依据与选型对比）· docs/db-schema-v2.sql（可执行 DDL）· tools/audit-fk-indexes.mjs（外键索引审计）
+1. **双端不一致**：网页端是 Dexie（IndexedDB），**没有触发器** —— 数据库侧触发器只在桌面端生效，同一条规则会有两套真相；
+2. **规则藏在表定义之外**：读 DDL 看不出「删一个元素到底连带删掉什么」；
+3. **与写入端逻辑重复**：隐式行为干扰调试、导入与数据修复。
+
+这些规则改由**应用层**（唯一的写入路径）保证，两端行为一致：
+
+| 原触发器承担的规则 | 现在由谁保证 |
+|---|---|
+| 删元素 → 连带删除以它为端点的 connector、以及挂在它名下的关键帧 | 应用层删除元素时一并清理 |
+| 跟随机位只能引用同一章节内的路线元素 | 写入端校验（选择跟随机位时只列本章路线） |
+
+数据库侧只保留 `v_check_dangling` / `v_check_territory_ref` 两个**自检视图**：它们不拦截写入，只把「数据已损坏」从隐性变成可检测。
+
+MapVideo V2 表清单速查 · 由 `docs/db-schema-v2.sql` 与 `src/types/index.ts` 的实际定义整理，表名、主键、外键均取自 DDL 实测解析结果。
+
+配套文件：`docs/db-redesign.md`（设计依据与选型对比）· `docs/db-schema-v2.sql`（可执行 DDL）· `tools/audit-fk-indexes.mjs`（外键索引审计）

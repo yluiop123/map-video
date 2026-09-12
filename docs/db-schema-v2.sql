@@ -2,9 +2,10 @@
 -- MapVideo V2 关系型数据库结构
 -- 目标引擎：SQLite（桌面端 node:sqlite / DatabaseSync）；Dexie 端见报告第 6.4 节
 -- 命名约定：表名与 TS 实体同名并转 snake_case（elementMarker ↔ element_marker），
---          主键统一 <实体>_id，时间统一 *_frame（帧）/ *_at（epoch ms）
--- 字符集：UTF-8；时间单位：帧（整数），基准帧率见 project.default_fps
--- 规模：21 张表 / 3 视图 / 6 触发器
+--          主键统一 <实体>_id，时间统一 *_sec（秒，REAL）/ *_at（epoch ms，仅审计字段用）
+-- 字符集：UTF-8；时间单位：**秒**（REAL，存用户输入的原值）；
+--          渲染 / 导出时按 project_config.default_fps 换算为帧（帧是派生量，不入库）
+-- 规模：21 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -20,7 +21,8 @@
 --   疆域内部实体（势力/地块/兼并事件）
 --   JSON 内联进 element_territory；元素标签（label）内联为 label_json。
 --   代价与补偿：跨表引用（connector 端点、keyframe 归属）失去外键，改由
---   AFTER DELETE 清理触发器 + 一致性自检视图兜底；跨类别列表查询用 v_element_index。
+--   应用层清理 + 一致性自检视图兜底（不使用触发器，见第 10 节）；
+--   跨类别列表查询用 v_element_index。
 -- =============================================================================
 
 PRAGMA foreign_keys = ON;
@@ -65,7 +67,7 @@ CREATE TABLE IF NOT EXISTS project (
 --   配置面板只读写这张表，互不干扰；新增配置项也不改动 project 结构。
 CREATE TABLE IF NOT EXISTS project_config (
   project_id            TEXT PRIMARY KEY REFERENCES project(project_id) ON DELETE CASCADE,
-  default_duration      INTEGER NOT NULL CHECK (default_duration > 0),
+  default_duration_sec      REAL NOT NULL CHECK (default_duration_sec > 0),
   default_fps           INTEGER NOT NULL CHECK (default_fps BETWEEN 1 AND 240),
   resolution_w          INTEGER NOT NULL CHECK (resolution_w > 0),
   resolution_h          INTEGER NOT NULL CHECK (resolution_h > 0),
@@ -116,7 +118,7 @@ CREATE TABLE IF NOT EXISTS asset (
   blob          BLOB,                      -- storage='blob'：小文件内联
   width         INTEGER,
   height        INTEGER,
-  duration_ms   INTEGER,
+  duration_sec   REAL,
   -- 媒体元信息（供 UI 预览与校验，避免为了取尺寸而先下载整个文件）
   --   model: { bbox:[minX,minY,minZ,maxX,maxY,maxZ], animations:[名], triangles:n }
   --   gif:   { frames:n, fps, loop:bool }
@@ -137,51 +139,51 @@ CREATE TABLE IF NOT EXISTS chapter (
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   title          TEXT NOT NULL DEFAULT '',
   order_index    INTEGER NOT NULL DEFAULT 0,
-  start_frame    INTEGER NOT NULL CHECK (start_frame >= 0),
-  end_frame      INTEGER NOT NULL,
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec      REAL NOT NULL,
   base_map_id      TEXT,              -- 章节级覆盖：存内置底图 id，空则跟随项目
   elevation_map_id TEXT,              -- 同上
   title_style_json TEXT CHECK (title_style_json IS NULL OR json_valid(title_style_json)),
   transition_json  TEXT CHECK (transition_json  IS NULL OR json_valid(transition_json)),
-  CHECK (end_frame > start_frame)
+  CHECK (end_sec > start_sec)
 );
 CREATE INDEX IF NOT EXISTS ix_chapter_project ON chapter(project_id, order_index);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_chapter_span ON chapter(project_id, start_frame);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_chapter_span ON chapter(project_id, start_sec);
 
--- 相机视角关键帧：frame 语义 = 「到达时间」（绝对帧），move_duration = 起飞提前量
+-- 相机视角关键帧：sec = 「到达时间」（绝对秒），move_duration_sec = 起飞提前量（秒）
 CREATE TABLE IF NOT EXISTS camera_keyframe (
   kf_id            TEXT PRIMARY KEY,
   chapter_id       TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
-  frame            INTEGER NOT NULL CHECK (frame >= 0),
+  sec            REAL NOT NULL CHECK (sec >= 0),
   center_lng       REAL NOT NULL,
   center_lat       REAL NOT NULL,
   zoom             REAL NOT NULL,
   pitch            REAL,
   bearing          REAL,
   easing           TEXT,
-  move_duration    INTEGER CHECK (move_duration IS NULL OR move_duration >= 0),
+  move_duration_sec    REAL CHECK (move_duration_sec IS NULL OR move_duration_sec >= 0),
   camera_type      TEXT CHECK (camera_type IS NULL OR camera_type IN ('fixed','follow','orbit')),
 
   -- follow 视角：跟随目标只能是路线类元素（line / moving_point）
   -- 单列外键 + SET NULL：复合外键会连带清空 NOT NULL 的 chapter_id（见报告 5.6）
   follow_route_element_id TEXT REFERENCES element_route(element_id) ON DELETE SET NULL,
   follow_direction        INTEGER CHECK (follow_direction IS NULL OR follow_direction IN (0,1)),
-  follow_start_frame      INTEGER,
-  follow_end_frame        INTEGER,
+  follow_start_sec      REAL,
+  follow_end_sec        REAL,
 
   -- orbit 视角
   orbit_speed    REAL,
-  orbit_duration REAL,
+  orbit_duration_sec REAL,
   ord            INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS ix_camera_kf_chapter ON camera_keyframe(chapter_id, frame);
+CREATE INDEX IF NOT EXISTS ix_camera_kf_chapter ON camera_keyframe(chapter_id, sec);
 CREATE INDEX IF NOT EXISTS ix_camera_kf_follow  ON camera_keyframe(follow_route_element_id);
 
 -- -----------------------------------------------------------------------------
 -- 4. 元素表（4 张类别宽表）
 --    公共列（每张表都有）：element_id / chapter_id / type / name / visible /
---    locked / start_frame / end_frame / z_index / shape_category / anim_effect /
---    fly_mode / show_icon / move_icon_json / move_start_frame / move_end_frame /
+--    locked / start_sec / end_sec / z_index / shape_category / anim_effect /
+--    fly_mode / show_icon / move_icon_json / move_start_sec / move_end_sec /
 --    uniform_move / point_times_json / label_json / ord
 --    类别内子类型用 type 判别列 + CHECK 表达「该子类型必填项」。
 -- -----------------------------------------------------------------------------
@@ -195,16 +197,16 @@ CREATE TABLE IF NOT EXISTS element_marker (
   name           TEXT NOT NULL DEFAULT '',
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
   locked         INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
-  start_frame    INTEGER NOT NULL CHECK (start_frame >= 0),
-  end_frame      INTEGER NOT NULL,
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec      REAL NOT NULL,
   z_index        INTEGER NOT NULL DEFAULT 0,
   shape_category TEXT CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route')),
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
   move_icon_json TEXT CHECK (move_icon_json IS NULL OR json_valid(move_icon_json)),
-  move_start_frame INTEGER,
-  move_end_frame   INTEGER,
+  move_start_sec REAL,
+  move_end_sec   REAL,
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
   label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),  -- 原 element_label 内联
@@ -249,8 +251,8 @@ CREATE TABLE IF NOT EXISTS element_marker (
   echelon        TEXT,
   symbol_label   TEXT,
 
-  CHECK (end_frame >= start_frame),
-  CHECK (move_end_frame IS NULL OR move_start_frame IS NULL OR move_end_frame > move_start_frame),
+  CHECK (end_sec >= start_sec),
+  CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL),
   -- 媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin
   CHECK (type <> 'point' OR shape IS NULL
@@ -278,16 +280,16 @@ CREATE TABLE IF NOT EXISTS element_route (
   name           TEXT NOT NULL DEFAULT '',
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
   locked         INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
-  start_frame    INTEGER NOT NULL CHECK (start_frame >= 0),
-  end_frame      INTEGER NOT NULL,
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec      REAL NOT NULL,
   z_index        INTEGER NOT NULL DEFAULT 0,
   shape_category TEXT CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route')),
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
   move_icon_json TEXT CHECK (move_icon_json IS NULL OR json_valid(move_icon_json)),
-  move_start_frame INTEGER,
-  move_end_frame   INTEGER,
+  move_start_sec REAL,
+  move_end_sec   REAL,
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
   label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
@@ -318,8 +320,8 @@ CREATE TABLE IF NOT EXISTS element_route (
   animated          INTEGER CHECK (animated  IS NULL OR animated  IN (0,1)),
   arrowhead         INTEGER CHECK (arrowhead IS NULL OR arrowhead IN (0,1)),
 
-  CHECK (end_frame >= start_frame),
-  CHECK (move_end_frame IS NULL OR move_start_frame IS NULL OR move_end_frame > move_start_frame),
+  CHECK (end_sec >= start_sec),
+  CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'line'         OR coords_json IS NOT NULL),
   CHECK (type <> 'moving_point' OR coords_json IS NOT NULL),
   CHECK (type <> 'connector'    OR (from_element_id IS NOT NULL AND to_element_id IS NOT NULL)),
@@ -327,7 +329,7 @@ CREATE TABLE IF NOT EXISTS element_route (
 );
 CREATE INDEX IF NOT EXISTS ix_route_chapter ON element_route(chapter_id, z_index, ord);
 CREATE INDEX IF NOT EXISTS ix_route_type    ON element_route(chapter_id, type);
--- 连接线端点：清理触发器按 from/to 反查，必须建索引（否则删元素时全表扫描）
+-- 连接线端点：应用层按 from/to 反查清理，必须建索引（否则删元素时全表扫描）
 CREATE INDEX IF NOT EXISTS ix_route_from    ON element_route(chapter_id, from_element_id);
 CREATE INDEX IF NOT EXISTS ix_route_to      ON element_route(chapter_id, to_element_id);
 
@@ -341,16 +343,16 @@ CREATE TABLE IF NOT EXISTS element_shape (
   name           TEXT NOT NULL DEFAULT '',
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
   locked         INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
-  start_frame    INTEGER NOT NULL CHECK (start_frame >= 0),
-  end_frame      INTEGER NOT NULL,
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec      REAL NOT NULL,
   z_index        INTEGER NOT NULL DEFAULT 0,
   shape_category TEXT CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route')),
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
   move_icon_json TEXT CHECK (move_icon_json IS NULL OR json_valid(move_icon_json)),
-  move_start_frame INTEGER,
-  move_end_frame   INTEGER,
+  move_start_sec REAL,
+  move_end_sec   REAL,
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
   label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
@@ -392,8 +394,8 @@ CREATE TABLE IF NOT EXISTS element_shape (
   pulse_animation INTEGER CHECK (pulse_animation IS NULL OR pulse_animation IN (0,1)),
   rotation       REAL,
 
-  CHECK (end_frame >= start_frame),
-  CHECK (move_end_frame IS NULL OR move_start_frame IS NULL OR move_end_frame > move_start_frame),
+  CHECK (end_sec >= start_sec),
+  CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (radius IS NULL OR radius > 0),
   CHECK (type <> 'polygon' OR rings_json IS NOT NULL),
   CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR circle_meta_json IS NOT NULL),
@@ -412,7 +414,7 @@ CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(chapter_id, type);
 -- 5.4 疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件全部 JSON 内联
 --     countries_json: [{ countryId, name, color, ord }]
 --     plots_json:     [{ plotId, name, rings, ownerId, ord }]        rings = GeoJSON 环数组
---     events_json:    [{ eventId, frame, toCountryId, preset, duration, highlight, plotIds[], ord }]
+--     events_json:    [{ eventId, sec, toCountryId, preset, duration_sec, highlight, plotIds[], ord }]
 CREATE TABLE IF NOT EXISTS element_territory (
   element_id     TEXT PRIMARY KEY,
   chapter_id     TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
@@ -421,8 +423,8 @@ CREATE TABLE IF NOT EXISTS element_territory (
   name           TEXT NOT NULL DEFAULT '',
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
   locked         INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
-  start_frame    INTEGER NOT NULL CHECK (start_frame >= 0),
-  end_frame      INTEGER NOT NULL,
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec      REAL NOT NULL,
   z_index        INTEGER NOT NULL DEFAULT 0,
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
   label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
@@ -433,14 +435,14 @@ CREATE TABLE IF NOT EXISTS element_territory (
   plots_json     TEXT CHECK (plots_json     IS NULL OR json_valid(plots_json)),
   events_json    TEXT CHECK (events_json    IS NULL OR json_valid(events_json)),
 
-  CHECK (end_frame >= start_frame)
+  CHECK (end_sec >= start_sec)
 );
 CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(chapter_id, z_index, ord);
 
 -- -----------------------------------------------------------------------------
 -- 5. 元素附属：动画关键帧
 --    ★ 取消了 element 基表后，关键帧无法用外键指向「四张表之一」，故为弱引用：
---      element_id 不加外键，元素删除时由 AFTER DELETE 清理触发器（第 11 节）删除；
+--      element_id 不加外键，元素删除时由应用层一并删除它的关键帧（不使用触发器，见第 10 节）；
 --      chapter_id 仍保留外键，保证「删章节」能级联清掉本章关键帧。
 -- -----------------------------------------------------------------------------
 
@@ -456,15 +458,15 @@ CREATE TABLE IF NOT EXISTS element_keyframe (
   property    TEXT NOT NULL CHECK (property IN (
                 'opacity','scale','rotation','draw_progress','progress',
                 'path_progress','fill_progress','morph')),
-  frame       INTEGER NOT NULL CHECK (frame >= 0),
+  sec       REAL NOT NULL CHECK (sec >= 0),
   easing      TEXT,
   value_num   REAL,                                    -- 标量快路径
   value_json  TEXT CHECK (value_json IS NULL OR json_valid(value_json)),  -- morph 用 rings
   ord         INTEGER NOT NULL DEFAULT 0,
   CHECK (value_num IS NOT NULL OR value_json IS NOT NULL),
-  UNIQUE (element_id, property, frame)
+  UNIQUE (element_id, property, sec)
 );
-CREATE INDEX IF NOT EXISTS ix_element_kf   ON element_keyframe(element_id, property, frame);
+CREATE INDEX IF NOT EXISTS ix_element_kf   ON element_keyframe(element_id, property, sec);
 CREATE INDEX IF NOT EXISTS ix_element_kf_ch ON element_keyframe(chapter_id);
 
 -- -----------------------------------------------------------------------------
@@ -481,8 +483,8 @@ CREATE TABLE IF NOT EXISTS overlay (
   position     TEXT NOT NULL CHECK (position IN (
                  'top','bottom','left','right','center',
                  'topLeft','topRight','bottomLeft','bottomRight')),
-  start_frame  INTEGER NOT NULL CHECK (start_frame >= 0),
-  end_frame    INTEGER NOT NULL,
+  start_sec  REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec    REAL NOT NULL,
   animation      TEXT,
   exit_animation TEXT,
   scale        REAL,
@@ -497,9 +499,9 @@ CREATE TABLE IF NOT EXISTS overlay (
   audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
   parent_overlay_id TEXT REFERENCES overlay(overlay_id) ON DELETE CASCADE,  -- 兼容旧 group 嵌套
   ord          INTEGER NOT NULL DEFAULT 0,
-  CHECK (end_frame >= start_frame)
+  CHECK (end_sec >= start_sec)
 );
-CREATE INDEX IF NOT EXISTS ix_overlay_chapter ON overlay(chapter_id, start_frame);
+CREATE INDEX IF NOT EXISTS ix_overlay_chapter ON overlay(chapter_id, start_sec);
 CREATE INDEX IF NOT EXISTS ix_overlay_parent  ON overlay(parent_overlay_id);
 
 -- custom 类型的内容块（文字/图片/视频纵向堆叠）
@@ -559,8 +561,8 @@ CREATE TABLE IF NOT EXISTS screen_fx (
   chapter_id TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
   kind       TEXT NOT NULL CHECK (kind IN ('weather','screen')),
   name       TEXT NOT NULL DEFAULT '',
-  start_frame INTEGER NOT NULL CHECK (start_frame >= 0),
-  end_frame   INTEGER NOT NULL,
+  start_sec REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec   REAL NOT NULL,
   weather_type TEXT CHECK (weather_type IS NULL OR weather_type IN ('rain','snow','lightning','fog')),
   intensity  REAL CHECK (intensity IS NULL OR intensity BETWEEN 0 AND 1),
   wind       REAL CHECK (wind IS NULL OR wind BETWEEN -1 AND 1),
@@ -569,11 +571,11 @@ CREATE TABLE IF NOT EXISTS screen_fx (
   effect_color TEXT,
   enabled    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
   ord        INTEGER NOT NULL DEFAULT 0,
-  CHECK (end_frame >= start_frame),
+  CHECK (end_sec >= start_sec),
   CHECK ((kind = 'weather' AND weather_type IS NOT NULL)
       OR (kind = 'screen'  AND effect_type  IS NOT NULL))
 );
-CREATE INDEX IF NOT EXISTS ix_screen_fx ON screen_fx(chapter_id, start_frame);
+CREATE INDEX IF NOT EXISTS ix_screen_fx ON screen_fx(chapter_id, start_sec);
 
 -- 字幕档：1:1 持有样式；字幕条 1:N
 CREATE TABLE IF NOT EXISTS narration (
@@ -586,30 +588,30 @@ CREATE TABLE IF NOT EXISTS narration_entry (
   chapter_id    TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
   text          TEXT NOT NULL DEFAULT '',
   audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
-  duration_frames INTEGER NOT NULL CHECK (duration_frames >= 1),
-  start_frame     INTEGER NOT NULL CHECK (start_frame >= 0),
+  duration_sec REAL NOT NULL CHECK (duration_sec >= 1),
+  start_sec     REAL NOT NULL CHECK (start_sec >= 0),
   locked        INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
   status        TEXT CHECK (status IS NULL OR status IN ('none','pending','ready','error')),
   error         TEXT,
   ord           INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS ix_narration_entry ON narration_entry(chapter_id, start_frame);
+CREATE INDEX IF NOT EXISTS ix_narration_entry ON narration_entry(chapter_id, start_sec);
 
 CREATE TABLE IF NOT EXISTS music_track (
   track_id      TEXT PRIMARY KEY,
   chapter_id    TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
   name          TEXT NOT NULL DEFAULT '',
   audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
-  start_frame   INTEGER NOT NULL CHECK (start_frame >= 0),
-  end_frame     INTEGER NOT NULL,
+  start_sec   REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec     REAL NOT NULL,
   volume        REAL NOT NULL DEFAULT 1 CHECK (volume BETWEEN 0 AND 1),
   loop          INTEGER NOT NULL DEFAULT 0 CHECK (loop IN (0,1)),
   fade_in       REAL NOT NULL DEFAULT 0 CHECK (fade_in  >= 0),
   fade_out      REAL NOT NULL DEFAULT 0 CHECK (fade_out >= 0),
   ord           INTEGER NOT NULL DEFAULT 0,
-  CHECK (end_frame >= start_frame)
+  CHECK (end_sec >= start_sec)
 );
-CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(chapter_id, start_frame);
+CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(chapter_id, start_sec);
 
 -- -----------------------------------------------------------------------------
 -- 8. 应用配置聚合（与项目内容解耦，Key 只存本机）
@@ -664,72 +666,22 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 -- 注：底图 / 高程图列已不是外键（配置在代码里），无需外键支撑索引
 
 -- =============================================================================
--- 10. 完整性触发器
+-- 10. 不使用触发器：弱引用的一致性由应用层保证
 -- =============================================================================
-
--- 11.1 跟随机位必须引用同一章节内的路线元素
---      （不能改用复合外键：SET NULL 会连带清空 NOT NULL 的 chapter_id）
-CREATE TRIGGER IF NOT EXISTS trg_camera_follow_chapter_ins
-BEFORE INSERT ON camera_keyframe
-WHEN NEW.follow_route_element_id IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM element_route
-                 WHERE element_id = NEW.follow_route_element_id
-                   AND chapter_id = NEW.chapter_id)
-BEGIN
-  SELECT RAISE(ABORT, 'follow_route_element_id 必须属于同一章节的路线元素');
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_camera_follow_chapter_upd
-BEFORE UPDATE OF follow_route_element_id ON camera_keyframe
-WHEN NEW.follow_route_element_id IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM element_route
-                 WHERE element_id = NEW.follow_route_element_id
-                   AND chapter_id = NEW.chapter_id)
-BEGIN
-  SELECT RAISE(ABORT, 'follow_route_element_id 必须属于同一章节的路线元素');
-END;
-
--- 11.2 跨表弱引用的反向清理（补偿「没有 element 基表 → 复合外键 CASCADE 不可用」）
---      删除任一元素时：
---        · 删掉以它为端点的连接线（connector）行
---        · 删掉它自己的动画关键帧
---      用 AFTER DELETE：若被删的是连接线自身，下方 DELETE 命中 0 行；
---      recursive_triggers 默认关闭，不会递归。
-CREATE TRIGGER IF NOT EXISTS trg_marker_cleanup
-AFTER DELETE ON element_marker
-BEGIN
-  DELETE FROM element_route
-   WHERE type = 'connector'
-     AND (from_element_id = OLD.element_id OR to_element_id = OLD.element_id);
-  DELETE FROM element_keyframe WHERE element_id = OLD.element_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_route_cleanup
-AFTER DELETE ON element_route
-BEGIN
-  DELETE FROM element_route
-   WHERE type = 'connector'
-     AND (from_element_id = OLD.element_id OR to_element_id = OLD.element_id);
-  DELETE FROM element_keyframe WHERE element_id = OLD.element_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_shape_cleanup
-AFTER DELETE ON element_shape
-BEGIN
-  DELETE FROM element_route
-   WHERE type = 'connector'
-     AND (from_element_id = OLD.element_id OR to_element_id = OLD.element_id);
-  DELETE FROM element_keyframe WHERE element_id = OLD.element_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_territory_cleanup
-AFTER DELETE ON element_territory
-BEGIN
-  DELETE FROM element_route
-   WHERE type = 'connector'
-     AND (from_element_id = OLD.element_id OR to_element_id = OLD.element_id);
-  DELETE FROM element_keyframe WHERE element_id = OLD.element_id;
-END;
+--
+-- 本设计**不定义任何触发器**（2026-09-12 起全部移除）。理由：
+--   1) 双端不一致：网页端是 Dexie（IndexedDB），**没有触发器**，
+--      数据库侧触发器只在桌面端生效，同一条业务规则会存在两套真相；
+--   2) 规则被藏在表定义之外：读 DDL 看不出「删一个元素到底会连带删掉什么」；
+--   3) 清理逻辑与写入端重复，隐式行为干扰调试、导入与数据修复。
+--
+-- 因此把规则前移到唯一的写入路径（应用层），两端行为一致：
+--   · 删除元素 → 一并删除「以它为端点的 connector」与「挂在它名下的关键帧」
+--   · camera_keyframe.follow_route_element_id 只允许引用**同一章节**内的路线元素
+--   · 写入顺序：先建元素，再建引用它的连接线 / 关键帧
+--
+-- 数据库侧只保留 v_check_dangling / v_check_territory_ref 两个**自检视图**用于体检，
+-- 它们不拦截写入，只把「数据已损坏」从隐性变为可检测。
 
 -- =============================================================================
 -- 11. 视图
@@ -738,19 +690,19 @@ END;
 -- 12.1 跨类别元素索引：取消基表后，轨道 / 列表 / 计数查这里，不必手写 4 表 UNION
 CREATE VIEW IF NOT EXISTS v_element_index AS
 SELECT 'marker' AS category, element_id, chapter_id, type, name, visible, locked,
-       start_frame, end_frame, z_index, ord
+       start_sec, end_sec, z_index, ord
   FROM element_marker
 UNION ALL
 SELECT 'route', element_id, chapter_id, type, name, visible, locked,
-       start_frame, end_frame, z_index, ord
+       start_sec, end_sec, z_index, ord
   FROM element_route
 UNION ALL
 SELECT 'shape', element_id, chapter_id, type, name, visible, locked,
-       start_frame, end_frame, z_index, ord
+       start_sec, end_sec, z_index, ord
   FROM element_shape
 UNION ALL
 SELECT 'territory', element_id, chapter_id, type, name, visible, locked,
-       start_frame, end_frame, z_index, ord
+       start_sec, end_sec, z_index, ord
   FROM element_territory;
 
 -- 12.2 悬空引用自检（弱引用 + 外键未开启时应为 0；迁移后与老库体检）
@@ -809,9 +761,10 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
 -- 1) 底图 / 高程图不入库：配置是代码内置常量，project / chapter 只存 id 字符串。
 --    理由：配置数量固定、无需用户自定义，入库只会多出两张表与两处外键（还曾形成循环）。
 -- 2) 【本版最大取舍】取消 element 基表后，跨表弱引用失去数据库级外键：
---    · connector.from/to（可指向任意类别元素）→ 靠 11.2 清理触发器 + 12.2 自检视图
+--    · connector.from/to（可指向任意类别元素）→ 应用层清理 + 自检视图
 --    · element_keyframe.element_id        → 同上
---    代价：写入侧需应用层保证「先建元素、再建引用它的连接线/关键帧」。
+--    代价：写入侧需保证「先建元素、再建引用它的连接线 / 关键帧」，
+--          且删除元素时要一并清理引用它的连接线与关键帧（无触发器兜底，见第 10 节）。
 --    收益：元素表数量 14 → 4，模块边界与工具栏一致，读写路径更直观。
 -- 3) 疆域内部实体（势力/地块/兼并事件）JSON 内联进 element_territory：
 --    放弃了原先的复合外键与唯一约束，一致性改由 12.3 视图 + 应用层保证。

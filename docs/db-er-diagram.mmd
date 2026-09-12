@@ -25,7 +25,7 @@ erDiagram
     text chapter_id PK
     text project_id FK
     int order_index
-    int start_frame
+    real start_sec
   }
   ELEMENT_MARKER {
     text element_id PK
@@ -64,7 +64,7 @@ erDiagram
     text element_type
     text chapter_id FK
     text property
-    int frame
+    real sec
   }
   CAMERA_KEYFRAME {
     text kf_id PK
