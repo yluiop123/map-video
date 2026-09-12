@@ -123,7 +123,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2 设计稿，尚未落地到运行时）
 
-**规模**：22 张表 / 3 视图 / **0 触发器** / 330 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：20 张表 / 3 视图 / **0 触发器** / 316 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
 - **★ 只存输入原值，不存派生 / 换算值**：凡是能从别处算出来的都不入库或存为可空覆盖值 —— 例如字幕时长有配音时随音频（不落库）、无配音时才存估算值，`music_track` 的结束时间同理。典型反面：`FrameTimeField` 曾把「秒」输入换算成帧入库，改 fps 后用户输入就永久丢失了。
@@ -152,7 +152,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
   - 地形夸张系数可调节 → 打破了「底图/高程图是代码常量，配置不入库」的前提，必须在 `project_config` 给它落库；
-  - 自定义图片库 `customImages` 运行时已有 → 设计稿却没有对应表，补了 `custom_image`。
+  - 自定义图片库 `customImages` 运行时已有 → 设计稿却没有对应表，补了 `custom_image`（后随三表合并并入 `asset`，`kind='image'`）。
   - 判断口诀：**「用户能改」的值就必须能存**，凡是「XX 不入库」这类取舍，都要确认它的前提（配置是否真的固定）仍然成立。
 
 - **能力矩阵三处联动，改一处必须同步另两处**：模型不可着色且不能贴地、GIF 不可着色 —— ① DDL 的 CHECK ② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
@@ -162,7 +162,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 11. 标记（Pin）形态扩展的代码落点
 
-point 有 **9 种视觉形态**：`circle/text/pin/bubble/emoji` + `image/gif/model/icon`。资源两来源：`asset_id`（用户上传，外置）与 `builtin_id`（内置、**不入库**）；图标形态用 `icon_lib` + `icon_name`（自建库落 `custom_symbol.ns`）。
+point 有 **9 种视觉形态**：`circle/text/pin/bubble/emoji` + `image/gif/model/icon`。资源两来源：`asset_id`（用户上传，外置）与 `builtin_id`（内置、**不入库**）；图标形态用 `icon_lib` + `icon_name`（自建库条目落 `asset`，`kind='icon'`）。
 
 | 文件 | 职责 |
 |---|---|

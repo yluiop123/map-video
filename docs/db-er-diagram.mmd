@@ -75,13 +75,9 @@ erDiagram
   ASSET {
     text asset_id PK
     text project_id FK
-    text sha256
-    text storage
-  }
-  CUSTOM_IMAGE {
-    text project_id PK
-    text asset_id PK
+    text kind "icon|image|gif|model|audio|video|font"
     text name
+    text storage
   }
   OVERLAY {
     text overlay_id PK
@@ -96,8 +92,7 @@ erDiagram
   COLLECTION ||--o{ PROJECT : "1:N 项目"
   PROJECT ||--|| PROJECT_CONFIG : "1:1 配置"
   PROJECT ||--o{ CHAPTER : "1:N 章节"
-  PROJECT ||--o{ CUSTOM_SYMBOL : "1:N 自定义符号"
-  PROJECT ||--o{ ASSET : "1:N 素材"
+  PROJECT ||--o{ ASSET : "1:N 素材（含 icon/image 库条目）"
   CHAPTER ||--o{ ELEMENT_MARKER : "1:N 标记(Pin)"
   CHAPTER ||--o{ ELEMENT_ROUTE : "1:N 路线(Route)"
   CHAPTER ||--o{ ELEMENT_SHAPE : "1:N 形状(Shape)"
@@ -114,8 +109,5 @@ erDiagram
   OVERLAY ||--o{ PERSON_BLOCK : "1:N 人物块"
   ELEMENT_MARKER ||--o{ ELEMENT_KEYFRAME : "弱引用 无外键"
   ELEMENT_MARKER }o--o| ASSET : "媒体资源 asset_id"
-  CUSTOM_SYMBOL }o--|| ASSET : "图标素材"
-  PROJECT ||--o{ CUSTOM_IMAGE : "1:N 项目图片库"
-  CUSTOM_IMAGE }o--|| ASSET : "图片素材 RESTRICT"
   CAMERA_KEYFRAME }o--o| ELEMENT_ROUTE : "跟随机位 SET NULL"
   ELEMENT_ROUTE }o--o{ ELEMENT_MARKER : "connector 端点 弱引用 无外键"

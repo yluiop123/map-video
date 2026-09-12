@@ -5,7 +5,7 @@
 --          主键统一 <实体>_id，时间统一 *_sec（秒，REAL）/ *_at（epoch ms，仅审计字段用）
 -- 字符集：UTF-8；时间单位：**秒**（REAL，存用户输入的原值）；
 --          渲染 / 导出时按 project_config.default_fps 换算为帧（帧是派生量，不入库）
--- 规模：22 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
+-- 规模：20 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -89,36 +89,23 @@ CREATE TABLE IF NOT EXISTS project_config (
 -- 例外：**地形夸张系数用户可调**（面板滑动条 0–50），因此作为「对当前生效高程图的覆盖值」
 --       落在 project_config.elevation_exaggeration（NULL = 沿用内置默认的 1.5）。
 
--- 用户图标库：图标 / 图片 / SVG / 动图；ns 为命名空间，支持「可扩展图标库」
--- （内置 lucide / react-icons 不进库，用 element_marker.icon_lib + icon_name 引用；
---   用户自建库/上传的图标写这里，ns='custom' 或自定义库名）
-CREATE TABLE IF NOT EXISTS custom_symbol (
-  symbol_id  TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  name       TEXT NOT NULL,                                        -- 图标名（icon_name 引用它）
-  ns         TEXT NOT NULL DEFAULT 'custom',                       -- 命名空间 / 自建库名
-  kind       TEXT NOT NULL CHECK (kind IN ('icon','image','svg','gif')),
-  asset_id   TEXT REFERENCES asset(asset_id) ON DELETE RESTRICT,   -- V2：外置存储
-  url        TEXT,                                                -- 兼容外链
-  width      INTEGER NOT NULL DEFAULT 64 CHECK (width  > 0),
-  height     INTEGER NOT NULL DEFAULT 64 CHECK (height > 0),
-  ord        INTEGER NOT NULL DEFAULT 0,
-  CHECK (asset_id IS NOT NULL OR url IS NOT NULL),
-  UNIQUE (project_id, ns, name)
-);
-CREATE INDEX IF NOT EXISTS ix_custom_symbol_project ON custom_symbol(project_id, ord);
-
--- 素材表：把 base64 dataURL 从项目 JSON 中剥离出来，是本次改造收益最大的一项
--- kind 新增 gif / model：模型（glb/gltf）与动图体积大，必须外置，绝不内联进项目 JSON
+-- 素材表（**唯一**的素材存储，合并了原 custom_symbol / custom_image）：
+-- 把 base64 dataURL 从项目 JSON 中剥离出来，是本次改造收益最大的一项。
+-- kind 覆盖：image（含静态图与 gif）/ model / audio / video / font / **icon**（用户图标库条目）。
+-- asset_id 为**随机 id**（与文件名解耦，改名不影响引用）；桌面端文件按「项目 / 类型 / 时间戳」命名：
+--   userData/projects/<projectId>/<images|models|audio|video|fonts>/<YYYYMMDD-HHmmss>-<assetId><ext>
+-- 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份（时间戳命名永不重名）。
+-- 原 custom_symbol（图标库）/ custom_image（图片库）本质上都只是「项目收录的一个素材」，
+-- 由 kind 区分：icon 即原图标库条目，image 即原图片库条目。
 CREATE TABLE IF NOT EXISTS asset (
   asset_id      TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  kind          TEXT NOT NULL CHECK (kind IN ('image','gif','model','audio','video','font')),
+  kind          TEXT NOT NULL CHECK (kind IN ('image','gif','model','audio','video','font','icon')),
+  name          TEXT NOT NULL DEFAULT '',  -- 原文件名 / 展示名
   mime          TEXT NOT NULL,
   byte_size     INTEGER NOT NULL CHECK (byte_size >= 0),
-  sha256        TEXT NOT NULL,             -- 内容寻址,支持同图去重
   storage       TEXT NOT NULL CHECK (storage IN ('file','blob')),
-  rel_path      TEXT,                      -- storage='file'：相对 userData/assets/
+  rel_path      TEXT,                      -- storage='file'：projects/<projectId>/<kind>/<文件名>
   blob          BLOB,                      -- storage='blob'：小文件内联
   width         INTEGER,
   height        INTEGER,
@@ -131,21 +118,8 @@ CREATE TABLE IF NOT EXISTS asset (
   CHECK ((storage = 'file' AND rel_path IS NOT NULL)
       OR (storage = 'blob' AND blob      IS NOT NULL))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_asset_content ON asset(project_id, sha256);
-CREATE INDEX        IF NOT EXISTS ix_asset_kind    ON asset(project_id, kind);
-
--- 自定义图片库（项目级登记）：标记「图片」形态上传后登记在此，之后可跨元素复用
--- （素材本体在 asset，内容寻址；这里只记「本项目收录了哪些图片」）。
--- 与 custom_symbol 的分工：symbol 是可被 icon_name 引用的**符号/图标**（带 ns 命名空间），
--- custom_image 只是供面板浏览选择的**图片库条目**；二者都指向 asset。
-CREATE TABLE IF NOT EXISTS custom_image (
-  project_id  TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  asset_id    TEXT NOT NULL REFERENCES asset(asset_id) ON DELETE RESTRICT,
-  name        TEXT NOT NULL DEFAULT '',
-  created_at  INTEGER NOT NULL,
-  PRIMARY KEY (project_id, asset_id)
-);
-CREATE INDEX IF NOT EXISTS ix_custom_image_asset ON custom_image(asset_id);
+CREATE INDEX IF NOT EXISTS ix_asset_kind ON asset(project_id, kind);
+CREATE INDEX IF NOT EXISTS ix_asset_name ON asset(project_id, name);
 
 -- -----------------------------------------------------------------------------
 -- 3. 章节与时间轴
@@ -667,7 +641,6 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 --   检查每个 FK 的子列是否被某个索引的前缀完整覆盖。
 
 -- ① 素材引用：asset 的孤儿回收 / 「是否被引用」查询由全表扫描变为索引查找
-CREATE INDEX IF NOT EXISTS ix_custom_symbol_asset  ON custom_symbol(asset_id);
 CREATE INDEX IF NOT EXISTS ix_overlay_audio_asset  ON overlay(audio_asset_id);
 CREATE INDEX IF NOT EXISTS ix_overlay_block_asset   ON overlay_block(asset_id);
 CREATE INDEX IF NOT EXISTS ix_person_block_asset    ON person_block(asset_id);

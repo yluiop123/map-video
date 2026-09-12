@@ -211,9 +211,13 @@ function registerIpc() {
   ipcMain.handle('db:clearAll', () => {
     db.exec('DELETE FROM projects; DELETE FROM collections;');
     try {
-      const dir = assetsDir();
-      for (const f of fs.readdirSync(dir)) fs.unlinkSync(path.join(dir, f));
-    } catch { /* 素材目录不存在时忽略 */ }
+      const root = projectsRoot();
+      for (const f of fs.readdirSync(root)) {
+        const p = path.join(root, f);
+        if (f === 'index.json') { fs.writeFileSync(p, '{}'); continue; }
+        fs.rmSync(p, { recursive: true, force: true });
+      }
+    } catch { /* 目录不存在时忽略 */ }
     const now = Date.now();
     db.prepare(`
       INSERT OR IGNORE INTO collections (id, name, ord, created_at, updated_at)
@@ -279,54 +283,83 @@ function registerIpc() {
     userData: app.getPath('userData'),
   }));
 
-  // 素材（asset）：图片 / GIF / 模型等大文件外置到 userData/assets/<sha256><ext>
-  // 项目 JSON 里只存 asset_id(=sha256)，彻底避免 base64 内联撑爆存档。
+  // 素材（asset）：按**项目分文件夹、按类型分子目录、时间戳命名**（保留原格式扩展名）：
+  //   userData/projects/<projectId>/<images|models|audio|video|fonts>/<YYYYMMDD-HHmmss>-<assetId><ext>
+  // assetId 是**随机 id**（与文件名解耦，改名不影响引用）；assetId → 文件的映射存在 projects/index.json。
+  // 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份（时间戳命名永不重名）。
   const EXT_BY_MIME = {
     'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif',
     'image/svg+xml': '.svg',
     'model/gltf-binary': '.glb', 'model/gltf+json': '.gltf', 'model/obj': '.obj',
     'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'video/mp4': '.mp4',
   };
-  const assetsDir = () => {
-    const dir = path.join(app.getPath('userData'), 'assets');
+  const projectsRoot = () => {
+    const dir = path.join(app.getPath('userData'), 'projects');
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   };
-  /** 把 assetId 收敛成目录内的安全文件名（防目录穿越） */
-  const assetPath = (assetId) => {
-    const id = path.basename(String(assetId || ''));
-    const dir = assetsDir();
-    if (!/^[0-9a-f]{64}$/i.test(id)) return null;
-    const hit = fs.readdirSync(dir).find((f) => f === id || f.startsWith(id + '.'));
-    return hit ? path.join(dir, hit) : null;
-  };
+  const kindDirOf = (mime) =>
+    mime.startsWith('image/') ? 'images'
+      : mime.startsWith('model/') ? 'models'
+        : mime.startsWith('audio/') ? 'audio'
+          : mime.startsWith('video/') ? 'video'
+            : mime.startsWith('font') ? 'fonts' : 'misc';
 
-  ipcMain.handle('assets:save', (_e, { mime, bytes }) => {
+  const indexFile = () => path.join(projectsRoot(), 'index.json');
+  const readIndex = () => {
+    try { return JSON.parse(fs.readFileSync(indexFile(), 'utf8')); } catch { return {}; }
+  };
+  const writeIndex = (idx) => fs.writeFileSync(indexFile(), JSON.stringify(idx, null, 2));
+
+  ipcMain.handle('assets:save', (_e, { mime, bytes, projectId, name }) => {
     const buf = Buffer.from(bytes);
-    const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
-    const relPath = sha256 + (EXT_BY_MIME[mime] || '');
-    const abs = path.join(assetsDir(), relPath);
-    if (!fs.existsSync(abs)) fs.writeFileSync(abs, buf);
-    return { assetId: sha256, relPath, byteSize: buf.length };
+    const assetId = 'a' + crypto.randomBytes(8).toString('hex');
+    const now = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`;
+    const dir = path.join(projectsRoot(), String(projectId || 'default'), kindDirOf(String(mime || '')));
+    fs.mkdirSync(dir, { recursive: true });
+    const fileName = `${stamp}-${assetId}${EXT_BY_MIME[mime] || ''}`;
+    fs.writeFileSync(path.join(dir, fileName), buf);
+    const rel = path.relative(projectsRoot(), path.join(dir, fileName)).replace(/\\/g, '/');
+    const idx = readIndex();
+    idx[assetId] = { rel, mime, byteSize: buf.length, name: String(name || ''), projectId: String(projectId || '') };
+    writeIndex(idx);
+    return { assetId, relPath: rel, byteSize: buf.length };
   });
   ipcMain.handle('assets:read', (_e, assetId) => {
-    const abs = assetPath(assetId);
-    if (!abs) return null;
-    return { bytes: new Uint8Array(fs.readFileSync(abs)) };
+    const meta = readIndex()[String(assetId || '')];
+    if (!meta) return null;
+    const abs = path.join(projectsRoot(), meta.rel);
+    if (!fs.existsSync(abs)) return null;
+    return { bytes: new Uint8Array(fs.readFileSync(abs)), mime: meta.mime, name: meta.name };
   });
   ipcMain.handle('assets:remove', (_e, assetId) => {
-    const abs = assetPath(assetId);
-    if (abs) fs.unlinkSync(abs);
+    const idx = readIndex();
+    const meta = idx[String(assetId || '')];
+    if (meta) {
+      const abs = path.join(projectsRoot(), meta.rel);
+      if (fs.existsSync(abs)) fs.unlinkSync(abs);
+      delete idx[String(assetId)];
+      writeIndex(idx);
+    }
     return { ok: true };
   });
-  ipcMain.handle('assets:exists', (_e, assetId) => !!assetPath(assetId));
-  /** 孤儿素材扫描：返回目录内文件数与总字节数（供设置页/维护用） */
+  ipcMain.handle('assets:exists', (_e, assetId) => !!readIndex()[String(assetId || '')]);
+  /** 孤儿素材扫描：递归统计文件数与总字节数（供设置页/维护用） */
   ipcMain.handle('assets:stat', () => {
-    const dir = assetsDir();
-    const files = fs.readdirSync(dir);
+    const root = projectsRoot();
+    let count = 0;
     let bytes = 0;
-    for (const f of files) bytes += fs.statSync(path.join(dir, f)).size;
-    return { count: files.length, bytes, dir };
+    const walk = (d) => {
+      for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, f.name);
+        if (f.isDirectory()) walk(p);
+        else if (f.name !== 'index.json') { count++; bytes += fs.statSync(p).size; }
+      }
+    };
+    walk(root);
+    return { count, bytes, dir: root };
   });
 
   ipcMain.handle('shell:openExternal', (_e, url) => {

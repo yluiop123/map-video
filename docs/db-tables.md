@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 22 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 20 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：22 张表 · 4 张元素类别宽表 · 3 个视图 · 0 个触发器 · 28 个外键（全部有索引）
+- **规模**：20 张表 · 4 张元素类别宽表 · 3 个视图 · 0 个触发器 · 26 个外键（全部有索引）
 
 **目录**
 
-- 一、22 张表的构成与分流规则
+- 一、20 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、22 张表逐表速查（按 10 组）
+- 三、20 张表逐表速查（按 10 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图，以及为什么没有触发器
 
-## 一、22 张表的构成与分流规则
+## 一、20 张表的构成与分流规则
 
-**22 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**20 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,12 +28,12 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`title_style_json`、`transition_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 22 张表的构成
+#### 一句话理解 20 张表的构成
 
 - **4 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；
 - **1 张**是「元素附属」：`element_keyframe`（所有元素共用的动画关键帧，按 `element_id` 弱引用）；
 - **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
-- **3 张**是「素材库」（自定义图标、二进制素材、自定义图片库）；
+- **1 张**是「素材库」：`asset`（自定义图标 / 图片 / GIF / 模型 / 音频等二进制，`kind` 区分，按「项目 / 类型 / 时间戳」落盘）；
 - **3 张**是「弹窗内容块」；
 - **4 张**是合集、项目本体、项目配置与应用配置。
 
@@ -49,8 +49,7 @@
 | `globalConfig.projection` | `project` 的 `projection` 列 | P1 列化：地图投影是项目自身的属性（渲染方式），随项目走，不属于「默认值类」配置 |
 | `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | **不入库**：配置是代码内置常量，项目只存选中的 id 字符串 |
 | `elevationMaps[].exaggeration`（面板滑动条可调） | `project_config.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–50，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
-| `customSymbols[]`（`url` 可能是 data URL） | `custom_symbol` + `asset` | 元数据留表内，二进制走 P4 外置 |
-| `customImages[]`（上传后登记，供复用） | `custom_image` + `asset` | 项目级图片库；素材本体走 P4 外置，这里只登记「本项目收录了哪些图片」 |
+| `customSymbols[]` / `customImages[]`（图标库 / 图片库登记） | `asset`（`kind='icon'` / `kind='image'`） | **三表已合并**：两者都只是项目收录的一个素材行，二进制走 P4 外置 |
 | `chapters[]` | `chapter` | P1；`titleStyle` / `transition` 按 P3 留在 JSON 列 |
 | `chapters[].elements[]` | `element_marker` / `element_route` / `element_shape` / `element_territory`（4 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表） |
 | `elements[].style`（`Keyframe[]` 数组） | `element_keyframe` | P2：8 种 property 统一一张表，带时间轴语义与唯一约束 |
@@ -68,7 +67,7 @@
 > 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目与章节只保存所选配置的 id 字符串（`project.active_base_map_id` / `chapter.base_map_id`）。
 > **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project_config.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、22 张表逐表速查（按 10 组）
+## 三、20 张表逐表速查（按 10 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
@@ -80,13 +79,11 @@
 | `project` | 项目本体：身份 + 归属 + 审计字段 + 地图投影 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） | 项目卡片（`ProjectManager.tsx`）；运行时即 `projectStore.project` |
 | `project_config` | 项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 **+ 地形夸张覆盖值** | `project_id` | 与 `project` **1:1**（主键即外键）；配置独立成表，配置面板只读写这张表 | 导出对话框（`ExportDialog.tsx`）选分辨率/帧率；地形夸张在底图芯片（`MapStyleChip.tsx` 滑动条） |
 
-### 组 2 · 资源与素材 3 张
+### 组 2 · 资源与素材 1 张
 
 | 表 | 职责 | 主键 | 删除行为 | 前端对应 |
 |---|---|---|---|---|
-| `custom_symbol` | 自定义图标库（icon / image / svg 的元数据） | `symbol_id` | 被元素占用时 **RESTRICT 拒绝删除**（旧实现会静默损坏图标） | **当前无 UI 入口**（store 有 `addCustomSymbol`，面板未接入） |
-| `asset` 新增 | 所有大体积二进制的唯一入口（图片/音频/视频/字体），按 `sha256` 去重 | `asset_id` | 孤儿回收是待办项（需定期清理或引用计数） | 属性面板上传行（`ResourceUploadRow`）、字幕/配乐音频上传（`lib/assets.ts`） |
-| `custom_image` | 自定义图片库：项目收录的图片（素材本体在 `asset`），供标记「图片」形态跨元素复用 | `project_id` + `asset_id`（复合主键） | 随项目 **CASCADE**；`asset_id` 为 RESTRICT（素材被引用时不允许删） | 标记面板「自定义图片」网格（`CustomImageGrid`，悬停可删除） |
+| `asset` | 唯一素材存储（图片 / GIF / 模型 / 音频 / 字体 / 用户图标，`kind` 区分），按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重） | `asset_id` | 随项目 **CASCADE**；孤儿回收是待办项（需定期清理或引用计数） | 属性面板上传行（`ResourceUploadRow`）、标记面板自定义图片网格（`CustomImageGrid`）、字幕/配乐音频上传（`lib/assets.ts`） |
 
 ### 组 3 · 章节与时间轴 7 张
 
@@ -171,7 +168,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **22 张表 / 330 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，330 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **20 张表 / 316 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，316 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。
 
@@ -180,7 +177,7 @@
 #### 快速跳转
 
 - **组 1 · 合集与项目（含配置）**：`collection` · `project` · `project_config`
-- **组 2 · 资源与素材**：`custom_symbol` · `asset` · `custom_image`
+- **组 2 · 资源与素材**：`asset`
 - **组 3 · 章节与时间轴**：`chapter` · `camera_keyframe` · `screen_fx` · `chapter_fx` · `narration` · `narration_entry` · `music_track`
 - **组 4 · 标记类元素（Pin 工具）**：`element_marker`
 - **组 5 · 路线类元素（Route 工具）**：`element_route`
@@ -243,73 +240,32 @@
 
 ### 组 2 · 资源与素材
 
-#### custom_symbol
-
-**职责**：用户自建图标 / 符号库（ns 命名空间，可被 icon_lib+icon_name 引用）　**前端**：**当前无 UI 入口**（store 有 addCustomSymbol，面板未接入；军标导入等场景预留）
-
-10 列 · 主键 `symbol_id`
-
-| 列 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `symbol_id` | TEXT | `PK` | 图标 id |
-| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
-| `name` | TEXT | `NOT NULL` | 图标名（icon 形态由 element_marker.icon_name 引用它） |
-| `ns` | TEXT | `NOT NULL` | 命名空间 / 自建库名（内置 lucide·react-icons 不进库；用户自建库写这里，默认 custom） · 默认 `'custom'` |
-| `kind` | TEXT | `NOT NULL` | 图标类型：icon 图标 / image 图片 / svg 矢量 / gif 动图 · `CHECK (kind IN ('icon','image','svg','gif'))` |
-| `asset_id` | TEXT | `FK → asset RESTRICT` | 图标二进制素材（V2 外置存储） |
-| `url` | TEXT | — | 外链地址或 data URL |
-| `width` | INTEGER | `NOT NULL` | 原始宽度（px，统一规范为 64×64） · 默认 `64` · `CHECK (width > 0)` |
-| `height` | INTEGER | `NOT NULL` | 原始高度（px） · 默认 `64` · `CHECK (height > 0)` |
-| `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
-
-**表级约束**
-
-- `CHECK (asset_id IS NOT NULL OR url IS NOT NULL)`
-- `UNIQUE (project_id, ns, name)`
-
 #### asset
 
-**职责**：素材仓库：所有大体积二进制（图片 / GIF / 模型 / 音频）按 sha256 内容寻址　**前端**：属性面板上传行（PropertiesPanel ResourceUploadRow）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）
+**职责**：素材仓库（**唯一**素材存储，合并原 custom_symbol / custom_image）：按项目 / 类型 / 时间戳落盘　**前端**：属性面板上传行（PropertiesPanel ResourceUploadRow）、标记面板自定义图片网格（CustomImageGrid）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）
 
 14 列 · 主键 `asset_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `asset_id` | TEXT | `PK` | 素材 id |
+| `asset_id` | TEXT | `PK` | 素材 id（随机生成，与文件名/内容解耦，改名不影响引用） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
-| `kind` | TEXT | `NOT NULL` | 素材种类：image 图片 / gif 动图 / model 3D 模型 / audio 音频 / video 视频 / font 字体 · `CHECK (kind IN ('image','gif','model','audio','video','font'))` |
+| `kind` | TEXT | `NOT NULL` | 素材种类：image 图片 / gif 动图 / model 3D 模型 / audio 音频 / video 视频 / font 字体 / icon 用户图标库条目（合并了原 custom_symbol / custom_image） · `CHECK (kind IN ('image','gif','model','audio','video','font','icon'))` |
+| `name` | TEXT | `NOT NULL` | 原文件名 / 展示名 · 默认 `''` |
 | `mime` | TEXT | `NOT NULL` | MIME 类型（如 image/png） |
 | `byte_size` | INTEGER | `NOT NULL` | 原始字节数 · `CHECK (byte_size >= 0)` |
-| `sha256` | TEXT | `NOT NULL` | 内容哈希，同图去重（内容寻址） |
 | `storage` | TEXT | `NOT NULL` | 存放方式：file 外置文件 / blob 库内联 · `CHECK (storage IN ('file','blob'))` |
-| `rel_path` | TEXT | — | 外置方式下的相对路径（相对 userData/assets/） |
+| `rel_path` | TEXT | — | 外置方式下的相对路径（相对 userData/projects/，按「项目/类型/时间戳」命名） |
 | `blob` | BLOB | — | 内联方式下的小文件二进制 |
 | `width` | INTEGER | — | 图片宽度（px） |
 | `height` | INTEGER | — | 图片高度（px） |
-| `duration_sec` | REAL | — | 音视频时长（毫秒） |
+| `duration_sec` | REAL | — | 音视频时长（秒） |
 | `meta_json` | TEXT | — | 媒体元信息（免下载即可预览/校验）：model={bbox,animations,triangles}；gif={frames,fps,loop} · `CHECK (meta_json IS NULL OR json_valid(meta_json))` |
 | `created_at` | INTEGER | `NOT NULL` | 入库时间（毫秒时间戳） |
 
 **表级约束**
 
 - `CHECK ((storage = 'file' AND rel_path IS NOT NULL) OR (storage = 'blob' AND blob IS NOT NULL))`
-
-#### custom_image
-
-**职责**：项目级自定义图片库登记（供标记「图片」形态跨元素复用）　**前端**：标记面板「自定义图片」网格（PropertiesPanel CustomImageGrid，悬停可删除）
-
-4 列 · 主键 —
-
-| 列 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目（与 asset_id 组成复合主键） |
-| `asset_id` | TEXT | `NOT NULL` `FK → asset RESTRICT` | 图片素材（内容寻址；素材本体在 asset 表，这里只登记本项目收录） |
-| `name` | TEXT | `NOT NULL` | 展示名（默认取文件名） · 默认 `''` |
-| `created_at` | INTEGER | `NOT NULL` | 登记时间（epoch ms） |
-
-**表级约束**
-
-- `PRIMARY KEY (project_id, asset_id)`
 
 ### 组 3 · 章节与时间轴
 
@@ -511,7 +467,7 @@
 | `asset_id` | TEXT | `FK → asset SET NULL` | 用户上传的图片 / GIF / 模型素材（删除素材则置空） |
 | `builtin_id` | TEXT | — | 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin |
 | `icon_lib` | TEXT | — | 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用） |
-| `icon_name` | TEXT | — | 图标名（shape=icon 时必填，可指向内置库或 custom_symbol.name） |
+| `icon_name` | TEXT | — | 图标名（shape=icon 时必填，可指向内置库或 asset(kind='icon').name） |
 | `visual_meta_json` | TEXT | — | P3 表现参数：image={fit,tintable}；gif={fps,loop}；model={scale,altitude,autoRotate,spin,pitchAlign,animation}；icon={strokeWidth} · `CHECK (visual_meta_json IS NULL OR json_valid(visual_meta_json))` |
 | `flag_text` | TEXT | — | 旗面文字（type=flag 时必填） |
 | `flag_color` | TEXT | — | 旗面颜色 |
@@ -873,7 +829,7 @@
 | **模型** | `model` | 内置模型 / 上传 glb·gltf | ✓ | **✗**（强制 3D 朝向） | ✓ | **✗**（多材质） | `{scale, altitude, autoRotate, spin, pitchAlign, animation}` |
 | **图标库** | `icon` | lucide / react-icons / 自建库 | ✓ | ✓ | ✓ | ✓ | `{strokeWidth}` |
 
-资源两来源：**`asset_id`**（用户上传，进 asset 表外置存储）与 **`builtin_id`**（内置资源，打包进应用、不入库）；图标形态额外用 `icon_lib` + `icon_name` 定位，自建库落在 `custom_symbol`（`ns` 命名空间 + `UNIQUE(project_id, ns, name)`）。
+资源两来源：**`asset_id`**（用户上传，进 asset 表外置存储）与 **`builtin_id`**（内置资源，打包进应用、不入库）；图标形态额外用 `icon_lib` + `icon_name` 定位，自建库条目落在 `asset`（`kind='icon'`，`UNIQUE` 由应用层保证）。
 
 ## 六、容易混淆的 5 组
 

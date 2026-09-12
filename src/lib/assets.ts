@@ -1,10 +1,12 @@
 /**
  * assets.ts — 素材仓库门面（双端统一）
  *
- * assetId = sha256（内容寻址，同文件天然去重）
- *   · 桌面端：Electron IPC → userData/assets/<sha256><ext>（文件系统，由主进程算哈希）
- *   · 网页端：Dexie `assets` 表（Blob，浏览器 WebCrypto 算哈希）
+ * assetId = **随机 id**（与文件名/内容解耦，改名不影响引用）
+ *   · 桌面端：Electron IPC → userData/projects/<projectId>/<类型>/<时间戳>-<assetId><ext>
+ *     （按项目分文件夹、按类型分子目录、时间戳命名；assetId→文件映射在 projects/index.json）
+ *   · 网页端：Dexie `assets` 表（Blob，无文件系统）
  *
+ * 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份。
  * 渲染端只需要 URL：统一走 getAssetUrl（objectURL，按 assetId 缓存，避免重复解码）。
  * 之所以必须外置：模型（几 MB）与 GIF 若内联进 project JSON，存档会膨胀到不可用。
  */
@@ -12,7 +14,7 @@ import { IS_DESKTOP } from './backend';
 import * as dexie from '../stores/db';
 
 export interface AssetRef {
-  /** 内容哈希，元素里存这个 */
+  /** 随机 id，元素里存这个 */
   assetId: string;
   mime: string;
   byteSize: number;
@@ -37,26 +39,27 @@ function resolveMime(file: File | Blob): string {
   return MIME_BY_EXT[ext] || 'application/octet-stream';
 }
 
-async function sha256Hex(buf: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+/** 生成随机素材 id（16 位十六进制，前缀 a） */
+function newAssetId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return 'a' + Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /** 上传素材 → 返回 assetId；元素只需存这个 id */
 export async function uploadAsset(file: File | Blob, projectId = ''): Promise<AssetRef> {
   const buf = await file.arrayBuffer();
   const mime = resolveMime(file);
+  const name = (file as File).name || '';
 
   if (IS_DESKTOP) {
-    // 桌面端交给主进程算哈希并落盘（渲染进程不依赖 crypto.subtle 的安全上下文）
-    const r = await window.mapvideo!.assets.save({ mime, bytes: new Uint8Array(buf) });
+    // 桌面端：主进程按「项目 / 类型」分文件夹落盘（时间戳命名），并登记到 projects/index.json
+    const r = await window.mapvideo!.assets.save({ mime, bytes: new Uint8Array(buf), projectId, name });
     return { assetId: r.assetId, mime, byteSize: r.byteSize };
   }
 
-  const assetId = await sha256Hex(buf);
-  const name = (file as File).name || '';
+  // 网页端：Dexie Blob；assetId 用随机 id。
+  // 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份（与桌面端时间戳命名语义一致）。
+  const assetId = newAssetId();
   await dexie.saveAsset({
     assetId,
     projectId,

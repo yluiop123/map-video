@@ -46,39 +46,19 @@ export default {
 
 
 
-  custom_symbol: {
-    symbol_id: '图标 id',
-    project_id: '所属项目',
-    name: '图标名（icon 形态由 element_marker.icon_name 引用它）',
-    ns: '命名空间 / 自建库名（内置 lucide·react-icons 不进库；用户自建库写这里，默认 custom）',
-    kind: '图标类型：icon 图标 / image 图片 / svg 矢量 / gif 动图',
-    asset_id: '图标二进制素材（V2 外置存储）',
-    url: '外链地址或 data URL',
-    width: '原始宽度（px，统一规范为 64×64）',
-    height: '原始高度（px）',
-    ord: '同项目内排序',
-  },
-
-  custom_image: {
-    project_id: '所属项目（与 asset_id 组成复合主键）',
-    asset_id: '图片素材（内容寻址；素材本体在 asset 表，这里只登记本项目收录）',
-    name: '展示名（默认取文件名）',
-    created_at: '登记时间（epoch ms）',
-  },
-
   asset: {
-    asset_id: '素材 id',
+    asset_id: '素材 id（随机生成，与文件名/内容解耦，改名不影响引用）',
     project_id: '所属项目',
-    kind: '素材种类：image 图片 / gif 动图 / model 3D 模型 / audio 音频 / video 视频 / font 字体',
+    kind: '素材种类：image 图片 / gif 动图 / model 3D 模型 / audio 音频 / video 视频 / font 字体 / icon 用户图标库条目（合并了原 custom_symbol / custom_image）',
+    name: '原文件名 / 展示名',
     mime: 'MIME 类型（如 image/png）',
     byte_size: '原始字节数',
-    sha256: '内容哈希，同图去重（内容寻址）',
     storage: '存放方式：file 外置文件 / blob 库内联',
-    rel_path: '外置方式下的相对路径（相对 userData/assets/）',
+    rel_path: '外置方式下的相对路径（相对 userData/projects/，按「项目/类型/时间戳」命名）',
     blob: '内联方式下的小文件二进制',
     width: '图片宽度（px）',
     height: '图片高度（px）',
-    duration_sec: '音视频时长（毫秒）',
+    duration_sec: '音视频时长（秒）',
     meta_json: '媒体元信息（免下载即可预览/校验）：model={bbox,animations,triangles}；gif={frames,fps,loop}',
     created_at: '入库时间（毫秒时间戳）',
   },

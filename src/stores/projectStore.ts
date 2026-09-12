@@ -248,6 +248,34 @@ interface ProjectState {
   redo: () => void;
 }
 
+/** 导入后把项目里所有 assetId 旧引用换成新 id（素材 id 已改为随机，不再内容寻址） */
+function remapAssetIds(project: MapVideoProject, map: Record<string, string>): MapVideoProject {
+  if (!Object.keys(map).length) return project;
+  return {
+    ...project,
+    customImages: (project.customImages || []).map((ci) => ({
+      ...ci,
+      assetId: map[ci.assetId] || ci.assetId,
+    })),
+    chapters: project.chapters.map((ch) => ({
+      ...ch,
+      elements: ch.elements.map((el) => {
+        const e = el as { assetId?: string; moveIcon?: { assetId?: string } };
+        const hitAsset = e.assetId ? map[e.assetId] : undefined;
+        const hitMove = e.moveIcon?.assetId ? map[e.moveIcon.assetId] : undefined;
+        if (!hitAsset && !hitMove) return el;
+        return {
+          ...e,
+          assetId: hitAsset ?? e.assetId,
+          moveIcon: e.moveIcon
+            ? { ...e.moveIcon, assetId: hitMove ?? e.moveIcon.assetId }
+            : e.moveIcon,
+        } as typeof el;
+      }),
+    })),
+  };
+}
+
 // ========== Store 实现 ==========
 
 export const useProjectStore = create<ProjectState>()((set, get) => {
@@ -721,24 +749,29 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     },
 
     importProjectConfig: async (data: ProjectExport, collectionId?: string) => {
-      // 先还原内嵌素材（assetId = sha256 内容寻址，重复导入天然幂等覆盖同一份）
+      // 还原内嵌素材并**重映射 assetId**：素材 id 是随机的，导入后生成新 id，
+      // 元素 / 图片库里的旧引用必须全部换成新 id（原内容寻址方案靠 sha256 天然同 id，已废除）
+      let imported = data;
       if (data.assets?.length) {
-        await Promise.all(data.assets.map(async (a) => {
+        const idMap: Record<string, string> = {};
+        for (const a of data.assets) {
           try {
             const bin = atob(a.dataUrl.split(',')[1] || '');
             const bytes = new Uint8Array(bin.length);
             for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            await uploadAsset(new Blob([bytes], { type: a.mime }), data.project.id);
+            const ref = await uploadAsset(new Blob([bytes], { type: a.mime }), data.project.id);
+            idMap[a.assetId] = ref.assetId;
           } catch { /* 单个素材失败不阻塞导入 */ }
-        }));
+        }
+        imported = { ...data, project: remapAssetIds(data.project, idMap) };
       }
       const project = {
-        ...data.project,
+        ...imported.project,
         id: generateId(),
         collectionId: collectionId || DEFAULT_COLLECTION_ID,
         updatedAt: new Date(),
-        chapters: normalizeChapters(data.project.chapters),
-        customImages: data.project.customImages ?? [],
+        chapters: normalizeChapters(imported.project.chapters),
+        customImages: imported.project.customImages ?? [],
       };
       set({ project, history: [], future: [] });
       await storage.saveProject(project);

@@ -34,7 +34,7 @@ const MARKER = 'FIELD-DICT';
 // 元素部分按「工具条按钮」分类（见 docs/db-tables.md 第五节），而非按技术结构分类
 const GROUPS = [
   ['组 1 · 合集与项目（含配置）', ['collection', 'project', 'project_config']],
-  ['组 2 · 资源与素材', ['custom_symbol', 'asset', 'custom_image']],
+  ['组 2 · 资源与素材', ['asset']],
   ['组 3 · 章节与时间轴', ['chapter', 'camera_keyframe', 'screen_fx', 'chapter_fx', 'narration', 'narration_entry', 'music_track']],
   ['组 4 · 标记类元素（Pin 工具）', ['element_marker']],
   ['组 5 · 路线类元素（Route 工具）', ['element_route']],
@@ -65,9 +65,7 @@ const TABLE_FRONTEND = {
   collection: { role: '合集：项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）', fe: '项目列表页左栏合集列表（ProjectManager.tsx）' },
   project: { role: '项目本体：身份 / 归属 / 审计 / 投影与生效底图的**默认值**引用', fe: '项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project' },
   project_config: { role: '项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 + 地形夸张覆盖值', fe: '导出对话框（ExportDialog.tsx，分辨率/帧率导出时选）；地形夸张在底图芯片面板（MapStyleChip.tsx 滑动条）；GlobalConfig 暂无独立设置 UI' },
-  custom_symbol: { role: '用户自建图标 / 符号库（ns 命名空间，可被 icon_lib+icon_name 引用）', fe: '**当前无 UI 入口**（store 有 addCustomSymbol，面板未接入；军标导入等场景预留）' },
-  asset: { role: '素材仓库：所有大体积二进制（图片 / GIF / 模型 / 音频）按 sha256 内容寻址', fe: '属性面板上传行（PropertiesPanel ResourceUploadRow）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）' },
-  custom_image: { role: '项目级自定义图片库登记（供标记「图片」形态跨元素复用）', fe: '标记面板「自定义图片」网格（PropertiesPanel CustomImageGrid，悬停可删除）' },
+  asset: { role: '素材仓库（**唯一**素材存储，合并原 custom_symbol / custom_image）：按项目 / 类型 / 时间戳落盘', fe: '属性面板上传行（PropertiesPanel ResourceUploadRow）、标记面板自定义图片网格（CustomImageGrid）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）' },
   chapter: { role: '章节本体：时间轴 / 标题样式 / 转场 / 本章底图·高程·投影', fe: '顶部章节页签 + 时间轴章节条（TimelineEditor.tsx）；底图/高程/3D 在左下角芯片（MapStyleChip.tsx）' },
   camera_keyframe: { role: '视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）', fe: '「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）' },
   screen_fx: { role: '屏幕空间特效窗口（天气 / 画面叠加，非地图元素）', fe: '右侧「特效」面板（FxPanelBody.tsx）+ 时间轴特效轨道' },
