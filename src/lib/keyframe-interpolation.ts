@@ -108,10 +108,28 @@ export function interpolatePath(
 }
 
 // ========== 相机插值 ==========
+
+/**
+ * 当前帧归属哪个视角关键帧：处于「飞行区」时归属目标关键帧（i+1），否则停在 i。
+ * 编辑端与导出端**必须共用**（此前两端各写一份，改一处就会「预览镜头 ≠ 导出镜头」）。
+ */
+export function resolveKfIndex(kfs: CameraKeyframe[], frame: number, fps: number): number {
+  if (kfs.length === 0) return -1;
+  for (let i = 0; i < kfs.length - 1; i++) {
+    const next = kfs[i + 1];
+    const gap = Math.max(0, next.frame - kfs[i].frame);
+    const move = typeof next.moveDuration === 'number' ? Math.min(next.moveDuration, gap) : Math.min(2 * fps, gap);
+    const moveStart = next.frame - move;
+    if (frame < moveStart) return i;        // 停留区：显示视角 i
+    if (frame <= next.frame) return i + 1;  // 飞行区：正飞向视角 i+1
+  }
+  return kfs.length - 1;
+}
+
 export function interpolateCamera(
   keyframes: CameraKeyframe[],
   frame: number,
-  fps = 30
+  fps: number
 ): CameraKeyframe {
   if (keyframes.length === 0) {
     return { frame, center: [104.0, 35.0], zoom: 4 };

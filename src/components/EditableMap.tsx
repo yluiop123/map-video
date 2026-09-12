@@ -10,7 +10,8 @@ import {
 } from '../lib/map-renderer';
 import { buildDoubleArrow, buildGatheringPlace } from '../lib/military-plots';
 import { pickFlyRibbon } from '../lib/fly-ribbon';
-import { interpolateCamera, getEasing, interpolateKeyframes, interpolatePath } from '../lib/keyframe-interpolation';
+import { interpolateCamera, getEasing, interpolateKeyframes, interpolatePath, resolveKfIndex } from '../lib/keyframe-interpolation';
+import { getStyleUrl } from '../lib/map-style';
 import { sharedMap } from '../lib/shared-map';
 import { findRegionsAt, loadRegionData, regionHitsToShapes } from '../lib/regions';
 import { useProjectStore, setHistoryMuted, snapshotHistory } from '../stores/projectStore';
@@ -126,7 +127,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       // 3D 球体投影（读全局配置最新值，避免闭包过期）
       applyProjection(map, (useProjectStore.getState().project?.globalConfig.projection ?? 'mercator') === 'globe');
       // 元素刷新
-      renderElements(map, chapter.elements, currentFrame, project.globalConfig.defaultFPS);
+      // 编辑端：传 interactive=true（绘制编辑辅助图形；导出端 MapScene 不传）
+      renderElements(map, chapter.elements, currentFrame, project.globalConfig.defaultFPS, true);
 
       // ===== 地图事件注册（一次性；回调经 handlersRef 取最新） =====
       const H = () => handlersRef.current;
@@ -246,7 +248,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const map = mapRef.current;
     if (!map) return;
     try {
-      renderElements(map, chapter.elements, currentFrame, project.globalConfig.defaultFPS);
+      // 编辑端：传 interactive=true（绘制编辑辅助图形；导出端 MapScene 不传）
+      renderElements(map, chapter.elements, currentFrame, project.globalConfig.defaultFPS, true);
     } catch { /* style 未就绪，下一帧重试 */ }
   }, [chapter, currentFrame, project.globalConfig.defaultFPS, styleTick]);
 
@@ -1228,10 +1231,14 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
   const handleWindowMouseUp = useCallback(() => {
     if (dragRef.current.active) {
       mapRef.current?.dragPan.enable();
-      setHistoryMuted(false);
     }
     dragRef.current = { active: false, elementId: null, x: 0, y: 0 };
+    // 无条件复位：拖拽被中断时若留 true，undo/redo 会从此**静默失效**
+    setHistoryMuted(false);
   }, []);
+
+  // 兜底：组件卸载时复位历史静音（拖拽中卸载/异常路径没有 mouseup，否则全局撤销栈失效）
+  useEffect(() => () => setHistoryMuted(false), []);
 
   // ===== 右键：撤销上一点 / 取消 =====
   const handleContextMenu = useCallback((e: maplibregl.MapMouseEvent) => {
@@ -1446,21 +1453,6 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
   }, [focusReq, chapter]);
 
   const getCursor = () => (mode.startsWith('add_') || routeEditMode === 'add' ? 'crosshair' : 'default');
-
-  /** 解析"播放头所在视角"：
-   *  视角 i 的画面停留区间 = [kf[i].frame, 下一视角起飞帧)；处于飞行窗口内则归属目标视角 */
-  const resolveKfIndex = (kfs: CameraKeyframe[], frame: number, fps: number): number => {
-    if (kfs.length === 0) return -1;
-    for (let i = 0; i < kfs.length - 1; i++) {
-      const next = kfs[i + 1];
-      const gap = Math.max(0, next.frame - kfs[i].frame);
-      const move = typeof next.moveDuration === 'number' ? Math.min(next.moveDuration, gap) : Math.min(2 * fps, gap);
-      const moveStart = next.frame - move;
-      if (frame < moveStart) return i;      // 停留区：当前显示视角 i
-      if (frame <= next.frame) return i + 1; // 飞行区：正飞向视角 i+1
-    }
-    return kfs.length - 1;
-  };
 
   /** Update View：镜头流有选中视角 → 更新该视角；无选中 → 新增视角 */
   const handleUpdateView = useCallback(() => {
@@ -1731,34 +1723,8 @@ function modeHint(mode: string): string {
 
 // ========== 辅助函数 ==========
 
-function getStyleUrl(project: MapVideoProject, chapter: Chapter): any {
-  const activeId = chapter.baseMapId || project.activeBaseMapId;
-  const baseMap = project.baseMaps.find((b) => b.id === activeId);
-  const style = baseMap?.style as any;
-  if (typeof style === 'string') return style;
-
-  let styleObj = style;
-  if (typeof styleObj !== 'string' && styleObj) {
-    const elevId = chapter.elevationMapId !== undefined ? chapter.elevationMapId : project.activeElevationMapId;
-    const elevation = project.elevationMaps.find((e) => e.id === elevId && e.url);
-    if (elevation && elevation.url && !styleObj.sources?.elevation) {
-      styleObj = {
-        ...styleObj,
-        sources: {
-          ...(styleObj.sources || {}),
-          elevation: {
-            type: 'raster-dem',
-            tiles: [elevation.url],
-            tileSize: 256,
-            encoding: elevation.encoding || 'terrarium',
-          },
-        },
-        terrain: { source: 'elevation', exaggeration: elevation.exaggeration || 1.5 },
-      };
-    }
-  }
-  return styleObj;
-}
+// 注：底图 + 高程的 style 解析已抽到 lib/map-style.ts，由编辑端与导出端共用
+// （此前两端各写一份 getStyleUrl 并已漂移）。
 
 /** 路线类元素的可编辑路径点（line/moving_point/arrow/double_arrow） */
 /** 路线类元素的可编辑路径点（line/moving_point/arrow/double_arrow/polygon等形状） */

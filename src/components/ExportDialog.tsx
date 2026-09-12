@@ -50,8 +50,14 @@ export function ExportDialog({ onClose }: ExportDialogProps) {
     }
   };
 
-  const handleExportConfig = () => {
-    const data = useProjectStore.getState().createExport();
+  const handleExportConfig = async () => {
+    // 含素材字节（自包含），因此是异步的：避免导出的 JSON 在别的机器上打开全是裂图
+    const data = await useProjectStore.getState().createExport().catch((err) => {
+      console.error(err);
+      setError(err instanceof Error ? err.message : '导出配置失败');
+      return null;
+    });
+    if (!data) return;
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

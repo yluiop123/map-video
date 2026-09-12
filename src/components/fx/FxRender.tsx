@@ -73,9 +73,11 @@ function defaultBg(): NonNullable<OverlayItem['bg']> {
 
 // ========== 弹窗卡片 ==========
 
-export function OverlayCard({ overlay, frame, interactive = false }: {
+export function OverlayCard({ overlay, frame, fps, interactive = false }: {
   overlay: OverlayItem;
   frame: number;
+  /** 项目帧率：卡片内按帧计时的动画（如对比条增长）需要它 —— 不能硬编码 30 */
+  fps: number;
   /** 编辑器传 true：语音卡片显示可点的播放按钮 */
   interactive?: boolean;
 }) {
@@ -127,13 +129,13 @@ export function OverlayCard({ overlay, frame, interactive = false }: {
           maxWidth: '100%',
         }}
       >
-        <OverlayContentView content={overlay.content} frame={frame} local={frame - overlay.startFrame} interactive={interactive} />
+        <OverlayContentView content={overlay.content} frame={frame} local={frame - overlay.startFrame} interactive={interactive} fps={fps} />
       </div>
     </div>
   );
 }
 
-function OverlayContentView({ content, frame, local, interactive }: { content: OverlayContent; frame: number; local: number; interactive: boolean }) {
+function OverlayContentView({ content, frame, local, fps, interactive }: { content: OverlayContent; frame: number; local: number; fps: number; interactive: boolean }) {
   switch (content.type) {
     case 'custom':
       return <CustomView content={content} frame={frame} interactive={interactive} />;
@@ -146,7 +148,7 @@ function OverlayContentView({ content, frame, local, interactive }: { content: O
     case 'quote':
       return <QuoteView content={content} />;
     case 'compare':
-      return <CompareView content={content} local={local} />;
+      return <CompareView content={content} local={local} fps={fps} />;
     case 'counter':
       return <CounterView content={content} local={local} />;
     case 'dialogue':
@@ -807,11 +809,12 @@ function QuoteView({ content }: { content: OverlayContent }) {
   );
 }
 
-function CompareView({ content, local }: { content: OverlayContent; local: number }) {
+function CompareView({ content, local, fps }: { content: OverlayContent; local: number; fps: number }) {
   const cp = content.compare;
   const l = cp?.left, r = cp?.right;
   const mx = Math.max(l?.value || 0, r?.value || 0) || 1;
-  const p = clamp01(local / 30);
+  // 增长动画时长 = 1 秒（按项目帧率换算，此前硬编码 /30，换帧率的项目时长会变）
+  const p = clamp01(local / fps);
   const unit = cp?.unit ? <span style={{ fontSize: 13, fontWeight: 400, color: '#a8a29e', marginLeft: 3 }}>{cp.unit}</span> : null;
   return (
     <div style={{ minWidth: 260 }}>
@@ -985,7 +988,7 @@ export function FxPreviewLayer({ chapter, frame, fps }: { chapter: Chapter; fram
   return (
     <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
       {(chapter.overlays || []).map((o) => (
-        <OverlayCard key={o.id} overlay={o} frame={frame} interactive />
+        <OverlayCard key={o.id} overlay={o} frame={frame} fps={fps} interactive />
       ))}
       <ChapterTitleView chapter={chapter} frame={frame} />
       <SubtitleLayer narration={chapter.narration} frame={frame - chapter.startFrame} fps={fps} />

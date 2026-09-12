@@ -146,11 +146,16 @@ export function showElementLayers(map: maplibregl.Map, elementId: string): void 
 }
 
 
+/**
+ * @param interactive 是否**编辑端**。编辑辅助图形（如移动点全程虚线引导）仅在此为
+ *   true 时绘制，避免泄漏进导出画面。默认 false —— 新调用点默认面向导出更安全。
+ */
 export function renderElements(
   map: maplibregl.Map,
   elements: MapElement[],
   frame: number,
-  _fps: number
+  _fps: number,
+  interactive = false
 ): void {
   const currentIds = new Set(elements.map((e) => e.id));
   const rendered = renderedByMap.get(map) || new Set<string>();
@@ -192,7 +197,7 @@ export function renderElements(
 
     switch (element.type) {
       case 'point': renderPoint(map, element, frame); break;
-      case 'moving_point': renderMovingPoint(map, element, frame); break;
+      case 'moving_point': renderMovingPoint(map, element, frame, interactive); break;
       case 'line': renderLine(map, element, frame); break;
       case 'polygon': renderPolygon(map, element, frame); break;
       case 'arrow': renderArrow(map, element, frame); break;
@@ -680,6 +685,17 @@ const gifFrameCache = new Map<string, GifFrames>();
 const gifPending = new Set<string>();
 const modelPending = new Set<string>();
 
+/**
+ * 清空渲染位图与解码缓存（切项目 / 卸载时调用）。
+ * 这些缓存只增不减，长编辑会话会持续占用内存。
+ */
+export function clearRenderCaches(): void {
+  gifFrameCache.clear();
+  shapeImageCache.clear();
+  gifPending.clear();
+  modelPending.clear();
+}
+
 /** 当前元素相对自身起点的播放毫秒（GIF 循环 / 程序化动画的相位基准） */
 function elapsedMsOf(element: { startFrame?: number }, frame: number): number {
   return Math.max(0, frame - (element.startFrame || 0)) * (1000 / renderFps);
@@ -833,7 +849,7 @@ function ensureVisualImage(
 
 // ========== 渲染：移动点 ==========
 
-function renderMovingPoint(map: maplibregl.Map, element: MovingPointElement, frame: number) {
+function renderMovingPoint(map: maplibregl.Map, element: MovingPointElement, frame: number, interactive = false) {
   const progress = getProgress(element.pathProgress, frame);
   const currentPos = interpolatePath(element.path, progress);
 
@@ -841,20 +857,22 @@ function renderMovingPoint(map: maplibregl.Map, element: MovingPointElement, fra
   const guideLayerId = `moving-guide-layer-${element.id}`;
   const pathLine = turf.lineString(element.path);
 
-  // 全程路径虚线引导（便于编辑观察）
-  if (map.getSource(guideSourceId)) {
-    (map.getSource(guideSourceId) as GeoJSONSource).setData(turf.featureCollection([pathLine]));
-  } else {
-    map.addSource(guideSourceId, { type: 'geojson', data: turf.featureCollection([pathLine]) });
-    map.addLayer({
-      id: guideLayerId, type: 'line', source: guideSourceId,
-      paint: {
-        'line-color': element.color || '#FF6600',
-        'line-width': 2,
-        'line-dasharray': [2, 2],
-        'line-opacity': 0.5,
-      },
-    });
+  // 全程路径虚线引导：仅编辑端观察用（导出时若画出来会污染视频画面）
+  if (interactive) {
+    if (map.getSource(guideSourceId)) {
+      (map.getSource(guideSourceId) as GeoJSONSource).setData(turf.featureCollection([pathLine]));
+    } else {
+      map.addSource(guideSourceId, { type: 'geojson', data: turf.featureCollection([pathLine]) });
+      map.addLayer({
+        id: guideLayerId, type: 'line', source: guideSourceId,
+        paint: {
+          'line-color': element.color || '#FF6600',
+          'line-width': 2,
+          'line-dasharray': [2, 2],
+          'line-opacity': 0.5,
+        },
+      });
+    }
   }
 
   const sourceId = `moving-${element.id}`;
