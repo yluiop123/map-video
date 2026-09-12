@@ -1,5 +1,5 @@
 /**
- * db-field-notes.mjs — 22 张表全部字段的中文说明（V2 设计稿用词表）
+ * db-field-notes.mjs — 23 张表全部字段的中文说明（V2 设计稿用词表）
  *
  * 为什么单独一份文件：DDL 是结构事实源，字段的业务含义变更比结构频繁，
  * 分开后改说明不必动 DDL；同时生成器会强制「每个字段都必须有说明」，
@@ -18,10 +18,19 @@ export default {
     value: '配置项值（结构版本号，供迁移判断）',
   },
 
+  collection: {
+    collection_id: '合集 id（默认合集恒为 default，不可删除）',
+    name: '合集名（默认合集名为「默认合集」，不可改名）',
+    ord: '合集排序（默认合集固定 -1，恒排最前）',
+    created_at: '创建时间（毫秒时间戳）',
+    updated_at: '最后修改时间（毫秒时间戳）',
+  },
+
   project: {
     project_id: '项目 id',
     name: '项目名',
     description: '项目描述',
+    collection_id: '所属合集（默认 default）；删合集时其下项目回落到默认合集',
     created_at: '创建时间（毫秒时间戳）',
     updated_at: '最后保存时间（毫秒时间戳）',
     default_duration: '默认章节时长（帧）',

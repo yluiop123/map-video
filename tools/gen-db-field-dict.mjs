@@ -34,7 +34,7 @@ const MARKER = 'FIELD-DICT';
 // 元素部分按「工具条按钮」分类（见 docs/db-tables.md 第五节），而非按技术结构分类
 const GROUPS = [
   ['组 1 · 元数据', ['schema_meta']],
-  ['组 2 · 项目聚合根', ['project']],
+  ['组 2 · 合集与项目聚合根', ['collection', 'project']],
   ['组 3 · 资源与素材', ['base_map', 'elevation_map', 'custom_symbol', 'asset']],
   ['组 4 · 章节与时间轴', ['chapter', 'camera_keyframe', 'screen_fx', 'chapter_fx', 'narration', 'narration_entry', 'music_track']],
   ['组 5 · 标记类元素（Pin 工具）', ['element_marker']],

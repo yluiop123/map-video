@@ -4,7 +4,7 @@
 
 - **版本**：V1 → V2
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：22 张表 · 3 视图 · 6 触发器（DDL 已实测执行）
+- **规模**：23 张表 · 3 视图 · 6 触发器（DDL 已实测执行）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 2026-09-10 改版：元素表按工具栏聚合为 4 张类别宽表
@@ -16,7 +16,7 @@
 - **图片类下线**：`custom_icon` 元素类型与 Image 工具被移除；
 - **疆域内部实体 JSON 内联**：原 4 张 `territory_*` 表并入 `element_territory` 的 `countries_json` / `plots_json` / `events_json`；
 - **标签内联**为各元素表的 `label_json`；**关键帧改弱引用**（`element_id` 无外键，改由清理触发器与自检视图兜底）；
-- 规模：**22 张表 / 3 视图 / 6 触发器**（原 37 / 5 / 17）；跨类别列表改用视图 `v_element_index`。
+- 规模：**23 张表 / 3 视图 / 6 触发器**（原 37 / 5 / 17）；跨类别列表改用视图 `v_element_index`。
 
 ## 结论摘要
 
@@ -193,16 +193,22 @@ Provider 配置存 `localStorage`。
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, frame)` 唯一性与时间轴语义，按 P2 建表。
 
-### 3.2 实体清单（22 张表，按结构分 11 组）
+### 3.2 实体清单（23 张表，按结构分 11 组）
 
-本节按**存储结构**分组（便于对照 DDL）。**改版后元素表按工具栏聚合为 4 张类别宽表**（标记 / 路线 / 形状 / 疆域，图片类已下线），若想按工具栏视角看这 22 张表与各自的工具入口，见 [`docs/db-tables.md`](db-tables.md) 第三节与第五节。
+本节按**存储结构**分组（便于对照 DDL）。**改版后元素表按工具栏聚合为 4 张类别宽表**（标记 / 路线 / 形状 / 疆域，图片类已下线），若想按工具栏视角看这 23 张表与各自的工具入口，见 [`docs/db-tables.md`](db-tables.md) 第三节与第五节。
 
 E-R 图（源文件 `docs/db-er-diagram.mmd`，下方为同内容，Markdown 渲染器可直接显示）：
 
 ```mermaid
 erDiagram
+  COLLECTION {
+    text collection_id PK
+    text name
+    int ord
+  }
   PROJECT {
     text project_id PK
+    text collection_id FK
     text name
     text active_base_map_id FK
     int default_fps
@@ -273,6 +279,7 @@ erDiagram
     text kind
     int active
   }
+  COLLECTION ||--o{ PROJECT : "1:N 项目"
   PROJECT ||--o{ CHAPTER : "1:N 章节"
   PROJECT ||--o{ BASE_MAP : "1:N 底图"
   PROJECT ||--o{ ELEVATION_MAP : "1:N 高程"
@@ -578,7 +585,7 @@ Dexie 是 IndexedDB 封装，**不支持 JOIN，也不支持外键级联**。三
 
 DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执行并跑完完整性用例：
 
-- 22 表创建成功
+- 23 表创建成功
 - 3 视图
 - 6 触发器
 - 17/17 用例通过

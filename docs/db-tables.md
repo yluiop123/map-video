@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 22 张表、3 个视图、6 个触发器 —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 23 张表、3 个视图、6 个触发器 —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：22 张表 · 4 张元素类别宽表 · 3 个视图 · 6 个触发器 · 32 个外键（31 个有索引）
+- **规模**：23 张表 · 4 张元素类别宽表 · 3 个视图 · 6 个触发器 · 33 个外键（32 个有索引，1 个有意豁免）
 
 **目录**
 
-- 一、22 张表从哪来
+- 一、23 张表从哪来
 - 二、V1 字段 → V2 表（完整对照）
-- 三、22 张表逐表速查（按 11 组）
+- 三、23 张表逐表速查（按 11 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图与 6 个触发器
 
-## 一、22 张表从哪来
+## 一、23 张表从哪来
 
-先把最容易误解的一点说清楚：**22 张表不是 22 个新概念**。它们是同一个项目文档按「字段从哪来、怎么用」拆开的结果。V1 的库层只有两张表 —— `projects(id, name, data, size, updated_at)` 与 `providers`，其中 `data` 一列装着整个项目的 JSON；Dexie 端是一样的单表结构。所以 V2 的 22 张表，本质是把这个 JSON 的字段按下面四条规则分流：
+先把最容易误解的一点说清楚：**23 张表不是 23 个新概念**。它们是同一个项目文档按「字段从哪来、怎么用」拆开的结果。V1 的库层只有两张表 —— `projects(id, name, data, size, updated_at)` 与 `providers`，其中 `data` 一列装着整个项目的 JSON；Dexie 端是一样的单表结构。所以 V2 的 23 张表，本质是把这个 JSON 的字段按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,14 +28,14 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`title_style_json`、`transition_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 22 张表的构成
+#### 一句话理解 23 张表的构成
 
 - **4 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；
 - **1 张**是「元素附属」：`element_keyframe`（所有元素共用的动画关键帧，按 `element_id` 弱引用）；
 - **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
 - **4 张**是「素材库」（底图、高程图、自定义图标、二进制素材）；
 - **3 张**是「弹窗内容块」；
-- **3 张**是项目本体、元数据与应用配置。
+- **4 张**是合集、项目本体、元数据与应用配置。
 
 ## 二、V1 字段 → V2 表（完整对照）
 
@@ -43,6 +43,7 @@
 
 | V1 结构（src/types/index.ts） | 落到 V2 | 处理方式与理由 |
 |---|---|---|
+| （合集层级，V1 无对应字段） | `collection` + `project.collection_id` | 新增：项目之上加一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）；未指定归属时落默认合集 `default` |
 | `MapVideoProject.id / name / description / createdAt / updatedAt` | `project` | P1 列化 |
 | `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing / projection） | `project` 的内联列 | P3 的例外：只有 5 个标量且恒定存在，独立成表只增一次 JOIN |
 | `baseMaps[]` + `activeBaseMapId` | `base_map` + `project.active_base_map_id` | P2；循环外键用 `SET NULL` 断开 |
@@ -63,7 +64,7 @@
 | — | `schema_meta` | 新增 V1 没有结构版本号，迁移只能靠猜 |
 | `providers`（V1 就是独立表） | `provider` | 保持独立；新增「每 kind 至多一条 active」的部分唯一索引 |
 
-## 三、22 张表逐表速查（按 11 组）
+## 三、23 张表逐表速查（按 11 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。V1 已有 表示这张表 V1 就存在（仅 `projects` 与 `providers` 两张，其余都是新拆出来的）。
 
@@ -73,11 +74,12 @@
 |---|---|---|---|
 | `schema_meta` | 键值对，存 `schema_version` | `key` | 让「打开老存档要迁移几步」有据可依 |
 
-### 组 2 · 项目聚合根 1 张 V1 已有
+### 组 2 · 合集与项目聚合根 2 张
 
 | 表 | 职责 | 主键 | 关键点 |
 |---|---|---|---|
-| `project` | 项目本体 + 全局配置（时长/帧率/分辨率/缓动/投影）+ 当前生效的底图与高程图 | `project_id` | 只 1 行 `active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） |
+| `collection` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素） | `collection_id` | 默认合集恒为 `default`：**不可改名、不可删除**；删其它合集时其下项目回落默认合集（**不删项目**） |
+| `project` | 项目本体 + 全局配置（时长/帧率/分辨率/缓动/投影）+ 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；只 1 行 `active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） |
 
 ### 组 3 · 资源与素材 4 张
 
@@ -167,7 +169,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **22 张表 / 334 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，334 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **23 张表 / 340 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，340 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。
 
@@ -176,7 +178,7 @@
 #### 快速跳转
 
 - **组 1 · 元数据**：`schema_meta`
-- **组 2 · 项目聚合根**：`project`
+- **组 2 · 合集与项目聚合根**：`collection` · `project`
 - **组 3 · 资源与素材**：`base_map` · `elevation_map` · `custom_symbol` · `asset`
 - **组 4 · 章节与时间轴**：`chapter` · `camera_keyframe` · `screen_fx` · `chapter_fx` · `narration` · `narration_entry` · `music_track`
 - **组 5 · 标记类元素（Pin 工具）**：`element_marker`
@@ -198,17 +200,30 @@
 | `key` | TEXT | `PK` | 配置项名（现只有 schema_version） |
 | `value` | TEXT | `NOT NULL` | 配置项值（结构版本号，供迁移判断） |
 
-### 组 2 · 项目聚合根
+### 组 2 · 合集与项目聚合根
+
+#### collection
+
+5 列 · 主键 `collection_id`
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `collection_id` | TEXT | `PK` | 合集 id（默认合集恒为 default，不可删除） |
+| `name` | TEXT | `NOT NULL` | 合集名（默认合集名为「默认合集」，不可改名） |
+| `ord` | INTEGER | `NOT NULL` | 合集排序（默认合集固定 -1，恒排最前） · 默认 `0` |
+| `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
+| `updated_at` | INTEGER | `NOT NULL` | 最后修改时间（毫秒时间戳） |
 
 #### project
 
-14 列 · 主键 `project_id`
+15 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `project_id` | TEXT | `PK` | 项目 id |
 | `name` | TEXT | `NOT NULL` | 项目名 |
 | `description` | TEXT | — | 项目描述 |
+| `collection_id` | TEXT | `NOT NULL` `FK → collection RESTRICT` | 所属合集（默认 default）；删合集时其下项目回落到默认合集 · 默认 `'default'` |
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后保存时间（毫秒时间戳） |
 | `default_duration` | INTEGER | `NOT NULL` | 默认章节时长（帧） · `CHECK (default_duration > 0)` |

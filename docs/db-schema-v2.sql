@@ -4,7 +4,7 @@
 -- 命名约定：表名与 TS 实体同名并转 snake_case（elementMarker ↔ element_marker），
 --          主键统一 <实体>_id，时间统一 *_frame（帧）/ *_at（epoch ms）
 -- 字符集：UTF-8；时间单位：帧（整数），基准帧率见 project.default_fps
--- 规模：22 张表 / 3 视图 / 6 触发器
+-- 规模：23 张表 / 3 视图 / 6 触发器
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -37,13 +37,27 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 -- 初始化：INSERT OR IGNORE INTO schema_meta(key,value) VALUES ('schema_version','2');
 
 -- -----------------------------------------------------------------------------
--- 2. 项目聚合根
+-- 2. 合集与项目聚合根
 -- -----------------------------------------------------------------------------
+
+-- 合集：项目之上的一层分组。
+--   · 默认合集 id 恒为 'default'（不可改名、不可删除），新建项目 / 导入未指定归属时落在这里
+--   · 删合集只把其下项目移回默认合集（应用层先迁移再删，故用 RESTRICT 防误删）
+CREATE TABLE IF NOT EXISTS collection (
+  collection_id TEXT PRIMARY KEY,
+  name          TEXT    NOT NULL,
+  ord           INTEGER NOT NULL DEFAULT 0,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS project (
   project_id            TEXT PRIMARY KEY,
   name                  TEXT    NOT NULL,
   description           TEXT,
+  -- 所属合集；缺省即默认合集（见上）
+  collection_id         TEXT    NOT NULL DEFAULT 'default'
+                        REFERENCES collection(collection_id) ON DELETE RESTRICT,
   created_at            INTEGER NOT NULL,
   updated_at            INTEGER NOT NULL,
 
@@ -664,10 +678,11 @@ CREATE INDEX IF NOT EXISTS ix_music_audio_asset     ON music_track(audio_asset_i
 -- ② 元素关键帧：FK 指向 chapter，删章节时避免扫描
 --    （element_id 是弱引用、无 FK，索引 ix_element_kf 见第 6 节）
 
--- ③ 底图 / 高程图被引用（删底图走 SET NULL，低频但同样应避免扫描）
+-- ③ 底图 / 高程图 / 合集被引用（删父行走 SET NULL / RESTRICT，低频但同样应避免扫描）
 CREATE INDEX IF NOT EXISTS ix_chapter_base_map     ON chapter(base_map_id)          WHERE base_map_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_chapter_emap         ON chapter(elevation_map_id)     WHERE elevation_map_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_project_active_emap  ON project(active_elevation_map_id) WHERE active_elevation_map_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 -- 注：project 只有一行，active_base_map_id 无需索引（全表扫描成本为常数 1 行）
 
 -- =============================================================================

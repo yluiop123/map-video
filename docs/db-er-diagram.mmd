@@ -2,8 +2,14 @@
 %% 用法：直接以 ```mermaid 代码块嵌入 docs/db-redesign.md（Markdown 渲染器原生支持，不再预渲染 SVG）
 %% 2026-09-10 改版：元素表由「element 基表 + 13 子表」改为 4 张类别宽表；图片类下线；疆域内部实体 JSON 内联。
 erDiagram
+  COLLECTION {
+    text collection_id PK
+    text name
+    int ord
+  }
   PROJECT {
     text project_id PK
+    text collection_id FK
     text name
     text active_base_map_id FK
     int default_fps
@@ -74,6 +80,7 @@ erDiagram
     text kind
     int active
   }
+  COLLECTION ||--o{ PROJECT : "1:N 项目"
   PROJECT ||--o{ CHAPTER : "1:N 章节"
   PROJECT ||--o{ BASE_MAP : "1:N 底图"
   PROJECT ||--o{ ELEVATION_MAP : "1:N 高程"
