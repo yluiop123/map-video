@@ -1,7 +1,7 @@
 import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
 import * as turf from '@turf/turf';
 import { interpolateKeyframes, interpolatePath } from './keyframe-interpolation';
-import { setFlyRibbon, clearFlyRibbons, flyHeight01, projectLifted, flyLiftMeters, setFlyMarker, clearFlyMarkers } from './fly-ribbon';
+import { setFlyRibbon, clearFlyRibbons, flyHeight01, flyArcHeightMeters, projectLifted, flyLiftMeters, setFlyMarker, clearFlyMarkers } from './fly-ribbon';
 import {
   buildAttackArrow, buildStraightArrow, buildDoubleArrow, buildGatheringPlace,
 } from './military-plots';
@@ -1045,9 +1045,12 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   let flyFullKm = 1;
   let flyFullCumGeo: number[] | null = null;
   let flyDataF: number[] | null = null;
+  /** 弧顶高度（米）：由路径总长度决定，与相机无关（挂点/光点/标记点共用） */
+  let flyHeightM = 0;
   if (flyActive) {
     flyFullKm = geoLengthKm(effective);
     flyFullCumGeo = geodesicCum(effective);
+    flyHeightM = flyArcHeightMeters(flyFullKm * 1000);
     const dataLine = data?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined;
     if (isMarch && marchTotal > 0) {
       flyFracA = Math.max(0, marchH - marchL) / marchTotal;
@@ -1068,23 +1071,13 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         widthPx: element.lineWidth || 8,
         opacity: 1,
         dash: element.lineDashArray,
-      });
-      // 地面投影（阴影航迹）：全程虚线贴地，让「悬空高度」可读
-      setFlyRibbon(map, `${element.id}|track`, {
-        paths: [{ coords: effective, lifts: effective.map(() => 0) }],
-        frac: { a: 0, b: 1 },
-        color: element.lineColor || '#FF0000',
-        widthPx: Math.max(1.5, (element.lineWidth || 8) * 0.3),
-        opacity: 0.45,
-        dash: [2, 2.5],
+        heightM: flyHeightM,
       });
     } else {
       setFlyRibbon(map, `${element.id}|main`, null);
-      setFlyRibbon(map, `${element.id}|track`, null);
     }
   } else {
     setFlyRibbon(map, `${element.id}|main`, null);
-    setFlyRibbon(map, `${element.id}|track`, null);
     try { if (map.getLayer(hitLayerId)) map.setLayoutProperty(hitLayerId, 'visibility', 'visible'); } catch { /* */ }
   }
 
@@ -1267,6 +1260,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         setFlyMarker(map, `${element.id}|icon`, [{
           imgId: mImgId, lnglat: iconCoord,
           lift01: flyHeight01(Math.max(0, Math.min(1, iconRatio))),
+          heightM: flyHeightM,
           sizePx: imgH * mScale,
           anchorX: 0.5, anchorY: mShape === 'pin' ? 1 : 0.5,
         }]);
@@ -1508,7 +1502,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       if (flyActive && flyFullCumGeo) {
         const s = flyFullCumGeo[Math.min(idx, flyFullCumGeo.length - 1)] / flyFullKm;
         try {
-          const tr = liftTranslate(map, spotCoord, flyHeight01(Math.max(0, Math.min(1, s))));
+          const tr = liftTranslate(map, spotCoord, flyHeight01(Math.max(0, Math.min(1, s))), flyHeightM);
           map.setPaintProperty(spotLayerId, 'circle-translate', tr as any);
           map.setPaintProperty(spotLayerId, 'circle-translate-anchor', 'viewport');
         } catch { /* */ }
@@ -1526,13 +1520,13 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     ? marchHead
     : (flyActive && effective.length >= 2 ? interpolatePath(effective, Math.max(0, Math.min(1, flyFracB))) : null);
   const flyIconShift: [number, number] = flyActive && iconLnglat
-    ? liftTranslate(map, iconLnglat, flyHeight01(Math.max(0, Math.min(1, iconRatio))))
+    ? liftTranslate(map, iconLnglat, flyHeight01(Math.max(0, Math.min(1, iconRatio))), flyHeightM)
     : zeroShift;
   const flyHeadShift: [number, number] = flyActive && headLnglat
-    ? liftTranslate(map, headLnglat, flyHeight01(Math.max(0, Math.min(1, flyFracB))))
+    ? liftTranslate(map, headLnglat, flyHeight01(Math.max(0, Math.min(1, flyFracB))), flyHeightM)
     : zeroShift;
   const flyLabelShift: [number, number] = flyActive && effective.length >= 2
-    ? liftTranslate(map, interpolatePath(effective, 0.5), 1) // 线中点文案=全程中点=拱顶
+    ? liftTranslate(map, interpolatePath(effective, 0.5), 1, flyHeightM) // 线中点文案=全程中点=拱顶
     : zeroShift;
   const translateLayer = (layer: string, prop: string, shift: [number, number]) => {
     if (!map.getLayer(layer)) return;
@@ -2205,10 +2199,11 @@ function buildCurvedSwallowtailWithOpts(
 // mercator 与 globe 均由 fly-ribbon 自定义层（世界空间高程「加高程」）逐顶点完成；这里只提供
 // 标记点/光点/头部图标与拱形一致的屏幕平移、箭头多边形 → 轨道比例环（subdivFlyRing）与旧 band 分段层的遗留清理。
 
-/** 地面投影 + 世界空间高程(米)抬升 → 屏幕平移（viewport 锚）；与 ribbon 同一投影矩阵（含低俯仰屏幕兜底） */
-function liftTranslate(map: maplibregl.Map, lnglat: [number, number], lift01: number): [number, number] {
+/** 地面投影 + 世界空间高程(米)抬升 → 屏幕平移（viewport 锚）；与 ribbon 同一投影矩阵。
+ *  heightM：弧顶高度（由路径总长决定，与相机无关），与所在路线的 ribbon 保持一致。 */
+function liftTranslate(map: maplibregl.Map, lnglat: [number, number], lift01: number, heightM = flyLiftMeters(map)): [number, number] {
   const g = map.project(lnglat as any);
-  const l = projectLifted(map, lnglat, Math.max(0, Math.min(1, lift01)) * flyLiftMeters(map), lift01);
+  const l = projectLifted(map, lnglat, Math.max(0, Math.min(1, lift01)) * heightM, lift01);
   return [l.x - g.x, l.y - g.y];
 }
 
@@ -2515,34 +2510,26 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
     try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'none'); } catch { /* */ }
     if (flyRings.length > 0) {
+      // 弧顶高度：由箭头路径总长决定，与相机无关；与填充/描边共用
+      const flyHeightA = flyArcHeightMeters(geoLengthKm(rail) * 1000);
       setFlyRibbon(map, `${element.id}|afill`, {
         kind: 'poly',
         rings: flyRings,
         color: fillColor,
-opacity: fillOpacity,
+        opacity: fillOpacity,
+        heightM: flyHeightA,
       });
-setFlyRibbon(map, `${element.id}|astroke`, {
+      setFlyRibbon(map, `${element.id}|astroke`, {
         paths: flyRings.map((r) => ({ coords: r.coords, f: r.f, closed: true })),
         color: fillColor,
         widthPx: 1.2,
         opacity: 0.8,
+        heightM: flyHeightA,
       });
-      // 地面投影（阴影航迹）：全程虚线贴地，让「悬空高度」可读
-      setFlyRibbon(map, `${element.id}|track`, {
-        paths: [{ coords: rail, lifts: rail.map(() => 0) }],
-        frac: { a: 0, b: 1 },
-        color: fillColor,
-        widthPx: 2,
-        opacity: 0.4,
-        dash: [2, 2.5],
-      });
-    } else {
-      setFlyRibbon(map, `${element.id}|track`, null);
     }
   } else {
     setFlyRibbon(map, `${element.id}|afill`, null);
     setFlyRibbon(map, `${element.id}|astroke`, null);
-    setFlyRibbon(map, `${element.id}|track`, null);
     try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'visible'); } catch { /* */ }
     try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'visible'); } catch { /* */ }
   }

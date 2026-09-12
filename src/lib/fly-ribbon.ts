@@ -5,7 +5,8 @@
  * 世界空间给予高程（米），经 MapLibre v5 的 projectTileFor3D 投影到屏幕——mercator
  * 与 globe（3D 球体）均正确，抬升锚定在地图世界空间（相机旋转/俯仰不贴屏幕）。
  *  - 高程语义：自定义图层路径下 elevation=米（mercator 内部按 z=meters/(R·cos lat) 换算，
- *    globe 直接米，shader 内逐顶点换算）；拱高随相机自适应（flyLiftMeters，视觉高度 ~64px）；
+ *    globe 直接米，shader 内逐顶点换算）；**拱高由路径总长度决定**（flyArcHeightMeters，
+ *    世界坐标固定米数）——缩放/俯仰/旋转都不改变弧线高度，不再做屏幕空间兜底抬升；
  *  - 线宽/端帽在屏幕空间扩展（NDC 偏移），与标记点平移一致；
  *  - 相机静止时缓冲零重建（mercat 位置不随相机变；仅 dash 距离依赖相机，脏检查重建）；
  *  - 线模式自带侧边/端帽/虚线端 1px 抗锯齿；多边形模式（箭头填充）由闭合 AA 描边覆盖轮廓锯齿。
@@ -47,6 +48,8 @@ export interface FlyRibbonDataLine {
   widthPx: number;
   opacity?: number;
   dash?: number[];
+  /** 弧顶高度（米）——由路径总长度决定（flyArcHeightMeters），**与相机无关** */
+  heightM?: number;
 }
 
 export interface FlyRibbonPolyRing {
@@ -60,6 +63,8 @@ export interface FlyRibbonDataPoly {
   rings: FlyRibbonPolyRing[];
   color: string;
   opacity?: number;
+  /** 弧顶高度（米）——由路径总长度决定（flyArcHeightMeters），**与相机无关** */
+  heightM?: number;
 }
 
 export type FlyRibbonData = FlyRibbonDataLine | FlyRibbonDataPoly;
@@ -67,8 +72,18 @@ export type FlyRibbonData = FlyRibbonDataLine | FlyRibbonDataPoly;
 const LAYER_ID = 'fly-ribbons';
 const VERT_STRIDE = 10; // aPos(2) + aPrev(2) + aNext(2) + aSide + aLift + aAlong + aDist
 const MAX_PTS = 600; // 每条路径采样上限（不足时按弧长加密）
-/** 拱形视觉高度（屏幕 px，随相机换算成米的高程）——任何缩放下观感稳定 */
+/** 拱形视觉高度（屏幕 px）——仅兜底换算用（flyLiftMeters），正常路径高度见 flyArcHeightMeters */
 export const FLY_VISUAL_PX = 96;
+
+/**
+ * 飞行弧顶高度（米）——**由路径总长度决定，与相机视角无关**。
+ * 高度 = 总长 × 0.12（约 300m ~ 25km 之间），配合 flyHeight01 的爬升/巡航/下降剖面，
+ * 呈现一段固定的真实弧线；缩放、俯仰、旋转都不改变它。
+ */
+export function flyArcHeightMeters(totalLenMeters: number): number {
+  const l = Number.isFinite(totalLenMeters) ? Math.max(0, totalLenMeters) : 0;
+  return Math.max(300, Math.min(25000, l * 0.12));
+}
 const M_PER_SAMPLE = 1000;
 /** 地球半径（米），mercator z 单位换算用：z = meters / (R·cos lat)，与 MercatorCoordinate.fromLngLat 一致 */
 const EARTH_R = 6378137;
@@ -354,8 +369,9 @@ export function projectLifted(
     }
     const cw = clip[3] !== 0 ? clip[3] : 1;
     const x = (clip[0] / cw * 0.5 + 0.5) * w;
-    let y = (1 - (clip[1] / cw * 0.5 + 0.5)) * h;
-    if (lift01) y -= Math.max(0, Math.min(1, lift01)) * flyScreenLiftPx(map);
+    const y = (1 - (clip[1] / cw * 0.5 + 0.5)) * h;
+    // lift01 已不再叠加屏幕空间兜底（高度只由世界高程决定，不随相机变）
+    void lift01;
     return { x, y };
   } catch {
     // 兜底：地面投影（matrix 异常时无抬升近似）
@@ -381,21 +397,12 @@ export function flyLiftMeters(map: MaplibreMap): number {
 }
 
 /**
- * 屏幕空间兜底抬升（px）：世界空间高程的屏幕位移随俯仰角减小而趋于 0（俯视时完全不可见），
- * 这里测出「当前相机下满高程的屏幕像素位移」，不足 FLY_VISUAL_PX 的部分用屏幕平移补足，
- * 保证任意俯仰角下拱形高度观感一致。与 shader 的 uScreenLift、projectLifted 的 lift01 同源。
+ * 屏幕空间兜底抬升（px）——已停用（恒 0）。
+ * 原因：它把「相机俯仰」混进高度，导致拱形随视角变；现在高度由路径总长决定（flyArcHeightMeters），
+ * 世界空间高程就是唯一真相。保留此导出仅为兼容潜在外部引用。
  */
-export function flyScreenLiftPx(map: MaplibreMap): number {
-  try {
-    const c = map.getCenter();
-    const ll: [number, number] = [c.lng, c.lat];
-    const base = projectLifted(map, ll, 0);
-    const up = projectLifted(map, ll, flyLiftMeters(map));
-    const d = Math.hypot(up.x - base.x, up.y - base.y);
-    return Math.max(0, FLY_VISUAL_PX - Math.min(FLY_VISUAL_PX, d));
-  } catch {
-    return FLY_VISUAL_PX;
-  }
+export function flyScreenLiftPx(_map: MaplibreMap): number {
+  return 0;
 }
 
 /** 单条路径 → 交错顶点数组（线模式每段两个三角形；poly 用 earcut 索引；位置=mercator，aLift=0..1） */
@@ -683,8 +690,9 @@ function drawRibbons(map: MaplibreMap, gl: WebGLRenderingContext | WebGL2Renderi
     g.uniform1f(st.uOpacity as WebGLUniformLocation, data.opacity ?? 1);
     const isPoly = data.kind === 'poly';
     g.uniform1f(st.uWidthPx as WebGLUniformLocation, isPoly ? 1 : Math.max(0.5, data.widthPx));
-    g.uniform1f(st.uLiftM as WebGLUniformLocation, flyLiftMeters(map));
-    g.uniform1f(st.uScreenLift as WebGLUniformLocation, flyScreenLiftPx(map));
+    // 高度：由路径总长度决定（data.heightM，与相机无关）；uScreenLift 恒 0（不再做屏幕空间兜底抬升）
+    g.uniform1f(st.uLiftM as WebGLUniformLocation, data.heightM ?? flyLiftMeters(map));
+    g.uniform1f(st.uScreenLift as WebGLUniformLocation, 0);
     g.uniform1f(st.uZIsMercator as WebGLUniformLocation, (map as any).getProjection?.()?.type === 'globe' ? 0 : 1);
     g.uniform1f(st.uEdgeAA as WebGLUniformLocation, isPoly ? 0 : 1);
     const dash = !isPoly && data.dash ? (data.dash as number[]).filter((v) => v > 0).map((v) => v * Math.max(0.5, data.widthPx)) : [];
@@ -767,11 +775,11 @@ export function pickFlyRibbon(map: MaplibreMap, px: number, py: number, elements
   if (!entries || entries.size === 0) return null;
   let bestId: string | null = null;
   let bestD = Infinity;
-  const liftM = flyLiftMeters(map);
   for (const [key, entry] of entries) {
     if (key.endsWith('|ghost')) continue;
     if ((entry.data as FlyRibbonDataPoly).kind === 'poly') continue;
     const data = entry.data as FlyRibbonDataLine;
+    const liftM = data.heightM ?? flyLiftMeters(map);
     const elId = key.slice(0, key.lastIndexOf('|'));
     const el = elements.find((e) => e.id === elId);
     if (!el || !el.flyMode) continue;
@@ -830,6 +838,8 @@ export interface FlyMarker {
   lnglat: [number, number];
   /** 抬升比例 0..1（flyHeight01） */
   lift01: number;
+  /** 弧顶高度（米）——与所在路线 ribbon 的 heightM 一致（缺省时回退相机换算） */
+  heightM?: number;
   /** 高度（CSS px，等比缩放） */
   sizePx: number;
   /** 锚点（图像内 0..1，默认 0.5/1.0 = 底部居中，如 pin） */
@@ -933,7 +943,8 @@ function drawMarkers(map: MaplibreMap, st: RibbonGlState): void {
   const canvas = map.getCanvas();
   const w = Math.max(1, canvas.clientWidth);
   const h = Math.max(1, canvas.clientHeight);
-  const liftM = flyLiftMeters(map);
+  // 每个标记点用自己路线的弧顶高度（与管/ribbon 严格对齐）；缺省回退相机换算
+  const fallbackLiftM = flyLiftMeters(map);
   // 复用 ribbon 主 buffer 槽绘制四边形顶点
   let vbuf = st.freeBuffers.pop() || null;
   if (!vbuf) vbuf = gl.createBuffer();
@@ -955,7 +966,7 @@ function drawMarkers(map: MaplibreMap, st: RibbonGlState): void {
       const tex = ensureMarkerTexture(st, mk.imgId, img.data);
       if (!tex) continue;
       const lift01 = Math.max(0, Math.min(1, mk.lift01));
-      const pos = projectLifted(map, mk.lnglat, lift01 * liftM, lift01);
+      const pos = projectLifted(map, mk.lnglat, lift01 * (mk.heightM ?? fallbackLiftM), lift01);
       if (pos.x < -200 || pos.y < -200 || pos.x > w + 200 || pos.y > h + 200) continue;
       const ox = mk.offsetPx ? mk.offsetPx[0] : 0;
       const oy = mk.offsetPx ? mk.offsetPx[1] : 0;
@@ -1012,7 +1023,7 @@ export function setFlyMarker(map: MaplibreMap, key: string, markers: FlyMarker[]
     if (entries.delete(key)) { try { map.triggerRepaint(); } catch { /* */ } }
     return;
   }
-  const sig = markers.map((m) => `${m.imgId}|${m.lnglat[0].toFixed(6)},${m.lnglat[1].toFixed(6)}|${m.lift01.toFixed(3)}|${m.sizePx}|${m.anchorX ?? 0.5}|${m.anchorY ?? 1}|${m.offsetPx ? m.offsetPx.join(',') : ''}|${m.opacity ?? 1}`).join(';');
+  const sig = markers.map((m) => `${m.imgId}|${m.lnglat[0].toFixed(6)},${m.lnglat[1].toFixed(6)}|${m.lift01.toFixed(3)}|${m.heightM ?? ''}|${m.sizePx}|${m.anchorX ?? 0.5}|${m.anchorY ?? 1}|${m.offsetPx ? m.offsetPx.join(',') : ''}|${m.opacity ?? 1}`).join(';');
   const prev = entries.get(key);
   if (!prev || (prev as any).__sig !== sig) {
     (markers as any).__sig = sig;
