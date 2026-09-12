@@ -5,7 +5,7 @@
 --          主键统一 <实体>_id，时间统一 *_sec（秒，REAL）/ *_at（epoch ms，仅审计字段用）
 -- 字符集：UTF-8；时间单位：**秒**（REAL，存用户输入的原值）；
 --          渲染 / 导出时按 project_config.default_fps 换算为帧（帧是派生量，不入库）
--- 规模：21 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
+-- 规模：22 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -72,7 +72,9 @@ CREATE TABLE IF NOT EXISTS project_config (
   resolution_w          INTEGER NOT NULL CHECK (resolution_w > 0),
   resolution_h          INTEGER NOT NULL CHECK (resolution_h > 0),
   resolution_label      TEXT    NOT NULL,
-  default_easing        TEXT    NOT NULL
+  default_easing        TEXT    NOT NULL,
+  -- 地形夸张：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例）
+  elevation_exaggeration REAL
 );
 
 -- -----------------------------------------------------------------------------
@@ -84,6 +86,8 @@ CREATE TABLE IF NOT EXISTS project_config (
 -- 项目与章节只保存所选配置的 id 字符串（project.active_base_map_id / chapter.base_map_id）。
 -- 取舍：省掉两张表与两处外键（连带消除原本的循环外键问题）；
 --       代价是底图 / 高程图配置不可由用户在运行时增删改。
+-- 例外：**地形夸张系数用户可调**（面板滑动条 0–5），因此作为「对当前生效高程图的覆盖值」
+--       落在 project_config.elevation_exaggeration（NULL = 沿用内置默认的 1.5）。
 
 -- 用户图标库：图标 / 图片 / SVG / 动图；ns 为命名空间，支持「可扩展图标库」
 -- （内置 lucide / react-icons 不进库，用 element_marker.icon_lib + icon_name 引用；
@@ -129,6 +133,19 @@ CREATE TABLE IF NOT EXISTS asset (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_asset_content ON asset(project_id, sha256);
 CREATE INDEX        IF NOT EXISTS ix_asset_kind    ON asset(project_id, kind);
+
+-- 自定义图片库（项目级登记）：标记「图片」形态上传后登记在此，之后可跨元素复用
+-- （素材本体在 asset，内容寻址；这里只记「本项目收录了哪些图片」）。
+-- 与 custom_symbol 的分工：symbol 是可被 icon_name 引用的**符号/图标**（带 ns 命名空间），
+-- custom_image 只是供面板浏览选择的**图片库条目**；二者都指向 asset。
+CREATE TABLE IF NOT EXISTS custom_image (
+  project_id  TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
+  asset_id    TEXT NOT NULL REFERENCES asset(asset_id) ON DELETE RESTRICT,
+  name        TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (project_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS ix_custom_image_asset ON custom_image(asset_id);
 
 -- -----------------------------------------------------------------------------
 -- 3. 章节与时间轴

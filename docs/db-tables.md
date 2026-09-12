@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 21 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 22 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：21 张表 · 4 张元素类别宽表 · 3 个视图 · 0 个触发器 · 28 个外键（全部有索引）
+- **规模**：22 张表 · 4 张元素类别宽表 · 3 个视图 · 0 个触发器 · 28 个外键（全部有索引）
 
 **目录**
 
-- 一、21 张表的构成与分流规则
+- 一、22 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、21 张表逐表速查（按 10 组）
+- 三、22 张表逐表速查（按 10 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图，以及为什么没有触发器
 
-## 一、21 张表的构成与分流规则
+## 一、22 张表的构成与分流规则
 
-**21 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**22 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,12 +28,12 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`title_style_json`、`transition_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 21 张表的构成
+#### 一句话理解 22 张表的构成
 
 - **4 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；
 - **1 张**是「元素附属」：`element_keyframe`（所有元素共用的动画关键帧，按 `element_id` 弱引用）；
 - **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
-- **2 张**是「素材库」（自定义图标、二进制素材）；
+- **3 张**是「素材库」（自定义图标、二进制素材、自定义图片库）；
 - **3 张**是「弹窗内容块」；
 - **4 张**是合集、项目本体、项目配置与应用配置。
 
@@ -48,7 +48,9 @@
 | `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing） | `project_config` | P2 独立成表：配置与项目本体职责分离（1:1，主键即外键）；配置面板只读写这张表 |
 | `globalConfig.projection` | `project` 的 `projection` 列 | P1 列化：地图投影是项目自身的属性（渲染方式），随项目走，不属于「默认值类」配置 |
 | `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | **不入库**：配置是代码内置常量，项目只存选中的 id 字符串 |
+| `elevationMaps[].exaggeration`（面板滑动条可调） | `project_config.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–5，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
 | `customSymbols[]`（`url` 可能是 data URL） | `custom_symbol` + `asset` | 元数据留表内，二进制走 P4 外置 |
+| `customImages[]`（上传后登记，供复用） | `custom_image` + `asset` | 项目级图片库；素材本体走 P4 外置，这里只登记「本项目收录了哪些图片」 |
 | `chapters[]` | `chapter` | P1；`titleStyle` / `transition` 按 P3 留在 JSON 列 |
 | `chapters[].elements[]` | `element_marker` / `element_route` / `element_shape` / `element_territory`（4 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表） |
 | `elements[].style`（`Keyframe[]` 数组） | `element_keyframe` | P2：8 种 property 统一一张表，带时间轴语义与唯一约束 |
@@ -64,8 +66,9 @@
 | `providers` | `provider` | 独立聚合；「每 kind 至多一条 active」由部分唯一索引保证 |
 
 > 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目与章节只保存所选配置的 id 字符串（`project.active_base_map_id` / `chapter.base_map_id`）。
+> **例外**：「地形夸张系数」用户在面板可调（0–5，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project_config.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、21 张表逐表速查（按 10 组）
+## 三、22 张表逐表速查（按 10 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
@@ -75,14 +78,15 @@
 |---|---|---|---|
 | `collection` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素） | `collection_id` | 默认合集恒为 `default`：**不可改名、不可删除**；删其它合集时其下项目回落默认合集（**不删项目**） |
 | `project` | 项目本体：身份 + 归属 + 审计字段 + 地图投影 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） |
-| `project_config` | 项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 | `project_id` | 与 `project` **1:1**（主键即外键）；配置独立成表，配置面板只读写这张表 |
+| `project_config` | 项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 **+ 地形夸张覆盖值** | `project_id` | 与 `project` **1:1**（主键即外键）；配置独立成表，配置面板只读写这张表 |
 
-### 组 2 · 资源与素材 2 张
+### 组 2 · 资源与素材 3 张
 
 | 表 | 职责 | 主键 | 删除行为 |
 |---|---|---|---|
 | `custom_symbol` | 自定义图标库（icon / image / svg 的元数据） | `symbol_id` | 被元素占用时 **RESTRICT 拒绝删除**（旧实现会静默损坏图标） |
 | `asset` 新增 | 所有大体积二进制的唯一入口（图片/音频/视频/字体），按 `sha256` 去重 | `asset_id` | 孤儿回收是待办项（需定期清理或引用计数） |
+| `custom_image` | 自定义图片库：项目收录的图片（素材本体在 `asset`），供标记「图片」形态跨元素复用 | `project_id` + `asset_id`（复合主键） | 随项目 **CASCADE**；`asset_id` 为 RESTRICT（素材被引用时不允许删） |
 
 ### 组 3 · 章节与时间轴 7 张
 
@@ -163,7 +167,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **21 张表 / 325 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，325 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **22 张表 / 330 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，330 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。
 
@@ -172,7 +176,7 @@
 #### 快速跳转
 
 - **组 1 · 合集与项目（含配置）**：`collection` · `project` · `project_config`
-- **组 2 · 资源与素材**：`custom_symbol` · `asset`
+- **组 2 · 资源与素材**：`custom_symbol` · `asset` · `custom_image`
 - **组 3 · 章节与时间轴**：`chapter` · `camera_keyframe` · `screen_fx` · `chapter_fx` · `narration` · `narration_entry` · `music_track`
 - **组 4 · 标记类元素（Pin 工具）**：`element_marker`
 - **组 5 · 路线类元素（Route 工具）**：`element_route`
@@ -214,7 +218,7 @@
 
 #### project_config
 
-7 列 · 主键 `project_id`
+8 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -225,6 +229,7 @@
 | `resolution_h` | INTEGER | `NOT NULL` | 默认导出高度（px） · `CHECK (resolution_h > 0)` |
 | `resolution_label` | TEXT | `NOT NULL` | 分辨率标签（如 1080p） |
 | `default_easing` | TEXT | `NOT NULL` | 默认缓动类型 |
+| `elevation_exaggeration` | REAL | — | 地形夸张系数：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例），空=用内置默认 |
 
 ### 组 2 · 资源与素材
 
@@ -274,6 +279,21 @@
 **表级约束**
 
 - `CHECK ((storage = 'file' AND rel_path IS NOT NULL) OR (storage = 'blob' AND blob IS NOT NULL))`
+
+#### custom_image
+
+4 列 · 主键 —
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目（与 asset_id 组成复合主键） |
+| `asset_id` | TEXT | `NOT NULL` `FK → asset RESTRICT` | 图片素材（内容寻址；素材本体在 asset 表，这里只登记本项目收录） |
+| `name` | TEXT | `NOT NULL` | 展示名（默认取文件名） · 默认 `''` |
+| `created_at` | INTEGER | `NOT NULL` | 登记时间（epoch ms） |
+
+**表级约束**
+
+- `PRIMARY KEY (project_id, asset_id)`
 
 ### 组 3 · 章节与时间轴
 

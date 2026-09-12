@@ -41,6 +41,7 @@ export default {
     resolution_h: '默认导出高度（px）',
     resolution_label: '分辨率标签（如 1080p）',
     default_easing: '默认缓动类型',
+    elevation_exaggeration: '地形夸张系数：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例），空=用内置默认',
   },
 
 
@@ -56,6 +57,13 @@ export default {
     width: '原始宽度（px，统一规范为 64×64）',
     height: '原始高度（px）',
     ord: '同项目内排序',
+  },
+
+  custom_image: {
+    project_id: '所属项目（与 asset_id 组成复合主键）',
+    asset_id: '图片素材（内容寻址；素材本体在 asset 表，这里只登记本项目收录）',
+    name: '展示名（默认取文件名）',
+    created_at: '登记时间（epoch ms）',
   },
 
   asset: {

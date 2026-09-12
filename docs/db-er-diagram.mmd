@@ -16,10 +16,11 @@ erDiagram
   }
   PROJECT_CONFIG {
     text project_id PK
-    int default_duration
+    real default_duration_sec
     int default_fps
     text resolution_label
     text default_easing
+    real elevation_exaggeration "地形夸张覆盖值 空=用内置默认"
   }
   CHAPTER {
     text chapter_id PK
@@ -77,6 +78,11 @@ erDiagram
     text sha256
     text storage
   }
+  CUSTOM_IMAGE {
+    text project_id PK
+    text asset_id PK
+    text name
+  }
   OVERLAY {
     text overlay_id PK
     text chapter_id FK
@@ -109,5 +115,7 @@ erDiagram
   ELEMENT_MARKER ||--o{ ELEMENT_KEYFRAME : "弱引用 无外键"
   ELEMENT_MARKER }o--o| ASSET : "媒体资源 asset_id"
   CUSTOM_SYMBOL }o--|| ASSET : "图标素材"
+  PROJECT ||--o{ CUSTOM_IMAGE : "1:N 项目图片库"
+  CUSTOM_IMAGE }o--|| ASSET : "图片素材 RESTRICT"
   CAMERA_KEYFRAME }o--o| ELEMENT_ROUTE : "跟随机位 SET NULL"
   ELEMENT_ROUTE }o--o{ ELEMENT_MARKER : "connector 端点 弱引用 无外键"

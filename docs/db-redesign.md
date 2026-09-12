@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：21 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：22 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -28,7 +28,7 @@
 | 内容层 | `MapElement`（12 子类） | 地图上绘制的一切：点、线、面、箭头、军标、旗、连接线、疆域 | 每章 0 – 数百 |
 | 叠加层 | `OverlayItem`（11 类型） | 屏幕空间弹窗：图表、人物卡、战报、时间线、引用、对比、计数、对话、地点、自定义块 | 每章 0 – 数十 |
 | 时间层 | `CameraKeyframe` / `ScreenFxItem` / `ChapterEffect` / `NarrationTrack` / `MusicTrack` | 镜头、天气与画面特效、章特效、字幕、配乐 | 每章 0 – 数十 |
-| 资源层 | `BaseMapConfig` / `ElevationMapConfig` / `CustomSymbol` | 底图、地形、自定义图标；其中**底图 / 高程图是代码内置常量（不入库）**，自定义图标入库（`custom_symbol` + `asset`） | 各 0 – 数十 |
+| 资源层 | `BaseMapConfig` / `ElevationMapConfig` / `CustomSymbol` / `CustomImage` | 底图、地形、自定义图标、自定义图片库；其中**底图 / 高程图是代码内置常量（不入库，但地形夸张覆盖值存 `project_config`）**，自定义图标入 `custom_symbol`、收录图片入 `custom_image`，二进制统一走 `asset` | 各 0 – 数十 |
 | 配置层 | `ProviderConfig` | LLM / TTS 连接配置，**独立聚合**，不属于项目内容 | 0 – 数十 |
 
 ### 1.2 元素结构：一个判别联合
@@ -115,12 +115,12 @@
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（21 张表，按结构分 10 组）
+### 2.2 实体清单（22 张表，按结构分 10 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
 | **1. 合集与项目** | `collection`、`project`、`project_config` | 合集是项目之上的分组；`project` 只留身份 / 归属 / 审计与生效底图；`project_config` 承载 GlobalConfig（1:1，主键即外键） |
-| **2. 资源与素材** | `custom_symbol`、`asset` | `asset` 承担 P4 外置存储，按 sha256 内容寻址去重；底图 / 高程图不入库（代码内置常量，项目只存 id） |
+| **2. 资源与素材** | `custom_symbol`、`asset`、`custom_image` | `asset` 承担 P4 外置存储，按 sha256 内容寻址去重；`custom_image` 登记项目收录的图片（供标记图片形态复用）；底图 / 高程图不入库（代码内置常量，项目只存 id，但**地形夸张覆盖值**存 `project_config`） |
 | **3. 章节与时间轴** | `chapter`、`camera_keyframe`、`screen_fx`、`chapter_fx`、`narration`、`narration_entry`、`music_track` | 章节的 7 类子集合，逐类一张表 |
 | **4. 标记类元素** | `element_marker` | type ∈ point / flag / military_symbol |
 | **5. 路线类元素** | `element_route` | type ∈ line / moving_point / connector |
@@ -321,7 +321,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执行并跑完完整性用例：
 
-- 21 表创建成功
+- 22 表创建成功
 - 3 视图
 - 0 触发器（不使用触发器）
 - 17/17 用例通过
