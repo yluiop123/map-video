@@ -453,7 +453,7 @@ function PinStyleChooser({ element, patch }: {
       patch({
         type: 'military_symbol', coordinates: coords,
         sidc: (element as MilitarySymbolElement).sidc || milSymSidc('F', 'UCI---'),
-        symbolSize: 32, rotation: 0, scale: 1,
+        direction: undefined, quantity: undefined, uniqueDesignation: undefined, frame: undefined, fill: undefined,
         color: undefined, label: undefined, shape: undefined, builtinId: undefined,
         assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined, emoji: undefined,
       } as unknown as Partial<MapElement>);
@@ -1076,21 +1076,62 @@ function MilSymSettings({ element, patch }: {
           ))}
         </div>
       </Section>
-      <Section title={t('大小与旋转', 'Size & Rotation')}>
-        <Field label={t('符号大小（px）', 'Symbol size (px)')}>
-          <NumberInput
-            value={String(element.symbolSize ?? 32)}
-            onCommit={(v) => patch({ symbolSize: clamp(v || 32, 12, 128) } as Partial<MapElement>)}
+      <Section title={t('标注（标准字段）', 'Labels (standard fields)')}>
+        <Field label={t('数量', 'Quantity')}>
+          <div className="flex items-center gap-2">
+            <input
+              type="range" min={0} max={99} step={1}
+              value={Number(element.quantity || 0)}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10) || 0;
+                patch({ quantity: n > 0 ? String(n) : undefined } as Partial<MapElement>);
+              }}
+              className="w-full"
+            />
+            <span className="text-xs w-8 text-right shrink-0">{Number(element.quantity || 0) || '—'}</span>
+          </div>
+        </Field>
+        <Field label={t('唯一编号', 'Unique designation')}>
+          <input
+            type="text"
+            value={element.uniqueDesignation || ''}
+            onChange={(e) => patch({ uniqueDesignation: e.target.value || undefined } as Partial<MapElement>)}
             className="input"
+            placeholder="T-72 / 3rd Bn"
           />
         </Field>
-        <Field label={t('旋转（度）', 'Rotation (°)')}>
-          <NumberInput
-            value={String(Math.round(element.rotation ?? 0))}
-            onCommit={(v) => patch({ rotation: clamp(v || 0, 0, 360) } as Partial<MapElement>)}
-            className="input"
-          />
-        </Field>
+      </Section>
+
+      <Section title={t('方向箭头', 'Direction Arrow')}>
+        <Toggle
+          checked={element.direction !== undefined}
+          label={t('显示方向箭头', 'Show direction arrow')}
+          onChange={(v) => patch({ direction: v ? 0 : undefined } as Partial<MapElement>)}
+        />
+        {element.direction !== undefined && (
+          <div className="flex items-center gap-2 mt-1">
+            <input
+              type="range" min={0} max={359} step={1}
+              value={Math.round(element.direction)}
+              onChange={(e) => patch({ direction: parseInt(e.target.value, 10) || 0 } as Partial<MapElement>)}
+              className="w-full"
+            />
+            <span className="text-xs w-10 text-right shrink-0">{Math.round(element.direction)}°</span>
+          </div>
+        )}
+      </Section>
+
+      <Section title={t('显示', 'Display')}>
+        <Toggle
+          checked={element.frame !== false}
+          label={t('显示外框', 'Frame')}
+          onChange={(v) => patch({ frame: v } as Partial<MapElement>)}
+        />
+        <Toggle
+          checked={element.fill !== false}
+          label={t('填充阵营色', 'Fill')}
+          onChange={(v) => patch({ fill: v } as Partial<MapElement>)}
+        />
       </Section>
     </>
   );

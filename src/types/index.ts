@@ -366,9 +366,16 @@ export interface MilitarySymbolElement extends MapElementBase {
   type: 'military_symbol';
   sidc: string;
   coordinates: [number, number];
-  rotation?: number;
-  symbolSize?: number;
-  echelon?: string;
+  /** 方向箭头角度（0-359 度；未定义 = 不画箭头）——milsymbol direction */
+  direction?: number;
+  /** 数量标注（军标文本字段 A；空 = 不显示）——milsymbol quantity */
+  quantity?: string;
+  /** 唯一编号（军标文本字段 T）——milsymbol uniqueDesignation */
+  uniqueDesignation?: string;
+  /** 是否绘制外框（默认 true）——milsymbol frame */
+  frame?: boolean;
+  /** 是否填充阵营色（默认 true）——milsymbol fill */
+  fill?: boolean;
   label?: string;
 }
 
