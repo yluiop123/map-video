@@ -365,7 +365,7 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   /** 资源形态（image / gif / model / icon） */
   const isResourceShape = cap.source !== 'none';
   /** 走位图管线的形态（model 走 3D custom layer，见渲染端模型章节） */
-  const isVisualShape = shape === 'image' || shape === 'gif' || shape === 'icon' || shape === 'model';
+  const isVisualShape = shape === 'image' || shape === 'gif' || shape === 'icon' || shape === 'model' || shape === 'military_symbol';
   const visualSrc = isResourceShape ? resolvePinVisualSource(element) : ({ type: 'none' } as const);
   const legacyIconUrl = element.iconUrl;
   const hasVisual = (isVisualShape && visualSrc.type !== 'none') || !!legacyIconUrl;

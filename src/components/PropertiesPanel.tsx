@@ -16,7 +16,7 @@ import type {
   DoubleArrowElement, EncirclementElement, GatheringElement,
   CameraKeyframe, TerritoryElement, PointShape,
 } from '../types';
-import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES } from '../lib/builtin-assets';
+import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES, BUILTIN_MILSYMS } from '../lib/builtin-assets';
 import { defaultVisualFor, getPinCapability } from '../lib/pin-visual';
 import { loadLucideIcons, filterExistingIcons, type IconComponent } from '../lib/icon-library';
 import { uploadAsset, getAssetUrl, removeAsset, listMedia, type MediaItem, type AssetKind } from '../lib/assets';
@@ -248,7 +248,7 @@ function LabelStyleFields({ label, onChange, allowCenter, fixedCenter }: {
 
 // ========== PIN ==========
 
-type PinStyle = 'dot' | 'pin' | 'bubble' | 'emoji' | 'text' | 'flag' | 'image' | 'gif' | 'model' | 'icon';
+type PinStyle = 'dot' | 'pin' | 'bubble' | 'emoji' | 'text' | 'flag' | 'image' | 'gif' | 'model' | 'icon' | 'milsym';
 
 const EMOJI_CHOICES = ['📍', '🚩', '⚔️', '🏰', '🔥', '⭐', '✅', '❌', '💀', '🛡️', '⚓', '✈️', '🚀', '💥', '👑', '🎯', '🪖', '☢️', '🕊️', '🩸', '⚠️', '💤', '🧭', '📕'];
 
@@ -343,7 +343,7 @@ function PinSettings({ element, patch }: {
         </Section>
       )}
 
-      {((['dot', 'pin', 'image', 'gif', 'model', 'icon'] as PinStyle[]).includes(style)) && cap.canTint && (
+      {((['dot', 'pin', 'image', 'gif', 'model', 'icon', 'milsym'] as PinStyle[]).includes(style)) && cap.canTint && (
         <Appearance color={pe.color || '#FF4444'} onChange={(c) => patch({ color: c })} />
       )}
 
@@ -422,9 +422,9 @@ function PinStyleChooser({ element, patch }: {
         flagColor: leavingFlag ? '#E23B3B' : (pe.color || '#E23B3B'), textColor: lbl?.color || '#FFFFFF',
         fontSize: 28, flagWidth: 216, scale: 1,
       } as Partial<MapElement>);
-    } else if (s === 'image' || s === 'gif' || s === 'model' || s === 'icon') {
+    } else if (s === 'image' || s === 'gif' || s === 'model' || s === 'icon' || s === 'milsym') {
       // 资源形态：交给能力矩阵补默认值，并清掉该形态不支持的字段（与数据库 CHECK 一致）
-      patch({ type: 'point', coordinates: coords, ...defaultVisualFor(s as PointShape, pe) } as Partial<MapElement>);
+      patch({ type: 'point', coordinates: coords, ...defaultVisualFor(s === 'milsym' ? 'military_symbol' : (s as PointShape), pe) } as Partial<MapElement>);
     }
   };
 
@@ -451,13 +451,14 @@ function PinStyleChooser({ element, patch }: {
           </button>
         ))}
       </div>
-      {/* 资源形态：图片 / 动图 / 模型 / 图标库 */}
-      <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+      {/* 资源形态：图片 / 动图 / 模型 / 图标库 / 军标 */}
+      <div className="grid grid-cols-5 gap-1.5 mt-1.5">
         {([
           { value: 'image', label: t('🖼 图片', '🖼 IMAGE') },
           { value: 'gif', label: t('🎞 动图', '🎞 GIF') },
           { value: 'model', label: t('🧊 模型', '🧊 MODEL') },
           { value: 'icon', label: t('🔷 图标', '🔷 ICON') },
+          { value: 'milsym', label: t('🎖 军标', '🎖 MIL') },
         ] as { value: PinStyle; label: string }[]).map((o) => (
           <button
             key={o.value}
@@ -524,7 +525,8 @@ function PinResourcePicker({ element, style, patch }: {
 }) {
   const t = useT();
   const isIconStyle = style === 'icon';
-  const isResource = style === 'image' || style === 'gif' || style === 'model' || isIconStyle;
+  const isMilStyle = style === 'milsym';
+  const isResource = style === 'image' || style === 'gif' || style === 'model' || isIconStyle || isMilStyle;
 
   // 全局图片素材库（跨项目可用）：列表 + 缩略图按 assetId 异步取 URL
   const { items: customImages, thumbs, refresh: refreshLibrary } = useImageLibrary(style === 'image');
@@ -542,7 +544,12 @@ function PinResourcePicker({ element, style, patch }: {
     );
   }
 
-  const list = style === 'image' ? BUILTIN_IMAGES : style === 'gif' ? BUILTIN_GIFS : BUILTIN_MODELS;
+  const list = style === 'image' ? BUILTIN_IMAGES
+    : style === 'gif' ? BUILTIN_GIFS
+      : style === 'milsym' ? BUILTIN_MILSYMS
+        : BUILTIN_MODELS;
+  /** 面板样式 → 元素 shape（军标按钮对应 'military_symbol'，其余同名） */
+  const shapeOf = (s: PinStyle): PointShape => (s === 'milsym' ? 'military_symbol' : s as PointShape);
   const resettable = { builtinId: undefined, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined } as Partial<MapElement>;
   const isDot = !element.shape || element.shape === 'circle';
   return (
@@ -571,7 +578,7 @@ function PinResourcePicker({ element, style, patch }: {
           <button
             key={a.id}
             title={a.name}
-            onClick={() => patch({ ...resettable, shape: style as PointShape, builtinId: a.id } as Partial<MapElement>)}
+            onClick={() => patch({ ...resettable, shape: shapeOf(style), builtinId: a.id } as Partial<MapElement>)}
             className={`${CELL_BASE} h-12 px-1 text-[10px] leading-tight text-center ${element.builtinId === a.id ? CELL_ON : CELL_OFF}`}
           >
             {a.src
@@ -597,7 +604,8 @@ function PinResourcePicker({ element, style, patch }: {
           <ResourceUploadRow style={style} onLoaded={(assetId) => { patch({ shape: 'image' as PointShape, ...resettable, assetId } as Partial<MapElement>); refreshLibrary(); }} />
         </>
       )}
-      {style !== 'image' && <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: style as PointShape, ...resettable, assetId } as Partial<MapElement>)} />}
+      {/* 军标是内置符号集，不上传；gif / model 仍可上传自有文件 */}
+      {(style === 'gif' || style === 'model') && <ResourceUploadRow style={style} onLoaded={(assetId) => patch({ shape: shapeOf(style), ...resettable, assetId } as Partial<MapElement>)} />}
     </div>
   );
 }
@@ -945,6 +953,7 @@ function pinStyleOf(pe: PointElement): PinStyle {
   if (pe.shape === 'gif') return 'gif';
   if (pe.shape === 'model') return 'model';
   if (pe.shape === 'icon') return 'icon';
+  if (pe.shape === 'military_symbol') return 'milsym';
   if (pe.shape === 'text') return 'text';
   if (pe.shape === 'bubble') return 'bubble';
   if (pe.shape === 'emoji') return 'emoji';

@@ -103,8 +103,46 @@ export const BUILTIN_MODELS: BuiltinAsset[] = [
   { id: 'model:missile', kind: 'model', name: '导弹', tags: ['武器'], tintable: true, model: { kind: 'missile' }, sizeMeters: 100 },
 ];
 
+// ========== 内置军标（简化 MIL-STD-2525 / APP-6 地面兵种符号） ==========
+//
+// 全部为白色线稿 SVG（multiply 染色）：友军 = 矩形框，敌军 = 菱形框，
+// 框内是兵种符号。元素侧存 builtinId（'milsym:*'），渲染走通用内置图集管线。
+
+/** 友军矩形框（APP-6 friendly 单元框架） */
+const FRAME = '<rect x="3" y="6" width="18" height="12" fill="none" stroke="#FFFFFF" stroke-width="1.5"/>';
+/** 敌军菱形框（hostile 单元框架） */
+const DIAMOND = '<path d="M12 4 21 12 12 20 3 12Z" fill="none" stroke="#FFFFFF" stroke-width="1.5"/>';
+/** 组装军标 SVG：框 + 兵种符号 */
+const mil = (inner: string, hostile = false): string =>
+  S((hostile ? DIAMOND : FRAME) + inner);
+/** 线稿笔画（SVG 根 fill 不影响 stroke 元素，须显式声明） */
+const st = 'fill="none" stroke="#FFFFFF" stroke-width="1.5"';
+
+/** 内置军标（19 个：友军 15 + 敌军 4；全部可着色） */
+export const BUILTIN_MILSYMS: BuiltinAsset[] = [
+  { id: 'milsym:infantry', kind: 'image', name: '步兵', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M5 7.5 19 16.5M19 7.5 5 16.5" ${st}/>`) },
+  { id: 'milsym:armor', kind: 'image', name: '装甲', tags: ['军标', '友军'], tintable: true, src: mil(`<ellipse cx="12" cy="12" rx="5.5" ry="3.5" ${st}/>`) },
+  { id: 'milsym:mech', kind: 'image', name: '机械化步兵', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M5 7.5 19 16.5M19 7.5 5 16.5" ${st}/><ellipse cx="12" cy="12" rx="5.5" ry="3.5" ${st}/>`) },
+  { id: 'milsym:artillery', kind: 'image', name: '炮兵', tags: ['军标', '友军'], tintable: true, src: mil('<circle cx="12" cy="12" r="2.6"/>') },
+  { id: 'milsym:airdef', kind: 'image', name: '防空', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M7.5 14.5Q12 7 16.5 14.5" ${st}/>`) },
+  { id: 'milsym:heli', kind: 'image', name: '直升机', tags: ['军标', '友军', '航空'], tintable: true, src: mil(`<path d="M7 10.8a5 3.6 0 0 1 10 0" ${st}/><path d="M7 13.2a5 3.6 0 0 0 10 0" ${st}/>`) },
+  { id: 'milsym:fixedwing', kind: 'image', name: '固定翼', tags: ['军标', '友军', '航空'], tintable: true, src: mil(`<path d="M12 7v10M12 9.5 17.5 12v1.6L12 12.6 6.5 13.6V12Z" ${st}/>`) },
+  { id: 'milsym:medical', kind: 'image', name: '医疗', tags: ['军标', '友军'], tintable: true, src: mil('<path d="M11 8h2v3h3v2h-3v3h-2v-3H8v-2h3z"/>') },
+  { id: 'milsym:engineer', kind: 'image', name: '工程', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M9 8.5h6M9 12h5M9 15.5h6M9 8.5v7" ${st}/>`) },
+  { id: 'milsym:signal', kind: 'image', name: '通信', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M7.5 12q2.2-4 4.5 0t4.5 0" ${st}/>`) },
+  { id: 'milsym:recon', kind: 'image', name: '侦察', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M5.5 17 18.5 7" stroke="#FFFFFF" stroke-width="2.2"/>`) },
+  { id: 'milsym:radar', kind: 'image', name: '雷达', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M12 16V8.5" ${st}/><path d="M7.5 13.5a4.8 4.8 0 0 1 8.4-3.2" ${st}/>`) },
+  { id: 'milsym:missile', kind: 'image', name: '导弹', tags: ['军标', '友军', '武器'], tintable: true, src: mil('<path d="M12 6.5 14.8 14h-1.8v3.5h-2V14H9.2Z"/>') },
+  { id: 'milsym:supply', kind: 'image', name: '后勤', tags: ['军标', '友军'], tintable: true, src: mil('<path d="M12 7.5c2.4 3.1 3.8 4.9 3.8 6.6a3.8 3.8 0 1 1-7.6 0c0-1.7 1.4-3.5 3.8-6.6z"/>') },
+  { id: 'milsym:hq', kind: 'image', name: '指挥部', tags: ['军标', '友军'], tintable: true, src: mil(`<path d="M12 6V3h4.2" ${st}/>`) },
+  { id: 'milsym:h-infantry', kind: 'image', name: '敌步兵', tags: ['军标', '敌军'], tintable: true, src: mil(`<path d="M6.5 9.5 17.5 14.5M17.5 9.5 6.5 14.5" ${st}/>`, true) },
+  { id: 'milsym:h-armor', kind: 'image', name: '敌装甲', tags: ['军标', '敌军'], tintable: true, src: mil(`<ellipse cx="12" cy="12" rx="4.8" ry="3" ${st}/>`, true) },
+  { id: 'milsym:h-artillery', kind: 'image', name: '敌炮兵', tags: ['军标', '敌军'], tintable: true, src: mil('<circle cx="12" cy="12" r="2.2"/>', true) },
+  { id: 'milsym:h-airdef', kind: 'image', name: '敌防空', tags: ['军标', '敌军'], tintable: true, src: mil(`<path d="M8 14.5Q12 8 16 14.5" ${st}/>`, true) },
+];
+
 /** 全部内置资源（按 id 索引） */
-export const BUILTIN_ALL: BuiltinAsset[] = [...BUILTIN_IMAGES, ...BUILTIN_GIFS, ...BUILTIN_MODELS];
+export const BUILTIN_ALL: BuiltinAsset[] = [...BUILTIN_IMAGES, ...BUILTIN_GIFS, ...BUILTIN_MODELS, ...BUILTIN_MILSYMS];
 
 const BY_ID = new Map(BUILTIN_ALL.map((a) => [a.id, a]));
 
