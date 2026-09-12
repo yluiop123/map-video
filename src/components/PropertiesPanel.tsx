@@ -452,7 +452,7 @@ function PinStyleChooser({ element, patch }: {
       // 标准阵营配色（不可着色）、无界面标签、不可上传。默认友军步兵。
       patch({
         type: 'military_symbol', coordinates: coords,
-        sidc: (element as MilitarySymbolElement).sidc || 'SFG-UCI----',
+        sidc: (element as MilitarySymbolElement).sidc || milSymSidc('F', 'UCI---'),
         symbolSize: 32, rotation: 0, scale: 1,
         color: undefined, label: undefined, shape: undefined, builtinId: undefined,
         assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined, emoji: undefined,
@@ -987,26 +987,40 @@ const MILSYM_AFFS = [
   { aff: 'U', name: '未知' },   // 黄色四叶
 ] as const;
 
-/** 地面单元主图标表（MIL-STD-2525C 附录 A；code = 位置 6-7 的类别+兵种码）。
- *  SIDC = S<身份>G-U<code>----，预览由 milsymbol 按官方规范生成（与渲染端同源）。 */
-const MILSYM_ICONS: { code: string; name: string }[] = [
-  { code: 'CI', name: '步兵' },
-  { code: 'CA', name: '装甲' },
-  { code: 'CU', name: '炮兵' },
-  { code: 'CS', name: '防空' },
-  { code: 'CV', name: '直升机' },
-  { code: 'CF', name: '固定翼' },
-  { code: 'CX', name: '工程' },
-  { code: 'CR', name: '侦察' },
-  { code: 'CW', name: '通信' },
-  { code: 'SM', name: '医疗' },
-  { code: 'SV', name: '补给' },
-  { code: 'SR', name: '维护' },
-  { code: 'ST', name: '运输' },
+/** 地面单元主图标全集（功能码取自 milsymbol 内部 2525C 映射表，100% 对应官方规范）。
+ *  fid = SIDC 功能段（6 位，如 UCI---）；SIDC = S<身份>G-<fid>。 */
+const MILSYM_ICONS: { fid: string; name: string }[] = [
+  // —— 战斗兵种（Combat Arms，UC*）——
+  { fid: 'UCI---', name: '步兵' },
+  { fid: 'UCA---', name: '装甲' },
+  { fid: 'UCF---', name: '炮兵' },
+  { fid: 'UCD---', name: '防空' },
+  { fid: 'UCVF--', name: '固定翼' },
+  { fid: 'UCV---', name: '直升机' },
+  { fid: 'UCE---', name: '工程' },
+  { fid: 'UCR---', name: '侦察' },
+  { fid: 'UCM---', name: '导弹' },
+  { fid: 'UCS---', name: '警戒' },
+  // —— 战斗勤务支援（Combat Service Support，US*）——
+  { fid: 'USM---', name: '医疗' },
+  { fid: 'USS---', name: '补给' },
+  { fid: 'UST---', name: '运输' },
+  { fid: 'USX---', name: '维护' },
+  { fid: 'USA---', name: '行政' },
+  // —— 其它职能（UU*）——
+  { fid: 'UUS---', name: '通信' },
+  { fid: 'UUM---', name: '军事情报' },
+  { fid: 'UUL---', name: '宪兵' },
+  { fid: 'UUA---', name: '核生化' },
+  { fid: 'UUE---', name: '排爆' },
+  { fid: 'UUI---', name: '信息作战' },
+  { fid: 'UUT---', name: '测绘' },
+  { fid: 'UUX---', name: '两栖' },
+  { fid: 'UUD---', name: '钻探' },
 ];
 
-/** 由「身份 + 兵种码」拼 SIDC（2525C，10+2 位） */
-const milSymSidc = (aff: string, code: string): string => `S${aff}G-U${code}----`;
+/** 由「身份 + 功能码」拼 SIDC（2525C） */
+const milSymSidc = (aff: string, fid: string): string => `S${aff}G-${fid}`;
 
 /** 军标设置：每兵种一行 × [友好|敌对|中性|未知] 四阵营 + 大小 + 旋转
  *  （无颜色 / 无标签 / 无上传，框架与配色遵循标准） */
@@ -1020,7 +1034,7 @@ function MilSymSettings({ element, patch }: {
     const map = new Map<string, string>();
     for (const row of MILSYM_ICONS) {
       for (const a of MILSYM_AFFS) {
-        const sidc = milSymSidc(a.aff, row.code);
+        const sidc = milSymSidc(a.aff, row.fid);
         try { map.set(sidc, new ms.Symbol(sidc, { size: 28, fill: true }).toDataURL()); } catch { /* */ }
       }
     }
@@ -1040,10 +1054,10 @@ function MilSymSettings({ element, patch }: {
         {/* 每兵种一行：行首中文名 + 四阵营符号 */}
         <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
           {MILSYM_ICONS.map((row) => (
-            <div key={row.code} className="grid grid-cols-[56px_repeat(4,1fr)] gap-1">
+            <div key={row.fid} className="grid grid-cols-[56px_repeat(4,1fr)] gap-1">
               <span className="flex items-center text-[10px] text-foreground/80">{row.name}</span>
               {MILSYM_AFFS.map((a) => {
-                const sidc = milSymSidc(a.aff, row.code);
+                const sidc = milSymSidc(a.aff, row.fid);
                 const active = element.sidc === sidc;
                 return (
                   <button

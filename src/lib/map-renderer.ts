@@ -2935,6 +2935,12 @@ function renderMilitarySymbol(map: maplibregl.Map, element: MilitarySymbolElemen
     });
   } else {
     (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    // 切换 SIDC / 大小 / 旋转：图层已存在时同步 layout（否则地图上的图标不随面板更新）
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, 'icon-image', iconId);
+      map.setLayoutProperty(layerId, 'icon-size', (element.symbolSize || 32) / 64);
+      map.setLayoutProperty(layerId, 'icon-rotate', element.rotation || 0);
+    }
   }
 
   ensureMilIcon(map, iconId, element.sidc);
