@@ -4,7 +4,7 @@ import type {
   MapVideoProject, Chapter, MapElement, GlobalConfig, BaseMapConfig,
   ElevationMapConfig, CustomSymbol, CustomImage, OverlayItem, CameraKeyframe, TransitionConfig,
   ChapterEffect, ProjectExport, ScreenFxItem,
-  NarrationEntry, NarrationStyle, MusicTrack
+  NarrationEntry, NarrationStyle, MusicTrack, ConnectorElement
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeTitleStyle, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
@@ -404,15 +404,33 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       });
     },
 
+    /**
+     * 删除元素 —— 必须一并清理引用它的弱引用。
+     * 数据库层既无外键也无触发器（见 AGENTS.md），这两处引用只能由写入端清理，否则留下悬空引用：
+     *   1) 以该元素为端点的连接线（connector）：整条移除
+     *   2) 跟随机位指向该元素的视角关键帧：退化为固定镜头（等价于外键的 SET NULL）
+     */
     deleteElement: (chapterId: string, elementId: string) => {
       commit();
       set((state) => {
         if (!state.project) return state;
-        const chapters = state.project.chapters.map((ch) =>
-          ch.id === chapterId
-            ? { ...ch, elements: ch.elements.filter((el) => el.id !== elementId) }
-            : ch
-        );
+        const chapters = state.project.chapters.map((ch) => {
+          if (ch.id !== chapterId) return ch;
+          const elements = ch.elements.filter((el) => {
+            if (el.id === elementId) return false;
+            if (el.type === 'connector') {
+              const c = el as ConnectorElement;
+              return c.fromElementId !== elementId && c.toElementId !== elementId;
+            }
+            return true;
+          });
+          const camera = ch.camera?.map((kf) =>
+            kf.followRoute?.routeElementId === elementId
+              ? { ...kf, cameraType: 'fixed' as const, followRoute: undefined }
+              : kf
+          );
+          return { ...ch, elements, ...(camera ? { camera } : {}) };
+        });
         return { project: { ...state.project, chapters } };
       });
     },
