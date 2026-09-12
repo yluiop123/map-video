@@ -211,9 +211,9 @@ function LabelStyleFields({ label, onChange, fixedCenter }: {
   const transparent = label.bgColor === 'transparent' || /rgba\([^)]*,\s*0\)\s*$/.test(label.bgColor || 'transparent');
   const hasBg = !transparent;
   const t = useT();
-  // 连续偏移（0 = 居中；水平默认居中、垂直默认在上方 -20）
+  // 连续偏移（0 = 居中；水平正值向右、垂直正值向上；默认水平居中、垂直向上 40）
   const offX = label.offsetX ?? 0;
-  const offY = label.offsetY ?? -20;
+  const offY = label.offsetY ?? 40;
   return (
     <Section>
       {!fixedCenter && (
@@ -239,7 +239,7 @@ function LabelStyleFields({ label, onChange, fixedCenter }: {
             </div>
           </Field>
           <p className="text-[10px] text-muted-foreground/70 -mt-1">
-            {t('0 = 居中；负值向上 / 向左', '0 = centered; negative = up / left')}
+            {t('0 = 居中；垂直正值向上、水平正值向右', '0 = centered; positive = up / right')}
           </p>
         </>
       )}

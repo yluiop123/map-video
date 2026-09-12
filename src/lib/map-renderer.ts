@@ -416,9 +416,10 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   const labelFg = element.label?.color || '#FFFFFF';
   const labelSize = 13 * scale;
   const labelImgId = `pt-lbl-${hashStr(labelText + labelBg + labelFg + labelSize + (element.label?.bgRadius ?? 6) + (element.label?.bgPadding ?? 6) + shape)}`;
-  // 偏移：自定义偏移（中心锚 + 像素偏移，0 居中；默认位于上方 -20）；否则按位置避让本体
+  // 偏移：自定义偏移（中心锚 + 像素偏移，0 居中；offsetY 正值向上，屏幕坐标需取负）；
+  // 默认位于上方 40px；未设置偏移时按位置枚举避让本体
   const labelOffsetPx: [number, number] = hasCustomOffset
-    ? [(element.label?.offsetX ?? 0) * scale, (element.label?.offsetY ?? -20) * scale]
+    ? [(element.label?.offsetX ?? 0) * scale, -(element.label?.offsetY ?? 40) * scale]
     : getLabelPixelOffset(shape, labelPos, scale);
   // ORIENTATION：faceCam=始终面向摄像机（默认）；flat=贴地 + 地图空间旋转
   const flat = element.orientation === 'flat';

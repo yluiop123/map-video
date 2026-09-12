@@ -474,7 +474,7 @@ export interface LabelConfig {
   position?: 'top' | 'bottom' | 'left' | 'right' | 'center';
   /** 水平偏移（像素，0 = 水平居中；负左正右），随标记缩放 */
   offsetX?: number;
-  /** 垂直偏移（像素，0 = 垂直居中；负上正下），随标记缩放 */
+  /** 垂直偏移（像素，0 = 垂直居中；**正值向上**），随标记缩放；默认 40（位于上方） */
   offsetY?: number;
   /** 文案背景 */
   bgColor?: string;
