@@ -150,8 +150,9 @@ export function defaultVisualFor(shape: PointShape, el: PointElement): Partial<P
         color: el.color || '#FFFFFF',
       };
     case 'military_symbol':
-      // 军标：milsymbol 按官方规范生成（默认友军步兵），默认白色 = 标准阵营配色不被染色
-      return { ...base, iconUrl: undefined, emoji: undefined, builtinId: 'milsym:SFG-UCI---', color: el.color || '#FFFFFF' };
+      // 军标：milsymbol 按官方规范生成（默认友军步兵），默认色 = 友军阵营蓝
+      // （选不同阵营时面板会把「图标颜色」自动设为对应阵营标准色）
+      return { ...base, iconUrl: undefined, emoji: undefined, builtinId: 'milsym:SFG-UCI---', color: el.color || '#80E0FF' };
     default:
       return base;
   }

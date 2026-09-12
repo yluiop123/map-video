@@ -601,8 +601,9 @@ function PinResourcePicker({ element, style, patch }: {
     return (
       <MilSymGrid
         activeSidc={element.builtinId?.startsWith('milsym:') ? element.builtinId.slice('milsym:'.length) : undefined}
-        onPick={(sidc) => patch({
+        onPick={(sidc, affColor) => patch({
           shape: 'military_symbol' as PointShape, builtinId: `milsym:${sidc}`,
+          color: affColor,   // 阵营标准色：友好蓝/敌对红/中性绿/未知黄（用户可再改）
           assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined,
         } as Partial<MapElement>)}
       />
@@ -728,7 +729,7 @@ function MoveResourcePicker({ mi, patch }: {
     return (
       <MilSymGrid
         activeSidc={sidc}
-        onPick={(s) => set({ shape: 'military_symbol', builtinId: `milsym:${s}`, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined })}
+        onPick={(s, affColor) => set({ shape: 'military_symbol', builtinId: `milsym:${s}`, color: affColor, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined })}
       />
     );
   }
@@ -943,12 +944,14 @@ function RangeInput({ value, min, max, step = 1, suffix = '', onChange }: {
 
 // ========== 军标（military_symbol 元素）==========
 
-/** 四种阵营（SIDC 身份码，位置 2）：框架形状与配色由 milsymbol 按标准自动生成 */
+/** 四种阵营（SIDC 身份码，位置 2）：框架形状与配色由 milsymbol 按标准自动生成。
+ *  color = 各阵营标准填充色 —— 选中该阵营时自动设为「图标颜色」（multiply 染色源），
+ *  用户仍可随后手动改色。 */
 const MILSYM_AFFS = [
-  { aff: 'F', name: '友好' },   // 蓝色矩形
-  { aff: 'H', name: '敌对' },   // 红色菱形
-  { aff: 'N', name: '中性' },   // 绿色方形
-  { aff: 'U', name: '未知' },   // 黄色四叶
+  { aff: 'F', name: '友好', color: '#80E0FF' },   // 蓝色矩形
+  { aff: 'H', name: '敌对', color: '#FF8080' },   // 红色菱形
+  { aff: 'N', name: '中性', color: '#AAFFAA' },   // 绿色方形
+  { aff: 'U', name: '未知', color: '#FFFF80' },   // 黄色四叶
 ] as const;
 
 /** 地面单元主图标全集（功能码取自 milsymbol 内部 2525C 映射表，100% 对应官方规范）。
@@ -991,7 +994,7 @@ const milSymSidc = (aff: string, fid: string): string => `S${aff}G-${fid}`;
  *  符号图由 milsymbol 按官方规范生成；其余属性（大小/朝向/颜色/标签）与图片形态一致。 */
 function MilSymGrid({ activeSidc, onPick }: {
   activeSidc?: string;
-  onPick: (sidc: string) => void;
+  onPick: (sidc: string, affColor: string) => void;
 }) {
   const t = useT();
   // SIDC → 预览 dataURL（一次生成；单个符号失败不影响其余）
@@ -1027,7 +1030,7 @@ function MilSymGrid({ activeSidc, onPick }: {
                 <button
                   key={a.aff}
                   title={`${row.name} · ${a.name}`}
-                  onClick={() => onPick(sidc)}
+                  onClick={() => onPick(sidc, a.color)}
                   className={`h-11 rounded-md border flex items-center justify-center transition-colors ${
                     active ? 'border-primary bg-accent' : 'border-white/10 bg-white/[0.03] hover:bg-accent'
                   }`}
