@@ -1078,9 +1078,14 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         dash: element.lineDashArray,
         heightM: flyHeightM,
         // 带箭头路线：飞行模式下头部由 3D 锥体几何生成（与管同一光照/深度测试，真立体，
-        // 随拱形浮在空中），不再使用 symbol 层的平面三角贴图
+        // 随拱形浮在空中），不再使用 symbol 层的平面三角贴图。
+        // 尺寸按线宽走（长 5×线宽、底半径 2×线宽 → 底宽 4×线宽，明显大于管径 1.8×线宽）；
+        // 细线给下限，避免箭头小到看不清。
         ...(element.lineArrow
-          ? { headLenPx: (element.lineWidth || 8) * 3, headRadPx: (element.lineWidth || 8) * 1.3 }
+          ? {
+              headLenPx: Math.max(24, (element.lineWidth || 8) * 5),
+              headRadPx: Math.max(8, (element.lineWidth || 8) * 2),
+            }
           : {}),
       });
     } else {
