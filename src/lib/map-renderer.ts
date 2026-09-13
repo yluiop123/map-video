@@ -1008,18 +1008,12 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   let marchBright: any = null;
   let marchBase: any = null;
   let marchHead: [number, number] | null = null;
-  let marchH = 0;
-  let marchL = 0;
-  let marchTotal = 0;
   if (isMarch && effective.length >= 2) {
     const full = turf.lineString(effective);
     const total = turf.length(full);
     if (total > 0) {
       const L = total * MARCH_FRAC;
       const h = L + (total - L) * progress;
-      marchTotal = total;
-      marchL = L;
-      marchH = h;
       marchBright = turf.featureCollection([turf.lineSliceAlong(full, Math.max(0, h - L), h)]);
       if (anim === 'march' && total - h > total * 0.004) marchBase = turf.featureCollection([turf.lineSliceAlong(full, h, total)]);
       marchHead = turf.along(full, h).geometry.coordinates as [number, number];
@@ -1086,50 +1080,43 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   let flyFracB = 1;
   let flyFullKm = 1;
   let flyFullCumGeo: number[] | null = null;
-  let flyDataF: number[] | null = null;
   /** 弧顶高度（米）：由路径总长度决定，与相机无关（挂点/光点/标记点共用） */
   let flyHeightM = 0;
   if (flyActive) {
     flyFullKm = geoLengthKm(effective);
     flyFullCumGeo = geodesicCum(effective);
     flyHeightM = flyArcHeightMeters(flyFullKm * 1000);
-    const dataLine = data?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined;
-    if (isMarch && marchTotal > 0) {
-      flyFracA = Math.max(0, marchH - marchL) / marchTotal;
-      flyFracB = marchH / marchTotal;
-      // 主线 = 行进亮段切片（h-L → h）：高度剖面必须用**全路线绝对弧长分数**
-      // （起点 = flyFracA）。此前留空走 frac 线性映射，与浅色剩余段（精确分数）在接点处
-      // 高度不连续 → 两段拱形错开。
-      flyDataF = dataLine && dataLine.length >= 2
-        ? geodesicFracAbs(dataLine, flyFullKm).map((v) => Math.min(1, v + flyFracA))
-        : null;
-    } else if (dataLine && dataLine.length >= 2) {
-      // 全路线测地线绝对分数（与标记点同弧长空间）：ribbon 高度与标记点轨迹完全一致
-      flyDataF = geodesicFracAbs(dataLine, flyFullKm);
-      flyFracB = Math.max(0.001, Math.min(1, flyDataF[flyDataF.length - 1] || 1));
-    }
-    if (dataLine && dataLine.length >= 2) {
-      try { map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
-      try { map.setLayoutProperty(hitLayerId, 'visibility', 'none'); } catch { /* */ }
-      setFlyRibbon(map, `${element.id}|main`, {
-        paths: [{ coords: dataLine, f: flyDataF ?? undefined }],
-        frac: { a: flyFracA, b: flyFracB },
-        color: element.lineColor || '#FF0000',
-        widthPx: element.lineWidth || 8,
-        opacity: 1,
-        dash: element.lineDashArray,
-        heightM: flyHeightM,
-        // 带箭头路线：飞行模式下头部由 3D 锥体几何生成（与管同一光照/深度测试，真立体，
-        // 随拱形浮在空中），不再使用 symbol 层的平面三角贴图。
-        // 头部尺寸与平面三角贴图**完全同一来源**（长 = 底宽 = arrowTriSizePx，底半径取一半）
-        // → 飞行立体锥与非飞行平面三角样式一致，仅空间姿态不同
-        ...(element.lineArrow
-          ? { headLenPx: arrowTriSizePx(element.lineWidth), headRadPx: arrowTriSizePx(element.lineWidth) / 2 }
-          : {}),
-      });
+    if (isMarch) {
+      // march：亮段 [Lf, hf]、剩余段 [hf, 1]。全部在**测地弧长分数域**定义，
+      // 与弧长采样、高度剖面 flyHeight01(f) 同刻度 → 两段接缝高度严格连续。
+      const Lf = MARCH_LEN_FRAC;
+      const hf = Lf + (1 - Lf) * Math.max(0, Math.min(1, progress));
+      flyFracA = Lf;
+      flyFracB = Math.max(0.001, Math.min(1, hf));
     } else {
-      setFlyRibbon(map, `${element.id}|main`, null);
+      // fill 等：深色段 0→progress、浅色段 progress→1（进度分数即唯一真相）
+      flyFracB = Math.max(0.001, Math.min(1, progress));
     }
+    // 深色主线：按测地弧长分数 [flyFracA, flyFracB] **均匀采样**（几何与高度同源），
+    // 末端 f 精确 = flyFracB（浅色段起点），两段不会错开、不会出现高度台阶。
+    const mainSeg = sampleGeoFrac(effective, flyFullCumGeo, flyFracA, flyFracB, 160);
+    try { map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
+    try { map.setLayoutProperty(hitLayerId, 'visibility', 'none'); } catch { /* */ }
+    setFlyRibbon(map, `${element.id}|main`, {
+      paths: [{ coords: mainSeg.pts, f: mainSeg.fs }],
+      color: element.lineColor || '#FF0000',
+      widthPx: element.lineWidth || 8,
+      opacity: 1,
+      dash: element.lineDashArray,
+      heightM: flyHeightM,
+      // 带箭头路线：飞行模式下头部由 3D 锥体几何生成（与管同一光照/深度测试，真立体，
+      // 随拱形浮在空中），不再使用 symbol 层的平面三角贴图。
+      // 头部尺寸与平面三角贴图**完全同一来源**（长 = 底宽 = arrowTriSizePx，底半径取一半）
+      // → 飞行立体锥与非飞行平面三角样式一致，仅空间姿态不同
+      ...(element.lineArrow
+        ? { headLenPx: arrowTriSizePx(element.lineWidth), headRadPx: arrowTriSizePx(element.lineWidth) / 2 }
+        : {}),
+    });
   } else {
     setFlyRibbon(map, `${element.id}|main`, null);
     try { if (map.getLayer(hitLayerId)) map.setLayoutProperty(hitLayerId, 'visibility', 'visible'); } catch { /* */ }
@@ -1189,22 +1176,12 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     // 不能只在 ghost 切片有效时隐藏，否则切片异常/首帧会露出贴地的平面浅色线，
     // 与空中的立体管形成"平地 + 空中"双影（观感上就是"浅色段是平的"）。
     try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
-    let ghostCoords: [number, number][] | undefined;
-    if (anim === 'fill') {
-      // 浅色段**从当前进度点到终点**（与深色主线首尾相接、不重叠）
-      try {
-        const sliced = turf.lineSliceAlong(turf.lineString(effective), flyFullKm * Math.max(0, Math.min(1, flyFracB)), flyFullKm);
-        ghostCoords = sliced.geometry.coordinates as [number, number][];
-      } catch { ghostCoords = undefined; }
-    } else {
-      ghostCoords = marchBase?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined;
-    }
-    if (ghostCoords && ghostCoords.length >= 2) {
+    // 浅色段：取**同一条弧长采样序列**的续段 [flyFracB, 1] —— 起点与深色主线末端严格重合、
+    // 高度剖面同刻度连续，彻底消除此前「各自插值/切片」导致的接缝错位与高度台阶。
+    if (flyFullCumGeo && flyFracB < 0.999) {
+      const ghostSeg = sampleGeoFrac(effective, flyFullCumGeo, flyFracB, 1, 160);
       setFlyRibbon(map, `${element.id}|ghost`, {
-        // 高度剖面必须用**全路线绝对弧长分数**：ghostCoords 是「从进度点切到终点」的切片，
-        // 若从 0 起算会重走一遍「贴地→爬升」剖面（浅色段像另一条低弧、与主线错开）。
-        // 起点分数 = 主线末端分数 flyFracB（同一切点），故在自身累计分数上叠加该偏移。
-        paths: [{ coords: ghostCoords, f: geodesicFracAbs(ghostCoords, flyFullKm).map((v) => Math.min(1, v + flyFracB)) }],
+        paths: [{ coords: ghostSeg.pts, f: ghostSeg.fs }],
         // 浅色段颜色 = 线色与白混合 → 与 2D 浅色层同一观感；不透明度略高以保留管的明暗立体感
         color: lightenHex(element.lineColor || '#FF0000', GHOST_LIGHTEN),
         widthPx: element.lineWidth || 8,
@@ -2360,11 +2337,43 @@ function geodesicCum(coords: [number, number][]): number[] {
   return c;
 }
 /** 各点在全路线中的测地线绝对分数（0..~frac），与标记点 interpolatePath(turf.along) 同一空间 */
-function geodesicFracAbs(coords: [number, number][], fullKm: number): number[] {
-  const c = geodesicCum(coords);
-  const f = new Array<number>(coords.length);
-  for (let i = 0; i < coords.length; i++) f[i] = fullKm > 0 ? Math.max(0, Math.min(1, c[i] / fullKm)) : 0;
-  return f;
+/** 按**测地弧长分数** f（0..1，cum 为 geodesicCum 结果）在路线上线性插值取点 */
+function geoPointAt(coords: [number, number][], cum: number[], f: number): [number, number] {
+  if (coords.length === 0) return [0, 0];
+  if (coords.length < 2) return coords[0];
+  const total = cum[cum.length - 1] || 0;
+  if (!(total > 0)) return coords[0];
+  const target = Math.max(0, Math.min(1, f)) * total;
+  let i = 1;
+  while (i < cum.length - 1 && cum[i] < target) i++;
+  const a = coords[i - 1];
+  const b = coords[i];
+  const seg = cum[i] - cum[i - 1];
+  const t = seg > 0 ? Math.max(0, Math.min(1, (target - cum[i - 1]) / seg)) : 0;
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+/**
+ * 沿路线按测地弧长分数区间 [f0, f1] **均匀采样** n 个点，返回 { pts, fs }。
+ * 深色段与浅色段用同一序列的不同区间切分 → 端点（f1/f0）严格重合、高度剖面连续，
+ * 不会出现「两段各自插值导致接缝错位」。fs 即各点的绝对弧长分数（供 flyHeight01 生成拱形）。
+ */
+function sampleGeoFrac(
+  coords: [number, number][],
+  cum: number[],
+  f0: number,
+  f1: number,
+  n: number
+): { pts: [number, number][]; fs: number[] } {
+  const count = Math.max(2, n);
+  const pts: [number, number][] = [];
+  const fs: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const f = f0 + (f1 - f0) * (i / (count - 1));
+    pts.push(geoPointAt(coords, cum, f));
+    fs.push(f);
+  }
+  return { pts, fs };
 }
 function geoLengthKm(coords: [number, number][]): number {
   const c = geodesicCum(coords);
