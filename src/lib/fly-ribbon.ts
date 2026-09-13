@@ -54,6 +54,9 @@ export interface FlyRibbonDataLine {
   dash?: number[];
   /** 弧顶高度（米）——由路径总长度决定（flyArcHeightMeters），**与相机无关** */
   heightM?: number;
+  /** 立体锥形箭头头：沿路径末端切线挤出的 3D 锥体（屏幕像素尺寸，与管同一光照/深度） */
+  headLenPx?: number;
+  headRadPx?: number;
 }
 
 /** 飞行层数据类型：仅线（管）——箭头元素的飞行渲染已移除 */
@@ -481,7 +484,62 @@ function buildVertices(
         }
       };
       cap(0, -1);
-      cap(n - 1, 1);
+      // 带箭头路线：末端不画平端帽（由下面的立体锥头收口）
+      if (!((data.headLenPx ?? 0) > 0)) cap(n - 1, 1);
+    }
+
+    // ===== 立体箭头头（锥体）：末端切线方向挤出的 3D 锥 =====
+    // 与管同一渲染管线（法线光照 + 深度测试），因此箭头是**真空中的立体锥**，不是贴地贴图。
+    // 尺寸与朝向都在屏幕空间定义（与管截面一致：屏幕正圆底 + 屏幕方向轴），故不随俯仰压扁/变形。
+    if (!closed && (data.headLenPx ?? 0) > 0 && n >= 2) {
+      const i1 = n - 1;
+      const i0 = Math.max(0, i1 - 1);
+      const Ctip = center[i1];
+      // 末端切线方向（用抬升后的屏幕位置求，与管的投影一致）
+      let sx = 0, sy = 0;
+      try {
+        const pPrev = projectLifted(map, mercToLngLat(merc[i0]), liftOf(i0) * heightM);
+        const pTip = projectLifted(map, mercToLngLat(merc[i1]), liftOf(i1) * heightM);
+        sx = pTip.x - pPrev.x;
+        sy = pTip.y - pPrev.y;
+      } catch { /* 投影异常时退化为 +x 方向 */ }
+      const sl = Math.hypot(sx, sy) || 0;
+      if (sl > 1e-6) { sx /= sl; sy /= sl; } else { sx = 1; sy = 0; }
+      const headLen = Math.max(2, data.headLenPx || 24);
+      const headRad = Math.max(1.5, data.headRadPx || 12);
+      // 屏幕 px 偏移 → merc 偏移（复用管截面的逆矩阵；奇异时退化为世界半径）
+      const offPx = (pxX: number, pxY: number): [number, number] => {
+        if (Jinv) return [Jinv[0] * pxX + Jinv[1] * pxY, Jinv[2] * pxX + Jinv[3] * pxY];
+        const lat = mercToLngLat(merc[i1])[1];
+        const [rx2, ry2] = pxToMercRadii(lat, zoom, 1, isGlobe);
+        return [pxX * rx2, pxY * ry2];
+      };
+      // 底面圆（屏幕正圆）→ 逐顶点 merc 偏移
+      const hRing: Array<[number, number, number]> = [];
+      const hNrm: Array<[number, number, number]> = [];
+      for (let k = 0; k < TUBE_SIDES; k++) {
+        const th = (k / TUBE_SIDES) * Math.PI * 2;
+        const [ox, oy] = offPx(Math.cos(th) * headRad, Math.sin(th) * headRad);
+        hRing.push([Ctip[0] + ox, Ctip[1] + oy, Ctip[2]]);
+        hNrm.push(norm3([ox, oy, 0]));
+      }
+      const [apx, apy] = offPx(sx * headLen, sy * headLen);
+      const apex: [number, number, number] = [Ctip[0] + apx, Ctip[1] + apy, Ctip[2]];
+      // 侧面：底环 → 尖点（三角扇；顶点法线用环法线，光照呈现上亮下暗）
+      for (let k = 0; k < TUBE_SIDES; k++) {
+        const k2 = (k + 1) % TUBE_SIDES;
+        push(hRing[k], hNrm[k], dist[i1]);
+        push(apex, hNrm[k], dist[i1]);
+        push(hRing[k2], hNrm[k2], dist[i1]);
+      }
+      // 底面圆盘（封口，法线朝轴向后）
+      const backN = norm3([-apx, -apy, 0]);
+      for (let k = 0; k < TUBE_SIDES; k++) {
+        const k2 = (k + 1) % TUBE_SIDES;
+        push(Ctip, backN, dist[i1]);
+        push(hRing[k2], backN, dist[i1]);
+        push(hRing[k], backN, dist[i1]);
+      }
     }
   }
   return verts.length > 0 ? { arr: new Float32Array(verts), count: verts.length / VERT_STRIDE } : null;
@@ -543,6 +601,8 @@ function dataSig(data: FlyRibbonData): string {
       parts.push(sigOf(p.coords), p.closed ? '1' : '0', String(p.f?.length ?? 0));
     }
     parts.push(`${data.frac?.a ?? 0}|${data.frac?.b ?? 1}`, String(data.widthPx), String(data.opacity ?? 1), data.dash ? data.dash.join(',') : '');
+    // 立体锥头的尺寸变化也要触发几何重建（线宽/箭头开关切换时）
+    parts.push(String(data.headLenPx ?? 0), String(data.headRadPx ?? 0));
   }
   return parts.join('|');
 }

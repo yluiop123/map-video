@@ -1077,6 +1077,11 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         opacity: 1,
         dash: element.lineDashArray,
         heightM: flyHeightM,
+        // 带箭头路线：飞行模式下头部由 3D 锥体几何生成（与管同一光照/深度测试，真立体，
+        // 随拱形浮在空中），不再使用 symbol 层的平面三角贴图
+        ...(element.lineArrow
+          ? { headLenPx: (element.lineWidth || 8) * 3, headRadPx: (element.lineWidth || 8) * 1.3 }
+          : {}),
       });
     } else {
       setFlyRibbon(map, `${element.id}|main`, null);
@@ -1403,19 +1408,11 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       if (bw && bw.length >= 2) { tipLL = bw[bw.length - 1]; prevLL = bw[bw.length - 2]; }
       else { tipLL = marchHead; prevLL = effective[0] as [number, number]; }
     }
-    // 普通模式：地理方位角（从北顺时针，turf.bearing）—— 与地图旋转/倾斜无关，箭头沿线真实走向、
-    //   贴地随地图一起转（map 对齐），与 2D 线层视觉一致。
-    // 飞行模式：线由 3D 管绘制（截面是**屏幕空间正圆**、不随俯仰压扁），头部图标必须同处屏幕空间，
-    //   否则贴地压扁的三角与圆管形态不匹配、朝向也和投影方向对不上 → 改用屏幕角 + viewport 对齐。
+    // symbol 层平面三角**仅在非飞行模式**使用：地理方位角（turf.bearing，从北顺时针）+ map 对齐
+    //   → 箭头贴地、随地图旋转倾斜，与 2D 线层视觉一致。
+    //   飞行模式下该层整体隐藏，头部改由 fly-ribbon 的 3D 锥体几何绘制（真立体，见主线 ribbon）。
     const az = turf.bearing(turf.point(prevLL as any), turf.point(tipLL as any));
-    let angleDeg = az - 90;   // 三角图基准朝右（地理东 = 方位角 90°）
-    if (flyActive) {
-      const pa = map.project(prevLL as any);
-      const pb = map.project(tipLL as any);
-      angleDeg = (Math.atan2(pb.y - pa.y, pb.x - pa.x) * 180) / Math.PI;
-    }
-    /** 头部图标对齐方式：飞行=屏幕空间（同 3D 管），普通=地图空间（贴地） */
-    const headAlign: 'map' | 'viewport' = flyActive ? 'viewport' : 'map';
+    const angleDeg = az - 90;   // 三角图基准朝右（地理东 = 方位角 90°）
     const size = (element.lineWidth || 8) * 3;
     const color = element.lineColor || '#FF0000';
     const headImgId = `line-head-img-${element.id}`;
@@ -1433,10 +1430,10 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         (map.getSource(headSrcId) as GeoJSONSource).setData(headData);
         if (map.getLayer(headLayerId)) {
           map.setLayoutProperty(headLayerId, 'icon-rotate', ['get', 'rot'] as any);
-          // 普通=地图对齐（贴地随地图转）；飞行=屏幕对齐（与 3D 圆管同姿态，不压扁）
-          map.setLayoutProperty(headLayerId, 'icon-rotation-alignment', headAlign as any);
-          map.setLayoutProperty(headLayerId, 'icon-pitch-alignment', headAlign as any);
-          map.setLayoutProperty(headLayerId, 'visibility', 'visible');
+          // 贴地随地图旋转/倾斜；飞行模式整体隐藏（头部改由 3D 锥体几何绘制）
+          map.setLayoutProperty(headLayerId, 'icon-rotation-alignment', 'map' as any);
+          map.setLayoutProperty(headLayerId, 'icon-pitch-alignment', 'map' as any);
+          map.setLayoutProperty(headLayerId, 'visibility', flyActive ? 'none' : 'visible');
         }
       } else {
         map.addSource(headSrcId, { type: 'geojson', data: headData } as any);
@@ -1446,9 +1443,10 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
             'icon-image': headImgId,
             'icon-size': 1,
             'icon-rotate': ['get', 'rot'],
-            // 普通=地图对齐（贴地随地图转）；飞行=屏幕对齐（与 3D 圆管同姿态，不压扁）
-            'icon-rotation-alignment': headAlign,
-            'icon-pitch-alignment': headAlign,
+            // 贴地随地图旋转/倾斜（飞行模式该层隐藏，头部由 3D 锥体绘制）
+            'icon-rotation-alignment': 'map',
+            'icon-pitch-alignment': 'map',
+            'visibility': flyActive ? 'none' : 'visible',
             'icon-anchor': 'center',
             'icon-allow-overlap': true,
             'icon-ignore-placement': true,
@@ -1464,9 +1462,13 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
           try { map.moveLayer(headLayerId, belowId); } catch { /* */ }
         }
       }
-      // 飞行模式：头部仍用 symbol 层 + 与管同源的 3D 平移（见下方 flyHeadShift，使用同一个
-      // flyHeight01(flyFracB) × flyHeightM）。标记层方案在此场景不可靠，已回退。
+      // 飞行模式：头部改由 fly-ribbon 的 **3D 锥体几何**绘制（见主线 setFlyRibbon 的
+      // headLenPx/headRadPx）——与管同一光照/深度，真正的立体箭头浮在拱形末端；
+      // symbol 层的平面三角此时隐藏，避免与立体锥重复。
       setFlyMarker(map, `${element.id}|head`, null);
+      if (flyActive && map.getLayer(headLayerId)) {
+        try { map.setLayoutProperty(headLayerId, 'visibility', 'none'); } catch { /* */ }
+      }
     } catch { /* style 未就绪或图标未加载 */ }
   } else {
     if (map.getLayer(headLayerId)) map.setLayoutProperty(headLayerId, 'visibility', 'none');
