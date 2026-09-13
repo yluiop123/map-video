@@ -2235,14 +2235,7 @@ function liftTranslate(map: maplibregl.Map, lnglat: [number, number], lift01: nu
   return [l.x - g.x, l.y - g.y];
 }
 
-/** 累计弧长表（首项 0） */
-function cumArcOf(coords: [number, number][]): number[] {
-  const cum = new Array<number>(Math.max(0, coords.length));
-  for (let i = 0; i < coords.length; i++) {
-    cum[i] = i === 0 ? 0 : cum[i - 1] + Math.hypot(coords[i][0] - coords[i - 1][0], coords[i][1] - coords[i - 1][1]);
-  }
-  return cum;
-}
+// （累计弧长 / 轨道索引 / 环细分等工具已随「箭头飞行」移除；线类飞行由 fly-ribbon 的管几何自带弧长）
 
 /** 测地线（haversine）距离 km —— 标记点轨迹与 ribbon 高度共用同一弧长空间，避免漂移 */
 function geoKm(a: [number, number], b: [number, number]): number {
@@ -2270,78 +2263,6 @@ function geoLengthKm(coords: [number, number][]): number {
   const c = geodesicCum(coords);
   return c[c.length - 1] || 0;
 }
-/** 轨道索引：粗化采样（≤80 点）+ 累计弧长 + 任意点 → 沿线比例 */
-interface RailIndex {
-  pts: [number, number][];
-  cum: number[];
-  total: number;
-  fracOf(pt: [number, number]): number;
-}
-
-function buildRailIndex(rail: [number, number][]): RailIndex | null {
-  let projRail = rail;
-  if (rail && rail.length > 80) {
-    const step = Math.ceil(rail.length / 80);
-    const sampled: [number, number][] = [];
-    for (let i = 0; i < rail.length; i += step) sampled.push(rail[i]);
-    if (sampled[sampled.length - 1] !== rail[rail.length - 1]) sampled.push(rail[rail.length - 1]);
-    projRail = sampled;
-  }
-  if (!projRail || projRail.length < 2) return null;
-  const railCum = cumArcOf(projRail);
-  const railTotal = railCum[railCum.length - 1];
-  if (!(railTotal > 0)) return null;
-  return {
-    pts: projRail,
-    cum: railCum,
-    total: railTotal,
-    fracOf(pt: [number, number]): number {
-      let best = 0;
-      let bestD = Infinity;
-      for (let i = 0; i < projRail.length; i++) {
-        const dx = pt[0] - projRail[i][0];
-        const dy = pt[1] - projRail[i][1];
-        const d = dx * dx + dy * dy;
-        if (d < bestD) { bestD = d; best = i; }
-      }
-      return railCum[best] / railTotal;
-    },
-  };
-}
-
-/** 环 → {coords,f}：逐点取轨道 frac，按 Δf 与边长细分（连续拱形，无分段台阶） */
-function subdivFlyRing(ring: [number, number][], railIdx: RailIndex | null): { coords: [number, number][]; f: number[] } {
-  const coords: [number, number][] = [];
-  const fs: number[] = [];
-  if (!ring || ring.length < 3) return { coords, f: fs };
-  let perim = 0;
-  for (let i = 0; i < ring.length; i++) {
-    const a = ring[i];
-    const b = ring[(i + 1) % ring.length];
-    perim += Math.hypot(b[0] - a[0], b[1] - a[1]);
-  }
-  const maxLen = perim / 200;
-  const n = ring.length;
-  for (let i = 0; i < n; i++) {
-    const a = ring[i];
-    const b = ring[(i + 1) % n];
-    const fa = railIdx ? railIdx.fracOf(a) : 0;
-    const fb = railIdx ? railIdx.fracOf(b) : 0;
-    const edgeLen = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    let steps = Math.max(
-      railIdx ? Math.ceil(Math.abs(fb - fa) / 0.03) : 1,
-      maxLen > 0 ? Math.ceil(edgeLen / maxLen) : 1
-    );
-    steps = Math.max(1, Math.min(8, steps));
-    for (let k = 0; k < steps; k++) {
-      const t = k / steps;
-      coords.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-      fs.push(fa + (fb - fa) * t);
-    }
-  }
-  return { coords, f: fs };
-}
-
 /** 一次性清理旧「分段 band」遗留的 -f{i} 图层与 band 源（拱形已整体迁入 fly-ribbon 自定义层） */
 const legacyFlyBandsCleaned = new WeakMap<maplibregl.Map, true>();
 function cleanupLegacyFlyBands(map: maplibregl.Map): void {
@@ -2400,7 +2321,8 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   const isGrowFill = animEff === 'grow' || animEff === 'fill';
   const isShapeArrow = element.shapeCategory === 'multi' || element.shapeCategory === 'special';
   const isMarchA = (animEff === 'march' || animEff === 'marchplain') && !isShapeArrow;
-  const isFlyMode = !!element.flyMode && !isShapeArrow;
+  // 注：飞行模式仅支持 line 类路线（直线 / 曲线 / 带箭头直线 / 箭头曲线），
+  // 箭头元素（燕尾 / 行军）不再有飞行渲染。
   const nonUniform = (element as any).uniformMove === false && (element as any).pointTimes && (element as any).pointTimes.length >= 2;
   const progress = isShapeArrow
     ? 1
@@ -2508,13 +2430,10 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
       fullGeojson = turf.featureCollection(fullRings.map((ring) => turf.polygon([[...ring, ring[0]]])));
     }
     try {
-      // 飞行模式：底部完整/剩余箭头不贴地显示（它们在拱上由 |afill 挤出块呈现），
-      // 否则会形成"空中一段 + 地面一段"的双影
-      const baseVis = (isFlyMode && rings.length > 0) ? 'none' : 'visible';
       if (map.getSource(fillSrcId)) {
         (map.getSource(fillSrcId) as GeoJSONSource).setData(fullGeojson);
         if (map.getLayer(fillLayerId)) {
-          map.setLayoutProperty(fillLayerId, 'visibility', baseVis);
+          map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
           map.setPaintProperty(fillLayerId, 'fill-color', fillColor);
         }
       } else {
@@ -2530,42 +2449,12 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     try { if (map.getSource(fillSrcId)) map.removeSource(fillSrcId); } catch { /* */ }
   }
 
-  // ===== 飞行拱形（箭头）：与路线同一 fly-ribbon（逐顶点平滑拱形，mercator/globe 通用）=====
-  // 填充=三角化多边形、描边=闭合 ribbon；幽灵垫层(march 剩余/fill)保持贴地。
+  // 飞行模式已不再支持箭头元素（仅 line 类路线）；清掉历史版本的飞行层残留。
   cleanupLegacyFlyBands(map);
-  const flyActiveA = isFlyMode && rings.length > 0;
-  if (flyActiveA) {
-    const rail = arrowRailOf(element);
-    const railIdx = buildRailIndex(rail);
-    // 飞行模式：箭头**始终用完整几何**，不随增长动画裁剪。原因：
-    //   ① 头部位于路径末端，裁剪后头部缺失 → 箭头看不见（grow/move/fill 全中招）；
-    //   ② 条带的弧长比例只到动画进度、头部固定在 f≈1（终点），高度剖面断裂 → 视觉两段。
-    // 完整几何下条带与头部共享同一条 0→1 弧线剖面，自然连成一体。
-    const flyRings = buildArrowGeometry(element.from, element.to, geoWidth, element.arrowType, element.path)
-      .map((ring) => subdivFlyRing(ring, railIdx))
-      .filter((r) => r.coords.length >= 3);
-    if (flyRings.length > 0) {
-      try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
-      try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'none'); } catch { /* */ }
-      // 弧顶高度：由箭头路径总长决定，与相机无关；与填充/描边共用
-      const flyHeightA = flyArcHeightMeters(geoLengthKm(rail) * 1000);
-      setFlyRibbon(map, `${element.id}|afill`, {
-        kind: 'poly',
-        rings: flyRings,
-        color: fillColor,
-        opacity: fillOpacity,
-        heightM: flyHeightA,
-      });
-      // 不再注册闭合环描边管（astroke）：曲线形箭头由「条带 + 独立头部」多个环组成，
-      // 每个环再套一圈细管会显得"好几个图形"、图面杂乱。挤出块（afill）自身已带完整棱面与描边感。
-      setFlyRibbon(map, `${element.id}|astroke`, null);
-    }
-  } else {
-    setFlyRibbon(map, `${element.id}|afill`, null);
-    setFlyRibbon(map, `${element.id}|astroke`, null);
-    try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'visible'); } catch { /* */ }
-    try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'visible'); } catch { /* */ }
-  }
+  setFlyRibbon(map, `${element.id}|afill`, null);
+  setFlyRibbon(map, `${element.id}|astroke`, null);
+  try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'visible'); } catch { /* */ }
+  try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'visible'); } catch { /* */ }
   // fly 航迹已并入箭头本体（不再有独立虚线航迹层）；此处仅清理旧版本/同会话切换的残留层
   const flySrcId = `arrow-fly-src-${element.id}`;
   const flyLayerId = `arrow-fly-${element.id}`;
@@ -2692,47 +2581,13 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         try { map.removeLayer('arrow-mlabel-' + element.id); } catch { /* */ }
         try { if (map.getSource('arrow-mlabel-src-' + element.id)) map.removeSource('arrow-mlabel-src-' + element.id); } catch { /* */ }
       }
-      // 飞行模式：箭头标记点改由 fly-ribbon 自定义层绘制（与拱形同一投影，精确对齐）
-      if (flyActiveA) {
-        try { if (map.getLayer(iconLayerId)) map.setLayoutProperty(iconLayerId, 'visibility', 'none'); } catch { /* */ }
-        try { if (map.getLayer(`arrow-mlabel-${element.id}`)) map.setLayoutProperty(`arrow-mlabel-${element.id}`, 'visibility', 'none'); } catch { /* */ }
-        const imgH = (map.getImage(mImgId) as any)?.data?.height || 32;
-        setFlyMarker(map, `${element.id}|icon`, [{
-          imgId: mImgId, lnglat: iconCoord,
-          lift01: flyHeight01(Math.max(0, Math.min(1, iconRatio))),
-          sizePx: imgH * mScale,
-          anchorX: 0.5, anchorY: mEffShape === 'pin' ? 1 : 0.5,
-        }]);
-      } else {
-        setFlyMarker(map, `${element.id}|icon`, null);
-      }
+      // 箭头元素不支持飞行：清理历史版本的飞行标记残留（平铺显示）
+      setFlyMarker(map, `${element.id}|icon`, null);
     } catch { /* style 未就绪 */ }
   } else if (map.getLayer(iconLayerId)) {
     try { map.removeLayer(iconLayerId); } catch { /* */ }
     try { if (map.getSource(iconSrcId)) map.removeSource(iconSrcId); } catch { /* */ }
     setFlyMarker(map, `${element.id}|icon`, null);
-  }
-
-  // 飞行拱形：移动图标/标签按「沿线位置」取高度；基础填充/描边由分段层替代（已隐藏，平移归零）；
-  // 幽灵垫层（fill/march 剩余）保持贴地。
-  const zeroShiftA: [number, number] = [0, 0];
-  const arrowPathL = element.path && element.path.length >= 2 ? element.path : [element.from, element.to];
-  const iconLnglatA: [number, number] = (isMarchA && marchHead) ? marchHead : interpolatePath(arrowPathL, Math.max(0, Math.min(1, iconRatio)));
-  const flyIconShiftA: [number, number] = flyActiveA
-    ? liftTranslate(map, iconLnglatA, flyHeight01(Math.max(0, Math.min(1, iconRatio))))
-    : zeroShiftA;
-  for (const [flyLayer, flyProp, shift] of [
-    [layerId, 'fill-translate', zeroShiftA],
-    [strokeLayerId, 'line-translate', zeroShiftA],
-    [fillLayerId, 'fill-translate', zeroShiftA],
-    [iconLayerId, 'icon-translate', flyIconShiftA],
-    [`arrow-mlabel-${element.id}`, 'icon-translate', flyIconShiftA],
-  ] as [string, string, [number, number]][]) {
-    if (!map.getLayer(flyLayer)) continue;
-    try {
-      map.setPaintProperty(flyLayer, flyProp, shift as any);
-      map.setPaintProperty(flyLayer, `${flyProp}-anchor`, 'viewport');
-    } catch { /* 层未创建或样式未就绪 */ }
   }
 }
 

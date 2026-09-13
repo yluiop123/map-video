@@ -1185,6 +1185,7 @@ function RouteSettings({ element, patch, chapter }: {
         lineType: s === 'plain-bezier' ? 'bezier' : 'straight', lineArrow: false, plainPath: true,
         drawProgress: [{ frame: start, value: 1 }],
         lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const,
+        flyMode: false,   // 无样式路线不支持飞行
       } as Partial<MapElement>);
     } else if (s === 'straight' || s === 'bezier' || s === 'arc') {
       patch({
@@ -1211,6 +1212,7 @@ function RouteSettings({ element, patch, chapter }: {
         arrowType: 'curved', width: 15, color: colorOf,
         progress: [{ frame: start, value: 1 }], drawZoom: undefined,
         shapeCategory: 'route' as const, plainPath: undefined, lineArrow: undefined,
+        flyMode: false,   // 燕尾箭头不支持飞行（飞行仅限 line 类路线）
       } as Partial<MapElement>);
     } else if (s === 'military-simple') {
       const pts = coords.length >= 2 ? coords : [[104, 35], [105, 36]];
@@ -1219,11 +1221,13 @@ function RouteSettings({ element, patch, chapter }: {
         arrowType: 'curved-simple', width: 15, color: colorOf,
         progress: [{ frame: start, value: 1 }], drawZoom: undefined,
         shapeCategory: 'route' as const, plainPath: undefined, lineArrow: undefined,
+        flyMode: false,   // 行军箭头不支持飞行（飞行仅限 line 类路线）
       } as Partial<MapElement>);
     } else {
       patch({
         type: 'double_arrow', points: pad4(coords), color: colorOf,
         progress: [{ frame: start, value: 1 }],
+        flyMode: false,   // 双箭头不支持飞行（飞行仅限 line 类路线）
       } as Partial<MapElement>);
     }
   };
@@ -1275,13 +1279,17 @@ function RouteSettings({ element, patch, chapter }: {
             { value: 'marchplain', label: t('👣 行进', '👣 March') },
           ]}
         />
-        <div className="mt-2">
-          <Toggle
-            checked={!!(element as MapElement).flyMode}
-            label={t('✈️ 飞行（路线与图标不贴地）', '✈️ Fly (route & icon elevated)')}
-            onChange={(v) => patch({ flyMode: v } as Partial<MapElement>)}
-          />
-        </div>
+        {/* 飞行模式：仅「直线 / 曲线 / 带箭头直线 / 箭头曲线」（line 元素，非无样式）可用 */}
+        {element.type === 'line' && !(element as LineElement).plainPath
+          && ((element as LineElement).lineType === 'straight' || (element as LineElement).lineType === 'bezier') && (
+          <div className="mt-2">
+            <Toggle
+              checked={!!(element as MapElement).flyMode}
+              label={t('✈️ 飞行（路线与图标不贴地）', '✈️ Fly (route & icon elevated)')}
+              onChange={(v) => patch({ flyMode: v } as Partial<MapElement>)}
+            />
+          </div>
+        )}
       </Section>
 
       <Section title={t('显示时间', 'Display Time')}>

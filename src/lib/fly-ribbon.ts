@@ -3,13 +3,12 @@
  *
  * **真 3D 几何**：路线在 CPU 端构建成世界空间 3D 网格，经 MapLibre v5 的
  * projectTileFor3D 投影——mercator 与 globe（3D 球体）均正确。
- *  · 直线/曲线 → **圆柱管**：沿路径每采样点生成 8 边形圆截面环（半径 = 线宽/2，
- *    按 zoom 换算成米），开放路径两端加圆盘端帽；
- *  · 箭头填充 → **挤出立体块**：顶面（earcut）/ 底面 / 侧墙（鞋带公式定绕向，
- *    外法向朝外），半厚度 = EXTRUDE_HALF_PX 屏幕像素换算成米；
+ *  · 路线 → **圆柱管**：沿路径每采样点生成 8 边形圆截面环，开放路径两端加圆盘端帽；
+ *    截面在**屏幕空间**构造（宽高一致，不随俯仰压扁），半径按屏幕像素定义；
  *  · 立体感：顶点带法向，片元做固定光向的 Lambert 光照（相机无关），上亮下暗；
  *  · 高度：由路径总长度决定（flyArcHeightMeters，data.heightM），世界坐标固定米数——
  *    缩放/俯仰/旋转都不改变弧线（历史实现曾按相机换算拱高并叠加屏幕兜底抬升，已移除）。
+ *  · 仅服务 line 类路线（直线/曲线/带箭头直线/箭头曲线）；箭头元素的飞行渲染已移除。
  *  - 高程语义：自定义图层路径下 elevation=米（mercator 内部按 z=meters/(R·cos lat) 换算，
  *    globe 直接米，shader 内逐顶点换算）；**拱高由路径总长度决定**（flyArcHeightMeters，
  *    世界坐标固定米数）——缩放/俯仰/旋转都不改变弧线高度，不再做屏幕空间兜底抬升；
@@ -23,7 +22,6 @@
  *
  * 限制：globe 背面（地平线外）与 terrain 高程不参与计算，与旧实现一致。
  */
-import earcut from 'earcut';
 import type { Map as MaplibreMap } from 'maplibre-gl';
 
 /** 飞行高度剖面（返回 0..1）：起点爬升 → 巡航 → 终点下降（smoothstep，ramp=0.18） */
@@ -58,31 +56,14 @@ export interface FlyRibbonDataLine {
   heightM?: number;
 }
 
-export interface FlyRibbonPolyRing {
-  coords: [number, number][];
-  /** 每顶点高度比例（0..1，沿线轨道弧长） */
-  f: number[];
-}
-
-export interface FlyRibbonDataPoly {
-  kind: 'poly';
-  rings: FlyRibbonPolyRing[];
-  color: string;
-  opacity?: number;
-  /** 弧顶高度（米）——由路径总长度决定（flyArcHeightMeters），**与相机无关** */
-  heightM?: number;
-}
-
-export type FlyRibbonData = FlyRibbonDataLine | FlyRibbonDataPoly;
+/** 飞行层数据类型：仅线（管）——箭头元素的飞行渲染已移除 */
+export type FlyRibbonData = FlyRibbonDataLine;
 
 const LAYER_ID = 'fly-ribbons';
 /** 顶点布局：aPos(3: merc x, y, zElev) + aNrm(3: 法向，光照用) + aDist(1: 沿线屏幕弧长，虚线用) */
 const VERT_STRIDE = 7;
-const MAX_PTS = 600; // 每条路径采样上限（不足时按弧长加密）
 /** 管截面边数（8 边形视觉上即圆柱） */
 const TUBE_SIDES = 8;
-/** 箭头挤出的半厚度（屏幕 px，随 zoom 换算成米） */
-const EXTRUDE_HALF_PX = 1.6;
 /** 拱形视觉高度（屏幕 px）——仅兜底换算用（flyLiftMeters），正常路径高度见 flyArcHeightMeters */
 export const FLY_VISUAL_PX = 96;
 
@@ -387,83 +368,6 @@ function mercToLngLat(m: [number, number]): [number, number] {
   return [lng, lat];
 }
 
-/**
- * 多边形（箭头填充）→ 沿法向挤出的立体块：
- * 顶面（+z 法向）/ 底面（-z 法向）/ 侧墙（水平外法向，用鞋带公式定绕向），
- * 半厚度 = EXTRUDE_HALF_PX 屏幕像素按 zoom 换算成米 —— 箭头因此有真实厚度与棱面。
- */
-function buildExtrudedPoly(
-  data: FlyRibbonDataPoly,
-  isGlobe: boolean,
-  zoom: number,
-  push: (p: [number, number, number], nrm: [number, number, number], dist: number) => void
-): void {
-  const heightM = data.heightM ?? 0;
-  for (const ring of data.rings) {
-    if (!ring.coords || ring.coords.length < 3) continue;
-    const dens = densifyMerc(
-      ring.coords.map(lnglatToMerc),
-      ring.f,
-      true,
-      Math.min(MAX_PTS, Math.max(240, ring.coords.length))
-    );
-    const merc = dens.pts;
-    const n = merc.length;
-    if (n < 3) continue;
-    const f = (dens.f as number[]) || [];
-    const lat0 = mercToLngLat(merc[0])[1];
-    const tz = pxToMercRadii(lat0, zoom, EXTRUDE_HALF_PX, isGlobe)[2];
-    // 每个顶点的上下表面 z
-    const zTop: number[] = [];
-    const zBot: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const lat = mercToLngLat(merc[i])[1];
-      const cos = Math.max(0.01, Math.cos((lat * Math.PI) / 180));
-      const z = isGlobe ? (f[i] ?? 0) * heightM : ((f[i] ?? 0) * heightM) / (EARTH_R * cos);
-      zTop.push(z + tz);
-      zBot.push(z - tz);
-    }
-    const flat: number[] = [];
-    for (const p of merc) flat.push(p[0], p[1]);
-    const idx = earcut(flat);
-    for (let t = 0; t + 2 < idx.length; t += 3) {
-      const i0 = idx[t];
-      const i1 = idx[t + 1];
-      const i2 = idx[t + 2];
-      push([merc[i0][0], merc[i0][1], zTop[i0]], [0, 0, 1], 0);
-      push([merc[i1][0], merc[i1][1], zTop[i1]], [0, 0, 1], 0);
-      push([merc[i2][0], merc[i2][1], zTop[i2]], [0, 0, 1], 0);
-      push([merc[i0][0], merc[i0][1], zBot[i0]], [0, 0, -1], 0);
-      push([merc[i2][0], merc[i2][1], zBot[i2]], [0, 0, -1], 0);
-      push([merc[i1][0], merc[i1][1], zBot[i1]], [0, 0, -1], 0);
-    }
-    // 侧墙：鞋带面积定绕向 → 外法向统一朝外
-    let area = 0;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      area += merc[i][0] * merc[j][1] - merc[j][0] * merc[i][1];
-    }
-    const flip = area >= 0 ? 1 : -1;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const ex = merc[j][0] - merc[i][0];
-      const ey = merc[j][1] - merc[i][1];
-      const l = Math.hypot(ex, ey) || 1;
-      const N: [number, number, number] = [(flip * ey) / l, (-flip * ex) / l, 0];
-      const A: [number, number, number] = [merc[i][0], merc[i][1], zTop[i]];
-      const B: [number, number, number] = [merc[j][0], merc[j][1], zTop[j]];
-      const C: [number, number, number] = [merc[j][0], merc[j][1], zBot[j]];
-      const D: [number, number, number] = [merc[i][0], merc[i][1], zBot[i]];
-      push(A, N, 0);
-      push(B, N, 0);
-      push(C, N, 0);
-      push(A, N, 0);
-      push(C, N, 0);
-      push(D, N, 0);
-    }
-  }
-}
-
 /** 单条路径 → 交错顶点数组（线模式=3D 圆柱管；poly=沿法向挤出的立体块；位置=mercator XYZ） */
 function buildVertices(
   map: MaplibreMap,
@@ -475,11 +379,6 @@ function buildVertices(
   const push = (p: [number, number, number], nrm: [number, number, number], dist: number) => {
     verts.push(p[0], p[1], p[2], nrm[0], nrm[1], nrm[2], dist);
   };
-
-  if (data.kind === 'poly') {
-    buildExtrudedPoly(data, isGlobe, zoom, push);
-    return verts.length > 0 ? { arr: new Float32Array(verts), count: verts.length / VERT_STRIDE } : null;
-  }
 
   // ===== 线模式：圆柱管 =====
   for (const path of data.paths) {
@@ -638,10 +537,8 @@ function dataSig(data: FlyRibbonData): string {
     const mid = c[Math.floor(c.length / 2)];
     return `${c.length}|${c[0]?.[0].toFixed(6)},${c[0]?.[1].toFixed(6)}|${mid?.[0].toFixed(6)},${mid?.[1].toFixed(6)}|${c[c.length - 1]?.[0].toFixed(6)},${c[c.length - 1]?.[1].toFixed(6)}`;
   };
-  const parts: string[] = [data.kind === 'poly' ? 'poly' : 'line', data.color];
-  if (data.kind === 'poly') {
-    for (const r of data.rings) parts.push(sigOf(r.coords), String(r.f?.length ?? 0));
-  } else {
+  const parts: string[] = ['line', data.color];
+  {
     for (const p of data.paths) {
       parts.push(sigOf(p.coords), p.closed ? '1' : '0', String(p.f?.length ?? 0));
     }
@@ -823,9 +720,8 @@ function drawRibbons(map: MaplibreMap, gl: WebGLRenderingContext | WebGL2Renderi
     const rgba = hexToRgba(data.color);
     g.uniform4f(st.uColor as WebGLUniformLocation, rgba[0], rgba[1], rgba[2], rgba[3]);
     g.uniform1f(st.uOpacity as WebGLUniformLocation, data.opacity ?? 1);
-    const isPoly = data.kind === 'poly';
     // 几何已含高程与厚度（世界空间），高度不再经 uniform —— 相机无关
-    const dash = !isPoly && data.dash ? (data.dash as number[]).filter((v) => v > 0).map((v) => v * Math.max(0.5, data.widthPx)) : [];
+    const dash = data.dash ? (data.dash as number[]).filter((v) => v > 0).map((v) => v * Math.max(0.5, data.widthPx)) : [];
     if (dash.length >= 2) {
       const total = dash.reduce((a, b) => a + b, 0);
       const padded = dash.slice(0, 6);
@@ -910,7 +806,6 @@ export function pickFlyRibbon(map: MaplibreMap, px: number, py: number, elements
   let bestD = Infinity;
   for (const [key, entry] of entries) {
     if (key.endsWith('|ghost')) continue;
-    if ((entry.data as FlyRibbonDataPoly).kind === 'poly') continue;
     const data = entry.data as FlyRibbonDataLine;
     const liftM = data.heightM ?? flyLiftMeters(map);
     const elId = key.slice(0, key.lastIndexOf('|'));
