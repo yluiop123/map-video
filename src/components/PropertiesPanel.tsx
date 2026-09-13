@@ -1548,11 +1548,17 @@ function RouteSettings({ element, patch, chapter }: {
               const setMI = (patchMI: Record<string, unknown>) => patch({ moveIcon: { ...miNow, ...patchMI } } as Partial<MapElement>);
               if (mkShape === 'bubble' || mkShape === 'text') {
                 return (
-                  <LabelStyleFields
-                    label={{ text: miNow.labelText || '', color: miNow.labelColor || '#FFFFFF', bgColor: miNow.labelBg }}
-                    fixedCenter
-                    onChange={(l: any) => setMI({ labelText: l.text, labelColor: l.color, labelBg: l.bgColor })}
-                  />
+                  <>
+                    <Field label={t('标记标签', 'Marker Label')}>
+                      <input type="text" className="input" value={miNow.labelText || ''}
+                        onChange={(e) => setMI({ labelText: e.target.value })} />
+                    </Field>
+                    <LabelStyleFields
+                      label={{ text: miNow.labelText || '', color: miNow.labelColor || '#FFFFFF', bgColor: miNow.labelBg }}
+                      fixedCenter
+                      onChange={(l: any) => setMI({ labelText: l.text, labelColor: l.color, labelBg: l.bgColor })}
+                    />
+                  </>
                 );
               }
               return (
@@ -1565,13 +1571,20 @@ function RouteSettings({ element, patch, chapter }: {
                     />
                   </div>
                   {!!miNow.showLabel && (
-                    <LabelStyleFields
-                      label={{
-                        text: miNow.labelText || '', color: miNow.labelColor || '#000000',
-                        bgColor: miNow.labelBg, offsetX: miNow.labelOffsetX, offsetY: miNow.labelOffsetY,
-                      }}
-                      onChange={(l: any) => setMI({ labelText: l.text, labelColor: l.color, labelBg: l.bgColor, labelOffsetX: l.offsetX, labelOffsetY: l.offsetY })}
-                    />
+                    <>
+                      {/* 标记标签：控制标记上显示的文字内容 */}
+                      <Field label={t('标记标签', 'Marker Label')}>
+                        <input type="text" className="input" value={miNow.labelText || ''}
+                          onChange={(e) => setMI({ labelText: e.target.value })} />
+                      </Field>
+                      <LabelStyleFields
+                        label={{
+                          text: miNow.labelText || '', color: miNow.labelColor || '#000000',
+                          bgColor: miNow.labelBg, offsetX: miNow.labelOffsetX, offsetY: miNow.labelOffsetY,
+                        }}
+                        onChange={(l: any) => setMI({ labelText: l.text, labelColor: l.color, labelBg: l.bgColor, labelOffsetX: l.offsetX, labelOffsetY: l.offsetY })}
+                      />
+                    </>
                   )}
                 </>
               );

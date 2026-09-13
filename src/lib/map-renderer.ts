@@ -1085,7 +1085,19 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const fillSrcId = `line-fill-src-${element.id}`;
   const fillLayerId = `line-fill-layer-${element.id}`;
   if ((anim === 'fill' && !isPlain) || (isMarch && !isPlain && marchBase)) {
-    const fullData = anim === 'fill' ? turf.featureCollection([turf.lineString(effective)]) : marchBase;
+    let fullData: any;
+    if (anim === 'fill') {
+      // 浅色段从**当前进度点**到终点：与深色主线首尾相接（整条线叠一层浅色会显得"重影"）
+      try {
+        const fullLine = turf.lineString(effective);
+        const totalLen = turf.length(fullLine);
+        fullData = turf.featureCollection([turf.lineSliceAlong(fullLine, totalLen * Math.max(0, Math.min(1, progress)), totalLen)]);
+      } catch {
+        fullData = turf.featureCollection([turf.lineString(effective)]);
+      }
+    } else {
+      fullData = marchBase;
+    }
     try {
       if (map.getSource(fillSrcId)) {
         (map.getSource(fillSrcId) as GeoJSONSource).setData(fullData);
@@ -1112,15 +1124,21 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   // 飞行拱形：浅色部分（fill 的完整线 / march 的剩余段）**同样走拱形**（带 heightM）——
   // 之前贴地显示会形成"空中深色一段 + 地面浅色一段"的双影；抬升后浅色部分沿同一条拱弧延续。
   if (flyActive && ((anim === 'fill' && !isPlain) || (isMarch && !isPlain && marchBase))) {
-    const ghostCoords = anim === 'fill'
-      ? effective
-      : (marchBase?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined);
+    let ghostCoords: [number, number][] | undefined;
+    if (anim === 'fill') {
+      // 浅色段**从当前进度点到终点**（与深色主线首尾相接、不重叠）
+      try {
+        const sliced = turf.lineSliceAlong(turf.lineString(effective), flyFullKm * Math.max(0, Math.min(1, flyFracB)), flyFullKm);
+        ghostCoords = sliced.geometry.coordinates as [number, number][];
+      } catch { ghostCoords = undefined; }
+    } else {
+      ghostCoords = marchBase?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined;
+    }
     if (ghostCoords && ghostCoords.length >= 2) {
-      const gA = anim === 'fill' ? 0 : marchTotal > 0 ? marchH / marchTotal : 0;
       try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
       setFlyRibbon(map, `${element.id}|ghost`, {
-        paths: [{ coords: ghostCoords }],
-        frac: { a: gA, b: 1 },
+        // 高度剖面用**与主线同一测地线绝对分数**（否则两条线高度错开、看起来不重叠）
+        paths: [{ coords: ghostCoords, f: geodesicFracAbs(ghostCoords, flyFullKm) }],
         color: element.lineColor || '#FF0000',
         widthPx: element.lineWidth || 8,
         opacity: 0.35,
@@ -1544,9 +1562,14 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const iconLnglat: [number, number] | null = (isMarch && marchHead)
     ? marchHead
     : (effective.length >= 2 ? interpolatePath(effective, Math.max(0, Math.min(1, iconRatio))) : null);
+  // 头部锚点：与**管末端**同源（本帧实际绘制线段的末端，而非弧长插值）——
+  // 弧长插值用的是平面线性、管末端来自测地线裁剪，两者在长路线/高纬下会错开，导致箭头与线对不上。
+  const curLineHead = (data?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined) ?? null;
   const headLnglat: [number, number] | null = (isMarch && marchHead)
     ? marchHead
-    : (flyActive && effective.length >= 2 ? interpolatePath(effective, Math.max(0, Math.min(1, flyFracB))) : null);
+    : (curLineHead && curLineHead.length >= 2
+        ? curLineHead[curLineHead.length - 1]
+        : (flyActive && effective.length >= 2 ? interpolatePath(effective, Math.max(0, Math.min(1, flyFracB))) : null));
   const flyIconShift: [number, number] = flyActive && iconLnglat
     ? liftTranslate(map, iconLnglat, flyHeight01(Math.max(0, Math.min(1, iconRatio))), flyHeightM)
     : zeroShift;
