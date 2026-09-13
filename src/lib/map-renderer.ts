@@ -2571,7 +2571,9 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   // 动画结束后标记停在终点，与箭头一起在显示结束消失；仅「显示标记」开启才渲染
   const needIcon = !!element.showIcon && (beforeAnim || duringAnim || afterAnim || inDisplay);
   if (needIcon) {
-    const path = element.path && element.path.length >= 2 ? element.path : [element.from, element.to];
+    // 沿**箭头实际轨道**插值：燕尾/行军箭头（curved / curved-simple）的图形走贝塞尔曲线，
+    // 用控制点折线插值会让标记偏离箭头本体（标记位置不对）。arrowRailOf 与拱形/几何同源。
+    const path = arrowRailOf(element);
     const ratio = iconRatio;
     const iconCoord = (isMarchA && marchHead) ? marchHead : interpolatePath(path, Math.max(0, Math.min(1, ratio)));
     const iconData = turf.featureCollection([turf.point(iconCoord)]);
