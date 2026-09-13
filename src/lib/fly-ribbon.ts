@@ -521,37 +521,32 @@ function buildVertices(
       dist[i] = prevPx ? dist[i - 1] + Math.hypot(px.x - prevPx.x, px.y - prevPx.y) : 0;
       prevPx = px;
     }
-    // 切线（中心差分）+ 环截面
+    // 横截面：**屏幕空间正圆**（宽度 = 高度，不随俯仰被压扁）。
+    // 用当前相机的「屏幕像素 → 地图偏移」逆矩阵把像素圆映射回 merc 偏移；
+    // 顶点保持中心高程（截面在等高度面内偏移），投影后屏幕上即为正圆。
+    const rPx = Math.max(4, Math.max(0.5, data.widthPx) * 0.9);   // 管屏幕半径（px）
+    const midMerc = merc[Math.floor(n / 2)];
+    const midLift = liftOf(Math.floor(n / 2)) * heightM;
+    const Jinv = screenToMercInv(map, midMerc, midLift);
+    const radialOffset = (i: number, th: number): [number, number] => {
+      const sx = Math.cos(th) * rPx;
+      const sy = Math.sin(th) * rPx;
+      if (Jinv) return [Jinv[0] * sx + Jinv[1] * sy, Jinv[2] * sx + Jinv[3] * sy];
+      // 回退（矩阵奇异时）：世界空间半径（会随俯仰压扁）
+      const lat = mercToLngLat(merc[i])[1];
+      const [rx, ry] = pxToMercRadii(lat, zoom, rPx, isGlobe);
+      return [Math.cos(th) * rx, Math.sin(th) * ry];
+    };
     const rings: Array<Array<[number, number, number]>> = [];
     const nrms: Array<Array<[number, number, number]>> = [];
     for (let i = 0; i < n; i++) {
-      const a = center[Math.max(0, i - 1)];
-      const b = center[Math.min(n - 1, i + 1)];
-      const T = norm3([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
-      let S = cross3(T, [0, 0, 1]);
-      if (len3(S) < 1e-9) S = [1, 0, 0];
-      S = norm3(S);
-      const V = norm3(cross3(S, T));
-      const lat = mercToLngLat(merc[i])[1];
-      // 管半径：飞行路线要看得像"圆柱"——比平面线宽更粗（0.9×线宽作半径 ≈ 1.8 倍直径），最小 4px
-      const [rx, ry, rz] = pxToMercRadii(lat, zoom, Math.max(4, Math.max(0.5, data.widthPx) * 0.9), isGlobe);
       const ring: Array<[number, number, number]> = [];
       const rn: Array<[number, number, number]> = [];
       for (let k = 0; k < TUBE_SIDES; k++) {
         const th = (k / TUBE_SIDES) * Math.PI * 2;
-        const ct = Math.cos(th);
-        const st2 = Math.sin(th);
-        const d: [number, number, number] = [
-          S[0] * ct + V[0] * st2,
-          S[1] * ct + V[1] * st2,
-          S[2] * ct + V[2] * st2,
-        ];
-        ring.push([
-          center[i][0] + d[0] * rx,
-          center[i][1] + d[1] * ry,
-          center[i][2] + d[2] * rz,
-        ]);
-        rn.push(norm3(d));
+        const [ox, oy] = radialOffset(i, th);
+        ring.push([center[i][0] + ox, center[i][1] + oy, center[i][2]]);
+        rn.push(norm3([ox, oy, 0]));
       }
       rings.push(ring);
       nrms.push(rn);
@@ -598,11 +593,30 @@ function norm3(v: [number, number, number]): [number, number, number] {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;
   return [v[0] / l, v[1] / l, v[2] / l];
 }
-function cross3(a: [number, number, number], b: [number, number, number]): [number, number, number] {
-  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-}
-function len3(v: [number, number, number]): number {
-  return Math.hypot(v[0], v[1], v[2]);
+// （截面改用屏幕空间构造后，不再需要 3D 切线/叉积工具）
+
+/**
+ * 当前相机下「屏幕像素偏移 → mercator 偏移」的线性映射逆矩阵（局部线性化，返回 [m00,m01,m10,m11]）。
+ * 用法：把截面圆在**屏幕空间**采样（cosθ·rPx, sinθ·rPx），再用逆矩阵换回地图偏移 ——
+ * 这样横截面在屏幕上恒为正圆（宽高一致），不随俯仰角被透视压扁。
+ * 返回 null 表示矩阵奇异（极端视角），调用方回退世界空间半径。
+ */
+function screenToMercInv(map: MaplibreMap, merc: [number, number], liftM: number): [number, number, number, number] | null {
+  try {
+    const eps = 1e-5;
+    const p0 = projectLifted(map, mercToLngLat(merc), liftM);
+    const p1 = projectLifted(map, mercToLngLat([merc[0] + eps, merc[1]]), liftM);
+    const p2 = projectLifted(map, mercToLngLat([merc[0], merc[1] + eps]), liftM);
+    const a = (p1.x - p0.x) / eps;
+    const b = (p1.y - p0.y) / eps;
+    const c = (p2.x - p0.x) / eps;
+    const d = (p2.y - p0.y) / eps;
+    const det = a * d - b * c;
+    if (!Number.isFinite(det) || Math.abs(det) < 1e-14) return null;
+    return [d / det, -c / det, -b / det, a / det];
+  } catch {
+    return null;
+  }
 }
 
 /** 该点纬度 / 当前 zoom 下，屏幕像素半径 → mercator 空间三分量半径（x/y 水平，z 高程） */
