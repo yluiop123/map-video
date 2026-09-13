@@ -109,9 +109,8 @@ function toolActive(t: ModeItem, mode: InteractionMode): boolean {
 }
 
 /** 疆域分类菜单数据 */
-interface TerrItem { zh: string; en: string; glyph: string; hint?: string; act: 'new' | 'import' | 'plot' | 'annex' }
+interface TerrItem { zh: string; en: string; glyph: string; hint?: string; act: 'import' | 'plot' | 'annex' }
 const TERR_ITEMS: TerrItem[] = [
-  { zh: '新建疆域', en: 'New Territory', glyph: '🗺️', hint: '地图中心新建', act: 'new' },
   { zh: '导入疆域', en: 'Import', glyph: '📥', hint: '势力库/GeoJSON', act: 'import' },
   { zh: '绘制地块', en: 'Draw Plot', glyph: '✏️', hint: '多点闭合', act: 'plot' },
   { zh: '兼并', en: 'Annex', glyph: '⚔️', hint: '点选地块→事件', act: 'annex' },
@@ -262,8 +261,7 @@ export function FloatingTools() {
 
   const runTerrAction = (act: TerrItem['act']) => {
     setTerrOpen(false);
-    if (act === 'new') { useInteractionStore.getState().requestPlace('territory'); setMode('select'); }
-    else if (act === 'import') setTerrImportOpen(true);
+    if (act === 'import') setTerrImportOpen(true);
     else if (act === 'plot') setMode('add_terr_plot');
     else if (act === 'annex') setMode('terr_annex');
   };
