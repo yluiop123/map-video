@@ -1421,23 +1421,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         });
         if (map.getLayer(headLayerId)) map.moveLayer(headLayerId);
       }
-      // 飞行模式：头部改由 fly-ribbon 标记层按 3D 投影绘制（与拱上的管严格重合）；
-      // symbol 层的 icon-translate 只是屏幕近似平移，会与管分离。
-      if (flyActive) {
-        try { if (map.getLayer(headLayerId)) map.setLayoutProperty(headLayerId, 'visibility', 'none'); } catch { /* */ }
-        const liftFrac = (isMarch && marchTotal > 0) ? marchH / marchTotal : flyFracB;
-        setFlyMarker(map, `${element.id}|head`, [{
-          imgId: headImgId,
-          lnglat: tipLL,
-          lift01: flyHeight01(Math.max(0, Math.min(1, liftFrac))),
-          heightM: flyHeightM,
-          sizePx: size,
-          anchorX: 0.5, anchorY: 0.5,
-          rotate: angleDeg,
-        }]);
-      } else {
-        setFlyMarker(map, `${element.id}|head`, null);
-      }
+      // 飞行模式：头部仍用 symbol 层 + 与管同源的 3D 平移（见下方 flyHeadShift，使用同一个
+      // flyHeight01(flyFracB) × flyHeightM）。标记层方案在此场景不可靠，已回退。
+      setFlyMarker(map, `${element.id}|head`, null);
     } catch { /* style 未就绪或图标未加载 */ }
   } else {
     if (map.getLayer(headLayerId)) map.setLayoutProperty(headLayerId, 'visibility', 'none');
