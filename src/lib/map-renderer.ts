@@ -1343,11 +1343,15 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   // 方向箭头（示意）：线末端小三角，随线色；SVG 图标按像素固定尺寸渲染，与 zoom 无关
   const headSrcId = `line-head-src-${element.id}`;
   const headLayerId = `line-head-${element.id}`;
-  const showHead = !!element.lineArrow && effective.length >= 2 && (progress >= 1 || (!!isMarch && !!marchBright));
+  // 箭头头部始终显示（有 lineArrow 即显示），位置跟随**当前线段末端**：
+  //   原实现仅 progress>=1 时显示且取完整路径末端 → 动画期间看不见、出现时与线段脱节。
+  const showHead = !!element.lineArrow && effective.length >= 2;
   (window as any).__hl = { lineArrow: !!element.lineArrow, progress, effLen: effective.length, showHead };
   if (showHead) {
-    let tipLL = effective[effective.length - 1] as [number, number];
-    let prevLL = effective[effective.length - 2] as [number, number];
+    // 优先用本帧实际绘制的线段（动画中即进度位置），保证头部与线严格相连
+    const curLine = (data?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined) ?? null;
+    let tipLL = (curLine && curLine.length >= 2 ? curLine[curLine.length - 1] : effective[effective.length - 1]) as [number, number];
+    let prevLL = (curLine && curLine.length >= 2 ? curLine[curLine.length - 2] : effective[effective.length - 2]) as [number, number];
     if (isMarch && marchHead && effective.length >= 2) {
       // march：方向箭头骑在亮段头部，方向取亮段末端两点
       const bw = marchBright?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined;
