@@ -885,6 +885,7 @@ export function clearFlyRibbons(map: MaplibreMap, elementId: string): void {
 /** 清除某元素的飞行标记点（元素删除/类型切换时调用） */
 export function clearFlyMarkers(map: MaplibreMap, elementId: string): void {
   setFlyMarker(map, `${elementId}|icon`, null);
+  setFlyMarker(map, `${elementId}|head`, null);   // 带箭头路线的三角头部（飞行时也走标记层）
 }
 
 /** 选中拾取：点击点到抬升折线的屏幕距离判定（CSS px；threshold 含线宽） */
@@ -966,6 +967,8 @@ export interface FlyMarker {
   /** 额外屏幕偏移（CSS px） */
   offsetPx?: [number, number];
   opacity?: number;
+  /** 屏幕空间旋转（度，绕锚点）——用于箭头头部等需要指向的贴图 */
+  rotate?: number;
 }
 
 const markerEntriesByMap = new WeakMap<MaplibreMap, Map<string, FlyMarker[]>>();
@@ -1099,11 +1102,28 @@ function drawMarkers(map: MaplibreMap, st: RibbonGlState): void {
       const top = pos.y + oy - ay * qh;
       const ndcX = (x: number) => (x / w) * 2 - 1;
       const ndcY = (y: number) => 1 - (y / h) * 2;
-      const x0 = ndcX(left), x1 = ndcX(left + qw);
-      const y0 = ndcY(top), y1 = ndcY(top + qh);
-      // 纹理 v=0 = 图像顶行；屏幕上方顶点必须配 v=0（此前 v 反向，导致贴图上下翻转）
-      verts.push(x0, y0, 0, 0, x1, y0, 1, 0, x1, y1, 1, 1);
-      verts.push(x0, y0, 0, 0, x1, y1, 1, 1, x0, y1, 0, 1);
+      // 四个角（CSS px）：左上 / 右上 / 右下 / 左下（配 uv 0,0 / 1,0 / 1,1 / 0,1）
+      const corners: [number, number][] = [
+        [left, top], [left + qw, top], [left + qw, top + qh], [left, top + qh],
+      ];
+      const rot = (typeof mk.rotate === 'number' && mk.rotate !== 0) ? (mk.rotate * Math.PI) / 180 : 0;
+      if (rot) {
+        // 绕锚点（pos）旋转四个角
+        const cx = pos.x + ox;
+        const cy = pos.y + oy;
+        const cs = Math.cos(rot);
+        const sn = Math.sin(rot);
+        for (const c of corners) {
+          const dx = c[0] - cx;
+          const dy = c[1] - cy;
+          c[0] = cx + dx * cs - dy * sn;
+          c[1] = cy + dx * sn + dy * cs;
+        }
+      }
+      const p = corners.map((c) => [ndcX(c[0]), ndcY(c[1])] as [number, number]);
+      // 纹理 v=0 = 图像顶行；屏幕上方顶点必须配 v=0
+      verts.push(p[0][0], p[0][1], 0, 0, p[1][0], p[1][1], 1, 0, p[2][0], p[2][1], 1, 1);
+      verts.push(p[0][0], p[0][1], 0, 0, p[2][0], p[2][1], 1, 1, p[3][0], p[3][1], 0, 1);
       if (tex !== boundTex) {
         if (boundTex) {
           gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
@@ -1142,7 +1162,7 @@ export function setFlyMarker(map: MaplibreMap, key: string, markers: FlyMarker[]
     if (entries.delete(key)) { try { map.triggerRepaint(); } catch { /* */ } }
     return;
   }
-  const sig = markers.map((m) => `${m.imgId}|${m.lnglat[0].toFixed(6)},${m.lnglat[1].toFixed(6)}|${m.lift01.toFixed(3)}|${m.heightM ?? ''}|${m.sizePx}|${m.anchorX ?? 0.5}|${m.anchorY ?? 1}|${m.offsetPx ? m.offsetPx.join(',') : ''}|${m.opacity ?? 1}`).join(';');
+  const sig = markers.map((m) => `${m.imgId}|${m.lnglat[0].toFixed(6)},${m.lnglat[1].toFixed(6)}|${m.lift01.toFixed(3)}|${m.heightM ?? ''}|${m.sizePx}|${m.anchorX ?? 0.5}|${m.anchorY ?? 1}|${m.offsetPx ? m.offsetPx.join(',') : ''}|${m.opacity ?? 1}|${m.rotate ?? 0}`).join(';');
   const prev = entries.get(key);
   if (!prev || (prev as any).__sig !== sig) {
     (markers as any).__sig = sig;

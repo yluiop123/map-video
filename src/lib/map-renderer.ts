@@ -1109,13 +1109,33 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     try { if (map.getSource(fillSrcId)) map.removeSource(fillSrcId); } catch { /* */ }
   }
 
-  // 飞行拱形：不再显示幽灵垫层（fill 完整线 / march 剩余段）。
-  // 原因：垫层从当前头部沿拱弧降回终点，视觉上形成"空中一段 + 地面一段"的双影；
-  // 飞行模式下主线（含 fill/march 的拱上进度段）已足够表达，直接隐藏贴地填充层并清理旧垫层。
-  if (flyActive) {
-    try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
+  // 飞行拱形：浅色部分（fill 的完整线 / march 的剩余段）**同样走拱形**（带 heightM）——
+  // 之前贴地显示会形成"空中深色一段 + 地面浅色一段"的双影；抬升后浅色部分沿同一条拱弧延续。
+  if (flyActive && ((anim === 'fill' && !isPlain) || (isMarch && !isPlain && marchBase))) {
+    const ghostCoords = anim === 'fill'
+      ? effective
+      : (marchBase?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined);
+    if (ghostCoords && ghostCoords.length >= 2) {
+      const gA = anim === 'fill' ? 0 : marchTotal > 0 ? marchH / marchTotal : 0;
+      try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
+      setFlyRibbon(map, `${element.id}|ghost`, {
+        paths: [{ coords: ghostCoords }],
+        frac: { a: gA, b: 1 },
+        color: element.lineColor || '#FF0000',
+        widthPx: element.lineWidth || 8,
+        opacity: 0.35,
+        dash: element.lineDashArray,
+        heightM: flyHeightM,
+      });
+    } else {
+      setFlyRibbon(map, `${element.id}|ghost`, null);
+    }
+  } else {
+    if (flyActive) {
+      try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
+    }
+    setFlyRibbon(map, `${element.id}|ghost`, null);
   }
-  setFlyRibbon(map, `${element.id}|ghost`, null);
 
   // fly 航迹已并入路线本体（不再有独立虚线航迹层）；此处仅清理旧版本/同会话切换的残留层
   const raySrcId = `fly-ray-src-${element.id}`;
@@ -1401,9 +1421,27 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         });
         if (map.getLayer(headLayerId)) map.moveLayer(headLayerId);
       }
+      // 飞行模式：头部改由 fly-ribbon 标记层按 3D 投影绘制（与拱上的管严格重合）；
+      // symbol 层的 icon-translate 只是屏幕近似平移，会与管分离。
+      if (flyActive) {
+        try { if (map.getLayer(headLayerId)) map.setLayoutProperty(headLayerId, 'visibility', 'none'); } catch { /* */ }
+        const liftFrac = (isMarch && marchTotal > 0) ? marchH / marchTotal : flyFracB;
+        setFlyMarker(map, `${element.id}|head`, [{
+          imgId: headImgId,
+          lnglat: tipLL,
+          lift01: flyHeight01(Math.max(0, Math.min(1, liftFrac))),
+          heightM: flyHeightM,
+          sizePx: size,
+          anchorX: 0.5, anchorY: 0.5,
+          rotate: angleDeg,
+        }]);
+      } else {
+        setFlyMarker(map, `${element.id}|head`, null);
+      }
     } catch { /* style 未就绪或图标未加载 */ }
-  } else if (map.getLayer(headLayerId)) {
-    map.setLayoutProperty(headLayerId, 'visibility', 'none');
+  } else {
+    if (map.getLayer(headLayerId)) map.setLayoutProperty(headLayerId, 'visibility', 'none');
+    setFlyMarker(map, `${element.id}|head`, null);
   }
 
   // 线中点文案
@@ -2532,13 +2570,9 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         opacity: fillOpacity,
         heightM: flyHeightA,
       });
-      setFlyRibbon(map, `${element.id}|astroke`, {
-        paths: flyRings.map((r) => ({ coords: r.coords, f: r.f, closed: true })),
-        color: fillColor,
-        widthPx: 1.2,
-        opacity: 0.8,
-        heightM: flyHeightA,
-      });
+      // 不再注册闭合环描边管（astroke）：曲线形箭头由「条带 + 独立头部」多个环组成，
+      // 每个环再套一圈细管会显得"好几个图形"、图面杂乱。挤出块（afill）自身已带完整棱面与描边感。
+      setFlyRibbon(map, `${element.id}|astroke`, null);
     }
   } else {
     setFlyRibbon(map, `${element.id}|afill`, null);
