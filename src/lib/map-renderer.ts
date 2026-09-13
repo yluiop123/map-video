@@ -1109,28 +1109,13 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     try { if (map.getSource(fillSrcId)) map.removeSource(fillSrcId); } catch { /* */ }
   }
 
-  // 飞行拱形：幽灵垫层（fill 完整线 / march 剩余段）同样走拱形 ribbon（剩余段从当前头部一直降回终点）
-  if (flyActive && ((anim === 'fill' && !isPlain) || (isMarch && !isPlain && marchBase))) {
-    const ghostCoords = anim === 'fill'
-      ? effective
-      : (marchBase?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined);
-    if (ghostCoords && ghostCoords.length >= 2) {
-      const gA = anim === 'fill' ? 0 : marchTotal > 0 ? marchH / marchTotal : 0;
-      try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
-      setFlyRibbon(map, `${element.id}|ghost`, {
-        paths: [{ coords: ghostCoords }],
-        frac: { a: gA, b: 1 },
-        color: element.lineColor || '#FF0000',
-        widthPx: element.lineWidth || 8,
-        opacity: 0.35,
-        dash: element.lineDashArray,
-      });
-    } else {
-      setFlyRibbon(map, `${element.id}|ghost`, null);
-    }
-  } else {
-    setFlyRibbon(map, `${element.id}|ghost`, null);
+  // 飞行拱形：不再显示幽灵垫层（fill 完整线 / march 剩余段）。
+  // 原因：垫层从当前头部沿拱弧降回终点，视觉上形成"空中一段 + 地面一段"的双影；
+  // 飞行模式下主线（含 fill/march 的拱上进度段）已足够表达，直接隐藏贴地填充层并清理旧垫层。
+  if (flyActive) {
+    try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
   }
+  setFlyRibbon(map, `${element.id}|ghost`, null);
 
   // fly 航迹已并入路线本体（不再有独立虚线航迹层）；此处仅清理旧版本/同会话切换的残留层
   const raySrcId = `fly-ray-src-${element.id}`;
@@ -2495,10 +2480,13 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
       fullGeojson = turf.featureCollection(fullRings.map((ring) => turf.polygon([[...ring, ring[0]]])));
     }
     try {
+      // 飞行模式：底部完整/剩余箭头不贴地显示（它们在拱上由 |afill 挤出块呈现），
+      // 否则会形成"空中一段 + 地面一段"的双影
+      const baseVis = (isFlyMode && rings.length > 0) ? 'none' : 'visible';
       if (map.getSource(fillSrcId)) {
         (map.getSource(fillSrcId) as GeoJSONSource).setData(fullGeojson);
         if (map.getLayer(fillLayerId)) {
-          map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
+          map.setLayoutProperty(fillLayerId, 'visibility', baseVis);
           map.setPaintProperty(fillLayerId, 'fill-color', fillColor);
         }
       } else {
@@ -2521,10 +2509,17 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   if (flyActiveA) {
     const rail = arrowRailOf(element);
     const railIdx = buildRailIndex(rail);
-    const flyRings = rings.map((ring) => subdivFlyRing(ring, railIdx)).filter((r) => r.coords.length >= 3);
-    try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
-    try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'none'); } catch { /* */ }
+    let flyRings = rings.map((ring) => subdivFlyRing(ring, railIdx)).filter((r) => r.coords.length >= 3);
+    // 动画初期（grow/move/fill 起始帧）裁剪出的几何可能不足以成环 → 飞行模式下用完整几何兜底，
+    // 否则贴地层被隐藏而拱上又无几何，整条箭头会完全不可见
+    if (flyRings.length === 0) {
+      flyRings = buildArrowGeometry(element.from, element.to, geoWidth, element.arrowType, element.path)
+        .map((ring) => subdivFlyRing(ring, railIdx))
+        .filter((r) => r.coords.length >= 3);
+    }
     if (flyRings.length > 0) {
+      try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
+      try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'none'); } catch { /* */ }
       // 弧顶高度：由箭头路径总长决定，与相机无关；与填充/描边共用
       const flyHeightA = flyArcHeightMeters(geoLengthKm(rail) * 1000);
       setFlyRibbon(map, `${element.id}|afill`, {

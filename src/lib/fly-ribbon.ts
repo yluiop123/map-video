@@ -161,8 +161,8 @@ void main() {
   // 立体光照：固定光向（与相机无关），法向来自管面/挤出侧面 → 上亮下暗
   vec3 N = normalize(aNrm);
   vec3 L = normalize(vec3(0.42, -0.34, 0.84));
-  // 轻量光照：环境光占大头（0.78），法向贡献仅 0.22 —— 立体但不压暗整体颜色
-  vShade = 0.78 + 0.22 * max(0.0, dot(N, L));
+  // 轻量光照：环境光为主 + 法向贡献，既保留立体明暗又不压暗整体颜色
+  vShade = 0.72 + 0.28 * max(0.0, dot(N, L));
   vDist = aDist;
 }
 `;
@@ -533,7 +533,8 @@ function buildVertices(
       S = norm3(S);
       const V = norm3(cross3(S, T));
       const lat = mercToLngLat(merc[i])[1];
-      const [rx, ry, rz] = pxToMercRadii(lat, zoom, Math.max(0.5, data.widthPx) / 2, isGlobe);
+      // 管半径：飞行路线要看得像"圆柱"——比平面线宽更粗（0.9×线宽作半径 ≈ 1.8 倍直径），最小 4px
+      const [rx, ry, rz] = pxToMercRadii(lat, zoom, Math.max(4, Math.max(0.5, data.widthPx) * 0.9), isGlobe);
       const ring: Array<[number, number, number]> = [];
       const rn: Array<[number, number, number]> = [];
       for (let k = 0; k < TUBE_SIDES; k++) {
