@@ -1439,6 +1439,14 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         });
         if (map.getLayer(headLayerId)) map.moveLayer(headLayerId);
       }
+      // 层级（每帧执行）：三角头部应位于移动标记**之下** —— 标记盖住线端，而不是箭头压住标记。
+      // 标记层可能晚于头部层创建，因此不能只在创建时调整一次。
+      if (map.getLayer(headLayerId)) {
+        const belowId = `line-move-layer-${element.id}`;
+        if (map.getLayer(belowId)) {
+          try { map.moveLayer(headLayerId, belowId); } catch { /* */ }
+        }
+      }
       // 飞行模式：头部仍用 symbol 层 + 与管同源的 3D 平移（见下方 flyHeadShift，使用同一个
       // flyHeight01(flyFracB) × flyHeightM）。标记层方案在此场景不可靠，已回退。
       setFlyMarker(map, `${element.id}|head`, null);
