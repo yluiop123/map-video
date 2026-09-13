@@ -279,6 +279,31 @@ function arrowTriSizePx(lineWidth?: number): number {
  */
 const MARCH_LEN_FRAC = 0.35 / 3;
 
+/** 浅色剩余段：与白色的混合比例（0=原色，1=纯白）——越大越浅 */
+const GHOST_LIGHTEN = 0.45;
+
+/** 颜色与白色按比例混合（浅色剩余段用；非 #hex 颜色原样返回） */
+function lightenHex(color: string, t: number): string {
+  const c = (color || '').trim();
+  const m6 = /^#([0-9a-fA-F]{6})$/.exec(c);
+  const m3 = /^#([0-9a-fA-F]{3})$/.exec(c);
+  let r = 0, g = 0, b = 0;
+  if (m6) {
+    const v = parseInt(m6[1], 16);
+    r = (v >> 16) & 255; g = (v >> 8) & 255; b = v & 255;
+  } else if (m3) {
+    r = parseInt(m3[1][0] + m3[1][0], 16);
+    g = parseInt(m3[1][1] + m3[1][1], 16);
+    b = parseInt(m3[1][2] + m3[1][2], 16);
+  } else {
+    return color;
+  }
+  const k = Math.max(0, Math.min(1, t));
+  const mix = (x: number) => Math.round(x + (255 - x) * k);
+  const h2 = (x: number) => x.toString(16).padStart(2, '0');
+  return `#${h2(mix(r))}${h2(mix(g))}${h2(mix(b))}`;
+}
+
 function makeTriangleImage(color: string, size: number): ImageData {
   const pad = 2;
   const w = Math.max(4, Math.ceil(size + pad * 2));
@@ -1127,16 +1152,23 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     } else {
       fullData = marchBase;
     }
+    // 浅色段颜色 = 线色与白混合（GHOST_LIGHTEN）→ 明显比主线浅，同时保留线宽/虚线形态
+    const fillColor = lightenHex(element.lineColor || '#FF0000', GHOST_LIGHTEN);
     try {
       if (map.getSource(fillSrcId)) {
         (map.getSource(fillSrcId) as GeoJSONSource).setData(fullData);
-        if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
+        if (map.getLayer(fillLayerId)) {
+          map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
+          // 颜色/宽度随面板实时同步（浅色由线色派生，改线色时浅色段一起变）
+          map.setPaintProperty(fillLayerId, 'line-color', fillColor);
+          map.setPaintProperty(fillLayerId, 'line-width', element.lineWidth || 8);
+        }
       } else {
         map.addSource(fillSrcId, { type: 'geojson', data: fullData } as any);
         map.addLayer({
           id: fillLayerId, type: 'line', source: fillSrcId,
           paint: {
-            'line-color': element.lineColor || '#FF0000',
+            'line-color': fillColor,
             'line-width': element.lineWidth || 8,
             'line-opacity': 0.35,
             ...(element.lineDashArray ? { 'line-dasharray': element.lineDashArray } : {}),
@@ -1173,11 +1205,12 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         // 若从 0 起算会重走一遍「贴地→爬升」剖面（浅色段像另一条低弧、与主线错开）。
         // 起点分数 = 主线末端分数 flyFracB（同一切点），故在自身累计分数上叠加该偏移。
         paths: [{ coords: ghostCoords, f: geodesicFracAbs(ghostCoords, flyFullKm).map((v) => Math.min(1, v + flyFracB)) }],
-        color: element.lineColor || '#FF0000',
+        // 浅色段颜色 = 线色与白混合 → 与 2D 浅色层同一观感；不透明度略高以保留管的明暗立体感
+        color: lightenHex(element.lineColor || '#FF0000', GHOST_LIGHTEN),
         widthPx: element.lineWidth || 8,
         // 与主线同为 3D 管（同一光照/深度）。不透明度不宜过低——太透会盖掉管的明暗，
-        // 立体感消失（看起来像平面线）；0.5 既与深色主线区分，又保留体积感。
-        opacity: 0.5,
+        // 立体感消失（看起来像平面线）；0.55 既与深色主线区分，又保留体积感。
+        opacity: 0.55,
         dash: element.lineDashArray,
         heightM: flyHeightM,
       });
@@ -2491,6 +2524,8 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   }
 
   // 填充效果：底层完整半透明箭头（animEff==='fill'）；march：剩余段半透明（不断变短）
+  // 浅色 = 本体色与白混合，与路线元素的浅色段同一观感
+  const arrowGhostColor = lightenHex(fillColor, GHOST_LIGHTEN);
   const fillSrcId = `arrow-fill-src-${element.id}`;
   const fillLayerId = `arrow-fill-layer-${element.id}`;
   if (animEff === 'fill' || isMarchA) {
@@ -2509,13 +2544,13 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         (map.getSource(fillSrcId) as GeoJSONSource).setData(fullGeojson);
         if (map.getLayer(fillLayerId)) {
           map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
-          map.setPaintProperty(fillLayerId, 'fill-color', fillColor);
+          map.setPaintProperty(fillLayerId, 'fill-color', arrowGhostColor);
         }
       } else {
         map.addSource(fillSrcId, { type: 'geojson', data: fullGeojson } as any);
         map.addLayer({
           id: fillLayerId, type: 'fill', source: fillSrcId,
-          paint: { 'fill-color': fillColor, 'fill-opacity': 0.3 },
+          paint: { 'fill-color': arrowGhostColor, 'fill-opacity': 0.3 },
         });
       }
     } catch { /* style 未就绪 */ }
