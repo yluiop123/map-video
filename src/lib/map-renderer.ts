@@ -1055,7 +1055,12 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     if (isMarch && marchTotal > 0) {
       flyFracA = Math.max(0, marchH - marchL) / marchTotal;
       flyFracB = marchH / marchTotal;
-      flyDataF = null;
+      // 主线 = 行进亮段切片（h-L → h）：高度剖面必须用**全路线绝对弧长分数**
+      // （起点 = flyFracA）。此前留空走 frac 线性映射，与浅色剩余段（精确分数）在接点处
+      // 高度不连续 → 两段拱形错开。
+      flyDataF = dataLine && dataLine.length >= 2
+        ? geodesicFracAbs(dataLine, flyFullKm).map((v) => Math.min(1, v + flyFracA))
+        : null;
     } else if (dataLine && dataLine.length >= 2) {
       // 全路线测地线绝对分数（与标记点同弧长空间）：ribbon 高度与标记点轨迹完全一致
       flyDataF = geodesicFracAbs(dataLine, flyFullKm);
@@ -1137,8 +1142,10 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     if (ghostCoords && ghostCoords.length >= 2) {
       try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
       setFlyRibbon(map, `${element.id}|ghost`, {
-        // 高度剖面用**与主线同一测地线绝对分数**（否则两条线高度错开、看起来不重叠）
-        paths: [{ coords: ghostCoords, f: geodesicFracAbs(ghostCoords, flyFullKm) }],
+        // 高度剖面必须用**全路线绝对弧长分数**：ghostCoords 是「从进度点切到终点」的切片，
+        // 若从 0 起算会重走一遍「贴地→爬升」剖面（浅色段像另一条低弧、与主线错开）。
+        // 起点分数 = 主线末端分数 flyFracB（同一切点），故在自身累计分数上叠加该偏移。
+        paths: [{ coords: ghostCoords, f: geodesicFracAbs(ghostCoords, flyFullKm).map((v) => Math.min(1, v + flyFracB)) }],
         color: element.lineColor || '#FF0000',
         widthPx: element.lineWidth || 8,
         opacity: 0.35,
