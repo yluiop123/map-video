@@ -1497,15 +1497,9 @@ function RouteSettings({ element, patch, chapter }: {
             )}
 
             {(element as LineElement).moveIcon?.shape === 'flag' && (
-              <>
-                <Field label={t('旗上文字', 'Flag Text')}>
-                  <input type="text" className="input" value={(element as LineElement).moveIcon?.flagText ?? '旗'}
-                    onChange={(e) => patch({ moveIcon: { ...(element as LineElement).moveIcon, flagText: e.target.value } } as Partial<MapElement>)} />
-                </Field>
-                <Field label={t('旗帜颜色', 'Flag Color')}>
-                  <ColorPicker value={(element as LineElement).moveIcon?.flagColor || '#E23B3B'} onChange={(c) => patch({ moveIcon: { ...(element as LineElement).moveIcon, flagColor: c } } as Partial<MapElement>)} />
-                </Field>
-              </>
+              <Field label={t('旗帜颜色', 'Flag Color')}>
+                <ColorPicker value={(element as LineElement).moveIcon?.flagColor || '#E23B3B'} onChange={(c) => patch({ moveIcon: { ...(element as LineElement).moveIcon, flagColor: c } } as Partial<MapElement>)} />
+              </Field>
             )}
 
             <Field label={t('大小', 'Size')}>
@@ -1540,12 +1534,24 @@ function RouteSettings({ element, patch, chapter }: {
             </Field>
 
             {/* 标签：与标记设置**复用同一 LabelStyleFields**（连续偏移滑块 + 文字颜色 + 背景）。
-                bubble/text 的文字随图形常驻（不显示开关）；旗有专属文字故排除。 */}
+                bubble/text 的文字随图形常驻（不显示开关）；旗帜的文字用「标记标签」（无独立旗上文字字段）。 */}
             {(() => {
               const miNow = (element as LineElement).moveIcon || {};
               const mkShape = miNow.shape || 'dot';
-              if (mkShape === 'flag') return null;
               const setMI = (patchMI: Record<string, unknown>) => patch({ moveIcon: { ...miNow, ...patchMI } } as Partial<MapElement>);
+              if (mkShape === 'flag') {
+                return (
+                  <>
+                    <Field label={t('标记标签', 'Marker Label')}>
+                      <input type="text" className="input" value={miNow.labelText ?? miNow.flagText ?? ''}
+                        onChange={(e) => setMI({ labelText: e.target.value })} />
+                    </Field>
+                    <Field label={t('标记文字颜色', 'Marker Text Color')}>
+                      <ColorPicker value={miNow.labelColor || '#FFFFFF'} onChange={(c) => setMI({ labelColor: c })} />
+                    </Field>
+                  </>
+                );
+              }
               if (mkShape === 'bubble' || mkShape === 'text') {
                 return (
                   <>

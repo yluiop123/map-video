@@ -1182,7 +1182,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       : mShape === 'text'
         ? `pt-mtxt-${hashStr(mLabelText + mLabelColor + mScale + (mi?.labelSize ?? 13))}`
         : mShape === 'flag'
-          ? `pt-mflag-${hashStr((mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
+          ? `pt-mflag-${hashStr((mi?.labelText || mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
           : (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon' || mShape === 'military_symbol')
             ? `pt-mvis-${hashStr(mShape + (mi?.builtinId || '') + (mi?.assetId || '') + (mi?.iconLib || '') + (mi?.iconName || '') + mColor)}`
             : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
@@ -1213,7 +1213,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       else if (mShape === 'emoji') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeEmojiImageData(mEmoji)));
       else if (mShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 6, mi?.labelPadding ?? 8, false)));
       else if (mShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
-      else if (mShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
+      else if (mShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.labelText || mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
       else if (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon' || mShape === 'military_symbol') {
         // 资源形态：与标记共用资源管线（内置 / 上传素材 / 图标库）
         const vsrc = moveIconVisualSrc(mi);
@@ -1260,7 +1260,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         map.setLayoutProperty(iconLayerId, 'visibility', 'visible');
       }
       // 标记标签：showLabel 开启且非 bubble/text 形状时，在标记旁显示文字气泡
-      if (mi?.showLabel && mShape !== 'bubble' && mShape !== 'text' && mLabelText) {
+      if (mi?.showLabel && mShape !== 'bubble' && mShape !== 'text' && mShape !== 'flag' && mLabelText) {
         const lSrcId = `line-mlabel-src-${element.id}`;
         const lLayerId = `line-mlabel-${element.id}`;
         const lImgId = `pt-mlbl-${hashStr(mLabelText + mLabelColor + mLabelBg + mScale + (mi?.labelSize ?? 12) + (mi?.labelPadding ?? 4) + (mi?.labelRadius ?? 3))}`;
@@ -2525,7 +2525,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         : mEffShape === 'text'
           ? `pt-atxt-${hashStr(mLabelText + mLabelColor + mScale + (mi?.labelSize ?? 13))}`
           : mEffShape === 'flag'
-            ? `pt-aflag-${hashStr((mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
+            ? `pt-aflag-${hashStr((mi?.labelText || mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
             : (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon' || mEffShape === 'military_symbol')
               ? `pt-mvis-${hashStr(mEffShape + mVisKey + mColor)}`
               : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
@@ -2534,7 +2534,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
       else if (mEffShape === 'emoji') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeEmojiImageData(mi?.emoji || '📍')));
       else if (mEffShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 6, mi?.labelPadding ?? 8, false)));
       else if (mEffShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
-      else if (mEffShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
+      else if (mEffShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.labelText || mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
       else if (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon' || mEffShape === 'military_symbol') {
         // 资源形态：与标记/路线共用资源管线
         const vsrc = moveIconVisualSrc(mi);
@@ -2574,7 +2574,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         map.setLayoutProperty(iconLayerId, 'visibility', 'visible');
       }
       // 标记标签（showLabel 开启且非 bubble/text 形状时，在标记旁显示文字气泡）
-      if (mi?.showLabel && mEffShape !== 'bubble' && mEffShape !== 'text' && mLabelText) {
+      if (mi?.showLabel && mEffShape !== 'bubble' && mEffShape !== 'text' && mEffShape !== 'flag' && mLabelText) {
         const lSrcId = `arrow-mlabel-src-${element.id}`;
         const lLayerId = `arrow-mlabel-${element.id}`;
         const lImgId = `pt-albl-${hashStr(mLabelText + mLabelColor + mLabelBg + mScale + (mi?.labelSize ?? 12))}`;
