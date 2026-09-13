@@ -331,14 +331,14 @@ export function FloatingTools() {
 
       {/* 疆域分类菜单（展开在工具条下方） */}
       {terrOpen && (
-        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[420px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[320px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
           <div className="flex items-center gap-2">
             <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300/90 bg-violet-500/10 rounded">
               {lang === 'en' ? 'Territory' : '疆域'}
             </div>
             <div className="flex-1 h-px bg-white/[0.08]" />
           </div>
-          <div className="grid grid-cols-4 gap-1.5">
+          <div className="grid grid-cols-3 gap-1.5">
             {TERR_ITEMS.map((s) => (
               <button
                 key={s.act}
