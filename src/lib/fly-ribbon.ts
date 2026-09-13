@@ -424,17 +424,49 @@ function buildVertices(
       prevPx = px;
     }
     // 横截面：**屏幕空间正圆**（宽度 = 高度，不随俯仰被压扁）。
-    // 用当前相机的「屏幕像素 → 地图偏移」逆矩阵把像素圆映射回 merc 偏移；
-    // 顶点保持中心高程（截面在等高度面内偏移），投影后屏幕上即为正圆。
+    // 用「屏幕像素 → 地图偏移」逆矩阵把像素圆映射回 merc 偏移；顶点保持中心高程
+    // （截面在等高度面内偏移），投影后屏幕上即为正圆。
+    //
+    // ⚠ 矩阵必须**逐点**求（这里按固定间隔采样 + 线性插值）：管沿程高度差可能很大
+    // （浅色剩余段常从拱顶一路降到地面）。若整条管共用**中点**处的矩阵，远端截面的
+    // 尺度会失真 —— 表现为管被逐渐压扁/拉伸，且随镜头俯仰变化（深色段高度跨度小，
+    // 所以此前只有浅色段看起来"粗细随镜头变"）。
     const rPx = Math.max(4, Math.max(0.5, data.widthPx) * 0.9);   // 管屏幕半径（px）
-    const midMerc = merc[Math.floor(n / 2)];
-    const midLift = liftOf(Math.floor(n / 2)) * heightM;
-    const Jinv = screenToMercInv(map, midMerc, midLift);
+    type JinvMat = [number, number, number, number];
+    const J_SAMPLES = Math.max(2, Math.min(24, n));
+    const jIdx: number[] = [];
+    const jMats: (JinvMat | null)[] = [];
+    let lastGoodJ: JinvMat | null = null;
+    for (let s = 0; s < J_SAMPLES; s++) {
+      const i = Math.round((s / (J_SAMPLES - 1)) * (n - 1));
+      const j: JinvMat | null = screenToMercInv(map, merc[i], liftOf(i) * heightM) ?? lastGoodJ;
+      if (j) lastGoodJ = j;
+      jIdx.push(i);
+      jMats.push(j);
+    }
+    /** 第 i 个顶点处的「屏幕 px → merc 偏移」逆矩阵（相邻采样点线性插值） */
+    const jinvAt = (i: number): JinvMat | null => {
+      let k = 0;
+      while (k < jIdx.length - 2 && jIdx[k + 1] < i) k++;
+      const i0 = jIdx[k];
+      const i1 = jIdx[k + 1];
+      const j0 = jMats[k];
+      const j1 = jMats[k + 1];
+      if (!j0 || !j1) return j0 ?? j1 ?? lastGoodJ;
+      const t = i1 > i0 ? Math.max(0, Math.min(1, (i - i0) / (i1 - i0))) : 0;
+      return [
+        j0[0] + (j1[0] - j0[0]) * t,
+        j0[1] + (j1[1] - j0[1]) * t,
+        j0[2] + (j1[2] - j0[2]) * t,
+        j0[3] + (j1[3] - j0[3]) * t,
+      ];
+    };
     const radialOffset = (i: number, th: number): [number, number] => {
       const sx = Math.cos(th) * rPx;
       const sy = Math.sin(th) * rPx;
-      if (Jinv) return [Jinv[0] * sx + Jinv[1] * sy, Jinv[2] * sx + Jinv[3] * sy];
-      // 回退（矩阵奇异时）：世界空间半径（会随俯仰压扁）
+      const J = jinvAt(i);
+      if (J) return [J[0] * sx + J[1] * sy, J[2] * sx + J[3] * sy];
+      // 回退（矩阵奇异且无历史有效值）：世界空间半径（会随俯仰压扁）
       const lat = mercToLngLat(merc[i])[1];
       const [rx, ry] = pxToMercRadii(lat, zoom, rPx, isGlobe);
       return [Math.cos(th) * rx, Math.sin(th) * ry];
@@ -507,9 +539,10 @@ function buildVertices(
       if (sl > 1e-6) { sx /= sl; sy /= sl; } else { sx = 1; sy = 0; }
       const headLen = Math.max(2, data.headLenPx || 24);
       const headRad = Math.max(1.5, data.headRadPx || 12);
-      // 屏幕 px 偏移 → merc 偏移（复用管截面的逆矩阵；奇异时退化为世界半径）
+      // 屏幕 px 偏移 → merc 偏移（用末端点自身的逆矩阵，与管截面同源；奇异时退化为世界半径）
       const offPx = (pxX: number, pxY: number): [number, number] => {
-        if (Jinv) return [Jinv[0] * pxX + Jinv[1] * pxY, Jinv[2] * pxX + Jinv[3] * pxY];
+        const J = jinvAt(i1);
+        if (J) return [J[0] * pxX + J[1] * pxY, J[2] * pxX + J[3] * pxY];
         const lat = mercToLngLat(merc[i1])[1];
         const [rx2, ry2] = pxToMercRadii(lat, zoom, 1, isGlobe);
         return [pxX * rx2, pxY * ry2];
