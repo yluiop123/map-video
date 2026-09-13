@@ -1403,11 +1403,19 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       if (bw && bw.length >= 2) { tipLL = bw[bw.length - 1]; prevLL = bw[bw.length - 2]; }
       else { tipLL = marchHead; prevLL = effective[0] as [number, number]; }
     }
-    // 地理方位角（从北顺时针，turf.bearing）：**与地图旋转/倾斜无关** → 箭头始终沿线的真实走向。
-    // 此前用 map.project 的屏幕角 + viewport 对齐，导致箭头跟着镜头转（与线不一致）。
+    // 普通模式：地理方位角（从北顺时针，turf.bearing）—— 与地图旋转/倾斜无关，箭头沿线真实走向、
+    //   贴地随地图一起转（map 对齐），与 2D 线层视觉一致。
+    // 飞行模式：线由 3D 管绘制（截面是**屏幕空间正圆**、不随俯仰压扁），头部图标必须同处屏幕空间，
+    //   否则贴地压扁的三角与圆管形态不匹配、朝向也和投影方向对不上 → 改用屏幕角 + viewport 对齐。
     const az = turf.bearing(turf.point(prevLL as any), turf.point(tipLL as any));
-    // 三角图基准朝右（地理东 = 方位角 90°），map 对齐下顺时针旋转量 = az - 90
-    const angleDeg = az - 90;
+    let angleDeg = az - 90;   // 三角图基准朝右（地理东 = 方位角 90°）
+    if (flyActive) {
+      const pa = map.project(prevLL as any);
+      const pb = map.project(tipLL as any);
+      angleDeg = (Math.atan2(pb.y - pa.y, pb.x - pa.x) * 180) / Math.PI;
+    }
+    /** 头部图标对齐方式：飞行=屏幕空间（同 3D 管），普通=地图空间（贴地） */
+    const headAlign: 'map' | 'viewport' = flyActive ? 'viewport' : 'map';
     const size = (element.lineWidth || 8) * 3;
     const color = element.lineColor || '#FF0000';
     const headImgId = `line-head-img-${element.id}`;
@@ -1425,9 +1433,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         (map.getSource(headSrcId) as GeoJSONSource).setData(headData);
         if (map.getLayer(headLayerId)) {
           map.setLayoutProperty(headLayerId, 'icon-rotate', ['get', 'rot'] as any);
-          // 地图对齐：箭头随地图旋转/倾斜（贴地），与线融为一体
-          map.setLayoutProperty(headLayerId, 'icon-rotation-alignment', 'map' as any);
-          map.setLayoutProperty(headLayerId, 'icon-pitch-alignment', 'map' as any);
+          // 普通=地图对齐（贴地随地图转）；飞行=屏幕对齐（与 3D 圆管同姿态，不压扁）
+          map.setLayoutProperty(headLayerId, 'icon-rotation-alignment', headAlign as any);
+          map.setLayoutProperty(headLayerId, 'icon-pitch-alignment', headAlign as any);
           map.setLayoutProperty(headLayerId, 'visibility', 'visible');
         }
       } else {
@@ -1438,9 +1446,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
             'icon-image': headImgId,
             'icon-size': 1,
             'icon-rotate': ['get', 'rot'],
-            // 地图对齐（非 viewport）：箭头固定在地图世界空间，地图旋转/倾斜时与线同步，不跟镜头转
-            'icon-rotation-alignment': 'map',
-            'icon-pitch-alignment': 'map',
+            // 普通=地图对齐（贴地随地图转）；飞行=屏幕对齐（与 3D 圆管同姿态，不压扁）
+            'icon-rotation-alignment': headAlign,
+            'icon-pitch-alignment': headAlign,
             'icon-anchor': 'center',
             'icon-allow-overlap': true,
             'icon-ignore-placement': true,
