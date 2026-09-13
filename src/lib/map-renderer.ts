@@ -1396,14 +1396,11 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       if (bw && bw.length >= 2) { tipLL = bw[bw.length - 1]; prevLL = bw[bw.length - 2]; }
       else { tipLL = marchHead; prevLL = effective[0] as [number, number]; }
     }
-    const a = map.project(prevLL);
-    const b = map.project(tipLL);
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    const len = Math.hypot(dx, dy) || 1;
-    dx /= len; dy /= len;
-    // 像素角度：project 已含 bearing/投影，viewport 对齐直接用屏幕角
-    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    // 地理方位角（从北顺时针，turf.bearing）：**与地图旋转/倾斜无关** → 箭头始终沿线的真实走向。
+    // 此前用 map.project 的屏幕角 + viewport 对齐，导致箭头跟着镜头转（与线不一致）。
+    const az = turf.bearing(turf.point(prevLL as any), turf.point(tipLL as any));
+    // 三角图基准朝右（地理东 = 方位角 90°），map 对齐下顺时针旋转量 = az - 90
+    const angleDeg = az - 90;
     const size = (element.lineWidth || 8) * 3;
     const color = element.lineColor || '#FF0000';
     const headImgId = `line-head-img-${element.id}`;
@@ -1421,6 +1418,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         (map.getSource(headSrcId) as GeoJSONSource).setData(headData);
         if (map.getLayer(headLayerId)) {
           map.setLayoutProperty(headLayerId, 'icon-rotate', ['get', 'rot'] as any);
+          // 地图对齐：箭头随地图旋转/倾斜（贴地），与线融为一体
+          map.setLayoutProperty(headLayerId, 'icon-rotation-alignment', 'map' as any);
+          map.setLayoutProperty(headLayerId, 'icon-pitch-alignment', 'map' as any);
           map.setLayoutProperty(headLayerId, 'visibility', 'visible');
         }
       } else {
@@ -1431,7 +1431,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
             'icon-image': headImgId,
             'icon-size': 1,
             'icon-rotate': ['get', 'rot'],
-            'icon-rotation-alignment': 'viewport',
+            // 地图对齐（非 viewport）：箭头固定在地图世界空间，地图旋转/倾斜时与线同步，不跟镜头转
+            'icon-rotation-alignment': 'map',
+            'icon-pitch-alignment': 'map',
             'icon-anchor': 'center',
             'icon-allow-overlap': true,
             'icon-ignore-placement': true,
