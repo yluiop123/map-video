@@ -1196,13 +1196,13 @@ function RouteSettings({ element, patch, chapter }: {
       patch({
         type: 'line', coordinates: coords.length >= 2 ? coords : [[104, 35], [105, 36]],
         lineType: 'straight', lineArrow: true, drawProgress: [{ frame: start, value: 1 }],
-        lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const,
+        lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const, plainPath: undefined,
       } as Partial<MapElement>);
     } else if (s === 'curved-arrow') {
       patch({
         type: 'line', coordinates: coords.length >= 2 ? coords : [[104, 35], [105, 36]],
         lineType: 'bezier', lineArrow: true, drawProgress: [{ frame: start, value: 1 }],
-        lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const,
+        lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const, plainPath: undefined,
       } as Partial<MapElement>);
     } else if (s === 'military-arrow') {
       const pts = coords.length >= 2 ? coords : [[104, 35], [105, 36]];
@@ -1210,7 +1210,7 @@ function RouteSettings({ element, patch, chapter }: {
         type: 'arrow', from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], path: pts.map(p => [p[0], p[1]]),
         arrowType: 'curved', width: 15, color: colorOf,
         progress: [{ frame: start, value: 1 }], drawZoom: undefined,
-        shapeCategory: 'route' as const,
+        shapeCategory: 'route' as const, plainPath: undefined, lineArrow: undefined,
       } as Partial<MapElement>);
     } else if (s === 'military-simple') {
       const pts = coords.length >= 2 ? coords : [[104, 35], [105, 36]];
@@ -1218,7 +1218,7 @@ function RouteSettings({ element, patch, chapter }: {
         type: 'arrow', from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], path: pts.map(p => [p[0], p[1]]),
         arrowType: 'curved-simple', width: 15, color: colorOf,
         progress: [{ frame: start, value: 1 }], drawZoom: undefined,
-        shapeCategory: 'route' as const,
+        shapeCategory: 'route' as const, plainPath: undefined, lineArrow: undefined,
       } as Partial<MapElement>);
     } else {
       patch({
