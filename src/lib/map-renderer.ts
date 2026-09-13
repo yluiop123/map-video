@@ -2509,14 +2509,13 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   if (flyActiveA) {
     const rail = arrowRailOf(element);
     const railIdx = buildRailIndex(rail);
-    let flyRings = rings.map((ring) => subdivFlyRing(ring, railIdx)).filter((r) => r.coords.length >= 3);
-    // 动画初期（grow/move/fill 起始帧）裁剪出的几何可能不足以成环 → 飞行模式下用完整几何兜底，
-    // 否则贴地层被隐藏而拱上又无几何，整条箭头会完全不可见
-    if (flyRings.length === 0) {
-      flyRings = buildArrowGeometry(element.from, element.to, geoWidth, element.arrowType, element.path)
-        .map((ring) => subdivFlyRing(ring, railIdx))
-        .filter((r) => r.coords.length >= 3);
-    }
+    // 飞行模式：箭头**始终用完整几何**，不随增长动画裁剪。原因：
+    //   ① 头部位于路径末端，裁剪后头部缺失 → 箭头看不见（grow/move/fill 全中招）；
+    //   ② 条带的弧长比例只到动画进度、头部固定在 f≈1（终点），高度剖面断裂 → 视觉两段。
+    // 完整几何下条带与头部共享同一条 0→1 弧线剖面，自然连成一体。
+    const flyRings = buildArrowGeometry(element.from, element.to, geoWidth, element.arrowType, element.path)
+      .map((ring) => subdivFlyRing(ring, railIdx))
+      .filter((r) => r.coords.length >= 3);
     if (flyRings.length > 0) {
       try { if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none'); } catch { /* */ }
       try { if (map.getLayer(strokeLayerId)) map.setLayoutProperty(strokeLayerId, 'visibility', 'none'); } catch { /* */ }
