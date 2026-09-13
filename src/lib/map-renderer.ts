@@ -263,6 +263,22 @@ function makeDotImageData(color: string): ImageData {
 }
 
 /** 线末端三角箭头图标：像素作图中轴指向右侧，以 viewport 对齐呈现（不受 zoom/投影影响） */
+/**
+ * 带箭头路线：三角头尺寸（px）。
+ * **平面三角贴图与飞行立体锥共用同一尺寸**（长 = 底宽 = 返回值），保证两种模式样式一致。
+ * 下限 24px 避免细线时箭头小到看不清。
+ */
+function arrowTriSizePx(lineWidth?: number): number {
+  return Math.max(24, (lineWidth || 8) * 4);
+}
+
+/**
+ * march / marchplain（填充行进 / 行进）中**深色定长亮段**占全长的比例。
+ * 路线元素与箭头元素共用同一比例，避免同类动画长度不一致。
+ * 0.35 为原始值，现按需求缩短为三分之一。
+ */
+const MARCH_LEN_FRAC = 0.35 / 3;
+
 function makeTriangleImage(color: string, size: number): ImageData {
   const pad = 2;
   const w = Math.max(4, Math.ceil(size + pad * 2));
@@ -961,8 +977,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const effective = lineEffectiveCoordinates(element);
   const isPlain = !!element.plainPath;
 
-  // march 行进：定长亮段沿路线推进（头部前进），走过的消失，剩余段半透明不断变短
-  const MARCH_FRAC = 0.35;
+  // march 行进：定长亮段沿路线推进（头部前进），走过的消失，剩余段半透明不断变短。
+  // 深色定长亮段长度 = 总长 × MARCH_LEN_FRAC（已缩短为原 0.35 的三分之一）。
+  const MARCH_FRAC = MARCH_LEN_FRAC;
   let marchBright: any = null;
   let marchBase: any = null;
   let marchHead: [number, number] | null = null;
@@ -1079,13 +1096,10 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         heightM: flyHeightM,
         // 带箭头路线：飞行模式下头部由 3D 锥体几何生成（与管同一光照/深度测试，真立体，
         // 随拱形浮在空中），不再使用 symbol 层的平面三角贴图。
-        // 尺寸按线宽走（长 5×线宽、底半径 2×线宽 → 底宽 4×线宽，明显大于管径 1.8×线宽）；
-        // 细线给下限，避免箭头小到看不清。
+        // 头部尺寸与平面三角贴图**完全同一来源**（长 = 底宽 = arrowTriSizePx，底半径取一半）
+        // → 飞行立体锥与非飞行平面三角样式一致，仅空间姿态不同
         ...(element.lineArrow
-          ? {
-              headLenPx: Math.max(24, (element.lineWidth || 8) * 5),
-              headRadPx: Math.max(8, (element.lineWidth || 8) * 2),
-            }
+          ? { headLenPx: arrowTriSizePx(element.lineWidth), headRadPx: arrowTriSizePx(element.lineWidth) / 2 }
           : {}),
       });
     } else {
@@ -1139,6 +1153,10 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   // 飞行拱形：浅色部分（fill 的完整线 / march 的剩余段）**同样走拱形**（带 heightM）——
   // 之前贴地显示会形成"空中深色一段 + 地面浅色一段"的双影；抬升后浅色部分沿同一条拱弧延续。
   if (flyActive && ((anim === 'fill' && !isPlain) || (isMarch && !isPlain && marchBase))) {
+    // 飞行模式：2D 浅色层**无条件隐藏**（浅色段改由 3D 管绘制）——
+    // 不能只在 ghost 切片有效时隐藏，否则切片异常/首帧会露出贴地的平面浅色线，
+    // 与空中的立体管形成"平地 + 空中"双影（观感上就是"浅色段是平的"）。
+    try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
     let ghostCoords: [number, number][] | undefined;
     if (anim === 'fill') {
       // 浅色段**从当前进度点到终点**（与深色主线首尾相接、不重叠）
@@ -1150,7 +1168,6 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       ghostCoords = marchBase?.features?.[0]?.geometry?.coordinates as [number, number][] | undefined;
     }
     if (ghostCoords && ghostCoords.length >= 2) {
-      try { if (map.getLayer(fillLayerId)) map.setLayoutProperty(fillLayerId, 'visibility', 'none'); } catch { /* */ }
       setFlyRibbon(map, `${element.id}|ghost`, {
         // 高度剖面必须用**全路线绝对弧长分数**：ghostCoords 是「从进度点切到终点」的切片，
         // 若从 0 起算会重走一遍「贴地→爬升」剖面（浅色段像另一条低弧、与主线错开）。
@@ -1158,7 +1175,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         paths: [{ coords: ghostCoords, f: geodesicFracAbs(ghostCoords, flyFullKm).map((v) => Math.min(1, v + flyFracB)) }],
         color: element.lineColor || '#FF0000',
         widthPx: element.lineWidth || 8,
-        opacity: 0.35,
+        // 与主线同为 3D 管（同一光照/深度）。不透明度不宜过低——太透会盖掉管的明暗，
+        // 立体感消失（看起来像平面线）；0.5 既与深色主线区分，又保留体积感。
+        opacity: 0.5,
         dash: element.lineDashArray,
         heightM: flyHeightM,
       });
@@ -1418,7 +1437,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     //   飞行模式下该层整体隐藏，头部改由 fly-ribbon 的 3D 锥体几何绘制（真立体，见主线 ribbon）。
     const az = turf.bearing(turf.point(prevLL as any), turf.point(tipLL as any));
     const angleDeg = az - 90;   // 三角图基准朝右（地理东 = 方位角 90°）
-    const size = (element.lineWidth || 8) * 3;
+    const size = arrowTriSizePx(element.lineWidth);
     const color = element.lineColor || '#FF0000';
     const headImgId = `line-head-img-${element.id}`;
     try {
@@ -2404,7 +2423,8 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     const railLine = turf.lineString(rail as any);
     const total = turf.length(railLine);
     if (total > 0) {
-      const L = total * 0.35;
+      // 深色定长亮段：与路线元素共用 MARCH_LEN_FRAC（同样已缩短为原值的三分之一）
+      const L = total * MARCH_LEN_FRAC;
       const h = L + (total - L) * growProgress;
       const win = turf.lineSliceAlong(railLine, Math.max(0, h - L), h).geometry.coordinates as [number, number][];
       if (win.length >= 2) {
