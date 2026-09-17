@@ -59,6 +59,16 @@ erDiagram
     text plots_json
     text events_json
   }
+  ELEMENT_IMAGE {
+    text element_id PK
+    text project_id FK
+    text type "geo_image"
+    text asset_id "全局素材库 弱引用"
+    int cols
+    int rows
+    text grid_json "控制点网格"
+    real opacity
+  }
   CAMERA_KEYFRAME {
     text kf_id PK
     text project_id FK
@@ -104,6 +114,7 @@ erDiagram
   PROJECT ||--o{ ELEMENT_ROUTE : "1:N 路线(Route)"
   PROJECT ||--o{ ELEMENT_SHAPE : "1:N 形状(Shape)"
   PROJECT ||--o{ ELEMENT_TERRITORY : "1:N 疆域(Terr)"
+  PROJECT ||--o{ ELEMENT_IMAGE : "1:N 贴图(Image)"
   PROJECT ||--o{ CAMERA_KEYFRAME : "1:N 视角关键帧"
   PROJECT ||--o{ SCREEN_FX : "1:N 特效窗口"
   PROJECT ||--|| NARRATION : "1:1 字幕档"

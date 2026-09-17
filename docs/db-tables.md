@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 14 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 4 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 15 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：14 张表 · 4 张元素类别宽表 · 3 个视图 · 0 个触发器 · 365 列（外键全部有索引）
+- **规模**：15 张表 · 5 张元素类别宽表 · 3 个视图 · 0 个触发器 · 379 列（外键全部有索引）
 
 **目录**
 
-- 一、14 张表的构成与分流规则
+- 一、15 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、14 张表逐表速查（按 9 组）
+- 三、15 张表逐表速查（按 10 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图，以及为什么没有触发器
 
-## 一、14 张表的构成与分流规则
+## 一、15 张表的构成与分流规则
 
-**14 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**15 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,7 +28,7 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 14 张表的构成
+#### 一句话理解 15 张表的构成
 
 - **4 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
 - **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
@@ -50,8 +50,8 @@
 | `elevationMaps[].exaggeration`（面板滑动条可调） | `project.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–50，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
 | `customSymbols[]` / `customImages[]`（图标库 / 图片库登记） | `asset`（`kind='icon'` / `kind='image'`） | **三表已合并**：两者都只是项目收录的一个素材行，二进制走 P4 外置 |
 | `chapters[]` | `chapter` | P1 |
-| `chapters[].elements[]` | `element_marker` / `element_route` / `element_shape` / `element_territory`（4 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表） |
-| `elements[].style` / `drawProgress` / `morphKeyframes`（关键帧数组） | 4 张类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
+| `chapters[].elements[]` | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`（5 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表） |
+| `elements[].style` / `drawProgress` / `morphKeyframes`（关键帧数组） | 类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
 | `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：1:1 且可选，跟随元素整体读写 |
 | `chapters[].camera[]` | `camera_keyframe` | P2；`followRoute.routeElementId` 变成外键（删路线 → 退化为固定视角） |
 | `chapters[].overlays[]` | `overlay` | P2：本体一张；custom / person 的内容块内联在 `payload_json`（原两张中间表已删除） |
@@ -59,13 +59,14 @@
 | `chapters[].narration`（`NarrationTrack`） | `narration` + `narration_entry` | P2：档（样式/1:1）+ 条目（1:N） |
 | `music[]`（项目级） | `music_track` | P2；音频本体走 `asset` |
 | `territory` 元素内的 `countries / plots / events` | `element_territory` 的 `countries_json` / `plots_json` / `events_json` | P3 内联：疆域自包含、整体读写；代价是失去复合外键，由 `v_check_territory_ref` 视图兜底 |
+| `geo_image` 元素（地理配准贴图） | `element_image` 的 `grid_json` | P3 内联：控制点网格 `(rows+1)×(cols+1)`（2×2=四角投影，更大=网格变形）；图片本体走**全局素材库**（`asset_id` 弱引用、无外键） |
 | （二进制素材） | `asset` | P4 外置存储：图片 / 音频 / 视频 / 字体统一入表，业务表只留 `asset_id` |
 | `providers` | `provider` | 独立聚合；「每 kind 至多一条 active」由部分唯一索引保证 |
 
 > 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目与章节只保存所选配置的 id 字符串（`project.active_base_map_id` / `chapter.base_map_id`）。
 > **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、14 张表逐表速查（按 9 组）
+## 三、15 张表逐表速查（按 10 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
@@ -139,13 +140,21 @@
 |---|---|---|---|
 | `element_territory` | `element_id` | Terr：新建疆域 / 绘制地块 / 兼并 | `display_json` 显示配置 + 三个 JSON 列承载原 `territory_*` 四张表的全部内容；`plot.ownerId` / `event.toCountryId` 的合法性由 `v_check_territory_ref` 视图校验 |
 
-### 组 8 · 叠加层（弹窗） 1 张
+### 组 8 · 贴图类元素 1 张 Image 工具
+
+工具条「图片」按钮：导入图片 / 从全局素材库插入，在地图上拖控制点做地理配准。图片本体存**全局素材库**（跨项目），本表只存配准参数（控制点网格 `grid_json`）。
+
+| 表 | 主键 | 工具入口 | 职责 |
+|---|---|---|---|
+| `element_image` | `element_id` | Image（工具栏「图片」） | `grid_json` 控制点网格 `(rows+1)×(cols+1)`（`cols/rows=1` = 四角投影；更大 = 网格变形）；`asset_id` 为全局素材库弱引用（无外键）；`opacity` 不透明度 |
+
+### 组 9 · 叠加层（弹窗） 1 张
 
 | 表 | 职责 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
 | `overlay` | 弹窗本体（10 类：文本/图片/图表/人物/对话…） | `overlay_id` | 图表/时间轴/对话等内容按 P3 留在 `payload_json` | 「弹窗」面板（`FxPanelBody.tsx`）+ 画面渲染 `fx/FxRender.tsx` OverlayContentView |
 
-### 组 9 · 应用配置 1 张
+### 组 10 · 应用配置 1 张
 
 | 表 | 职责 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
@@ -154,9 +163,9 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **14 张表 / 365 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，365 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **15 张表 / 379 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，379 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
-> 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。
+> 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
 > 读法：**列**为字段名；**约束**中 `PK` 主键、`NOT NULL` 必填、`FK` 外键（其后为删除行为：CASCADE 级联删除 / SET NULL 置空 / RESTRICT 拒绝删除）。
 
@@ -169,8 +178,9 @@
 - **组 5 · 路线类元素（Route 工具）**：`element_route`
 - **组 6 · 形状类元素（Shape 工具）**：`element_shape`
 - **组 7 · 疆域类元素（Terr 工具）**：`element_territory`
-- **组 8 · 叠加层（弹窗）**：`overlay`
-- **组 9 · 应用配置**：`provider`
+- **组 8 · 贴图类元素（Image 工具）**：`element_image`
+- **组 9 · 叠加层（弹窗）**：`overlay`
+- **组 10 · 应用配置**：`provider`
 
 ### 组 1 · 合集与项目（含配置）
 
@@ -678,7 +688,36 @@
 
 - `CHECK (end_sec >= start_sec)`
 
-### 组 8 · 叠加层（弹窗）
+### 组 8 · 贴图类元素（Image 工具）
+
+#### element_image
+
+**职责**：贴图元素：地理配准图片（控制点网格），图片存全局素材库、本表只存配准参数　**前端**：工具条「图片」（导入/素材库插入）+ 贴图属性面板（PropertiesPanel GeoImageSettings）
+
+14 列 · 主键 `element_id` · 工具入口：Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，类别表共享同一 id 空间） |
+| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `type` | TEXT | `NOT NULL` | 子类型判别列（固定 geo_image） · 默认 `'geo_image'` · `CHECK (type = 'geo_image')` |
+| `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
+| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
+| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
+| `asset_id` | TEXT | — | 图片素材 id（全局素材库，弱引用、无外键） |
+| `aspect` | REAL | — | 图片宽高比（宽/高），切片渲染用 · `CHECK (aspect IS NULL OR aspect > 0)` |
+| `cols` | INTEGER | `NOT NULL` | 配准网格列数（1=四角投影，≥2=网格变形） · 默认 `1` · `CHECK (cols >= 1)` |
+| `rows` | INTEGER | `NOT NULL` | 配准网格行数 · 默认 `1` · `CHECK (rows >= 1)` |
+| `grid_json` | TEXT | — | 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]） · `CHECK (grid_json IS NULL OR json_valid(grid_json))` |
+| `opacity` | REAL | — | 不透明度（0–1） · `CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1)` |
+| `ord` | INTEGER | `NOT NULL` | 同章内排序 · 默认 `0` |
+
+**表级约束**
+
+- `CHECK (end_sec >= start_sec)`
+
+### 组 9 · 叠加层（弹窗）
 
 #### overlay
 
@@ -716,7 +755,7 @@
 
 - `CHECK (end_sec >= start_sec)`
 
-### 组 9 · 应用配置
+### 组 10 · 应用配置
 
 #### provider
 

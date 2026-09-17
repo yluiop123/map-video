@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：14 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：15 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -117,7 +117,7 @@
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（14 张表，按结构分 9 组）
+### 2.2 实体清单（15 张表，按结构分 10 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
@@ -128,20 +128,21 @@
 | **5. 路线类元素** | `element_route` | type ∈ line / moving_point / connector |
 | **6. 形状类元素** | `element_shape` | type ∈ polygon / arrow / double_arrow / gathering / encirclement |
 | **7. 疆域类元素** | `element_territory` | type = territory；势力 / 地块 / 兼并事件 JSON 内联 |
-| **8. 叠加层** | `overlay` | 弹窗本体；custom / person 的内容块内联在 `payload_json`（原 overlay_block / person_block 已删除） |
-| **9. 应用配置** | `provider` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证 |
+| **8. 贴图类元素** | `element_image` | type = geo_image；地理配准图片（控制点网格 JSON 内联），图片本体走全局素材库 |
+| **9. 叠加层** | `overlay` | 弹窗本体；custom / person 的内容块内联在 `payload_json`（原 overlay_block / person_block 已删除） |
+| **10. 应用配置** | `provider` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证 |
 
-### 2.3 元素建模：按工具栏聚合的 4 张类别宽表
+### 2.3 元素建模：按工具栏聚合的 5 张类别宽表
 
-元素共 12 个子类型（point / flag / military_symbol / line / moving_point / connector / polygon / arrow / double_arrow / gathering / encirclement / territory）。它们**共享同一套公共字段**（id、章节、时间轴、可见性、层级、动画与移动配置），但**专有字段差异极大**（从 3 个到 47 个）。
+元素共 13 个子类型（point / flag / military_symbol / line / moving_point / connector / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、章节、时间轴、可见性、层级、动画与移动配置），但**专有字段差异极大**（从 3 个到 47 个）。
 
 三种映射方案的取舍：
 
 | 方案 | 结构 | 问题 |
 |---|---|---|
-| 单表继承（STI） | 一张 `element` 承载全部子类列 | 12 类字段合计 60+ 列，多数行大面积 NULL；**子类必填规则无法表达**（如「`shape = 'emoji'` 时 `emoji` 必填」），约束退化回应用层 |
-| 按类型拆表（1 基表 + 12 子表） | 主键共享的 CTI | 字段可各自约束，但 **`type` 判别列与子表行的一致性需要额外维护**；跨实体级联会留下孤儿基类行；表数量最多 |
-| **按工具栏聚合（采用）** | **4 张类别宽表**，表内 `type` 判别子类型 | 表数量少；同类别内共享列；子类型必填规则由 `type` + CHECK 表达 |
+| 单表继承（STI） | 一张 `element` 承载全部子类列 | 13 类字段合计 60+ 列，多数行大面积 NULL；**子类必填规则无法表达**（如「`shape = 'emoji'` 时 `emoji` 必填」），约束退化回应用层 |
+| 按类型拆表（1 基表 + 13 子表） | 主键共享的 CTI | 字段可各自约束，但 **`type` 判别列与子表行的一致性需要额外维护**；跨实体级联会留下孤儿基类行；表数量最多 |
+| **按工具栏聚合（采用）** | **5 张类别宽表**，表内 `type` 判别子类型 | 表数量少；同类别内共享列；子类型必填规则由 `type` + CHECK 表达 |
 
 **为什么按工具栏聚合**
 

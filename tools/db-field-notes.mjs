@@ -367,6 +367,22 @@ export default {
     "display_label_align": "标签朝向：map 随图 / viewport 面向镜头",
     "display_label_scale": "标签缩放倍数"
   },
+  "element_image": {
+    "element_id": "元素 id（全库唯一，类别表共享同一 id 空间）",
+    "project_id": "所属项目",
+    "type": "子类型判别列（固定 geo_image）",
+    "name": "元素名（与属性面板首字段 LABEL 同步）",
+    "visible": "是否显示（0/1）",
+    "start_sec": "出现时间（秒）",
+    "end_sec": "消失时间（秒）",
+    "asset_id": "图片素材 id（全局素材库，弱引用、无外键）",
+    "aspect": "图片宽高比（宽/高），切片渲染用",
+    "cols": "配准网格列数（1=四角投影，≥2=网格变形）",
+    "rows": "配准网格行数",
+    "grid_json": "控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]）",
+    "opacity": "不透明度（0–1）",
+    "ord": "同章内排序"
+  },
   "overlay": {
     "overlay_id": "弹窗 id",
     "project_id": "所属项目",

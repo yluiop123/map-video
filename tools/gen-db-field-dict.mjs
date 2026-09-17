@@ -40,8 +40,9 @@ const GROUPS = [
   ['组 5 · 路线类元素（Route 工具）', ['element_route']],
   ['组 6 · 形状类元素（Shape 工具）', ['element_shape']],
   ['组 7 · 疆域类元素（Terr 工具）', ['element_territory']],
-  ['组 8 · 叠加层（弹窗）', ['overlay']],
-  ['组 9 · 应用配置', ['provider']],
+  ['组 8 · 贴图类元素（Image 工具）', ['element_image']],
+  ['组 9 · 叠加层（弹窗）', ['overlay']],
+  ['组 10 · 应用配置', ['provider']],
 ];
 
 // 元素表的「工具入口」标注（事实源：src/components/Toolbar.tsx 的 TOOLS / SHAPE_GROUPS / TERR_ITEMS
@@ -52,6 +53,7 @@ const TOOL_ENTRY = {
   element_route: 'Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表；连接线无工具入口',
   element_shape: 'Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表',
   element_territory: 'Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）',
+  element_image: 'Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库',
   element_keyframe: '跨类别（所有元素共用，按 element_id 弱引用）',
 };
 
@@ -74,6 +76,7 @@ const TABLE_FRONTEND = {
   element_route: { role: '路线类元素：line / moving_point / connector', fe: '工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）' },
   element_shape: { role: '形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）', fe: '工具条「形状」下拉 + 形状属性面板' },
   element_territory: { role: '疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含', fe: '工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）' },
+  element_image: { role: '贴图元素：地理配准图片（控制点网格），图片存全局素材库、本表只存配准参数', fe: '工具条「图片」（导入/素材库插入）+ 贴图属性面板（PropertiesPanel GeoImageSettings）' },
   overlay: { role: '弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）', fe: '右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView' },
   overlay_block: { role: 'custom 类弹窗的内容块序列（逐块排序）', fe: '弹窗面板「自定义」类型的块编辑（FxPanelBody.tsx）' },
   person_block: { role: '人物卡片内容块（头像 / 姓名 / 简介 / 引言 / 对白 5 种）', fe: '弹窗面板「人物」类型的块编辑（FxPanelBody.tsx）' },
@@ -305,7 +308,7 @@ const cell = (s) => String(s == null ? '' : s).replace(/\|/g, '\\|').replace(/\s
 
 const out = [];
 out.push(`> 本节由 DDL 自动生成（\`tools/gen-db-field-dict.mjs\`），共 **${sqliteTables.length} 张表 / ${totalCols} 个列，每列都有中文说明**。字段说明取自 \`tools/db-field-notes.mjs\`（人工词表，${descStats.notes} 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。\n`);
-out.push('> 元素相关的 **4 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域），每张表用 `type` 判别列承载该工具下的全部元素类型；图片类（Image 工具）已下线。工具条的完整对照见本文第五节。\n');
+out.push('> 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。\n');
 out.push('> 读法：**列**为字段名；**约束**中 `PK` 主键、`NOT NULL` 必填、`FK` 外键（其后为删除行为：CASCADE 级联删除 / SET NULL 置空 / RESTRICT 拒绝删除）。\n');
 
 out.push('#### 快速跳转\n');

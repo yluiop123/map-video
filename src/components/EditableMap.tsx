@@ -1218,7 +1218,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
       }
       setHistoryMuted(true);
       snapshotHistory();
-      dragRef.current = { active: true, elementId: v.eid, x: e.point.x, y: e.point.y, vertex: v.idx };
+      dragRef.current = { active: true, elementId: v.eid, x: e.originalEvent?.clientX ?? e.point.x, y: e.originalEvent?.clientY ?? e.point.y, vertex: v.idx };
       skipClickRef.current = true;
       selectElement(v.eid);
       map.dragPan.disable();
@@ -1229,7 +1229,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
       // 拖拽开始前快照一次（绕过 700ms 节流）
       setHistoryMuted(true);
       snapshotHistory();
-      dragRef.current = { active: true, elementId: hit, x: e.point.x, y: e.point.y };
+      dragRef.current = { active: true, elementId: hit, x: e.originalEvent?.clientX ?? e.point.x, y: e.originalEvent?.clientY ?? e.point.y };
       dragMovedRef.current = false;
       selectElement(hit);
       map.dragPan.disable();
@@ -1325,6 +1325,18 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     const el = project.elements.find((x) => x.id === drag.elementId);
     if (el && (el.type === 'point' || el.type === 'flag') && previewMoveElementOnMap(map, el, pt)) {
       drag.pendingLngLat = pt;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      return;
+    }
+    // 贴图：按指针位移整体平移（保持抓取点在图片上的相对位置，不跳到左上角）
+    if (el && el.type === 'geo_image') {
+      const prev = map.unproject([drag.x - bbox.left, drag.y - bbox.top]);
+      const ddx = pt[0] - prev.lng;
+      const ddy = pt[1] - prev.lat;
+      const cur = useProjectStore.getState().project?.elements.find((x) => x.id === drag.elementId);
+      const g = (cur && cur.type === 'geo_image' ? cur.grid : el.grid).map((p) => [p[0] + ddx, p[1] + ddy] as [number, number]);
+      useProjectStore.getState().updateElement(el.id, { grid: g } as Partial<MapElement>);
       drag.x = e.clientX;
       drag.y = e.clientY;
       return;

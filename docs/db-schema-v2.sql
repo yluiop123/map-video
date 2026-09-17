@@ -512,6 +512,33 @@ CREATE TABLE IF NOT EXISTS element_territory (
 CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(project_id, ord);
 
 -- -----------------------------------------------------------------------------
+-- 4b. 贴图（地理配准图片）：工具栏「图片」产出
+--     图片本体存**全局素材库**（asset_id 弱引用，不入本表 / 也不做 FK）；
+--     本表只存配准参数：控制点网格（cols×rows，2×2=四角投影，更大=网格变形）。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS element_image (
+  element_id     TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
+  type           TEXT NOT NULL DEFAULT 'geo_image' CHECK (type = 'geo_image'),
+
+  name           TEXT NOT NULL DEFAULT '',
+  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
+  start_sec      REAL NOT NULL CHECK (start_sec >= 0),
+  end_sec        REAL NOT NULL,
+
+  asset_id       TEXT,                                          -- 全局素材库图片 id（弱引用，无 FK）
+  aspect         REAL CHECK (aspect IS NULL OR aspect > 0),      -- 图片宽高比（宽/高）
+  cols           INTEGER NOT NULL DEFAULT 1 CHECK (cols >= 1),  -- 网格列数
+  rows           INTEGER NOT NULL DEFAULT 1 CHECK (rows >= 1),  -- 网格行数
+  grid_json      TEXT CHECK (grid_json IS NULL OR json_valid(grid_json)),  -- (rows+1)×(cols+1) 控制点 [[lng,lat],…]
+  opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1),
+  ord            INTEGER NOT NULL DEFAULT 0,
+
+  CHECK (end_sec >= start_sec)
+);
+CREATE INDEX IF NOT EXISTS ix_element_image ON element_image(project_id, ord);
+
+-- -----------------------------------------------------------------------------
 -- 5. 元素动画关键帧：**已内联**进 4 张类别表的 keyframes_json（P3）
 --    运行时元素对象本就内联关键帧数组（drawProgress / morphKeyframes 等），
 --    独立成表反而需要「元素 ↔ 关键帧」的弱引用维护，故取消该表。
@@ -728,7 +755,11 @@ SELECT 'shape', element_id, project_id, type, name, visible,
 UNION ALL
 SELECT 'territory', element_id, project_id, type, name, visible,
        start_sec, end_sec, ord
-  FROM element_territory;
+  FROM element_territory
+UNION ALL
+SELECT 'image', element_id, project_id, type, name, visible,
+       start_sec, end_sec, ord
+  FROM element_image;
 
 -- 12.2 悬空引用自检（弱引用 + 外键未开启时应为 0；迁移后与老库体检）
 CREATE VIEW IF NOT EXISTS v_check_dangling AS

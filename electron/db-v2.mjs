@@ -41,7 +41,7 @@ export function ensureV2Schema(db) {
     if (legacy) {
       try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }
       for (const t of ['chapter', 'camera_keyframe', 'screen_fx', 'overlay', 'narration', 'narration_entry',
-        'element_marker', 'element_route', 'element_shape', 'element_territory', 'music_track', 'project', 'projects']) {
+        'element_marker', 'element_route', 'element_shape', 'element_territory', 'element_image', 'music_track', 'project', 'projects']) {
         try { db.exec(`DROP TABLE IF EXISTS ${t}`); } catch { /* 忽略 */ }
       }
       for (const v of ['v_element_index', 'v_check_dangling', 'v_check_territory_ref']) {
@@ -131,6 +131,7 @@ const ELEMENT_CATEGORY = {
   line: 'route', moving_point: 'route', connector: 'route',
   polygon: 'shape', arrow: 'shape', double_arrow: 'shape', gathering: 'shape', encirclement: 'shape',
   territory: 'territory',
+  geo_image: 'image',
 };
 
 /** 标签 → 列（label_*） */
@@ -500,6 +501,22 @@ function saveElementV2(db, chapterId, el, f2s) {
     });
     return;
   }
+  if (cat === 'image') {
+    const grid = Array.isArray(el.grid) ? el.grid : [];
+    db.prepare(`INSERT INTO element_image (
+      element_id, project_id, type, name, visible, start_sec, end_sec,
+      asset_id, aspect, cols, rows, grid_json, opacity, ord
+    ) VALUES (@element_id,@project_id,@type,@name,@visible,@start_sec,@end_sec,
+      @asset_id,@aspect,@cols,@rows,@grid_json,@opacity,@ord)`).run({
+      element_id: el.id, project_id: chapterId, type: el.type, name: el.name || '',
+      visible: b(el.visible !== false), start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
+      asset_id: n(el.assetId), aspect: n(el.aspect),
+      cols: Math.max(1, Math.round(el.cols || 1)), rows: Math.max(1, Math.round(el.rows || 1)),
+      grid_json: grid.length ? JSON.stringify(grid) : null,
+      opacity: n(el.opacity), ord: 0,
+    });
+    return;
+  }
   // territory
   const d = el.display || {};
   db.prepare(`INSERT INTO element_territory (
@@ -531,6 +548,7 @@ function saveElementV2(db, chapterId, el, f2s) {
       effect: e.effect ? { preset: e.effect.preset, duration_sec: e.effect.duration == null ? undefined : f2s(e.effect.duration), highlight: e.effect.highlight } : undefined,
     }))),
   });
+  return;
 }
 
 // ---------- 读取 ----------
@@ -673,6 +691,15 @@ function readElementsV2(db, chapterId, s2f) {
         effect: e.effect?.preset ? { preset: e.effect.preset, duration: e.effect.duration_sec == null ? undefined : s2f(e.effect.duration_sec), highlight: e.effect.highlight } : undefined,
       })),
       display: { countryBorders: r.display_country_borders !== 0, plotBorders: r.display_plot_borders !== 0, borderWidth: r.display_border_width, fillOpacity: r.display_fill_opacity, countryNames: r.display_country_names !== 0, plotNames: r.display_plot_names === 1, labelAlign: r.display_label_align, labelScale: r.display_label_scale },
+    });
+  }
+  for (const r of db.prepare('SELECT * FROM element_image WHERE project_id = ?').all(chapterId)) {
+    out.push({
+      id: r.element_id, type: 'geo_image', name: r.name, visible: r.visible !== 0,
+      startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec), style: {},
+      assetId: r.asset_id ?? undefined, aspect: r.aspect ?? 1,
+      cols: r.cols ?? 1, rows: r.rows ?? 1, grid: J(r.grid_json, []),
+      opacity: r.opacity ?? undefined,
     });
   }
   return out;
