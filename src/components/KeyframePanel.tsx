@@ -5,21 +5,20 @@ import { useEditorStore } from '../stores/editorStore';
 import { FrameTimeField } from './FrameTimeField';
 import { EASING_OPTIONS } from '../lib/easing-labels';
 import { Section, Field, OptionBlocks, Toggle, useT, NumberInput } from './ui/primitives';
-import type { CameraKeyframe, EasingType } from '../types';
+import type { CameraKeyframe, EasingType, MapVideoProject } from '../types';
 
 /**
- * 镜头关键帧属性面板（选中底部 Storyboard 卡片时出现在右侧）
+ * 镜头关键帧属性面板（选中视角属性面板时出现在右侧）
  */
-export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnType<typeof useProjectStore.getState>['project']>['chapters'][number]; index: number }) {
+export function KeyframePanel({ project, index }: { project: MapVideoProject; index: number }) {
   const fps = useProjectStore((s) => s.project?.globalConfig.defaultFPS ?? 30);
-  const setChapterCamera = useProjectStore((s) => s.setChapterCamera);
-  const selectChapter = useEditorStore((s) => s.selectChapter);
+  const setProjectCamera = useProjectStore((s) => s.setProjectCamera);
   const setCurrentFrame = useEditorStore((s) => s.setCurrentFrame);
   const selectKeyframe = useEditorStore((s) => s.selectKeyframe);
   const t = useT();
   const confirm = useConfirm();
 
-  const kfs = [...(chapter.camera || [])].sort((a, b) => a.frame - b.frame);
+  const kfs = [...(project.camera || [])].sort((a, b) => a.frame - b.frame);
   const kf = kfs[index];
   const isFollow = !!kf && (kf.cameraType === 'follow' || !!kf.followRoute);
   const isOrbit = !!kf && (kf.cameraType === 'orbit' || !!kf.orbit);
@@ -29,7 +28,7 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
   }
 
   const patchKf = (changes: Partial<CameraKeyframe>) => {
-    setChapterCamera(chapter.id, kfs.map((k, i) => (i === index ? { ...k, ...changes } : k)));
+    setProjectCamera(kfs.map((k, i) => (i === index ? { ...k, ...changes } : k)));
   };
 
   /** 删除本关键帧（起始帧锚定不可删） */
@@ -37,16 +36,16 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
     if (index === 0) return;
     const ok = await confirm({ message: `删除「视角 ${index + 1}」？`, danger: true, confirmText: '删除' });
     if (!ok) return;
-    setChapterCamera(chapter.id, kfs.filter((_, i) => i !== index));
+    setProjectCamera(kfs.filter((_, i) => i !== index));
     selectKeyframe(null);
   };
 
   // ===== 时间约束：必须落在 [上一帧+1, 下一帧-1] 且在本章范围内 =====
   const MIN_GAP = 1; // 相邻关键帧最小间隔（帧）
-  const prevF = index > 0 ? kfs[index - 1].frame : chapter.startFrame;
-  const nextF = index < kfs.length - 1 ? kfs[index + 1].frame : chapter.endFrame;
-  const lo = Math.max(chapter.startFrame, index === 0 ? chapter.startFrame : prevF + MIN_GAP);
-  let hi = Math.min(chapter.endFrame, nextF - MIN_GAP);
+  const prevF = index > 0 ? kfs[index - 1].frame : 0;
+  const nextF = index < kfs.length - 1 ? kfs[index + 1].frame : project.endFrame;
+  const lo = Math.max(0, index === 0 ? 0 : prevF + MIN_GAP);
+  let hi = Math.min(project.endFrame, nextF - MIN_GAP);
   if (hi < lo) hi = lo; // 区间过窄时兜底
 
   const gapFrames = Math.max(0, kf.frame - prevF); // 与上一帧的间隔
@@ -70,9 +69,9 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
   };
 
   const jumpTo = () => {
-    selectChapter(chapter.id);
+    
     setCurrentFrame(Math.round(kf.frame));
-    const startF = index > 0 ? kfs[index - 1].frame : chapter.startFrame;
+    const startF = index > 0 ? kfs[index - 1].frame : 0;
     const moveFrames = typeof kf.moveDuration === 'number' ? Math.min(kf.moveDuration, kf.frame - startF) : kf.frame - startF;
     const dur = Math.max(0.2, Math.min(6, moveFrames / fps));
     useEditorStore.getState().seekCamera(
@@ -114,7 +113,7 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
                   onFrameChange={(f) => patchKf({ followRoute: { routeElementId: kf.followRoute?.routeElementId || '', startFrame: Math.round(f) } })} />
               </Field>
               <Field label={t('结束时间', 'End Time')}>
-                <FrameTimeField value={kf.followRoute?.endFrame ?? chapter.endFrame} fps={fps}
+                <FrameTimeField value={kf.followRoute?.endFrame ?? project.endFrame} fps={fps}
                   onFrameChange={(f) => patchKf({ followRoute: { routeElementId: kf.followRoute?.routeElementId || '', endFrame: Math.round(f) } })} />
               </Field>
             </div>
@@ -125,7 +124,7 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
               <FrameTimeField value={kf.frame} fps={fps} onFrameChange={patchTime} />
             </Field>
             <Field label={t('持续时间 (秒)', 'Duration (s)')}>
-              <NumberInput value={kf.orbit?.duration ?? 2} min={0.1} max={60} className="input"
+              <NumberInput value={(kf.orbit?.duration ?? 2).toFixed(2)} min={0.1} max={60} className="input"
                 onCommit={(v) => patchKf({ orbit: { ...(kf.orbit || {}), duration: Math.max(0.1, v) } })} />
             </Field>
           </div>
@@ -147,7 +146,7 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
             <Field label={t('到达时间 (秒)', 'Arrival Time (s)')}>
               <FrameTimeField value={kf.frame} fps={fps} onFrameChange={patchTime} />
               <p className="text-[11px] text-muted-foreground mt-1">
-                允许 {((lo - chapter.startFrame) / fps).toFixed(1)}s – {((hi - chapter.startFrame) / fps).toFixed(1)}s（不得越过相邻视角）
+                允许 {((lo - 0) / fps).toFixed(1)}s – {((hi - 0) / fps).toFixed(1)}s（不得越过相邻视角）
               </p>
             </Field>
             <Field label={t('移动持续时长 (秒，默认 2s)', 'Move Duration (s, default 2s)')}>
@@ -173,7 +172,7 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
           const isOrbit = kf.cameraType === 'orbit' || !!kf.orbit;
           // 跟随：路线选择 + 开始/结束时间 + 缩放 + 俯仰 + 方向开关
           if (isFollow) {
-            const routeEls = chapter.elements.filter((e) => e.type === 'line' || e.type === 'moving_point' || e.type === 'arrow');
+            const routeEls = project.elements.filter((e) => e.type === 'line' || e.type === 'moving_point' || e.type === 'arrow');
             const selRouteId = kf.followRoute?.routeElementId || (routeEls[0] && routeEls[0].id) || '';
             return (
               <div className="space-y-3">
@@ -190,7 +189,7 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
                       onFrameChange={(f) => patchKf({ followRoute: { ...(kf.followRoute || { routeElementId: selRouteId }), startFrame: f } })} />
                   </Field>
                   <Field label={t('结束时间', 'End Time')}>
-                    <FrameTimeField value={kf.followRoute?.endFrame ?? chapter.endFrame} fps={fps}
+                    <FrameTimeField value={kf.followRoute?.endFrame ?? project.endFrame} fps={fps}
                       onFrameChange={(f) => patchKf({ followRoute: { ...(kf.followRoute || { routeElementId: selRouteId }), endFrame: f } })} />
                   </Field>
                 </div>
@@ -235,10 +234,6 @@ export function KeyframePanel({ chapter, index }: { chapter: NonNullable<ReturnT
                 <Field label={t('旋转速度 (度/秒)', 'Rotate Speed (deg/s)')}>
                   <NumberInput value={kf.orbit?.speed ?? 45} step="1" min="1" max="360" className="input"
                     onCommit={(v) => patchKf({ orbit: { ...(kf.orbit || {}), speed: clamp(v, 1, 360) } })} />
-                </Field>
-                <Field label={t('环绕时间 (秒)', 'Orbit Duration (s)')}>
-                  <NumberInput value={kf.orbit?.duration ?? 2} step="0.1" min="0.1" max="60" className="input"
-                    onCommit={(v) => patchKf({ orbit: { ...(kf.orbit || {}), duration: Math.max(0.1, v) } })} />
                 </Field>
               </div>
             );

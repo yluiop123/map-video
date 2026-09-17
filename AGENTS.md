@@ -5,7 +5,7 @@
 
 ## 1. 项目是什么
 
-**MapVideo**：基于 Remotion + MapLibre GL 的「地图视频」生成框架。用户在浏览器编辑器里用军事态势符号（箭头/包围圈/集结点）、路线动画、区域高亮、相机关键帧、弹出元素等制作分章节的地图讲解视频，并可在浏览器内直接导出 MP4。
+**MapVideo**：基于 Remotion + MapLibre GL 的「地图视频」生成框架。用户在浏览器编辑器里用军事态势符号（箭头/包围圈/集结点）、路线动画、区域高亮、相机关键帧、弹出元素等制作地图讲解视频（项目=单条连续时间线），并可在浏览器内直接导出 MP4。
 
 ## 2. 技术栈与关键版本
 
@@ -36,41 +36,47 @@ npm run dist:win       # 打 Windows 包 → release/
 ```
 components/
   EditableMap.tsx      # 编辑态地图画布：绘制交互/拖拽/选中/相机插值/悬停光标（最复杂的文件）
-  Toolbar.tsx          # 导出两个组件：TopBar(顶栏 Logo/项目芯片/章节菜单/搜索/撤销重做/保存/导出) + FloatingTools(地图上方浮动工具条：选择+六工具)
+  Toolbar.tsx          # 导出两个组件：TopBar(顶栏 Logo/项目芯片/搜索/撤销重做/保存/导出/一键生成) + FloatingTools(地图上方浮动工具条：选择+六工具)
   MapStyleChip.tsx     # 地图左下角底图芯片（Mapimator SATELLITE 样式）：弹出 底图/高程/3D投影 面板
   ChapterMenu.tsx      # 顶栏章节弹出菜单：切换/重命名/复制/删除/新增/章节设置
   ShortcutsDialog.tsx  # 快捷键速查弹窗（时间线「快捷键」按钮触发）；改键盘绑定需同步此文件内容
   MapSearchBox.tsx     # 地名/坐标搜索，内嵌顶栏（项目芯片右侧）；地图实例经 lib/shared-map.ts 共享，EditableMap load/unload 时 set
+  FxPanelBody.tsx      # 特效面板主体：天气/画面/弹窗/字幕/音乐 五页签（见 §5）；含 AI 文案/配音/音乐/服务配置内联弹窗
+  GenerateDialog.tsx   # 顶栏「一键生成」：需求 → LLM 整片一条脚本（字幕/弹窗/特效/元素）→ 确认后可选配音/配图
   TimelineEditor.tsx   # 播放条(播放预览胶囊+步进+元素面板开关) + 镜头流块(宽=移动时长) + 元素轨道；刻度间隔随时长自适应
   KeyframePanel.tsx    # 右侧「视角属性」：到达时间/移动时长(默认2s)/中心/缩放(1位小数)/俯仰/方向/缓动
   PropertiesPanel.tsx  # Mapimator 式 Settings 面板（Pin/Route/Shape/Image 四类，见 §5）
   ElementsPanel.tsx    # 左侧浮动元素面板：搜索/眼睛显隐/副标题/GeoJSON-GPX 导入/底部统计（由右下「元素」按钮开合）
-  App.tsx              # 布局：TopBar + 全幅地图舞台(浮动工具条/元素浮层/右侧浮层) + 时间线 + 底部章节卡片
+  App.tsx              # 布局：TopBar + 全幅地图舞台(浮动工具条/元素浮层/右侧浮层) + 时间线
   ui/primitives.tsx    # 共享 UI 原子：Section/Field/StyleGrid/Toggle/ColorPicker/OptionBlocks/PanelHeader（勿在各面板重复定义）
   RegionPickerDialog.tsx / FrameTimeField.tsx / Storyboard.tsx(已废弃文件仍存在) 等
-compositions/          # Remotion 导出端：MapVideo(章节调度+转场) / MapScene / OverlayRenderer / transition.ts
+compositions/          # Remotion 导出端：MapVideo(单轴渲染) / MapScene / OverlayRenderer
 lib/
   map-renderer.ts      # ★ 核心：所有地图元素的渲染（点7样式/路线/形状/标签位图/动画）
   keyframe-interpolation.ts  # 相机/通用关键帧插值（含 moveDuration 停留-飞行语义）
+  camera-plan.ts       # 确定性镜头编排（起点概览→推近落位；无需 AI，产出普通 CameraKeyframe 可再编辑）
   military-plots.ts / military-geometry.ts  # 移植自 plot_ol 的军标算法（燕尾/钳形/进攻/集结地）
   regions.ts           # 行政区边界加载与点选/按名查找（默认 johan world.geo.json，可换源）
+  gazetteer.ts         # 本地地名库 + 文本抽地名（无需 AI/离线）；生成时→相机中心 + 自动落点标记
+  geocode.ts           # 联网地理编码（Nominatim，与顶栏搜索同源）；本地库未命中时兜底，查不到→用户手填坐标
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
 stores/
   projectStore.ts      # 项目数据全部操作 + 撤销/重做 + IndexedDB(dexie) 持久化
-  editorStore.ts       # 播放头 currentFrame / isPlaying / 选中元素与章节 / currentCamera / cameraSeek / elementsOpen
+  editorStore.ts       # 播放头 currentFrame / isPlaying / 选中元素 / currentCamera / cameraSeek / elementsOpen
   interactionStore.ts  # 绘制模式 + pendingPlace(一键中心放置) + focusReq
 types/index.ts         # 全部数据模型（改数据结构先看这里）
 ```
 
 ## 5. 领域模型速记
 
-- **Chapter**：startFrame/endFrame（绝对帧）、title/subtitle、elements、camera(视角关键帧)、overlays、transition、特效。章节页签=横向 tabs；时间线只显示当前章节。
+- **项目（单条连续时间线）**：`startFrame`恒 0、`endFrame`为总长；`elements/camera/overlays/fx/narration/music` 全用**项目绝对帧**；底图/高程/投影项目固定。
 - **MapElement** 判别联合：point(5种形态: shape=dot/pin/bubble/emoji/text；可带 iconUrl 自定义图)、line(straight/bezier/arc + label + routeEffect + flowSpeed)、moving_point(path+pathProgress)、polygon(shapeKind=poly/rect/circle + circleMeta/rectMeta)、arrow(7种箭头)、double_arrow、encirclement、gathering、flag、connector、military_symbol、territory。（**custom_icon 类型与 Image 工具已于 2026-09-10 下线**；旧数据由 `normalizeChapters` 在 load/import 时退化为 point）
 - **CameraKeyframe**：frame=**到达时间**（绝对帧）；`moveDuration`(帧)=起飞提前量，**默认 2*fps**；语义=停留→飞行→落位（`interpolateCamera(kfs, frame, fps)`）。
 - **LabelConfig**：text/color/position(上左下右中)/bgColor(默认透明)/bgPadding/bgRadius/fontWeight。渲染=canvas 气泡位图（makeBubbleImageData，仅 BUBBLE 样式带尾巴）。
 - **PointElement 特有**：shape、emoji、scale(0.3–3 等比缩放点+label)、orientation(faceCam/flat)、rotation(贴地旋转)、iconUrl、label。
+- **背景音乐（项目级）**：`project.music: MusicTrack[]` 是**单轨多段**（段用**项目绝对帧**，段内可循环），不是片段字段；默认第一段铺满全片（内置 `public/bgm` 或导入）。时间线只显示与当前章节相交的段；播放/预览/导出（`MapVideo.ProjectMusic` / `preview-audio`）都按项目绝对帧走。
 - **坐标显示一律 5 位小数**（toFixed(5) + step=0.00001）；视角缩放显示 1 位小数。
-- **合集（Collection）**：项目之上的一层分组（`合集 ▸ 项目 ▸ 章节 ▸ 元素`）。`id = 'default'` 的**「默认合集」不可改名、不可删除**（名称由 `DEFAULT_COLLECTION_NAME` 常量决定）；新建项目 / 导入未指定归属时落默认合集；删合集只把项目移回默认合集，**不删项目**。
+- **合集（Collection）**：项目之上的一层分组（`合集 ▸ 项目 ▸ 元素`）。`id = 'default'` 的**「默认合集」不可改名、不可删除**（名称由 `DEFAULT_COLLECTION_NAME` 常量决定）；新建项目 / 导入未指定归属时落默认合集；删合集只把项目移回默认合集，**不删项目**。
 
 ## 6. 血泪教训（改代码前必读，全部踩过）
 
@@ -85,7 +91,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 7. **双端一致**：改渲染/相机逻辑必须同时检查编辑器 `EditableMap` 与导出端 `compositions/MapScene`。导出端相机已传 fps。
  8. **PowerShell 内联 node -e 处理中文/复杂引号会碎**：批量改文件一律写一次性 `.cjs` 脚本用 fs+utf8（用完即删）。
 9. **pincer(钳形) 与 double_arrow**：预览与最终必须同用 `buildDoubleArrow`；不要用 buildArrowGeometry 的 pincer 分支做预览。
-11. **镜头插值 effect 的依赖必须是 `chapter.camera`（数组引用）而非 `chapter`**：任何元素属性修改都会重建 chapter 对象，若依赖 chapter 会在每次改样式/改属性时触发 `jumpTo`，把用户手动平移的地图拽回关键帧位置。
+11. **镜头插值 effect 的依赖必须是 `project.camera`（数组引用）而非 `project`**：任何元素属性修改都会重建 project 对象，若依赖 project 会在每次改样式/改属性时触发 `jumpTo`，把用户手动平移的地图拽回关键帧位置。
 10. **地图事件 vs 播放循环**：`map.on('move')` 会 60fps 触发 `setCurrentCamera`→全订阅组件重渲染，属预期；不要在 move 回调里做重活。
 12. **Windows + Node 22 不能直接 spawn `.cmd`/`.bat`**（CVE-2024-27980，会 EINVAL）：必须 `shell: true` 或走真实 exe 路径（`scripts/dev-desktop.mjs` 已修：Electron 用 `require('electron')` 返回的真实路径）。
 13. **本机安全删除守卫**：批量删除 >50 项会被拦（典型场景：Vite 重建依赖缓存 `node_modules/.vite`、npm install 后的临时目录）。规避方式是 **mv 挪走而非删除**：`move node_modules\.vite node_modules\.vite.bak.%RANDOM%`。
@@ -96,10 +102,10 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
 
 - **主题**：stone 深色系（bg #0c0a09 / card #1c1917 / accent #292524 / border 白10%），令牌在 `src/index.css`（HSL 变量，无浅色主题）；字体 Geist（Google Fonts，index.html 引入，fallback system-ui）；品牌蓝 `--brand`（选中/播放头/Toggle）。参考截图目录已删除。
-- **布局**：TopBar(h-14：Logo+项目芯片+章节菜单芯片+地名搜索+撤销重做/保存/导出) → 全幅地图舞台（浮动工具条 top-center、左下角 MapStyleChip 底图/高程/3D、元素浮层左侧、设置浮层右侧 overlay）→ 时间线(播放条+轨道)。章节管理在顶栏 ChapterMenu 弹出框（切换/铅笔重命名/复制/删除/新增/章节设置），不再占用底部空间。
+- **布局**：TopBar(h-14：Logo+项目芯片+地名搜索+撤销重做/保存/导出) → 全幅地图舞台（浮动工具条 top-center、左下角 MapStyleChip 底图/高程/3D、元素浮层左侧、设置浮层右侧 overlay）→ 时间线(播放条+轨道)。章节管理在顶栏 ChapterMenu 弹出框（切换/铅笔重命名/复制/删除/新增/章节设置），不再占用底部空间。
 - 顶栏工具是**扁平一键直达**（点击即创建/进入模式），样式差异全部放右侧 Settings 面板切换；**没有下拉工具组**。工具条/时间线上的「元素」按钮开合左侧元素浮层（editorStore.elementsOpen，默认收起）。
 - Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
-- 右侧浮层显示条件：element 模式需有选中元素；keyframe/chapter 模式始终显示（editorStore.panelMode 三态）。
+- 右侧浮层显示条件：element 模式需有选中元素；keyframe 模式始终显示（editorStore.panelMode 三态）。
 - 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（预设色板+自定义弹窗），不要再写裸 `input[type=color]`；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
 - 时间显示用秒（`lib/time.ts` / FrameTimeField），内部仍存帧。
 - **路线顶点编辑**：EditableMap 对 line/moving_point/arrow/double_arrow 显示路径点标记（vertex-dot 图层，选中的更大更蓝），mousedown 优先命中顶点（12px）→ 拖拽只更新该点坐标（routePathOf/hitRouteVertex 辅助函数）；路径点坐标也可在属性面板「路径点」中输入/删除。燕尾箭头归入形状类别（categoryOf 特判 arrowType）。
@@ -123,7 +129,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2 设计稿，尚未落地到运行时）
 
-**规模**：18 张表 / 3 视图 / **0 触发器** / 297 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：14 张表 / 3 视图 / **0 触发器** / 365 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
 - **★ 只存输入原值，不存派生 / 换算值**：凡是能从别处算出来的都不入库或存为可空覆盖值 —— 例如字幕时长有配音时随音频（不落库）、无配音时才存估算值，`music_track` 的结束时间同理。典型反面：`FrameTimeField` 曾把「秒」输入换算成帧入库，改 fps 后用户输入就永久丢失了。
@@ -151,13 +157,13 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   6. 验证：`node --experimental-sqlite tools/gen-db-field-dict.mjs --check`（校验结构一致 + 说明全覆盖）
 
 - **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
-  - 地形夸张系数可调节 → 打破了「底图/高程图是代码常量，配置不入库」的前提，必须在 `project_config` 给它落库；
+  - 地形夸张系数可调节 → 打破了「底图/高程图是代码常量，配置不入库」的前提，必须在 `project` 给它落库；
   - 自定义图片库 `customImages` 运行时已有 → 设计稿却没有对应表，补了 `custom_image`（后随三表合并并入 `asset`，`kind='image'`）。
   - 判断口诀：**「用户能改」的值就必须能存**，凡是「XX 不入库」这类取舍，都要确认它的前提（配置是否真的固定）仍然成立。
 
 - **能力矩阵三处联动，改一处必须同步另两处**：模型不可着色且不能贴地、GIF 不可着色 —— ① DDL 的 CHECK ② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键（**不要为性能删外键**，强制检查 ≈1µs/行），但不使用触发器（见上一条）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
-- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（334 字段中文说明词表，**新增字段漏补说明会直接报错**）。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（365 字段中文说明词表，**新增字段漏补说明会直接报错**）。
 - **文档一律 Markdown**（2026-09-11 起）：`docs/` 下不再有 HTML，也不要用脚本生成 HTML；图用 ```mermaid 代码块内嵌（E-R 图源 `docs/db-er-diagram.mmd`），不再预渲染 SVG。
 
 ## 11. 标记（Pin）形态扩展的代码落点

@@ -1,15 +1,15 @@
 import { Composition } from 'remotion';
 import { MapVideo } from './MapVideo';
 import { useProjectStore } from '../stores/projectStore';
-import { projectContentDuration } from '../lib/chapter-duration';
+import { projectContentDuration } from '../lib/project-duration';
 
 export const RemotionRoot: React.FC = () => {
   const project = useProjectStore((s) => s.project);
 
   if (!project) return null;
 
-  // 与导出一致：按内容结束帧，而不是章节 endFrame
-  const totalFrames = projectContentDuration(project.chapters);
+  // 与导出一致：按内容结束帧，而不是容器 endFrame
+  const totalFrames = projectContentDuration([project]);
 
   return (
     <Composition

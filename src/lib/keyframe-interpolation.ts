@@ -173,4 +173,4 @@ export function interpolateCamera(
     easing: b.easing,
   };
 }
-// 注：总时长计算已迁到 lib/chapter-duration.ts（按内容结束帧，而非章节 endFrame）
+// 注：总时长计算已迁到 lib/project-duration.ts（按内容结束帧，而非容器 endFrame）

@@ -2,17 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import { AbsoluteFill, useDelayRender, useVideoConfig, useCurrentFrame } from 'remotion';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { renderElements, setRenderFps, resolveFollowCam, resolveOrbitCam } from '../lib/map-renderer';
+import { renderElements, setRenderFps, resolveFollowCam, resolveOrbitCam, preloadGeoImageAssets } from '../lib/map-renderer';
 import { interpolateCamera, resolveKfIndex } from '../lib/keyframe-interpolation';
 import { getAssetUrl, getAssetBytes } from '../lib/assets';
 import { getStyleUrl } from '../lib/map-style';
-import type { Chapter, MapVideoProject, MapElement } from '../types';
+import type { MapVideoProject, MapElement } from '../types';
 
 interface MapSceneProps {
-  chapter: Chapter;
+  chapter: MapVideoProject;
   project: MapVideoProject;
   realtimeKey?: unknown;
-  /** 覆盖帧号（绝对帧）。用于转场时钳制前章画面到其结束态。缺省时用 useCurrentFrame()。 */
+  /** 覆盖帧号（绝对帧）。缺省时用 useCurrentFrame()。 */
   frame?: number;
 }
 
@@ -24,7 +24,7 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
   const frame = frameOverride ?? useCurrentFrame();
   const [handle] = useState(() => delayRender('Loading map...'));
 
-  const styleUrl = getStyleUrl(project, chapter);
+  const styleUrl = getStyleUrl(project);
 
   // 初始化地图（只执行一次）
   useEffect(() => {
@@ -43,8 +43,8 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
     map.on('load', () => {
       mapRef.current = map;
       try {
-        // 投影按章节绑定，缺省继承项目默认
-        if (((chapter.projection ?? project.globalConfig.projection) ?? 'mercator') === 'globe') {
+        // 投影项目固定
+        if (((project.globalConfig.projection ?? project.globalConfig.projection) ?? 'mercator') === 'globe') {
           map.setProjection({ type: 'globe' });
         }
       } catch { /* */ }
@@ -67,31 +67,36 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
     const media = chapter.elements.filter(
       (el) => el.type === 'point' && el.assetId && (el.shape === 'image' || el.shape === 'gif' || el.shape === 'model')
     ) as unknown as Array<MapElement & { assetId: string; shape: string }>;
-    if (!media.length) return;
+    const hasGeo = chapter.elements.some((el) => el.type === 'geo_image');
+    if (!media.length && !hasGeo) return;
     const h = delayRender('Loading media assets...');
-    void Promise.all(media.map(async (el) => {
-      const url = await getAssetUrl(el.assetId);
-      if (!url) return;
-      if (el.shape === 'image') {
-        await new Promise<void>((res) => {
-          const img = new Image();
-          img.onload = () => res();
-          img.onerror = () => res();   // 坏图不阻塞渲染
-          img.src = url;
-        });
-      } else if (el.shape === 'gif') {
-        const { decodeGifCached } = await import('../lib/gif-decoder');
-        // key 必须与渲染端一致（assetId），否则预热的是另一份缓存白等
-        await decodeGifCached(el.assetId, async () => {
-          const bytes = await getAssetBytes(el.assetId);
-          if (!bytes) return null;
-          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-        });
-      } else {
-        const { preloadModelAssets } = await import('../lib/model-renderer');
-        await preloadModelAssets([url]);
-      }
-    })).finally(() => continueRender(h));
+    void Promise.all([
+      ...media.map(async (el) => {
+        const url = await getAssetUrl(el.assetId);
+        if (!url) return;
+        if (el.shape === 'image') {
+          await new Promise<void>((res) => {
+            const img = new Image();
+            img.onload = () => res();
+            img.onerror = () => res();   // 坏图不阻塞渲染
+            img.src = url;
+          });
+        } else if (el.shape === 'gif') {
+          const { decodeGifCached } = await import('../lib/gif-decoder');
+          // key 必须与渲染端一致（assetId），否则预热的是另一份缓存白等
+          await decodeGifCached(el.assetId, async () => {
+            const bytes = await getAssetBytes(el.assetId);
+            if (!bytes) return null;
+            return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+          });
+        } else {
+          const { preloadModelAssets } = await import('../lib/model-renderer');
+          await preloadModelAssets([url]);
+        }
+      }),
+      // 贴图（地理配准图片）：预解码，渲染端同步切片即可
+      preloadGeoImageAssets(chapter.elements),
+    ]).finally(() => continueRender(h));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapter.elements, delayRender, continueRender]);
 

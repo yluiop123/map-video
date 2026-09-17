@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：18 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：14 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -23,13 +23,14 @@
 
 | 层次 | 实体 | 说明 | 数量级 |
 |---|---|---|---|
-| 聚合根 | `MapVideoProject` | 全局配置、底图/高程图目录、自定义符号、章节目录 | 1 |
+| 聚合根 | `MapVideoProject` | 全局配置、底图/高程图目录、元素/相机/弹窗/特效/字幕/音乐（单条时间线） | 1 |
 | 章节层 | `Chapter` | 标题/时间跨度/相机/元素/弹窗/特效/字幕/配乐，以及可覆盖的底图 | 1 – 数十 |
 | 内容层 | `MapElement`（12 子类） | 地图上绘制的一切：点、线、面、箭头、军标、旗、连接线、疆域 | 每章 0 – 数百 |
 | 叠加层 | `OverlayItem`（11 类型） | 屏幕空间弹窗：图表、人物卡、战报、时间线、引用、对比、计数、对话、地点、自定义块 | 每章 0 – 数十 |
-| 时间层 | `CameraKeyframe` / `ScreenFxItem` / `ChapterEffect` / `NarrationTrack` / `MusicTrack` | 镜头、天气与画面特效、章特效、字幕、配乐 | 每章 0 – 数十 |
-| 资源层 | `BaseMapConfig` / `ElevationMapConfig` / `CustomSymbol` / `CustomImage` | 底图、地形、自定义图标、自定义图片库；其中**底图 / 高程图是代码内置常量（不入库，但地形夸张覆盖值存 `project_config`）**，图标 / 图片统一入 `asset`（`kind='icon'` / `'image'`，三表已合并） | 各 0 – 数十 |
-| 配置层 | `ProviderConfig` | LLM / TTS 连接配置，**独立聚合**，不属于项目内容 | 0 – 数十 |
+| 时间层 | `CameraKeyframe` / `ScreenFxItem` / `ChapterEffect` / `NarrationTrack` | 镜头、天气与画面特效、章特效、字幕 | 每章 0 – 数十 |
+| 配乐层 | `MusicTrack` | 项目级背景音乐（单轨多段） | 每项目 0 – 数十段 |
+| 资源层 | `BaseMapConfig` / `ElevationMapConfig` / `CustomSymbol` / `CustomImage` | 底图、地形、自定义图标、自定义图片库；其中**底图 / 高程图是代码内置常量（不入库，但地形夸张覆盖值存 `project`）**，图标 / 图片统一入 `asset`（`kind='icon'` / `'image'`，三表已合并） | 各 0 – 数十 |
+| 配置层 | `ProviderConfig` | AI 连接配置（文案生成 / 语音含克隆 / 图片生成），**独立聚合**，不属于项目内容 | 0 – 数十 |
 
 ### 1.2 元素结构：一个判别联合
 
@@ -61,12 +62,13 @@
 | 1 | Project → Chapter | 1 → N | 一章属唯一项目 | 组合 |
 | 2 | Project → BaseMap / ElevationMap / CustomSymbol | 1 → N | 资源项目级共享 | 组合 |
 | 3 | Project → activeBaseMapId / activeElevationMapId | N → 1 | 可空引用 | 关联 |
-| 4 | Chapter → Element | 1 → N | 元素不跨章节 | 组合 |
-| 5 | Chapter → CameraKeyframe | 1 → N | 至少 1 个初始视角 | 组合 |
-| 6 | Chapter → Overlay / ScreenFx / ChapterEffect / MusicTrack | 1 → N | 可为空集合 | 组合 |
-| 7 | Chapter → NarrationTrack | 1 → 1 | 恒存在（可空内容） | 组合 |
+| 4 | Project → Element | 1 → N | 元素属项目 | 组合 |
+| 5 | Project → CameraKeyframe | 1 → N | 至少 1 个初始视角 | 组合 |
+| 6 | Project → Overlay / ScreenFx / ChapterEffect | 1 → N | 可为空集合 | 组合 |
+| 6b | Project → MusicTrack | 1 → N | 项目级单轨多段（绝对时间） | 组合 |
+| 7 | Project → NarrationTrack | 1 → 1 | 恒存在（可空内容） | 组合 |
 | 8 | NarrationTrack → NarrationEntry | 1 → N | 字幕条顺序排列 | 组合 |
-| 9 | Chapter → BaseMap / ElevationMap | N → 1 | 可空，覆盖项目默认 | 关联 |
+| 9 | Project → BaseMap / ElevationMap | N → 1 | 可空，覆盖项目默认 | 关联 |
 | 10 | Element → 13 个子类 | 1 → 1 | **恰好一个**具化 | 继承 |
 | 11 | Element → ElementLabel | 1 → 0..1 | 仅 point / line 有 | 组合 |
 | 12 | Element → ElementKeyframe | 1 → N | opacity/scale/rotation/progress | 组合 |
@@ -94,7 +96,7 @@
 
 - **数据引用方向：子 → 父。**外键永远写在「依赖方」（`element.chapterId`、`connector.fromElementId`、`plot.ownerId`），被引用方不持有反向指针。
 
-- **删除级联方向：父 → 子。**删除父实体时沿外键反向传播。`chapter` 不知道自己有哪些 `element`，但删它时必须清理干净——这正是需要数据库级联的原因。
+- **删除级联方向：父 → 子。**删除父实体时沿外键反向传播。`project` 不知道自己有哪些 `element`，但删它时必须清理干净——这正是需要数据库级联的原因。
 
 - **元素间依赖是「点状」的，不是树。**只有 `connector` 与 `cameraKeyframe.followRoute` 引用其它元素，其余 11 类元素彼此独立。因此依赖图是「一个浅层 DAG + 大量孤立节点」，不存在深递归删除。
 
@@ -108,24 +110,25 @@
 
 | 级别 | 判定标准 | 处理方式 | 典型字段 |
 |---|---|---|---|
-| **P1** 必列化 | 身份、时间轴、以及构成引用图的字段 —— 约束与查询都依赖它们 | 独立列 + 主键 / 外键 / CHECK | `id`、`start_sec`、`end_sec`、`chapter_id`、`from_element_id` |
-| **P2** 独立成表 | 子结构自身有 id 或顺序语义，需被单独约束或寻址 | 1:N 子表 | `overlay_block`、`person_block`、`narration_entry` |
+| **P1** 必列化 | 身份、时间轴、以及构成引用图的字段 —— 约束与查询都依赖它们 | 独立列 + 主键 / 外键 / CHECK | `id`、`start_sec`、`end_sec`、`project_id`、`from_element_id` |
+| **P2** 独立成表 | 子结构自身有 id 或顺序语义，需被单独约束或寻址 | 1:N 子表 | `narration_entry` |
 | **P3** 保留 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` 约束 | `display_json`、`front_style_json`、`route_effect_json`、`label_json`、`countries_json` / `plots_json` / `events_json` |
 | **P4** 外置存储 | 大体积二进制内容 | 独立 `asset` 表，业务表只留 `asset_id` | 图片、音频、视频、模型、字体 |
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（18 张表，按结构分 10 组）
+### 2.2 实体清单（14 张表，按结构分 9 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
-| **1. 合集与项目** | `collection`、`project`、`project_config` | 合集是项目之上的分组；`project` 只留身份 / 归属 / 审计与生效底图；`project_config` 承载 GlobalConfig（1:1，主键即外键） |
-| **2. 资源与素材** | `asset` | 唯一素材存储，承担 P4 外置存储；按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重）；底图 / 高程图不入库（代码内置常量，项目只存 id，但**地形夸张覆盖值**存 `project_config`） |
+| **1. 合集与项目** | `collection`、`project` | 合集是项目之上的分组；`project` 承载身份 / 归属 / 审计 / 生效底图 + GlobalConfig 配置列（原 1:1 `project_config` 已合并） |
+| **2. 资源与素材** | `asset` | 唯一素材存储，承担 P4 外置存储；按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重）；底图 / 高程图不入库（代码内置常量，项目只存 id，但**地形夸张覆盖值**存 `project`）；尺寸 / 时长 / 帧数等派生值不入库 |
+| **3. 时间轴** | `camera_keyframe`、`screen_fx`、`narration`、`narration_entry`、`music_track` | 镜头 / 特效 / 字幕 / 音乐（项目=单条连续时间线） |
 | **4. 标记类元素** | `element_marker` | type ∈ point / flag / military_symbol |
 | **5. 路线类元素** | `element_route` | type ∈ line / moving_point / connector |
 | **6. 形状类元素** | `element_shape` | type ∈ polygon / arrow / double_arrow / gathering / encirclement |
 | **7. 疆域类元素** | `element_territory` | type = territory；势力 / 地块 / 兼并事件 JSON 内联 |
-| **8. 叠加层** | `overlay`、`overlay_block`、`person_block` | overlay 承载 10 类弹窗，仅 custom / person 需要子表 |
+| **8. 叠加层** | `overlay` | 弹窗本体；custom / person 的内容块内联在 `payload_json`（原 overlay_block / person_block 已删除） |
 | **9. 应用配置** | `provider` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证 |
 
 ### 2.3 元素建模：按工具栏聚合的 4 张类别宽表
@@ -164,7 +167,7 @@
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | **PK** | 元素 id（与其它类别表共享同一 id 空间） |
-| `chapter_id` | TEXT | **FK** → chapter CASCADE | 所属章节 |
+| `project_id` | TEXT | **FK** → chapter CASCADE | 所属章节 |
 | `type` | TEXT | **CHECK** IN (point, flag, military_symbol) | 子类型判别列 |
 | `lng` / `lat` | REAL | NOT NULL | 坐标（三类标记都落在单点） |
 | `shape` | TEXT | **CHECK** IN (circle, text, pin, bubble, emoji, image, gif, model, icon) | 点的 9 种视觉形态 |
@@ -180,7 +183,7 @@
 ```sql
 CREATE TABLE element_route (
   element_id TEXT PRIMARY KEY,
-  chapter_id TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES chapter(project_id) ON DELETE CASCADE,
   type       TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),
   coords_json TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),
   -- connector 专用：端点弱引用（元素已分表，无外键目标）
@@ -203,12 +206,12 @@ CREATE TABLE element_route (
 | 引用边 | 基数 | ON DELETE | 依据 |
 |---|---|---|---|
 | `project.collection_id` → `collection` | N:1 | **RESTRICT** | 删合集前须先把其下项目迁移到默认合集（应用层负责） |
-| `project_config` → `project` | 1:1 | **CASCADE** | 配置随项目消亡 |
-| 元素类别表 → `chapter` | N:1 | **CASCADE** | 章节是元素的生命周期边界 |
+| `project` → `project` | 1:1 | **CASCADE** | 配置随项目消亡 |
+| 元素类别表 → `project` | N:1 | **CASCADE** | 项目是元素的生命周期边界 |
 | `camera_keyframe.follow_route_element_id` → `element_route` | N:1 | **SET NULL** | 路线被删时视角退化为固定镜头 |
 | `asset` 内部（`kind='icon'` 被元素引用） | N:1 | 应用层检查 | 三表合并后图标与素材同行，删除被引用素材由引用检查保护 |
 | `element_marker.asset_id` → `asset` | N:1 | **SET NULL** | 素材被删则元素退回内置或空态 |
-| `overlay_block` / `person_block` → `overlay` | N:1 | **CASCADE** | 内容块随弹窗消亡 |
+| `overlay（内容块内联）` / `overlay（人物块内联）` → `overlay` | N:1 | **CASCADE** | 内容块随弹窗消亡 |
 | **`connector` 端点（`from` / `to`）** | N:1 ×2 | **弱引用 + 应用层清理** | 元素已分表，无外键目标 |
 
 #### 弱引用的补偿机制
@@ -222,7 +225,7 @@ CREATE TABLE element_route (
 
 #### 为什么跟随机位不用复合外键
 
-直觉上可用复合外键 `(chapter_id, follow_route_element_id) → element_route(chapter_id, element_id)` 同时保证「同章节」与「删路线置空」。但 **SQLite 在复合外键触发 SET NULL 时会把全部引用列置空 —— 包括 NOT NULL 的 `chapter_id`**，操作会直接失败。
+直觉上可用复合外键 `(project_id, follow_route_element_id) → element_route(project_id, element_id)` 同时保证「同章节」与「删路线置空」。但 **SQLite 在复合外键触发 SET NULL 时会把全部引用列置空 —— 包括 NOT NULL 的 `project_id`**，操作会直接失败。
 
 因此采取二分策略：
 
@@ -263,9 +266,9 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 | 元素按工具栏聚合为 4 张类别宽表 | 12 个子类型专有字段 3–47 个、离散度极大：单表继承会产出 60+ 可空列并丧失子类必填约束；按类型逐张拆表则表数最多且需额外维护判别列与具化行的一致性 |
 | 动画关键帧内联为 `keyframes_json` | 运行时元素对象本就内联关键帧数组，独立成表需要弱引用维护；P3 内联跟随元素整体读写（原独立表已取消） |
 | 元素标签内联为 `label_json` | 标签是可选 1:1 值对象；元素已分表，独立成表会失去统一的外键目标 |
-| GlobalConfig 独立成 `project_config` | 配置与项目本体职责分离：`project` 只留身份 / 归属 / 审计字段，配置面板只读写配置表；将来新增配置项不改动 `project` 结构 |
+| GlobalConfig 独立成 `project` | 配置与项目本体职责分离：`project` 只留身份 / 归属 / 审计字段，配置面板只读写配置表；将来新增配置项不改动 `project` 结构 |
 | `asset` 表承担 P4 外置 | base64 内嵌是当前最大的性能问题；内容寻址（sha256）顺带获得同图去重 |
-| 同域约束按删除行为二分 | 能配合 CASCADE 的用复合外键；必须 SET NULL 的（跟随机位）退回单列外键，「同章节」由应用层校验 —— SQLite 复合外键 SET NULL 会连带清空 NOT NULL 的 `chapter_id` |
+| 同域约束按删除行为二分 | 能配合 CASCADE 的用复合外键；必须 SET NULL 的（跟随机位）退回单列外键，「同章节」由应用层校验 —— SQLite 复合外键 SET NULL 会连带清空 NOT NULL 的 `project_id` |
 | 样式标量走 P3 JSON | 固定形状、整体读写、不参与检索；列化它们会产生 100+ 张无意义的表 |
 | `provider` 加部分唯一索引 | 「每 kind 至多一条 active」从应用层两步写（先全清后置位）升级为数据库保证 |
 | 布尔统一 INTEGER 0/1 + CHECK | SQLite 无布尔类型，显式 CHECK 防止写入 `'true'`/`2` 之类的脏值 |
@@ -331,7 +334,7 @@ DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执�
 | # | 问题 | 说明 |
 |---|---|---|
 | Q1 | `keyframes_json` 的「同一时刻重复定义」校验 | 内联后无数据库唯一索引，写入端需自行去重（同 property 同时刻只保留最后一个） |
-| Q2 | `chapter` 时间跨度的重叠约束 | 当前只加了 `ux_chapter_span(project_id, start_sec)`（起点不重复）。是否允许章节时间区间重叠需与产品确认，若不允许需由应用层校验 |
+| Q2 | `project` 时间跨度的重叠约束 | 当前只加了 `ux_chapter_span(project_id, start_sec)`（起点不重复）。是否允许章节时间区间重叠需与产品确认，若不允许需由应用层校验 |
 | Q3 | 素材文件的生命周期与垃圾回收 | 元素被删后 `asset` 行仍在（无反向引用）。需要定期「孤儿素材清理」任务，或改用引用计数 |
 | Q4 | `move_icon_json` 内的 `symbolId` 是弱引用 | P3 JSON 内的符号引用无法用外键约束。可选：把 `moveIcon` 提升为独立表以换取约束能力，但会为各类元素都增加一次 JOIN |
 | Q5 | 撤销/重做（50 步历史栈）与数据库的关系 | 历史栈完全在内存（快照式）；数据库只承载「已保存」状态，这是有意的边界 |

@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Layers, Mountain, Globe, Grid2x2, Check } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
-import type { Chapter } from '../types';
 
 /**
  * 地图左下角底图芯片（对齐 Mapimator SATELLITE 样式）：
@@ -11,21 +10,18 @@ import type { Chapter } from '../types';
 export function MapStyleChip() {
   const project = useProjectStore((s) => s.project);
   const isPlaying = useEditorStore((s) => s.isPlaying);
-  const chapterId = useEditorStore((s) => s.selectedChapterId);
-  const updateChapter = useProjectStore((s) => s.updateChapter);
+  const setActiveBaseMap = useProjectStore((s) => s.setActiveBaseMap);
+  const setActiveElevationMap = useProjectStore((s) => s.setActiveElevationMap);
+  const updateGlobalConfig = useProjectStore((s) => s.updateGlobalConfig);
   const updateElevationMap = useProjectStore((s) => s.updateElevationMap);
   const [open, setOpen] = useState(false);
+  // 弹出面板限高：按「芯片顶部到地图舞台顶部」的可用高度算，避免被舞台 overflow-hidden 从顶部裁切
+  const [panelMaxH, setPanelMaxH] = useState(0);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  // 底图 / 高程 / 投影**按章节绑定**：面板操作的是当前章节，
-  // 项目级的 activeBaseMapId / activeElevationMapId / globalConfig.projection 只作为新建章节的初始值
-  const chapter = useMemo(
-    () => (project ? project.chapters.find((c) => c.id === chapterId) ?? project.chapters[0] ?? null : null),
-    [project, chapterId],
-  );
-
+  // 底图 / 高程 / 投影为**项目固定**（不再按时间线）
   // 当前生效的高程源（'none' 或没有 url 视为平面）与其夸张系数草稿
-  const activeElevationId = chapter?.elevationMapId ?? project?.activeElevationMapId ?? 'none';
+  const activeElevationId = project?.activeElevationMapId ?? 'none';
   const activeElevation = project?.elevationMaps.find((e) => e.id === activeElevationId && e.url);
   const [exagDraft, setExagDraft] = useState(activeElevation?.exaggeration ?? 1.5);
   useEffect(() => {
@@ -55,19 +51,27 @@ export function MapStyleChip() {
 
   if (!project || isPlaying) return null;
 
-  if (!chapter) return null;
-
-  const activeBaseMapId = chapter.baseMapId ?? project.activeBaseMapId;
+  const activeBaseMapId = project.activeBaseMapId;
   const activeBaseMap = project.baseMaps.find((b) => b.id === activeBaseMapId);
-  const isGlobe = (chapter.projection ?? project.globalConfig.projection ?? 'mercator') === 'globe';
-
-  const setChapterVisual = (c: Partial<Chapter>) => updateChapter(chapter.id, c);
+  const isGlobe = (project.globalConfig.projection ?? 'mercator') === 'globe';
 
   return (
     <div ref={boxRef} className="absolute left-3 bottom-3 z-20">
       {/* 芯片：图标 + 当前底图名 */}
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          if (!open) {
+            const el = boxRef.current;
+            const stage = el?.parentElement;
+            if (el && stage) {
+              const avail = el.getBoundingClientRect().top - stage.getBoundingClientRect().top - 8;
+              setPanelMaxH(Math.max(180, Math.floor(avail)));
+            } else {
+              setPanelMaxH(420);
+            }
+          }
+          setOpen(!open);
+        }}
         className="flex flex-col items-center gap-0.5 w-[64px] py-1.5 rounded-lg bg-card/95 backdrop-blur border border-white/15 shadow-lg hover:border-white/30 transition-colors"
         title="底图 / 高程 / 3D"
       >
@@ -82,7 +86,10 @@ export function MapStyleChip() {
 
       {/* 弹出面板 */}
       {open && (
-        <div className="absolute left-0 bottom-full mb-2 w-60 bg-card/95 backdrop-blur border border-white/10 rounded-xl shadow-2xl p-2">
+        <div
+          className="absolute left-0 bottom-full mb-2 w-60 overflow-y-auto overscroll-contain bg-card/95 backdrop-blur border border-white/10 rounded-xl shadow-2xl p-2"
+          style={{ maxHeight: panelMaxH || undefined }}
+        >
           {/* 底图 */}
           <p className="px-2 pt-1 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">底图</p>
           {project.baseMaps.map((bm) => {
@@ -90,7 +97,7 @@ export function MapStyleChip() {
             return (
               <button
                 key={bm.id}
-                onClick={() => setChapterVisual({ baseMapId: bm.id })}
+                onClick={() => setActiveBaseMap(bm.id)}
                 className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition-colors ${
                   active ? 'bg-brand/15 text-foreground' : 'text-foreground/80 hover:bg-white/[0.06]'
                 }`}
@@ -111,7 +118,7 @@ export function MapStyleChip() {
             return (
               <button
                 key={em.id || 'none'}
-                onClick={() => setChapterVisual({ elevationMapId: em.id === 'none' ? null : em.id })}
+                onClick={() => setActiveElevationMap(em.id === 'none' ? null : em.id)}
                 className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition-colors ${
                   active ? 'bg-brand/15 text-foreground' : 'text-foreground/80 hover:bg-white/[0.06]'
                 }`}
@@ -150,7 +157,7 @@ export function MapStyleChip() {
 
           {/* 3D 投影 */}
           <button
-            onClick={() => setChapterVisual({ projection: isGlobe ? 'mercator' : 'globe' })}
+            onClick={() => updateGlobalConfig({ projection: isGlobe ? 'mercator' : 'globe' })}
             className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition-colors ${
               isGlobe ? 'bg-brand/15 text-foreground' : 'text-foreground/80 hover:bg-white/[0.06]'
             }`}

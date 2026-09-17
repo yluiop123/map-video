@@ -44,7 +44,6 @@ interface RegionPickerDialogProps {
 /** 区域列表选择器：搜索国家名 → 一键生成本段高亮面（无需在地图上点选） */
 export function RegionPickerDialog({ onClose }: RegionPickerDialogProps) {
   const project = useProjectStore((s) => s.project);
-  const selectedChapterId = useEditorStore((s) => s.selectedChapterId);
   const addElements = useProjectStore((s) => s.addElements);
   const selectElement = useEditorStore((s) => s.selectElement);
 
@@ -61,7 +60,7 @@ export function RegionPickerDialog({ onClose }: RegionPickerDialogProps) {
     return () => { alive = false; };
   }, []);
 
-  const chapter = project?.chapters.find((c) => c.id === selectedChapterId) || project?.chapters[0];
+  const chapter = project;
 
   // 过滤：中文名 / 英文名
   const filtered = useMemo(() => {
@@ -83,11 +82,11 @@ export function RegionPickerDialog({ onClose }: RegionPickerDialogProps) {
       const shapes = regionHitsToShapes([hit]);
       const els: PolygonElement[] = shapes.map((s) => ({
         id: generateId(), type: 'polygon', name: s.name, visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: chapter.endFrame, style: {},
         coordinates: s.rings as [number, number][][],
         fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#FF6666', strokeWidth: 2,
       } as PolygonElement));
-      addElements(chapter.id, els);
+      addElements(els);
       selectElement(els[0].id);
       onClose();
     } catch (e) {
@@ -107,7 +106,7 @@ export function RegionPickerDialog({ onClose }: RegionPickerDialogProps) {
         <div className="px-4 pt-4 pb-2">
           <h2 className="text-base font-semibold">🌐 高亮区域</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            搜索国家/地区并一键添加为本段高亮面（添加到「{chapter?.title || '-'}」）
+            搜索国家/地区并一键添加为本段高亮面（添加到「{chapter?.name || '-'}」）
           </p>
         </div>
 

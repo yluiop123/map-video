@@ -1,21 +1,21 @@
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { FrameTimeField } from './FrameTimeField';
-import type { Chapter, CameraKeyframe, EasingType } from '../types';
+import type { MapVideoProject, CameraKeyframe, EasingType } from '../types';
 
 const EASINGS: EasingType[] = ['linear', 'easeIn', 'easeOut', 'easeInOut', 'cubicIn', 'cubicOut', 'cubicInOut', 'spring', 'bounce'];
 
-export function CameraEditor({ chapter }: { chapter: Chapter }) {
-  const setChapterCamera = useProjectStore((s) => s.setChapterCamera);
+export function CameraEditor({ project }: { project: MapVideoProject }) {
+  const setProjectCamera = useProjectStore((s) => s.setProjectCamera);
   const fps = useProjectStore((s) => s.project?.globalConfig.defaultFPS ?? 30);
   const currentFrame = useEditorStore((s) => s.currentFrame);
   const currentCamera = useEditorStore((s) => s.currentCamera);
 
-  const camera = chapter.camera || [];
+  const camera = project.camera || [];
 
   const addKeyframe = () => {
     // 默认值 = 当前地图视角 + 当前播放帧
-    const frame = Math.max(chapter.startFrame, Math.round(currentFrame));
+    const frame = Math.max(0, Math.round(currentFrame));
     const newKf: CameraKeyframe = {
       frame,
       center: currentCamera.center,
@@ -23,24 +23,24 @@ export function CameraEditor({ chapter }: { chapter: Chapter }) {
       pitch: currentCamera.pitch || 0,
       bearing: currentCamera.bearing || 0,
       easing: 'linear',
-      moveDuration: Math.min(2 * fps, Math.max(0, frame - (camera.length ? camera[camera.length - 1].frame : chapter.startFrame))),
+      moveDuration: Math.min(2 * fps, Math.max(0, frame - (camera.length ? camera[camera.length - 1].frame : 0))),
     };
     // 若该帧已有关键帧，则更新它；否则追加
     const exists = camera.some((kf) => Math.abs(kf.frame - frame) < 0.5);
     if (exists) {
-      setChapterCamera(chapter.id, camera.map((kf) => (Math.abs(kf.frame - frame) < 0.5 ? { ...kf, ...newKf } : kf)));
+      setProjectCamera(camera.map((kf) => (Math.abs(kf.frame - frame) < 0.5 ? { ...kf, ...newKf } : kf)));
     } else {
-      setChapterCamera(chapter.id, [...camera, newKf].sort((a, b) => a.frame - b.frame));
+      setProjectCamera([...camera, newKf].sort((a, b) => a.frame - b.frame));
     }
   };
 
   const updateKeyframe = (index: number, changes: Partial<CameraKeyframe>) => {
     const next = camera.map((kf, i) => (i === index ? { ...kf, ...changes } : kf));
-    setChapterCamera(chapter.id, next);
+    setProjectCamera(next);
   };
 
   const removeKeyframe = (index: number) => {
-    setChapterCamera(chapter.id, camera.filter((_, i) => i !== index));
+    setProjectCamera(camera.filter((_, i) => i !== index));
   };
 
   return (
@@ -62,7 +62,7 @@ export function CameraEditor({ chapter }: { chapter: Chapter }) {
               <button
                 onClick={() => {
                   const prev = camera[i - 1];
-                  const startFrame = prev ? prev.frame : chapter.startFrame;
+                  const startFrame = prev ? prev.frame : 0;
                   const dur = ((kf.frame - startFrame) / fps);
                   useEditorStore.getState().seekCamera(
                     { center: kf.center, zoom: kf.zoom, pitch: kf.pitch || 0, bearing: kf.bearing || 0 },

@@ -1,20 +1,24 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   MapPin, Route as RouteIcon,
-  Shapes, Undo2, Redo2, FolderOpen, Settings2, Download, Languages, Landmark, UserRound,
+  Shapes, Undo2, Redo2, FolderOpen, Settings2, Download, Languages, Landmark, UserRound, Sparkles,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { useProjectStore, isProjectDirty } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
-import { useInteractionStore, type InteractionMode } from '../stores/interactionStore';
-import { exportVideo, downloadBlob } from '../lib/export-video';
+import { useInteractionStore, type InteractionMode, type PinPlaceStyle, type RouteDrawStyle } from '../stores/interactionStore';
 import { sharedMap } from '../lib/shared-map';
+import { stopPreviewAudio } from '../lib/preview-audio';
 import { IS_DESKTOP } from '../lib/backend';
+import { uploadAsset, listMedia, type MediaItem } from '../lib/assets';
+import { loadImageAspect, createGeoImageElement } from '../lib/geo-image';
 import { MapSearchBox } from './MapSearchBox';
-import { ChapterMenu } from './ChapterMenu';
 import { TerritoryImportDialog } from './TerritoryImportDialog';
+import { GenerateDialog } from './GenerateDialog';
 
 interface ToolbarProps {
   onOpenExport: () => void;
+  onOpenSettings: () => void;
 }
 
 interface ModeItem {
@@ -23,7 +27,7 @@ interface ModeItem {
   label: string;
   zh: string;
   /** 非绘图动作 */
-  action?: 'place-pin';
+  action?: 'place-pin' | 'image';
 }
 
 /** 浮动工具条（对齐 Mapimator：一键直达，样式在右侧 Settings 切换） */
@@ -32,6 +36,7 @@ const TOOLS: ModeItem[] = [
   { icon: <RouteIcon size={15} className="text-blue-400" />, label: 'Route', zh: '路线', mode: 'add_line' },
   { icon: <Shapes size={15} className="text-orange-400" />, label: 'Shape', zh: '形状', mode: 'add_polygon' },
   { icon: <Landmark size={15} className="text-violet-400" />, label: 'Terr', zh: '疆域', mode: 'add_terr_plot' },
+  { icon: <ImageIcon size={15} className="text-emerald-400" />, label: 'Image', zh: '图片', action: 'image' },
 ];
 
 const ROUTE_MODES: InteractionMode[] = ['add_line', 'add_bezier', 'add_line_arc', 'add_arrow', 'add_curved', 'add_pincer'];
@@ -93,11 +98,11 @@ const SHAPE_GROUPS: { zh: string; en: string; items: ShapeItem[] }[] = [
   },
 ];
 
-/** 工具当前是否激活（用于高亮） */
-function toolActive(t: ModeItem, mode: InteractionMode): boolean {
+/** 工具当前是否激活（用于高亮）；路线弹窗的样式请求会临时归属路线工具 */
+function toolActive(t: ModeItem, mode: InteractionMode, routeReq: { mode: InteractionMode } | null): boolean {
   if (t.mode) {
-    if (t.label === 'Route') return ROUTE_MODES.includes(mode);
-    if (t.label === 'Shape') return SHAPE_MODES.includes(mode);
+    if (t.label === 'Route') return ROUTE_MODES.includes(mode) || routeReq?.mode === mode;
+    if (t.label === 'Shape') return SHAPE_MODES.includes(mode) && routeReq?.mode !== mode;
     if (t.label === 'Terr') return TERR_MODES.includes(mode);
     return t.mode === mode;
   }
@@ -106,20 +111,48 @@ function toolActive(t: ModeItem, mode: InteractionMode): boolean {
   return false;
 }
 
+/** 标记弹窗数据（对应标记设置的样式） */
+interface PinItem { style: PinPlaceStyle; zh: string; en: string; glyph: string }
+const PIN_ITEMS: PinItem[] = [
+  { style: 'bubble', zh: '气泡', en: 'Bubble', glyph: '💬' },
+  { style: 'flag', zh: '旗帜', en: 'Marker', glyph: '🚩' },
+  { style: 'text', zh: '文字', en: 'Text', glyph: 'Aa' },
+  { style: 'emoji', zh: '表情', en: 'Emoji', glyph: '😀' },
+  { style: 'image', zh: '图片', en: 'Image', glyph: '🖼' },
+  { style: 'gif', zh: '动图', en: 'GIF', glyph: '🎞' },
+  { style: 'model', zh: '模型', en: 'Model', glyph: '🧊' },
+  { style: 'icon', zh: '图标', en: 'Icon', glyph: '🔷' },
+  { style: 'milsym', zh: '军标', en: 'Mil', glyph: '🎖' },
+];
+
+/** 路线弹窗数据（对应路线设置的路线类型；route 为绘制完成时套用的样式请求） */
+interface RouteItem { zh: string; en: string; glyph: string; mode: InteractionMode; route?: RouteDrawStyle }
+const ROUTE_ITEMS: RouteItem[] = [
+  { zh: '直线', en: 'Straight', glyph: '─', mode: 'add_line' },
+  { zh: '曲线', en: 'Curve', glyph: '〰', mode: 'add_bezier' },
+  { zh: '带箭头直线', en: 'Arrow Line', glyph: '──▶', mode: 'add_shape_line_arrow', route: 'arrow-line' },
+  { zh: '箭头曲线', en: 'Arrow Curve', glyph: '➤', mode: 'add_shape_bezier_arrow', route: 'arrow-curve' },
+  { zh: '燕尾箭头', en: 'Swallowtail', glyph: '🏹', mode: 'add_curved', route: 'swallowtail' },
+  { zh: '行军箭头', en: 'March Arrow', glyph: '⚔️', mode: 'add_shape_march', route: 'march' },
+  { zh: '无样式直线', en: 'Plain Line', glyph: '➖', mode: 'add_line', route: 'plain-straight' },
+  { zh: '无样式曲线', en: 'Plain Curve', glyph: '〰️', mode: 'add_bezier', route: 'plain-bezier' },
+];
+
 /** 疆域分类菜单数据 */
-interface TerrItem { zh: string; en: string; glyph: string; hint?: string; act: 'import' | 'plot' | 'annex' }
+interface TerrItem { zh: string; en: string; glyph: string; hint?: string; act: 'import' | 'plot' | 'split' | 'annex' }
 const TERR_ITEMS: TerrItem[] = [
   { zh: '导入疆域', en: 'Import', glyph: '📥', hint: '势力库/GeoJSON', act: 'import' },
   { zh: '绘制地块', en: 'Draw Plot', glyph: '✏️', hint: '多点闭合', act: 'plot' },
+  { zh: '分割地块', en: 'Split Plot', glyph: '✂️', hint: '画线切开编辑地块', act: 'split' },
   { zh: '兼并', en: 'Annex', glyph: '⚔️', hint: '点选地块→事件', act: 'annex' },
 ];
 
 /**
  * 顶部栏（对齐 Mapimator 顶栏）：
- * Logo + 项目芯片 + 章节菜单 ｜ 地名搜索 ｜ 撤销重做 · 保存 · 导出
+ * Logo + 项目芯片 ｜ 地名搜索 ｜ 撤销重做 · 保存 · 导出
  * 底图/高程/3D 在地图左下角 MapStyleChip。
  */
-export function TopBar({ onOpenExport }: ToolbarProps) {
+export function TopBar({ onOpenExport, onOpenSettings }: ToolbarProps) {
   const project = useProjectStore((s) => s.project);
   const saveProject = useProjectStore((s) => s.saveProject);
   const undo = useProjectStore((s) => s.undo);
@@ -128,28 +161,12 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
   const futureLen = useProjectStore((s) => s.future.length);
   const lang = useEditorStore((s) => s.lang);
   const setLang = useEditorStore((s) => s.setLang);
+  const [genOpen, setGenOpen] = useState(false);
 
-  const [exporting, setExporting] = useState(false);
-  const [exportPct, setExportPct] = useState(0);
   // 有未保存修改时保存按钮才可用
   const dirty = useMemo(() => isProjectDirty(project), [project]);
 
   if (!project) return null;
-
-  const handleExport = async () => {
-    setExporting(true);
-    setExportPct(0);
-    try {
-      const blob = await exportVideo({ project, onProgress: (p) => setExportPct(p) });
-      downloadBlob(blob, `${project.name || 'map-video'}.mp4`);
-    } catch (err) {
-      console.error(err);
-      alert(`导出失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setExporting(false);
-      setExportPct(0);
-    }
-  };
 
   const iconBtn = 'h-8 w-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-30 shrink-0';
 
@@ -165,16 +182,18 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
 
       {/* 项目芯片：点击回项目列表 */}
       <button
-        onClick={() => useProjectStore.setState({ project: null })}
+        onClick={() => {
+          // 退出项目：停止播放与预览音频，避免音乐在项目列表页继续响
+          useEditorStore.getState().setIsPlaying(false);
+          stopPreviewAudio();
+          useProjectStore.setState({ project: null });
+        }}
         className="h-9 px-3 flex items-center gap-2 rounded-lg bg-white/[0.05] border border-white/10 text-sm text-foreground/90 hover:bg-white/10 transition-colors shrink-0"
         title="项目列表"
       >
         <FolderOpen size={14} className="text-muted-foreground" />
         <span className="max-w-[160px] truncate">{project.name || '未命名项目'}</span>
       </button>
-
-      {/* 章节菜单：切换 / 重命名 / 复制 / 删除 / 新增 */}
-      <ChapterMenu />
 
       {/* 地名/坐标搜索（跳转当前地图） */}
       <MapSearchBox getMap={() => sharedMap.get()} />
@@ -191,7 +210,7 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
 
       {/* 保存（有未保存修改时才可点） */}
       <button
-        onClick={() => saveProject()}
+        onClick={() => { void saveProject().catch((e) => alert('保存失败：' + (e instanceof Error ? e.message : String(e)))); }}
         disabled={!dirty}
         className="h-8 px-3 flex items-center gap-1.5 rounded-md bg-white/[0.05] border border-white/15 text-xs font-medium text-amber-400/90 hover:bg-white/10 transition-colors disabled:opacity-35 disabled:cursor-not-allowed shrink-0"
         title={dirty ? '保存到浏览器' : '没有需要保存的修改'}
@@ -200,21 +219,31 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
         保存
       </button>
 
-      {/* 导出配置 */}
-      <button onClick={onOpenExport} className={iconBtn} title="导出配置 / GeoJSON">
+      {/* 设置（AI 能力：文案生成 / 语音克隆 / 图片生成） */}
+      <button onClick={onOpenSettings} className={iconBtn} title="设置 · AI">
         <Settings2 size={15} />
       </button>
 
-      {/* 导出视频（白底主按钮，导出时显示进度百分比+细进度条） */}
+      {/* 一键生成：主题 → 整片 + 字幕 + 配音 */}
       <button
-        onClick={handleExport}
-        disabled={exporting}
-        className="relative h-9 px-3.5 flex items-center gap-1.5 rounded-md bg-white text-black text-sm font-medium hover:bg-white/90 transition-colors disabled:opacity-50 shrink-0 overflow-hidden"
+        onClick={() => setGenOpen(true)}
+        className="h-9 px-3 flex items-center gap-1.5 rounded-md border border-white/15 bg-white/[0.05] text-xs font-medium hover:bg-white/10 transition-colors shrink-0"
+        title="AI 一键生成整片脚本"
+      >
+        <Sparkles size={14} />
+        一键生成
+      </button>
+
+      {/* 导出（弹出左侧设置按钮的导出窗口） */}
+      <button
+        onClick={onOpenExport}
+        className="relative h-9 px-3.5 flex items-center gap-1.5 rounded-md bg-white text-black text-sm font-medium hover:bg-white/90 transition-colors shrink-0"
       >
         <Download size={14} />
-        {exporting ? `导出中 ${Math.round(exportPct * 100)}%` : '导出视频'}
-        {exporting && <span className="absolute left-0 bottom-0 h-0.5 bg-[var(--brand)]" style={{ width: `${exportPct * 100}%` }} />}
+        导出视频
       </button>
+
+      {genOpen && <GenerateDialog onClose={() => setGenOpen(false)} />}
 
       {/* 界面语言切换（属性面板标签 中/EN） */}
       <div className="h-9 px-1 flex items-center gap-0.5 rounded-full border border-white/10 bg-white/[0.05] shrink-0" title="界面语言 / Language">
@@ -245,22 +274,75 @@ export function TopBar({ onOpenExport }: ToolbarProps) {
   );
 }
 
-/** 地图上方浮动工具条：选择 + 扁平工具（形状/疆域点击展开分类菜单） */
+/** 地图上方浮动工具条：选择 + 扁平工具（标记/路线/形状/疆域点击展开分类菜单） */
 export function FloatingTools() {
   const mode = useInteractionStore((s) => s.mode);
   const setMode = useInteractionStore((s) => s.setMode);
+  const routeReq = useInteractionStore((s) => s.pendingRouteStyle);
   const lang = useEditorStore((s) => s.lang);
+  const [pinOpen, setPinOpen] = useState(false);
+  const [routeOpen, setRouteOpen] = useState(false);
   const [shapeOpen, setShapeOpen] = useState(false);
   const [terrOpen, setTerrOpen] = useState(false);
   const [terrImportOpen, setTerrImportOpen] = useState(false);
+  const [imageOpen, setImageOpen] = useState(false);
+  const [imageItems, setImageItems] = useState<MediaItem[]>([]);
+  const [imageBusy, setImageBusy] = useState(false);
+
+  // 打开「图片」菜单时加载全局素材库（跨项目）
+  useEffect(() => {
+    if (!imageOpen || !IS_DESKTOP) return;
+    void listMedia('image').then(setImageItems).catch(() => setImageItems([]));
+  }, [imageOpen]);
 
   const item = 'h-8 px-2.5 flex items-center gap-1.5 rounded-full text-xs font-medium transition-colors shrink-0';
+
+  const closeAll = () => { setPinOpen(false); setRouteOpen(false); setShapeOpen(false); setTerrOpen(false); setImageOpen(false); };
+  /** 该工具的弹窗是否展开（用于按钮激活态 + 再次点击关闭） */
+  const openOf = (label: string) =>
+    label === 'Pin' ? pinOpen : label === 'Route' ? routeOpen : label === 'Shape' ? shapeOpen : label === 'Terr' ? terrOpen : label === 'Image' ? imageOpen : false;
+  /** 点击工具：展开自己的弹窗；已是展开态则再次点击关闭（不能依赖 setState 的函数式更新——
+   *  closeAll 会先把状态排到 false，updater 拿到的是 closeAll 后的 false，导致永远重新打开）。 */
+  const toggleMenu = (label: string, setOpen: (v: boolean) => void) => {
+    const was = openOf(label);
+    closeAll();
+    if (!was) setOpen(true);
+  };
 
   const runTerrAction = (act: TerrItem['act']) => {
     setTerrOpen(false);
     if (act === 'import') setTerrImportOpen(true);
     else if (act === 'plot') setMode('add_terr_plot');
+    else if (act === 'split') setMode('terr_split');
     else if (act === 'annex') setMode('terr_annex');
+  };
+
+  /** 在地图当前视野中心插入一张贴图（四角配准） */
+  const insertGeoImage = async (assetId: string) => {
+    const map = sharedMap.get();
+    const project = useProjectStore.getState().project;
+    if (!map || !project) return;
+    const b = map.getBounds();
+    const aspect = await loadImageAspect(assetId);
+    const el = createGeoImageElement(project, assetId, aspect, {
+      west: b.getWest(), east: b.getEast(), south: b.getSouth(), north: b.getNorth(),
+    });
+    useProjectStore.getState().addElement(el);
+    useEditorStore.getState().selectElement(el.id);
+    setImageOpen(false);
+  };
+
+  const importImageFile = async (file: File) => {
+    setImageBusy(true);
+    try {
+      const ref = await uploadAsset(file, 'image');
+      await insertGeoImage(ref.assetId);
+      void listMedia('image').then(setImageItems).catch(() => { /* */ });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImageBusy(false);
+    }
   };
 
   return (
@@ -271,12 +353,20 @@ export function FloatingTools() {
             key={tool.label}
             title={lang === 'en' ? tool.label : tool.zh}
             onClick={() => {
-              if (tool.action === 'place-pin') { useInteractionStore.getState().requestPlace('pin'); setMode('select'); }
-              else if (tool.mode === 'add_polygon') { setShapeOpen((v) => !v); setTerrOpen(false); }
-              else if (tool.label === 'Terr') { setTerrOpen((v) => !v); setShapeOpen(false); }
-              else if (tool.mode) { setShapeOpen(false); setTerrOpen(false); setMode(tool.mode); }
+              if (tool.action === 'place-pin') toggleMenu('Pin', setPinOpen);
+              else if (tool.action === 'image') toggleMenu('Image', setImageOpen);
+              else if (tool.mode === 'add_line') toggleMenu('Route', setRouteOpen);
+              else if (tool.mode === 'add_polygon') toggleMenu('Shape', setShapeOpen);
+              else if (tool.label === 'Terr') toggleMenu('Terr', setTerrOpen);
+              else if (tool.mode) { closeAll(); setMode(tool.mode); }
             }}
-            className={`${item} ${toolActive(tool, mode) ? 'bg-white/15 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'}`}
+            className={`${item} ${
+              openOf(tool.label)
+                ? 'bg-white/20 text-foreground'
+                : toolActive(tool, mode, routeReq)
+                  ? 'bg-white/15 text-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+            }`}
           >
             {tool.icon}
             <span className="hidden xl:inline">{lang === 'en' ? tool.label : tool.zh}</span>
@@ -284,9 +374,83 @@ export function FloatingTools() {
         ))}
       </div>
 
+      {/* 标记样式弹窗（标题=类型名称；内容=标记设置的样式） */}
+      {pinOpen && (
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[340px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-300/90 bg-red-500/10 rounded">
+              {lang === 'en' ? 'Pin' : '标记'}
+            </div>
+            <div className="flex-1 h-px bg-white/[0.08]" />
+          </div>
+          <div className="grid grid-cols-5 gap-1.5">
+            {PIN_ITEMS.map((s) => (
+              <button
+                key={s.style}
+                title={lang === 'en' ? s.en : s.zh}
+                onClick={() => {
+                  setPinOpen(false);
+                  useInteractionStore.getState().requestPlace('pin', s.style);
+                  setMode('select');
+                }}
+                className="flex flex-col items-center gap-1 py-2 px-1 rounded-lg border bg-white/[0.04] border-white/[0.09] text-foreground/85 hover:bg-white/10 hover:border-white/25 transition-colors"
+              >
+                <span className="text-lg leading-none drop-shadow-sm">{s.glyph}</span>
+                <span className="text-[10.5px] leading-tight font-medium text-center">
+                  {lang === 'en' ? s.en : s.zh}
+                </span>
+              </button>
+            ))}
+          </div>
+          <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
+            {lang === 'en' ? 'Pick a style to place the marker at map center; drag to fine-tune.' : '选择样式即在地图中心放置标记，可拖拽微调；具体属性在右侧面板设置。'}
+          </p>
+        </div>
+      )}
+
+      {/* 路线类型弹窗（标题=类型名称；内容=路线设置的路线类型） */}
+      {routeOpen && (
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[340px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-300/90 bg-blue-500/10 rounded">
+              {lang === 'en' ? 'Route' : '路线'}
+            </div>
+            <div className="flex-1 h-px bg-white/[0.08]" />
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {ROUTE_ITEMS.map((s) => (
+              <button
+                key={s.zh}
+                title={lang === 'en' ? s.en : s.zh}
+                onClick={() => {
+                  setRouteOpen(false);
+                  setMode(s.mode);
+                  if (s.route) useInteractionStore.getState().setPendingRouteStyle(s.route, s.mode);
+                }}
+                className="flex flex-col items-center gap-1 py-2 px-1 rounded-lg border bg-white/[0.04] border-white/[0.09] text-foreground/85 hover:bg-white/10 hover:border-white/25 transition-colors"
+              >
+                <span className="text-lg leading-none drop-shadow-sm">{s.glyph}</span>
+                <span className="text-[10.5px] leading-tight font-medium text-center">
+                  {lang === 'en' ? s.en : s.zh}
+                </span>
+              </button>
+            ))}
+          </div>
+          <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
+            {lang === 'en' ? 'Click map to draw; dblclick to finish; right-click/Esc cancel. Colors, animation and move marker in panel.' : '点击地图绘制，双击完成，右键/Esc 取消；颜色、动画、移动标记在右侧面板设置。'}
+          </p>
+        </div>
+      )}
+
       {/* 形状分类菜单（展开在工具条下方） */}
       {shapeOpen && (
         <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[460px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-orange-300/90 bg-orange-500/10 rounded">
+              {lang === 'en' ? 'Shape' : '形状'}
+            </div>
+            <div className="flex-1 h-px bg-white/[0.08]" />
+          </div>
           {SHAPE_GROUPS.map((g) => (
             <div key={g.zh}>
               <div className="flex items-center gap-2 mb-1.5">
@@ -356,6 +520,50 @@ export function FloatingTools() {
             {lang === 'en'
               ? 'Annex events recolor plots: instant / fade / border draw / spread from invader / nibble by an advancing ragged front, plus glow.'
               : '兼并事件按帧生效：瞬时 / 渐变 / 描线 / 扩散（从占领方边界推进）/ 蚕食（扩散推进+湍流置换前沿），可加高亮。'}
+          </p>
+        </div>
+      )}
+
+      {/* 图片贴图菜单：导入新图 / 从全局素材库插入 */}
+      {imageOpen && (
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[380px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300/90 bg-emerald-500/10 rounded">
+              {lang === 'en' ? 'Image' : '图片贴图'}
+            </div>
+            <div className="flex-1 h-px bg-white/[0.08]" />
+          </div>
+          <label className={`flex items-center justify-center gap-1.5 h-9 rounded-lg border border-dashed border-white/20 text-xs transition-colors ${IS_DESKTOP && !imageBusy ? 'cursor-pointer hover:border-white/40 hover:bg-white/5' : 'opacity-50 cursor-not-allowed'}`}>
+            {imageBusy ? (lang === 'en' ? 'Importing…' : '导入中…') : `⬆ ${lang === 'en' ? 'Import image' : '导入图片'}`}
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              disabled={!IS_DESKTOP || imageBusy}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void importImageFile(f); e.target.value = ''; }}
+            />
+          </label>
+          {imageItems.length > 0 && (
+            <div>
+              <div className="text-[10px] text-muted-foreground mb-1">{lang === 'en' ? 'Library' : '素材库'}</div>
+              <div className="grid grid-cols-3 gap-1.5 max-h-40 overflow-y-auto">
+                {imageItems.map((m) => (
+                  <button
+                    key={m.assetId}
+                    onClick={() => void insertGeoImage(m.assetId)}
+                    className="h-8 px-1.5 rounded-md border border-white/10 bg-white/[0.04] text-[10px] truncate hover:bg-white/10 hover:border-white/25 transition-colors"
+                    title={m.name}
+                  >
+                    🖼 {m.name || m.assetId.slice(0, 6)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
+            {lang === 'en'
+              ? 'Inserted at map center; drag the 4 corner points to georeference; grid density & opacity in the right panel.'
+              : '插入到当前地图视野中心；拖动四角控制点做配准；网格密度与不透明度在右侧面板调整。'}
           </p>
         </div>
       )}

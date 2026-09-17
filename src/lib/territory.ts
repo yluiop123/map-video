@@ -584,6 +584,71 @@ export function trimPlotOverlap(
   }
 }
 
+/** Feature<Polygon|MultiPolygon> → 逐个多边形 rings 列表 */
+function polysOfFeature(f: unknown): [number, number][][][] {
+  const g = (f as { geometry?: Polygon | MultiPolygon } | null)?.geometry;
+  if (!g) return [];
+  return g.type === 'Polygon'
+    ? [g.coordinates as [number, number][][]]
+    : (g.coordinates as [number, number][][][]);
+}
+
+/**
+ * 用一条切线把地块分割成多块。
+ *  · 2 点直线切：构造切线两侧的半平面（超大矩形）与地块求交 → 两块**精确共边**、无缝隙；
+ *  · 多点折线切：切线做微小缓冲后与地块求差 → 得到多块（接缝处有极窄空隙）。
+ * 返回每个子块的 rings（外环+洞）数组；切线未贯穿（结果 <2 块）返回 null。
+ */
+export function splitPlotByLine(
+  rings: [number, number][][],
+  line: [number, number][],
+): [number, number][][][] | null {
+  if (!rings?.[0] || rings[0].length < 4 || !line || line.length < 2) return null;
+  let subject: Feature<Polygon>;
+  try { subject = turf.polygon(rings as [number, number][][]); } catch { return null; }
+  const a = line[0];
+  const b = line[line.length - 1];
+  if (Math.abs(a[0] - b[0]) < 1e-12 && Math.abs(a[1] - b[1]) < 1e-12) return null;
+  const subjArea = (() => { try { return turf.area(subject); } catch { return 0; } })();
+  const eps = Math.max(1e-9, subjArea * 1e-6);
+  const areaOf = (pr: [number, number][][]) => { try { return turf.area(turf.polygon(pr)); } catch { return 0; } };
+  const valid = (list: [number, number][][][]) => list.filter((pr) => pr?.[0]?.length >= 4 && areaOf(pr) > eps);
+
+  try {
+    if (line.length === 2) {
+      // —— 直线：两侧半平面与地块求交（精确共边） ——
+      const bbox = turf.bbox(subject);
+      const diagM = Math.max(1000, turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[3]], { units: 'meters' }));
+      const L = diagM * 3;
+      const brgAB = turf.bearing(turf.point(a), turf.point(b));
+      const back = (brgAB + 180 + 360) % 360;
+      const left = (brgAB + 90 + 360) % 360;
+      const right = (brgAB - 90 + 360) % 360;
+      const mid = turf.midpoint(turf.point(a), turf.point(b)).geometry.coordinates as [number, number];
+      const farB = turf.destination(mid, L, brgAB, { units: 'meters' }).geometry.coordinates as [number, number]; // 越过 b
+      const farA = turf.destination(mid, L, back, { units: 'meters' }).geometry.coordinates as [number, number];  // 越过 a
+      const off = (p: [number, number], brg: number) =>
+        turf.destination(p, L, brg, { units: 'meters' }).geometry.coordinates as [number, number];
+      const leftPoly = turf.polygon([[[...farA] as [number, number], farB, off(farB, left), off(farA, left), farA]]);
+      const rightPoly = turf.polygon([[[...farA] as [number, number], farB, off(farB, right), off(farA, right), farA]]);
+      const interL = turf.intersect(turf.featureCollection([subject, leftPoly]));
+      const interR = turf.intersect(turf.featureCollection([subject, rightPoly]));
+      const pieces = valid([...polysOfFeature(interL), ...polysOfFeature(interR)]);
+      return pieces.length >= 2 ? pieces : null;
+    }
+    // —— 折线：细缓冲后求差（会留一丝空隙，可接受） ——
+    const rKm = Math.max(0.001, Math.min(0.1, (Math.sqrt(Math.max(1, subjArea)) / 1000) * 0.002));
+    const cut = turf.buffer(turf.lineString(line as [number, number][]), rKm, { units: 'kilometers' });
+    if (!cut) return null;
+    const diff = turf.difference(turf.featureCollection([subject, cut as Feature<Polygon>]));
+    const pieces = valid(polysOfFeature(diff));
+    return pieces.length >= 2 ? pieces : null;
+  } catch (e) {
+    console.warn('[territory] splitPlotByLine 失败:', e);
+    return null;
+  }
+}
+
 /** 闭合环描线切片：t∈[0,1]，返回已绘制部分的开放折线 */
 export function sliceRingClosed(ring: [number, number][], t: number): [number, number][] {
   const closed = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]

@@ -28,7 +28,7 @@ declare global {
         list: () => Promise<import('../types').ProviderConfig[]>;
         upsert: (cfg: import('../types').ProviderConfig) => Promise<{ ok: boolean }>;
         remove: (id: string) => Promise<{ ok: boolean }>;
-        setActive: (kind: 'llm' | 'tts', id: string | null) => Promise<{ ok: boolean }>;
+        setActive: (kind: 'llm' | 'tts' | 'image', id: string | null) => Promise<{ ok: boolean }>;
       };
       /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId = sha256） */
       assets: {
@@ -41,6 +41,9 @@ declare global {
       };
       aiChat: (config: import('../types').ProviderConfig, system: string, user: string) => Promise<{ content?: string; error?: string }>;
       aiTts: (config: import('../types').ProviderConfig, text: string) => Promise<{ bytes?: Uint8Array; mime?: string; error?: string }>;
+      aiImage: (config: import('../types').ProviderConfig, prompt: string) => Promise<{ image?: string; error?: string }>;
+      aiVoiceClone: (config: import('../types').ProviderConfig, body: unknown) => Promise<{ voiceId?: string; error?: string }>;
+      netJson: (url: string) => Promise<{ text?: string; error?: string }>;
       env: () => Promise<{ version: string; electron: string; node: string; userData: string }>;
       openExternal: (url: string) => void;
     };

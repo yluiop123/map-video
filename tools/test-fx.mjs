@@ -46,7 +46,6 @@ const inj = await page.evaluate(async () => {
   s.addScreenFx(ch.id, { id: 'fx_vig', kind: 'screen', name: '暗角', startFrame: 100, endFrame: 165, effect: { type: 'vignette', intensity: 1 }, enabled: true });
   s.addOverlay(ch.id, { id: 'ov_text', type: 'text', name: '文字', position: 'top', content: { type: 'text', text: { content: '渡江战役·总攻发起', fontSize: 30, color: '#FFD700', bold: true } }, startFrame: 30, endFrame: 150, animation: 'fadeIn', exitAnimation: 'fadeOut', scale: 1 });
   s.addOverlay(ch.id, { id: 'ov_list', type: 'list', name: '文字块', position: 'bottomLeft', content: { type: 'list', list: { title: '战役进程', items: ['3月5日 渡江集结', '3月8日 炮火准备', '3月9日 总攻发起'] } }, startFrame: 45, endFrame: 160, animation: 'slideInLeft', exitAnimation: 'fadeOut', widthPct: 30 });
-  s.updateChapter(ch.id, { titleStyle: { show: true, fontFamily: "'Geist','Noto Sans SC',system-ui,sans-serif", fontSize: 40, color: '#FFFFFF', weight: 700, align: 'left', vPos: 'bottom', bg: 'card', bgColor: '#0c0a09', shadow: true, showSubtitle: false } });
   return { ok: true };
 });
 log('注入:', inj);

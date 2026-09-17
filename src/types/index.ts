@@ -14,6 +14,10 @@ export interface Collection {
 export const DEFAULT_COLLECTION_ID = 'default';
 export const DEFAULT_COLLECTION_NAME = '默认合集';
 
+/**
+ * 项目 = 一条 0→endFrame 的**连续时间线**（无时间线）。
+ * 元素 / 相机 / 弹窗 / 特效 / 字幕 / 音乐全部用**项目绝对帧**。
+ */
 export interface MapVideoProject {
   id: string;
   name: string;
@@ -23,21 +27,36 @@ export interface MapVideoProject {
   createdAt: Date;
   updatedAt: Date;
   globalConfig: GlobalConfig;
-  chapters: Chapter[];
+  /** 时间线原点（恒为 0，统一坐标） */
+  startFrame: number;
+  /** 全片总长（帧）；内容超出时由 projectContentDuration 扩展 */
+  endFrame: number;
+  /** 全片元素（绝对帧） */
+  elements: MapElement[];
+  /** 一条相机关键帧轴（绝对帧） */
+  camera: CameraKeyframe[];
+  /** 弹窗卡片（绝对帧） */
+  overlays: OverlayItem[];
+  /** 天气/画面特效窗口（绝对帧） */
+  fx: ScreenFxItem[];
+  /** 字幕/配音轨（绝对帧） */
+  narration: NarrationTrack;
+  /** 项目级背景音乐：单轨多段（绝对帧，段内循环） */
+  music: MusicTrack[];
   baseMaps: BaseMapConfig[];
-  /** 新建章节的**默认底图**；实际生效的是章节上的 `chapter.baseMapId` */
+  /** 生效底图（项目固定） */
   activeBaseMapId: string;
   elevationMaps: ElevationMapConfig[];
-  /** 新建章节的**默认高程**；实际生效的是章节上的 `chapter.elevationMapId` */
+  /** 生效高程（项目固定） */
   activeElevationMapId: string | null;
 }
 
 export interface GlobalConfig {
-  defaultDuration: number;       // 默认时长（帧）
+  defaultDuration: number;       // 默认时长（帧，仅新建项目初始值）
   defaultFPS: number;
   defaultResolution: Resolution;
   defaultEasing: EasingType;
-  /** 地图投影：平面（默认）/ 3D 球体 —— 仅作新建章节的默认值，实际生效的是 `chapter.projection` */
+  /** 全片地图投影（项目固定）：平面（默认）/ 3D 球体 */
   projection?: 'mercator' | 'globe';
 }
 
@@ -65,36 +84,6 @@ export interface ElevationMapConfig {
   style?: string;                // 可选的关联底图样式
 }
 
-// ========== 章节类型 ==========
-
-export interface Chapter {
-  id: string;
-  title: string;
-  order: number;
-  startFrame: number;
-  endFrame: number;
-  elements: MapElement[];
-  camera?: CameraKeyframe[];
-  overlays: OverlayItem[];
-  /** 特效窗口：天气/画面特效层（屏幕空间，非地图元素），startFrame/endFrame 为绝对帧 */
-  fx?: ScreenFxItem[];
-  /** 章节标题样式（导出与预览共用渲染）；缺省用默认样式 */
-  titleStyle?: TitleStyle;
-  transition?: TransitionConfig; // 进入本节的转场
-  /**
-   * 底图 / 高程 / 投影 —— **按章节绑定**（不同章节可以不同底图、地形与 2D/3D 投影）。
-   * 为空时继承项目级默认值（`project.activeBaseMapId` / `activeElevationMapId` /
-   * `globalConfig.projection`），项目级那三个字段只作为「新建章节的初始值」，不直接生效。
-   */
-  baseMapId?: string;
-  elevationMapId?: string | null;
-  projection?: 'mercator' | 'globe';
-  /** 字幕/配音轨道（章内绝对帧） */
-  narration?: NarrationTrack;
-  /** 背景音乐段（章内绝对帧，可多段循环） */
-  music?: MusicTrack[];
-}
-
 // ========== 元素类型 ==========
 
 export type ElementType =
@@ -109,7 +98,8 @@ export type ElementType =
   | 'military_symbol'
   | 'connector'
   | 'flag'
-  | 'territory';
+  | 'territory'
+  | 'geo_image';
 
 export interface MapElementBase {
   id: string;
@@ -444,6 +434,27 @@ export interface TerritoryElement extends MapElementBase {
   display: TerritoryDisplay;
 }
 
+/**
+ * 地理配准图片（贴图）：把导入的图片按控制点网格贴到地图上。
+ * · cols=1,rows=1（即 2×2 网格点）= 四角投影配准（处理透视/斜切/旋转/缩放）
+ * · cols/rows 更大 = 网格变形配准（切片逐格贴图，纠正任意不规则扭曲）
+ * 图片存全局素材库（assetId，跨项目可用），本元素只保存配准参数。
+ */
+export interface GeoImageElement extends MapElementBase {
+  type: 'geo_image';
+  /** 全局素材库图片 id */
+  assetId: string;
+  /** 图片像素宽高比（宽/高），切片渲染用 */
+  aspect: number;
+  /** 网格列数/行数（1 = 四角；≥2 = 网格变形） */
+  cols: number;
+  rows: number;
+  /** 控制点（行优先，(rows+1)×(cols+1) 个 [lng,lat]） */
+  grid: [number, number][];
+  /** 不透明度 0–1（默认 1） */
+  opacity?: number;
+}
+
 export type MapElement =
   | PointElement
   | MovingPointElement
@@ -455,7 +466,8 @@ export type MapElement =
   | GatheringElement
   | ConnectorElement
   | FlagElement
-  | TerritoryElement;
+  | TerritoryElement
+  | GeoImageElement;
 
 // ========== 样式类型 ==========
 
@@ -546,18 +558,6 @@ export interface CameraKeyframe {
   };
 }
 
-// ========== 转场类型 ==========
-
-export interface TransitionConfig {
-  type: TransitionType;
-  duration: number;      // 帧数
-}
-
-export type TransitionType =
-  | 'cut' | 'fade' | 'fadeBlack' | 'fadeWhite'
-  | 'dissolve' | 'wipeLeft' | 'wipeRight'
-  | 'zoom' | 'mapFly';
-
 // ========== 叠加层类型（弹出元素） ==========
 
 export interface OverlayItem {
@@ -588,123 +588,81 @@ export interface OverlayBlock {
   url?: string;
 }
 
-// ========== 人物卡（块化：图片/姓名/介绍/名言/对话，各块开关+语音，布局可配） ==========
+// ========== 人物卡（精简：常用预设 + 少量参数） ==========
 
-export type PersonBlockKind = 'image' | 'name' | 'intro' | 'quote' | 'dialogue';
-
-export interface PersonBlock {
-  id: string;
-  kind: PersonBlockKind;
-  /** 显示开关 */
-  show: boolean;
-  /** name=姓名 / intro=介绍 / quote=名言 / dialogue=说的话（单角色自述） */
-  text?: string;
-  /** image 块图片 */
-  imageUrl?: string;
-  /** image 块尺寸 px（60–360） */
-  size?: number;
-  /** image 块遮罩：bottom/top=渐变压暗、circle=圆形裁剪、feather=边缘羽化 */
-  mask?: 'none' | 'bottom' | 'top' | 'circle' | 'feather';
-}
-
-export interface PersonLayoutCfg {
-  /** 图片相对文字的方位（none=不显示图片区，仅图片块单独渲染） */
-  imageSide: 'left' | 'right' | 'top' | 'bottom' | 'none';
-  align: 'left' | 'center';
-  /** 块间距 px */
-  gap: number;
-  /** 卡片最大宽 px（240–560） */
-  width: number;
-  /** 名言样式：bubble 引用气泡 / line 竖线引用 / big 大字居中 */
-  quoteStyle: 'bubble' | 'line' | 'big';
-  /** 海报式：姓名/介绍叠加在图片底部（配合 bottom 遮罩） */
-  textOverImage: boolean;
-}
+/** 常用样式：人物简介 / 名言台词 / 海报大图 / 纯文字 */
+export type PersonStyle = 'profile' | 'quote' | 'poster' | 'text';
 
 export interface PersonContent {
-  blocks: PersonBlock[];
-  layout: PersonLayoutCfg;
-  /** 整卡语音（唯一；编辑端点击播放，导出端纯视觉） */
+  style: PersonStyle;
+  /** 是否显示照片 */
+  showImage: boolean;
+  imageUrl?: string;
+  /** 照片形状 */
+  imageShape: 'square' | 'circle';
+  /** 照片方位（简介样式：左/右） */
+  imageSide: 'left' | 'right';
+  name?: string;
+  /** 职务 / 身份（姓名下小字） */
+  title?: string;
+  /** 简介 */
+  intro?: string;
+  /** 名言 / 台词 */
+  quote?: string;
+  /** 整卡语音（编辑端可试听；导出为纯视觉） */
   audioUrl?: string;
 }
 
-/** 人物卡布局预设：应用=改 layout + 块显隐/顺序（不动已填内容） */
-export const PERSON_PRESETS: {
-  id: string; zh: string; en: string;
-  layout: PersonLayoutCfg;
-  order: PersonBlockKind[];
-  show: Partial<Record<PersonBlockKind, boolean>>;
-}[] = [
-  {
-    id: 'profile', zh: '人物简介', en: 'Profile',
-    layout: { imageSide: 'left', align: 'left', gap: 14, width: 380, quoteStyle: 'bubble', textOverImage: false },
-    order: ['image', 'name', 'intro'], show: { intro: true, quote: false, dialogue: false },
-  },
-  {
-    id: 'quoteCard', zh: '名言卡', en: 'Quote',
-    layout: { imageSide: 'top', align: 'center', gap: 12, width: 360, quoteStyle: 'big', textOverImage: false },
-    order: ['image', 'quote', 'name'], show: { intro: false, quote: true, dialogue: false },
-  },
-  {
-    id: 'dialogueCard', zh: '对话卡', en: 'Dialogue',
-    layout: { imageSide: 'left', align: 'left', gap: 12, width: 380, quoteStyle: 'bubble', textOverImage: false },
-    order: ['image', 'name', 'dialogue'], show: { intro: false, quote: false, dialogue: true },
-  },
-  {
-    id: 'poster', zh: '海报', en: 'Poster',
-    layout: { imageSide: 'top', align: 'left', gap: 10, width: 440, quoteStyle: 'line', textOverImage: true },
-    order: ['image', 'name', 'intro'], show: { intro: true, quote: false, dialogue: false },
-  },
-  {
-    id: 'imageOnly', zh: '仅图片', en: 'Image only',
-    layout: { imageSide: 'left', align: 'center', gap: 0, width: 420, quoteStyle: 'bubble', textOverImage: false },
-    order: ['image'], show: { name: false, intro: false, quote: false, dialogue: false },
-  },
-  {
-    id: 'all', zh: '全展示', en: 'All',
-    layout: { imageSide: 'left', align: 'left', gap: 14, width: 420, quoteStyle: 'bubble', textOverImage: false },
-    order: ['image', 'name', 'intro', 'quote', 'dialogue'],
-    show: {},
-  },
+export const PERSON_PRESETS: { id: PersonStyle; zh: string; en: string }[] = [
+  { id: 'profile', zh: '人物简介', en: 'Profile' },
+  { id: 'quote', zh: '名言台词', en: 'Quote' },
+  { id: 'poster', zh: '海报大图', en: 'Poster' },
+  { id: 'text', zh: '纯文字', en: 'Text' },
 ];
 
+/** 预设对应的默认图片参数（不动已填文字） */
+export const PERSON_STYLE_DEFAULTS: Record<PersonStyle, Partial<PersonContent>> = {
+  profile: { showImage: true, imageShape: 'square', imageSide: 'left' },
+  quote: { showImage: false },
+  poster: { showImage: true, imageShape: 'square' },
+  text: { showImage: false },
+};
+
 export function defaultPersonContent(): PersonContent {
-  const b = (kind: PersonBlockKind, extra: Partial<PersonBlock> = {}): PersonBlock =>
-    ({ id: generateId(), kind, show: kind !== 'quote' && kind !== 'dialogue', ...extra });
   return {
-    layout: { imageSide: 'left', align: 'left', gap: 14, width: 380, quoteStyle: 'bubble', textOverImage: false },
-    blocks: [
-      b('image', { size: 72, mask: 'none' }),
-      b('name'),
-      b('intro'),
-      b('quote', { show: false }),
-      b('dialogue', { show: false }),
-    ],
+    style: 'profile', showImage: true, imageShape: 'square', imageSide: 'left',
+    name: '', title: '', intro: '', quote: '',
   };
 }
 
-/** person 旧结构（imageUrl/name/title/description/speech/audioUrl）→ 块化；缺字段补默认 */
+/** 兼容旧数据（块化 / v1 平铺）→ 精简结构 */
 export function normalizePersonContent(p: unknown): PersonContent {
   const def = defaultPersonContent();
   if (!p || typeof p !== 'object') return def;
-  const obj = p as Partial<PersonContent> & { imageUrl?: string; name?: string; title?: string; description?: string; speech?: string };
-  if (Array.isArray(obj.blocks) && obj.blocks.length > 0) {
-    const layout: PersonLayoutCfg = { ...def.layout, ...(obj.layout || {}) };
-    const blocks = def.blocks.map((db) => {
-      const old = (obj.blocks as PersonBlock[]).find((x) => x && x.kind === db.kind);
-      return old ? { ...db, ...old, id: old.id || db.id } : db;
-    });
-    return { blocks, layout, audioUrl: obj.audioUrl };
-  }
-  // v1 → v2
-  const text: Partial<Record<PersonBlockKind, Partial<PersonBlock>>> = {};
-  if (obj.imageUrl) text.image = { imageUrl: obj.imageUrl };
-  if (obj.name) text.name = { text: obj.name };
-  if (obj.description) text.intro = { text: obj.description };
-  if (obj.speech) text.dialogue = { text: obj.speech };
+  const obj = p as Record<string, unknown> & Partial<PersonContent>;
+  if (obj.style) return { ...def, ...obj } as PersonContent;
+  const blocks = Array.isArray(obj.blocks)
+    ? (obj.blocks as { kind?: string; show?: boolean; text?: string; imageUrl?: string }[])
+    : [];
+  const find = (k: string) => blocks.find((b) => b && b.kind === k && b.show !== false);
+  const vis = blocks.filter((b) => b && b.show !== false);
+  const imgOnly = vis.length === 1 && vis[0]?.kind === 'image';
+  const layout = (obj.layout || {}) as { imageSide?: string };
+  let style: PersonStyle = 'profile';
+  if (imgOnly) style = 'poster';
+  else if (find('quote')) style = 'quote';
+  else if (!find('intro') && !find('image')) style = 'text';
   return {
-    layout: def.layout,
-    blocks: def.blocks.map((db) => ({ ...db, ...(text[db.kind] || {}) })),
+    ...def,
+    style,
+    showImage: !!find('image') || imgOnly,
+    imageUrl: find('image')?.imageUrl || (obj.imageUrl as string) || undefined,
+    imageShape: 'square',
+    imageSide: layout.imageSide === 'right' ? 'right' : 'left',
+    name: find('name')?.text || (obj.name as string) || '',
+    title: (obj.title as string) || '',
+    intro: find('intro')?.text || (obj.description as string) || '',
+    quote: find('quote')?.text || find('dialogue')?.text || (obj.speech as string) || '',
     audioUrl: obj.audioUrl,
   };
 }
@@ -713,8 +671,9 @@ export type OverlayType =
   | 'custom'                                        // 自定义（文字/图片/视频块组合 + 背景语音）
   | 'chart'
   | 'person'                                        // 人物卡（头像+姓名+职务+介绍+说话+音效）
-  | 'report' | 'timeline' | 'quote' | 'compare'     // 战报 / 时间线 / 引用 / 对比
-  | 'counter' | 'dialogue' | 'stats' | 'place';     // 计数 / 对话 / 态势 / 地点
+  | 'timeline' | 'quote' | 'compare'               // 时间线 / 引用 / 对比
+  | 'stat'                                          // 数字卡
+  | 'stats' | 'counter' | 'dialogue' | 'place' | 'report';  // [已删除] 态势 / 计数 / 对话卡 / 地点卡 / 战报卡（仅保留类型用于旧数据迁移）
 
 export type ChartType = 'bar' | 'line' | 'pie' | 'area' | 'hbar' | 'donut' | 'radar' | 'gauge' | 'vs';
 
@@ -736,7 +695,7 @@ export interface OverlayContent {
   /** person：块化人物卡（图片/姓名/介绍/名言/对话，各块开关+语音，布局可配；见 PersonContent） */
   person?: PersonContent;
   chart?: { type: ChartType; title?: string; data: { label: string; value: number }[]; data2?: { label: string; value: number }[]; color?: string; color2?: string };
-  /** report 战报卡：大数字战果 */
+  /** [已删除] report 战报卡：仅兼容旧数据，加载时迁移为 custom 文字块 */
   report?: { title?: string; value: number | string; unit?: string; note?: string };
   /** timeline 时间线卡：逐条错峰进场 */
   timeline?: { title?: string; items: { time?: string; text: string }[] };
@@ -744,13 +703,15 @@ export interface OverlayContent {
   quote?: { text: string; source?: string };
   /** compare 对比卡：左右两列 VS */
   compare?: { title?: string; left: { label: string; value: number }; right: { label: string; value: number }; unit?: string };
-  /** counter 计数卡：大数字随播放滚动增长（durationFrames=计数时长） */
+  /** stat 数字卡：大数字 + 标签 + 单位（可选从 0 滚动计数） */
+  stat?: { value: number; label?: string; prefix?: string; unit?: string; countUp?: boolean };
+  /** [已删除] counter 计数卡：仅兼容旧数据，加载时迁移为 custom 文字块 */
   counter?: { value: number; label?: string; prefix?: string; unit?: string; durationFrames?: number };
-  /** dialogue 对话卡：头像+聊天气泡（往来命令/电文） */
+  /** [已删除] dialogue 对话卡：仅兼容旧数据，加载时迁移为 custom 文字块 */
   dialogue?: { title?: string; items: { who: string; avatarUrl?: string; text: string }[] };
   /** [已删除] stats 态势卡：仅兼容旧数据，加载时迁移为 custom 文字块 */
   stats?: { title?: string; items: { label: string; value: number; unit?: string; max?: number }[] };
-  /** place 地点卡：地名+简介+配图 */
+  /** [已删除] place 地点卡：仅兼容旧数据，加载时迁移为 custom 文字块 */
   place?: { name: string; description?: string; imageUrl?: string };
   /** 兼容旧数据（text/list/image/video/audio/group），加载时自动迁移为 custom */
   text?: { content: string; fontSize: number; color: string; bold?: boolean; align?: 'left' | 'center' | 'right' };
@@ -762,7 +723,8 @@ export interface OverlayContent {
 }
 
 const NEW_OVERLAY_TYPES = new Set<OverlayType>([
-  'custom', 'chart', 'person', 'report', 'timeline', 'quote', 'compare', 'counter', 'dialogue', 'place',
+  'custom', 'chart', 'person', 'timeline', 'quote', 'compare',
+  'stat',
 ]);
 
 /** 旧弹窗内容迁移为自定义块（load/import 入口调用；audio→纯背景语音卡，group 子内容递归拍平；person 迁移为块化） */
@@ -778,6 +740,40 @@ export function normalizeOverlayContent(content: OverlayContent): OverlayContent
     for (const it of st?.items || []) {
       blocks.push({ id: generateId(), type: 'text', text: { content: [it.label, String(it.value), it.unit].filter(Boolean).join('：'), fontSize: 14, color: '#e7e5e4', align: 'left' } });
     }
+    return { type: 'custom', custom: { blocks } };
+  }
+  if (content.type === 'report') {
+    // 战报卡已删除：迁移为自定义文字块（标题 + 大数字 + 注释）
+    const r = content.report;
+    const blocks: OverlayBlock[] = [];
+    if (r?.title) blocks.push({ id: generateId(), type: 'text', text: { content: r.title, fontSize: 16, color: '#FFFFFF', bold: true, align: 'left' } });
+    if (r && r.value !== undefined && r.value !== '') blocks.push({ id: generateId(), type: 'text', text: { content: `${r.value}${r.unit || ''}`, fontSize: 28, color: '#FFFFFF', bold: true, align: 'left' } });
+    if (r?.note) blocks.push({ id: generateId(), type: 'text', text: { content: r.note, fontSize: 14, color: '#e7e5e4', align: 'left' } });
+    return { type: 'custom', custom: { blocks } };
+  }
+  if (content.type === 'counter') {
+    // 计数卡已删除：迁移为自定义文字块（大数字 + 标签）
+    const ct = content.counter;
+    const blocks: OverlayBlock[] = [];
+    if (ct) blocks.push({ id: generateId(), type: 'text', text: { content: `${ct.prefix || ''}${ct.value}${ct.unit || ''}`, fontSize: 28, color: '#FFFFFF', bold: true, align: 'left' } });
+    if (ct?.label) blocks.push({ id: generateId(), type: 'text', text: { content: ct.label, fontSize: 14, color: '#e7e5e4', align: 'left' } });
+    return { type: 'custom', custom: { blocks } };
+  }
+  if (content.type === 'dialogue') {
+    // 对话卡已删除：迁移为自定义文字块（标题 + 说话人：内容）
+    const dl = content.dialogue;
+    const blocks: OverlayBlock[] = [];
+    if (dl?.title) blocks.push({ id: generateId(), type: 'text', text: { content: dl.title, fontSize: 16, color: '#FFFFFF', bold: true, align: 'left' } });
+    for (const it of dl?.items || []) blocks.push({ id: generateId(), type: 'text', text: { content: [it.who, it.text].filter(Boolean).join('：'), fontSize: 14, color: '#e7e5e4', align: 'left' } });
+    return { type: 'custom', custom: { blocks } };
+  }
+  if (content.type === 'place') {
+    // 地点卡已删除：迁移为自定义块（地名 + 简介 + 配图）
+    const pl = content.place;
+    const blocks: OverlayBlock[] = [];
+    if (pl?.imageUrl) blocks.push({ id: generateId(), type: 'image', url: pl.imageUrl });
+    if (pl?.name) blocks.push({ id: generateId(), type: 'text', text: { content: pl.name, fontSize: 18, color: '#FFFFFF', bold: true, align: 'left' } });
+    if (pl?.description) blocks.push({ id: generateId(), type: 'text', text: { content: pl.description, fontSize: 14, color: '#e7e5e4', align: 'left' } });
     return { type: 'custom', custom: { blocks } };
   }
   if (NEW_OVERLAY_TYPES.has(content.type)) return content;
@@ -839,104 +835,6 @@ export interface ScreenFxItem {
   enabled?: boolean;
 }
 
-/** 章节标题样式（双端同源渲染） */
-export interface TitleStyle {
-  show: boolean;
-  preset?: string;                         // 内置样式 id；手动改属性后变 'custom'
-  fontFamily: string;
-  fontSize: number;
-  color: string;
-  weight: number;                          // 300–900
-  pos: OverlayPosition;                    // 9 宫格位置（同弹窗）
-  offsetX: number;                         // 横向微调 %（-40..40，正值向右）
-  offsetY: number;                         // 纵向微调 %（-40..40，正值向下）
-  bg: 'none' | 'bar' | 'card';             // 无背景 / 半透明条带 / 卡片
-  bgColor: string;
-  shadow: boolean;
-}
-
-/** 内置标题样式预设：选中即套用一组参数，之后各项仍可自由调整 */
-export const TITLE_PRESETS: { id: string; zh: string; en: string; values: Omit<TitleStyle, 'show' | 'preset'> }[] = [
-  {
-    id: 'classic', zh: '默认卡片', en: 'Classic',
-    values: {
-      fontFamily: "'Geist', 'Noto Sans SC', system-ui, sans-serif", fontSize: 36, color: '#FFFFFF',
-      weight: 700, pos: 'bottomLeft', offsetX: 0, offsetY: 0, bg: 'card', bgColor: '#0c0a09', shadow: true,
-    },
-  },
-  {
-    id: 'documentary', zh: '纪录片', en: 'Documentary',
-    values: {
-      fontFamily: "Georgia, 'Noto Serif SC', 'SimSun', serif", fontSize: 46, color: '#FFFFFF',
-      weight: 700, pos: 'bottomLeft', offsetX: 0, offsetY: 0, bg: 'none', bgColor: '#0c0a09', shadow: true,
-    },
-  },
-  {
-    id: 'inkpaper', zh: '宣纸墨韵', en: 'Ink Paper',
-    values: {
-      fontFamily: "'KaiTi', 'STKaiti', serif", fontSize: 42, color: '#3a2e1c',
-      weight: 700, pos: 'bottomLeft', offsetX: 0, offsetY: 0, bg: 'card', bgColor: '#f3ecd8', shadow: false,
-    },
-  },
-  {
-    id: 'golden', zh: '金色史诗', en: 'Golden Epic',
-    values: {
-      fontFamily: "Georgia, 'Noto Serif SC', 'SimSun', serif", fontSize: 56, color: '#e8c56a',
-      weight: 900, pos: 'top', offsetX: 0, offsetY: 0, bg: 'none', bgColor: '#0c0a09', shadow: true,
-    },
-  },
-  {
-    id: 'military', zh: '军报横幅', en: 'Military',
-    values: {
-      fontFamily: "'SimHei', 'Microsoft YaHei', 'Noto Sans SC', sans-serif", fontSize: 38, color: '#FFFFFF',
-      weight: 900, pos: 'bottomLeft', offsetX: 0, offsetY: 0, bg: 'bar', bgColor: '#233318', shadow: false,
-    },
-  },
-  {
-    id: 'cinema', zh: '电影黑条', en: 'Cinema',
-    values: {
-      fontFamily: "'Geist', 'Noto Sans SC', system-ui, sans-serif", fontSize: 30, color: '#FFFFFF',
-      weight: 400, pos: 'bottom', offsetX: 0, offsetY: 40, bg: 'bar', bgColor: '#000000', shadow: false,
-    },
-  },
-];
-
-export function defaultTitleStyle(): TitleStyle {
-  return {
-    show: true,
-    preset: 'classic',
-    fontFamily: "'Geist', 'Noto Sans SC', system-ui, sans-serif",
-    fontSize: 36,
-    color: '#FFFFFF',
-    weight: 700,
-    pos: 'bottomLeft',
-    offsetX: 0,
-    offsetY: 0,
-    bg: 'card',
-    bgColor: '#0c0a09',
-    shadow: true,
-  };
-}
-
-/** 兼容旧标题样式（align+vPos → 9 宫格 pos；offsetX/Y=相对 POS_BASE 标准位的微调量），load/import 时调用 */
-export function normalizeTitleStyle(ts?: Partial<TitleStyle> & { align?: string; vPos?: string } | null): TitleStyle {
-  const m: Record<string, unknown> = { ...defaultTitleStyle(), ...(ts || {}) };
-  if (!m.pos) {
-    const a = m.align === 'right' ? 'right' : m.align === 'center' ? 'center' : 'left';
-    const v = m.vPos === 'top' ? 'top' : m.vPos === 'center' ? 'center' : 'bottom';
-    m.pos = v === 'center'
-      ? (a === 'center' ? 'center' : a === 'right' ? 'right' : 'left')
-      : v === 'top'
-        ? (a === 'center' ? 'top' : a === 'right' ? 'topRight' : 'topLeft')
-        : (a === 'center' ? 'bottom' : a === 'right' ? 'bottomRight' : 'bottomLeft');
-  }
-  if (typeof m.offsetX !== 'number') m.offsetX = 0;
-  if (typeof m.offsetY !== 'number') m.offsetY = 0;
-  delete m.align;
-  delete m.vPos;
-  return m as unknown as TitleStyle;
-}
-
 // ========== 工具函数 ==========
 
 export function generateId(): string {
@@ -964,6 +862,8 @@ export interface NarrationEntry {
 
 export interface NarrationStyle {
   fontSize: number;
+  /** 字体族（默认 楷体 KaiTi, SimSun） */
+  fontFamily?: string;
   color: string;
   strokeColor: string;
   strokeWidth: number;
@@ -976,12 +876,41 @@ export interface NarrationStyle {
   maxPct: number;
 }
 
+/** 生成用：一档弹窗规格（帧由 store 落帧） */
+export interface GeneratedOverlaySpec {
+  type: OverlayType;
+  name?: string;
+  position: OverlayPosition;
+  content: OverlayContent;
+  animation?: AnimationPreset;
+  exitAnimation?: AnimationPreset;
+  /** 章内相对起点（帧） */
+  startOffset: number;
+  /** 持续帧数 */
+  duration: number;
+  scale?: number;
+}
+
+/** 生成用：一章的构建计划 */
+export interface GeneratedChapterPlan {
+  title: string;
+  entries: NarrationEntry[];
+  overlays?: GeneratedOverlaySpec[];
+  fx?: ScreenFxType[];
+  /** 相机中心（由字幕地名解析得出）；缺省用默认概览 */
+  cameraTarget?: { center: [number, number]; zoom?: number };
+  /** 本章自动落点标记（坐标固定，可见时间=整章） */
+  markers?: { name: string; center: [number, number] }[];
+  /** 由 LLM 意图构造的内置元素（帧为章内相对帧，store 落到绝对帧） */
+  elements?: MapElement[];
+}
+
 export interface NarrationTrack {
   entries: NarrationEntry[];
   style: NarrationStyle;
 }
 
-/** 背景音乐段：章内生效区间，可循环 */
+/** 背景音乐段（项目级单轨的一段）：项目绝对帧区间，段内可循环 */
 export interface MusicTrack {
   id: string;
   name: string;
@@ -999,11 +928,12 @@ export interface MusicTrack {
 /** AI / 配音服务配置（localStorage 持久化，不入项目文件防泄密） */
 export interface ProviderConfig {
   id: string;
-  kind: 'llm' | 'tts';
+  /** llm=文案生成 / tts=语音（含克隆）/ image=图片生成 */
+  kind: 'llm' | 'tts' | 'image';
   label: string;
   baseUrl: string;
   apiKey: string;
-  /** LLM 模型名 / TTS 音色模型 */
+  /** LLM 模型名 / TTS 音色模型 / 图片模型 */
   model: string;
   /** TTS 接口协议 */
   protocol?: TtsProtocol;
@@ -1026,7 +956,9 @@ export interface ProviderPreset {
   model: string;
   voice?: string;
   protocol?: TtsProtocol;
-  /** 申请 Key 的地址提示 */
+  /** 可选模型列表（提供时，属性面板的模型字段渲染为下拉框） */
+  models?: string[];
+  /** 获取 Key 的地址提示 */
   keyHint?: string;
   /** 备注（CORS/协议说明） */
   note?: string;
@@ -1039,15 +971,17 @@ export function estimateTextDurationFrames(text: string, fps: number): number {
 }
 
 export function defaultNarrationStyle(): NarrationStyle {
+  // 默认对齐纪录片《千古一帝》字幕：楷体、40px、米白字、半透明黑底、底部居中
   return {
-    fontSize: 30,
-    color: '#FFFFFF',
+    fontSize: 40,
+    fontFamily: "'KaiTi', 'STKaiti', 'SimSun', serif",
+    color: '#E9DEC4',
     strokeColor: '#000000',
-    strokeWidth: 4,
-    bg: 'none',
+    strokeWidth: 0,
+    bg: 'bar',
     bgColor: '#000000',
-    posY: 8,
-    maxPct: 80,
+    posY: 2,
+    maxPct: 92,
   };
 }
 

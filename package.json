@@ -42,6 +42,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "docs/db-schema-v2.sql",
       "package.json"
     ],
     "win": {

@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld('mapvideo', {
   },
   aiChat: (config, system, user) => ipcRenderer.invoke('ai:chat', { config, system, user }),
   aiTts: (config, text) => ipcRenderer.invoke('ai:tts', { config, text }),
+  aiImage: (config, prompt) => ipcRenderer.invoke('ai:image', { config, prompt }),
+  aiVoiceClone: (config, body) => ipcRenderer.invoke('ai:voiceClone', { config, body }),
+  /** 主进程代拉 JSON/GeoJSON 文本（避开渲染进程 CORS） */
+  netJson: (url) => ipcRenderer.invoke('net:json', url),
   env: () => ipcRenderer.invoke('env:get'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 });

@@ -1,7 +1,7 @@
 import { renderMediaOnWeb, canRenderMediaOnWeb, type WebRendererContainer, type WebRendererVideoCodec, type WebRendererAudioCodec } from '@remotion/web-renderer';
 import { MapVideo } from '../compositions/MapVideo';
 import type { MapVideoProject } from '../types';
-import { projectContentDuration } from './chapter-duration';
+import { projectContentDuration } from './project-duration';
 
 export interface ExportOptions {
   project: MapVideoProject;
@@ -21,8 +21,6 @@ export const EXPORT_PRESETS = [
   { label: '1080p 横屏 (16:9)', width: 1920, height: 1080 },
   { label: '竖屏 (9:16)', width: 1080, height: 1920 },
   { label: '方形 (1:1)', width: 1080, height: 1080 },
-  { label: '720p 横屏', width: 1280, height: 720 },
-  { label: '4K 横屏', width: 3840, height: 2160 },
 ] as const;
 
 export async function checkExportSupport(
@@ -43,8 +41,8 @@ export async function checkExportSupport(
 export async function exportVideo(options: ExportOptions): Promise<Blob> {
   const { project, container, videoCodec, onProgress, onArtifact, signal } = options;
 
-  // 导出长度按「内容实际结束帧」算，而不是章节手动设的 endFrame（可留白/定格）
-  const totalFrames = projectContentDuration(project.chapters);
+  // 导出长度按「内容实际结束帧」算，而不是容器 endFrame（可留白/定格）
+  const totalFrames = projectContentDuration([project]);
   const fps = options.fps ?? project.globalConfig.defaultFPS;
   const width = options.width ?? project.globalConfig.defaultResolution.width;
   const height = options.height ?? project.globalConfig.defaultResolution.height;

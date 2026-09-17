@@ -69,24 +69,30 @@ export function drawWeather(c: WeatherDrawCtx): void {
   const count = Math.round(40 + intensity * 260);
 
   if (type === 'rain') {
-    ctx.strokeStyle = `rgba(174,194,224,${0.35 * env})`;
-    ctx.lineWidth = 1.2;
-    ctx.lineCap = 'round';
-    const speed = 900 + intensity * 500; // px/s
-    const len = 14 + intensity * 14;
+    // 提高可见度：更亮更粗的雨丝 + 单条路径统一描边（带轻微辉光），浅色底图上也看得清
+    const rCount = Math.round(60 + intensity * 300);
+    const speed = 950 + intensity * 550; // px/s
+    const len = 18 + intensity * 16;
     const drift = wind * 260;
-    for (let i = 0; i < count; i++) {
+    ctx.save();
+    ctx.strokeStyle = `rgba(222, 236, 255, ${0.62 * env})`;
+    ctx.lineWidth = 1.5 + intensity * 0.7;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = `rgba(170, 200, 245, ${0.85 * env})`;
+    ctx.shadowBlur = 2.5;
+    ctx.beginPath();
+    for (let i = 0; i < rCount; i++) {
       const x0 = rand(seed + i * 3.1) * (w + 200) - 100;
       const y0 = rand(seed + i * 7.7) * h;
       const sp = speed * (0.75 + rand(seed + i * 11.3) * 0.5);
       const y = (y0 + t * sp) % (h + 40) - 20;
       const x = x0 + (y / Math.max(1, h)) * drift * 0.6 + drift * t * 0.2;
       const dx = (drift + 40) * (len / sp);
-      ctx.beginPath();
       ctx.moveTo(x, y);
       ctx.lineTo(x + dx, y + len);
-      ctx.stroke();
     }
+    ctx.stroke();
+    ctx.restore();
   } else if (type === 'snow') {
     ctx.fillStyle = `rgba(255,255,255,${0.8 * env})`;
     for (let i = 0; i < count; i++) {

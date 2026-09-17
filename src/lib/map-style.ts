@@ -6,19 +6,20 @@
  * 导致「编辑器里看到的底图/地形」与「导出视频里的」可能不一致。
  */
 import type { StyleSpecification } from 'maplibre-gl';
-import type { MapVideoProject, Chapter } from '../types';
+import type { MapVideoProject } from '../types';
 
 const EMPTY_STYLE: StyleSpecification = { version: 8, sources: {}, layers: [] };
 
-export function getStyleUrl(project: MapVideoProject, chapter: Chapter): string | StyleSpecification {
-  const activeId = chapter.baseMapId || project.activeBaseMapId;
-  const baseMap = project.baseMaps.find((b) => b.id === activeId);
+export function getStyleUrl(project: MapVideoProject): string | StyleSpecification {
+  const activeId = project.activeBaseMapId;
+  // 找不到时回退到第一个底图（老项目残留已删除的底图 id 时避免空白地图）
+  const baseMap = project.baseMaps.find((b) => b.id === activeId) || project.baseMaps[0];
   const style = baseMap?.style;
   if (!style) return EMPTY_STYLE;
   if (typeof style === 'string') return style;
 
-  const elevId = chapter.elevationMapId !== undefined ? chapter.elevationMapId : project.activeElevationMapId;
-  const elevation = project.elevationMaps.find((e) => e.id === elevId && e.url);
+  const elevId = project.activeElevationMapId ?? 'none';
+  const elevation = (project.elevationMaps || []).find((e) => e.id === elevId && e.url);
   if (!elevation?.url || style.sources?.elevation) return style;
 
   return {

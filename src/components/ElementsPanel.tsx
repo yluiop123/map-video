@@ -18,7 +18,6 @@ export function ElementsPanel() {
   const deleteElement = useProjectStore((s) => s.deleteElement);
   const updateElement = useProjectStore((s) => s.updateElement);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
-  const selectedChapterId = useEditorStore((s) => s.selectedChapterId);
   const selectElement = useEditorStore((s) => s.selectElement);
   const setElementsOpen = useEditorStore((s) => s.setElementsOpen);
   const openFx = useEditorStore((s) => s.openFx);
@@ -30,7 +29,7 @@ export function ElementsPanel() {
 
   if (!project) return null;
 
-  const chapter = project.chapters.find((c) => c.id === selectedChapterId) || project.chapters[0];
+  const chapter = project;
   const chapterElements = chapter?.elements || [];
   const kw = filter.trim().toLowerCase();
   const shown = kw ? chapterElements.filter((el) => (el.name || '').toLowerCase().includes(kw)) : chapterElements;
@@ -41,13 +40,13 @@ export function ElementsPanel() {
     try {
       const elements = await uploadGeoJSON(file);
       if (elements.length > 0) {
-        // 修正时间范围到当前章节
+        // 修正时间范围到项目
         const fixed = elements.map((el) => ({
           ...el,
-          startFrame: chapter.startFrame,
+          startFrame: 0,
           endFrame: chapter.endFrame,
         }));
-        addElements(chapter.id, fixed);
+        addElements(fixed);
       }
     } catch (err) {
       console.error(err);
@@ -66,12 +65,12 @@ export function ElementsPanel() {
       const el: MapElement = {
         id: Math.random().toString(36).slice(2),
         type: 'line', name: track.name, visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: chapter.endFrame, style: {},
         coordinates: track.coords,
-        drawProgress: [{ frame: chapter.startFrame, value: 1 }],
+        drawProgress: [{ frame: 0, value: 1 }],
         lineWidth: 8, lineColor: '#FF6600',
       };
-      addElement(chapter.id, el);
+      addElement(el);
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : 'GPX 导入失败');
@@ -100,7 +99,7 @@ export function ElementsPanel() {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${chapter?.title || 'chapter'}.geojson`;
+            a.download = `${chapter?.name || 'chapter'}.geojson`;
             a.click();
             URL.revokeObjectURL(url);
           }} className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/5" title="导出GeoJSON">
@@ -155,14 +154,14 @@ export function ElementsPanel() {
                   ✨
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); updateElement(chapter.id, element.id, { visible: element.visible === false } as Partial<MapElement>); }}
+                  onClick={(e) => { e.stopPropagation(); updateElement(element.id, { visible: element.visible === false } as Partial<MapElement>); }}
                   className={`p-1 rounded shrink-0 ${element.visible === false ? 'text-muted-foreground' : 'text-foreground/70'} hover:text-foreground hover:bg-white/10`}
                   title={element.visible === false ? '显示' : '隐藏'}
                 >
                   {element.visible === false ? <EyeOff size={13} /> : <Eye size={13} />}
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); deleteElement(chapter.id, element.id); }}
+                  onClick={(e) => { e.stopPropagation(); deleteElement(element.id); }}
                   className="p-1 rounded shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-white/10 transition-opacity"
                   title="删除"
                 >

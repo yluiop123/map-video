@@ -23,7 +23,6 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
   const updateElement = useProjectStore((s) => s.updateElement);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
   const selectElement = useEditorStore((s) => s.selectElement);
-  const selectedChapterId = useEditorStore((s) => s.selectedChapterId);
 
   const [tab, setTab] = useState<'built' | 'geojson'>('built');
   const [names, setNames] = useState<string[] | null>(null);
@@ -34,7 +33,7 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
   const [geo, setGeo] = useState<TerritoryShapeInput[] | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const chapter = project?.chapters.find((c) => c.id === selectedChapterId) || project?.chapters[0];
+  const chapter = project;
 
   useEffect(() => {
     let alive = true;
@@ -51,10 +50,10 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
     if (sel?.type === 'territory') return { chapterId: chapter.id, el: sel as TerritoryElement };
     const el: TerritoryElement = {
       id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
-      startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+      startFrame: 0, endFrame: chapter.endFrame, style: {},
       countries: [], plots: [], events: [], display: defaultTerritoryDisplay(),
     };
-    addElement(chapter.id, el);
+    addElement(el);
     selectElement(el.id);
     return { chapterId: chapter.id, el };
   };
@@ -69,7 +68,7 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
       return;
     }
     const merged = mergeShapesIntoTerritory(tgt.el, fresh);
-    updateElement(tgt.chapterId, tgt.el.id, { countries: merged.countries, plots: merged.plots } as any);
+    updateElement(tgt.el.id, { countries: merged.countries, plots: merged.plots } as any);
     const cCount = new Set(fresh.map((s) => s.countryName)).size;
     // 导入成功后：视野定位到新增地块范围（无需手动去地图上找）
     const map = sharedMap.get();
@@ -160,7 +159,7 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
         <div className="px-4 pt-4 pb-2">
           <h2 className="text-base font-semibold">🗺️ 导入疆域</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            导入到「{chapter?.title || '-'}」{project ? '' : ''}
+            导入到「{chapter?.name || '-'}」{project ? '' : ''}
             {(() => {
               const sel = chapter?.elements.find((e) => e.id === selectedElementId);
               return sel?.type === 'territory' ? ` · 疆域「${sel.name}」` : ' · 将新建疆域';

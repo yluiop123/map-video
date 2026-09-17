@@ -1,11 +1,13 @@
 import { createElement, useRef, useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
-import { MapPin, Route as RouteIcon, Square, Trash2, Plus, Landmark, Crosshair } from 'lucide-react';
+import { MapPin, Route as RouteIcon, Square, Trash2, Plus, Landmark, Crosshair, Image as ImageIcon } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { useInteractionStore } from '../stores/interactionStore';
 import { generateId } from '../types';
 import { FrameTimeField } from './FrameTimeField';
 import { frameToSeconds, secondsToFrame, round2 } from '../lib/time';
+import { fullDisplayEnd } from '../lib/project-duration';
+import { loadImageAspect, withGridDensity } from '../lib/geo-image';
 import { TERRITORY_PALETTE } from '../lib/territory';
 import { Section, Field, StyleGrid, Toggle, ColorPicker, OptionBlocks, PanelHeader, useT, NumberInput } from './ui/primitives';
 import { useConfirm } from './ui/ConfirmHost';
@@ -14,17 +16,17 @@ import type {
   MapElement, PointElement, LineElement,
   PolygonElement, ArrowElement, FlagElement,
   DoubleArrowElement, EncirclementElement, GatheringElement,
-  CameraKeyframe, TerritoryElement, PointShape,
+  CameraKeyframe, TerritoryElement, GeoImageElement, PointShape,
 } from '../types';
 import { BUILTIN_IMAGES, BUILTIN_GIFS, BUILTIN_MODELS, BUILTIN_ICON_NAMES } from '../lib/builtin-assets';
-import { defaultVisualFor, getPinCapability } from '../lib/pin-visual';
+import { getPinCapability } from '../lib/pin-visual';
 import { loadLucideIcons, filterExistingIcons, type IconComponent } from '../lib/icon-library';
 import { uploadAsset, getAssetUrl, removeAsset, listMedia, type MediaItem, type AssetKind } from '../lib/assets';
 import ms from 'milsymbol';
 import { IS_DESKTOP } from '../lib/backend';
 import { distributePointTimes, ensurePointTimes } from '../lib/route-time';
 
-type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'territory';
+type Category = 'pin' | 'route' | 'shape-multi' | 'shape-two' | 'shape-special' | 'territory' | 'image';
 
 const CATEGORY_META: Record<Category, { icon: React.ReactNode; zh: string; en: string }> = {
   pin: { icon: <MapPin size={14} className="text-red-400" />, zh: '标记设置', en: 'Pin Settings' },
@@ -33,10 +35,12 @@ const CATEGORY_META: Record<Category, { icon: React.ReactNode; zh: string; en: s
   'shape-two': { icon: <Square size={14} className="text-orange-400" />, zh: '两点绘制设置', en: 'Two-Point Shape Settings' },
   'shape-special': { icon: <Square size={14} className="text-orange-400" />, zh: '特殊图形设置', en: 'Special Shape Settings' },
   territory: { icon: <Landmark size={14} className="text-violet-400" />, zh: '疆域设置', en: 'Territory Settings' },
+  image: { icon: <ImageIcon size={14} className="text-emerald-400" />, zh: '贴图设置', en: 'Image Settings' },
 };
 
 function categoryOf(el: MapElement): Category {
   const t = el.type;
+  if (t === 'geo_image') return 'image';
   if (t === 'territory') return 'territory';
   const sc = el.shapeCategory;
   if (sc === 'multi') return 'shape-multi';
@@ -72,11 +76,9 @@ export function PropertiesPanel() {
 
   if (!project) return <EmptyPanel />;
 
-  let element: MapElement | null = null;
-  let chapterId = '';
-  for (const chapter of project.chapters) {
+  let element: MapElement | null = null;  for (const chapter of [project]) {
     const found = chapter.elements.find((el) => el.id === selectedElementId);
-    if (found) { element = found; chapterId = chapter.id; break; }
+    if (found) { element = found; break; }
   }
   if (!element) return <EmptyPanel />;
 
@@ -85,7 +87,7 @@ export function PropertiesPanel() {
 
   const patch = (changes: Partial<MapElement>) => {
     for (const [k, v] of Object.entries(changes)) {
-      updateElement(chapterId, element!.id, { [k]: v } as Partial<MapElement>);
+      updateElement(element!.id, { [k]: v } as Partial<MapElement>);
     }
   };
 
@@ -123,11 +125,12 @@ export function PropertiesPanel() {
         </Section>
 
         {cat === 'pin' && <PinSettings element={element as PointElement | FlagElement} patch={patch} />}
-        {cat === 'route' && <RouteSettings element={element} patch={patch} chapter={findChapterOf(project, element.id)!} />}
+        {cat === 'route' && <RouteSettings element={element} patch={patch} />}
         {cat === 'shape-multi' && <MultiShapeSettings element={element} patch={patch} />}
         {cat === 'shape-two' && <TwoShapeSettings element={element} patch={patch} />}
         {cat === 'shape-special' && <SpecialShapeSettings element={element} patch={patch} />}
         {cat === 'territory' && <TerritorySettings element={element as TerritoryElement} patch={patch} project={project} />}
+        {cat === 'image' && <GeoImageSettings element={element as GeoImageElement} patch={patch} />}
 
         {/* 显示时间：标记（含军标 / 旗）与图形类都有；路线有自己的时长体系故不显示 */}
         {cat !== 'route' && (
@@ -145,9 +148,16 @@ export function PropertiesPanel() {
           // bubble / text：文字随图形常驻 → 不提供「显示标签」开关，标签属性一直显示
           if (fixedCenter) {
             const lbl = pe.label;
+            // 默认色必须与渲染端一致（renderPoint）：bubble = 白底 #FFFFFF + 黑字；text = 透明底 + 白字
+            const isBubblePin = st === 'bubble';
             return (
               <LabelStyleFields
-                label={lbl || { text: element.name || '', fontSize: 13, color: '#000000' }}
+                label={{
+                  text: lbl?.text ?? (element.name || ''),
+                  fontSize: lbl?.fontSize ?? 13,
+                  color: lbl?.color ?? (isBubblePin ? '#000000' : '#FFFFFF'),
+                  bgColor: lbl?.bgColor ?? (isBubblePin ? '#FFFFFF' : 'rgba(0,0,0,0)'),
+                }}
                 fixedCenter
                 onChange={(l) => patch({ label: { ...l, position: 'center', offsetX: 0, offsetY: 0 } })}
               />
@@ -165,7 +175,7 @@ export function PropertiesPanel() {
 
         {/* Delete Layer */}
         <button
-          onClick={async () => { if (await confirm({ message: `删除「${element!.name}」？`, danger: true, confirmText: '删除' })) { deleteElement(chapterId, element!.id); selectElement(null); } }}
+          onClick={async () => { if (await confirm({ message: `删除「${element!.name}」？`, danger: true, confirmText: '删除' })) { deleteElement(element!.id); selectElement(null); } }}
           className="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium text-red-400/80 rounded-md hover:bg-red-500/10 hover:text-red-400 transition-colors"
         >
           <Trash2 size={14} /> {t('删除图层', 'Delete Layer')}
@@ -175,10 +185,6 @@ export function PropertiesPanel() {
       </div>
     </div>
   );
-}
-
-function findChapterOf(project: NonNullable<ReturnType<typeof useProjectStore.getState>['project']>, elementId: string) {
-  return project.chapters.find((c) => c.elements.some((e) => e.id === elementId)) || null;
 }
 
 function EmptyPanel() {
@@ -409,91 +415,19 @@ function PinSettings({ element, patch }: {
   );
 }
 
-/** PIN STYLE 选择区（标记与旗帜共用）：基础样式切换（图片 / 自定义图标已随 custom_icon 类型下线） */
+/** 标记资源区（样式切换已移至工具栏「标记」弹窗）：仅资源形态（图片/动图/模型/图标/军标）保留资源选择 */
 function PinStyleChooser({ element, patch }: {
   element: MapElement;
   patch: (c: Partial<MapElement>) => void;
 }) {
-  const coords = (element as PointElement).coordinates;
   const pe = element as PointElement;
-  const isFlag = element.type === 'flag';
-  const style: PinStyle = isFlag ? 'flag' : pinStyleOf(pe);
+  const style: PinStyle = element.type === 'flag' ? 'flag' : pinStyleOf(pe);
   const t = useT();
 
-  const setStyle = (s: PinStyle) => {
-    // 从旗帜切回其他样式时，把残留的白色 color 重置为默认红
-    const leavingFlag = style === 'flag';
-    const colorReset = leavingFlag ? { color: '#FF4444' } : {};
-    if (s === 'dot') {
-      patch({ type: 'point', shape: undefined, iconUrl: undefined, coordinates: coords, ...colorReset } as Partial<MapElement>);
-    } else if (s === 'pin' || s === 'bubble' || s === 'emoji') {
-      patch({
-        type: 'point', shape: s, iconUrl: undefined, coordinates: coords,
-        ...(s === 'emoji' && !pe.emoji ? { emoji: '📍' } : {}),
-        ...colorReset,
-      } as Partial<MapElement>);
-    } else if (s === 'text') {
-      patch({
-        type: 'point', shape: 'text', iconUrl: undefined, coordinates: coords, iconSize: 0,
-        label: pe.label || { text: element.name || '文字', fontSize: 14, color: '#000000', position: 'center', bgColor: '#FFFFFF', bgPadding: 3, bgRadius: 3, fontWeight: 'bold' },
-        ...colorReset,
-      } as Partial<MapElement>);
-    } else if (s === 'flag') {
-      const lbl = pe.label;
-      patch({
-        type: 'flag', coordinates: coords, text: lbl?.text || element.name || '旗',
-        flagColor: leavingFlag ? '#E23B3B' : (pe.color || '#E23B3B'), textColor: lbl?.color || '#FFFFFF',
-        fontSize: 28, flagWidth: 216, scale: 1,
-      } as Partial<MapElement>);
-    } else if (s === 'image' || s === 'gif' || s === 'model' || s === 'icon' || s === 'milsym') {
-      // 资源形态：交给能力矩阵补默认值，并清掉该形态不支持的字段（与数据库 CHECK 一致）。
-      // 军标同样是 point 的资源形态：符号图 = milsymbol 生成（builtinId 'milsym:<SIDC>'），
-      // 属性（大小/朝向/颜色/标签）与图片形态完全一致。
-      patch({ type: 'point', coordinates: coords, ...defaultVisualFor(s === 'milsym' ? 'military_symbol' : (s as PointShape), pe) } as Partial<MapElement>);
-    }
-  };
-
-  const blockBtn = 'flex items-center justify-center gap-1 px-1 py-1.5 text-[11px] font-medium rounded-md border truncate transition-colors';
-  const blockOn = 'bg-brand/20 border-brand text-foreground font-semibold';
-  const blockOff = 'bg-white/[0.03] border-white/10 text-foreground/80 hover:bg-accent hover:border-white/20';
+  if (style !== 'image' && style !== 'gif' && style !== 'model' && style !== 'icon' && style !== 'milsym') return null;
 
   return (
-    <Section title={t('样式', 'Pin Style')}>
-      <div className="grid grid-cols-4 gap-1.5">
-        {/* 基础样式（圆点 / 水滴针已归入「图片」类别） */}
-        {([
-          { value: 'bubble', label: '💬 BUBBLE' },
-          { value: 'flag', label: t('🚩 旗帜', '🚩 MARKER') },
-          { value: 'text', label: 'Aa TEXT' },
-          { value: 'emoji', label: '😀 EMOJI' },
-        ] as { value: PinStyle; label: string }[]).map((o) => (
-          <button
-            key={o.value}
-            onClick={() => setStyle(o.value)}
-            className={`${blockBtn} ${style === o.value ? blockOn : blockOff}`}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
-      {/* 资源形态：图片 / 动图 / 模型 / 图标库 / 军标 */}
-      <div className="grid grid-cols-5 gap-1.5 mt-1.5">
-        {([
-          { value: 'image', label: t('🖼 图片', '🖼 IMAGE') },
-          { value: 'gif', label: t('🎞 动图', '🎞 GIF') },
-          { value: 'model', label: t('🧊 模型', '🧊 MODEL') },
-          { value: 'icon', label: t('🔷 图标', '🔷 ICON') },
-          { value: 'milsym', label: t('🎖 军标', '🎖 MIL') },
-        ] as { value: PinStyle; label: string }[]).map((o) => (
-          <button
-            key={o.value}
-            onClick={() => setStyle(o.value)}
-            className={`${blockBtn} ${style === o.value ? blockOn : blockOff}`}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
+    <Section title={t('资源', 'Resource')}>
       <PinResourcePicker element={pe} style={style} patch={patch} />
     </Section>
   );
@@ -853,6 +787,61 @@ function ResourceUploadRow({ style, onLoaded }: {
     </div>
   );
 }
+/** 贴图（地理配准图片）设置：网格密度 / 不透明度 / 替换图片 */
+function GeoImageSettings({ element, patch }: { element: GeoImageElement; patch: (c: Partial<MapElement>) => void }) {
+  const t = useT();
+  const [busy, setBusy] = useState(false);
+  const cur = `${element.cols}:${element.rows}`;
+  const DENSITIES = [
+    { value: '1:1', label: t('四角', 'Corners') },
+    { value: '2:2', label: '3×3' },
+    { value: '3:3', label: '4×4' },
+    { value: '4:4', label: '5×5' },
+  ];
+  const replace = async (file: File) => {
+    setBusy(true);
+    try {
+      const ref = await uploadAsset(file, 'image');
+      const aspect = await loadImageAspect(ref.assetId);
+      patch({ assetId: ref.assetId, aspect } as Partial<MapElement>);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Section title={t('配准网格', 'Georeference Grid')}>
+        <Field label={t('网格密度', 'Grid')}>
+          <OptionBlocks
+            value={cur}
+            options={DENSITIES}
+            onChange={(v) => { const [c, r] = v.split(':').map(Number); patch(withGridDensity(element, c, r)); }}
+          />
+        </Field>
+        <p className="text-[10px] text-muted-foreground leading-relaxed">
+          {t('四角=投影配准（处理透视/斜切/旋转）；3×3 以上=网格变形配准（纠正不规则扭曲）。在地图上拖动控制点对齐真实位置。', 'Corners = projective warp; 3×3+ = mesh warp. Drag the control points on the map to align.')}
+        </p>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-muted-foreground w-10 shrink-0">{t('不透明度', 'Opacity')}</span>
+          <input type="range" min={0} max={1} step={0.05} value={element.opacity ?? 1}
+            onChange={(e) => patch({ opacity: parseFloat(e.target.value) } as Partial<MapElement>)}
+            className="flex-1 h-1 accent-[var(--brand)]" />
+          <span className="text-[11px] text-muted-foreground w-9 text-right tabular-nums">{Math.round((element.opacity ?? 1) * 100)}%</span>
+        </div>
+      </Section>
+      <Section title={t('图片', 'Image')}>
+        <label className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border bg-white/[0.045] text-xs hover:border-white/25 cursor-pointer transition-colors w-fit">
+          {busy ? t('导入中…', 'Importing…') : `⬆ ${t('替换图片', 'Replace image')}`}
+          <input type="file" accept="image/*" className="hidden" disabled={busy}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void replace(f); e.target.value = ''; }} />
+        </label>
+      </Section>
+    </>
+  );
+}
+
 /** 显示时间：默认全程显示（不开启），开启后可自定义起止时间 */
 function DisplayTimeToggle({ element, patch, project }: {
   element: MapElement;
@@ -860,10 +849,12 @@ function DisplayTimeToggle({ element, patch, project }: {
   project: NonNullable<ReturnType<typeof useProjectStore.getState>['project']>;
 }) {
   const t = useT();
-  const ch = project.chapters.find((c) => c.elements.some((e) => e.id === element.id)) || project.chapters[0];
   const fps = project.globalConfig.defaultFPS;
-  // 与章节全范围一致 → 关闭（全程显示）
-  const on = element.startFrame !== ch.startFrame || element.endFrame !== ch.endFrame;
+  // 全程显示基准：取「项目容器长度」与「内容实际结束」的较大者，
+  // 否则项目 endFrame 偏小/为 0 时，取消自定义时间会把元素收成 0 长度。
+  const fullEnd = fullDisplayEnd(project);
+  // 与全程范围一致 → 关闭（全程显示）
+  const on = element.startFrame !== 0 || element.endFrame !== fullEnd;
 
   return (
     <>
@@ -872,14 +863,15 @@ function DisplayTimeToggle({ element, patch, project }: {
         label={t('自定义显示时间', 'Custom display time')}
         onChange={(v) => {
           if (v) {
-            // 开启：写入默认自定义区间（章节中段 25%~75%），使 on 立即生效，用户随后微调
-            const span = Math.max(1, ch.endFrame - ch.startFrame);
-            patch({
-              startFrame: ch.startFrame + Math.round(span * 0.25),
-              endFrame: ch.startFrame + Math.round(span * 0.75),
-            });
+            // 开启：默认 0–60s；若与「全程」范围相同则取全程一半，
+            // 再兜底 +1（全程仅 1 帧等极端情况），确保能进入「自定义」态
+            const want = Math.max(1, Math.round(60 * fps));
+            let end = want < fullEnd ? want : Math.max(1, Math.round(fullEnd / 2));
+            if (end >= fullEnd) end = fullEnd + 1;
+            patch({ startFrame: 0, endFrame: end });
           } else {
-            patch({ startFrame: ch.startFrame, endFrame: ch.endFrame });
+            // 关闭：起止时间 = 整个时间轴（内容实际结束）
+            patch({ startFrame: 0, endFrame: fullEnd });
           }
         }}
       />
@@ -1125,8 +1117,6 @@ function FlagFields({ element, patch }: { element: FlagElement; patch: (c: Parti
 
 // ========== ROUTE ==========
 
-type RouteStyle = 'straight' | 'bezier' | 'arc' | 'swallowtail' | 'curved' | 'pincer' | 'straight-arrow' | 'curved-arrow' | 'military-arrow' | 'military-simple' | 'plain-straight' | 'plain-bezier';
-
 function routeCoords(el: MapElement): [number, number][] {
   switch (el.type) {
     case 'line': return el.coordinates;
@@ -1137,21 +1127,9 @@ function routeCoords(el: MapElement): [number, number][] {
   }
 }
 
-function pad4(c: [number, number][]): [number, number][] {
-  if (c.length === 0) return [[104, 35], [105, 35], [105, 36], [104, 36]];
-  const out = [...c];
-  let last = out[out.length - 1];
-  while (out.length < 4) {
-    last = [last[0] + 0.5, last[1] + 0.5];
-    out.push(last);
-  }
-  return out.slice(0, 4);
-}
-
-function RouteSettings({ element, patch, chapter }: {
+function RouteSettings({ element, patch }: {
   element: MapElement;
   patch: (changes: Partial<MapElement>) => void;
-  chapter: NonNullable<ReturnType<typeof useProjectStore.getState>['project']>['chapters'][number];
 }) {
   const t = useT();
   const fps = useProjectStore((s) => s.project?.globalConfig.defaultFPS ?? 30);
@@ -1167,93 +1145,11 @@ function RouteSettings({ element, patch, chapter }: {
     : element.type === 'moving_point' ? element.color || '#FF6600'
     : (element as ArrowElement).color || '#E23B3B';
 
-  const current: RouteStyle =
-    element.type === 'line' ? ((element as LineElement).plainPath
-      ? ((element as LineElement).lineType === 'bezier' ? 'plain-bezier' : 'plain-straight')
-      : ((element as LineElement).lineArrow
-        ? ((element as LineElement).lineType === 'bezier' ? 'curved-arrow' : 'straight-arrow')
-        : ((element as LineElement).lineType === 'bezier' ? 'bezier' : (element as LineElement).lineType === 'arc' ? 'arc' : 'straight')))
-    : element.type === 'arrow' ? ((element as ArrowElement).arrowType === 'curved-simple' ? 'military-simple' : 'military-arrow')
-    : element.type === 'double_arrow' ? 'pincer'
-    : 'straight';
-
-  const setStyle = (s: RouteStyle) => {
-    const start = chapter.startFrame;
-    if (s === 'plain-straight' || s === 'plain-bezier') {
-      patch({
-        type: 'line', coordinates: coords.length >= 2 ? coords : [[104, 35], [105, 36]],
-        lineType: s === 'plain-bezier' ? 'bezier' : 'straight', lineArrow: false, plainPath: true,
-        drawProgress: [{ frame: start, value: 1 }],
-        lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const,
-        flyMode: false,   // 无样式路线不支持飞行
-      } as Partial<MapElement>);
-    } else if (s === 'straight' || s === 'bezier' || s === 'arc') {
-      patch({
-        type: 'line', coordinates: coords.length >= 2 ? coords : [[104, 35], [105, 36]],
-        lineType: s, lineArrow: false, drawProgress: [{ frame: start, value: 1 }],
-        lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const, plainPath: undefined,
-      } as Partial<MapElement>);
-    } else if (s === 'straight-arrow') {
-      patch({
-        type: 'line', coordinates: coords.length >= 2 ? coords : [[104, 35], [105, 36]],
-        lineType: 'straight', lineArrow: true, drawProgress: [{ frame: start, value: 1 }],
-        lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const, plainPath: undefined,
-      } as Partial<MapElement>);
-    } else if (s === 'curved-arrow') {
-      patch({
-        type: 'line', coordinates: coords.length >= 2 ? coords : [[104, 35], [105, 36]],
-        lineType: 'bezier', lineArrow: true, drawProgress: [{ frame: start, value: 1 }],
-        lineWidth: 8, lineColor: colorOf, shapeCategory: 'route' as const, plainPath: undefined,
-      } as Partial<MapElement>);
-    } else if (s === 'military-arrow') {
-      const pts = coords.length >= 2 ? coords : [[104, 35], [105, 36]];
-      patch({
-        type: 'arrow', from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], path: pts.map(p => [p[0], p[1]]),
-        arrowType: 'curved', width: 15, color: colorOf,
-        progress: [{ frame: start, value: 1 }], drawZoom: undefined,
-        shapeCategory: 'route' as const, plainPath: undefined, lineArrow: undefined,
-        flyMode: false,   // 燕尾箭头不支持飞行（飞行仅限 line 类路线）
-      } as Partial<MapElement>);
-    } else if (s === 'military-simple') {
-      const pts = coords.length >= 2 ? coords : [[104, 35], [105, 36]];
-      patch({
-        type: 'arrow', from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], path: pts.map(p => [p[0], p[1]]),
-        arrowType: 'curved-simple', width: 15, color: colorOf,
-        progress: [{ frame: start, value: 1 }], drawZoom: undefined,
-        shapeCategory: 'route' as const, plainPath: undefined, lineArrow: undefined,
-        flyMode: false,   // 行军箭头不支持飞行（飞行仅限 line 类路线）
-      } as Partial<MapElement>);
-    } else {
-      patch({
-        type: 'double_arrow', points: pad4(coords), color: colorOf,
-        progress: [{ frame: start, value: 1 }],
-        flyMode: false,   // 双箭头不支持飞行（飞行仅限 line 类路线）
-      } as Partial<MapElement>);
-    }
-  };
-
   return (
     <>
-      <Section title={t('路线类型', 'Route Type')}>
-        <StyleGrid<RouteStyle>
-          value={current}
-          options={[
-            { value: 'straight', label: '─ 直线' },
-            { value: 'bezier', label: '〰 曲线' },
-            { value: 'straight-arrow', label: t('──▶ 带箭头直线', '──▶ Arrow Line') },
-            { value: 'curved-arrow', label: t('➤ 箭头曲线', '➤ Curved Arrow') },
-            { value: 'military-arrow', label: t('🏹 燕尾箭头', '🏹 Swallowtail') },
-            { value: 'military-simple', label: t('⚔️ 行军箭头', '⚔️ March Arrow') },
-            { value: 'plain-straight', label: t('➖ 无样式直线', '➖ Plain Line') },
-            { value: 'plain-bezier', label: t('〰️ 无样式曲线', '〰️ Plain Curve') },
-          ]}
-          onChange={setStyle}
-        />
-      </Section>
-
       <Section title={t('动画效果', 'Animation Effect')}>
         <OptionBlocks<'grow' | 'move' | 'fill' | 'march' | 'marchplain'>
-          value={(element as LineElement).animEffect || 'grow'}
+          value={(element as LineElement).animEffect || 'move'}
           onChange={(v) => {
             const le = element as LineElement;
             const start = element.startFrame;
@@ -1272,8 +1168,8 @@ function RouteSettings({ element, patch, chapter }: {
             patch(patchBase as unknown as Partial<MapElement>);
           }}
           options={[
-            { value: 'grow', label: t('📈 普通增长', '📈 Grow') },
             { value: 'move', label: t('🏃 路线移动', '🏃 Move') },
+            { value: 'grow', label: t('📈 普通增长', '📈 Grow') },
             { value: 'fill', label: t('🎨 填充', '🎨 Fill') },
             { value: 'march', label: t('🚶 填充行进', '🚶 Fill March') },
             { value: 'marchplain', label: t('👣 行进', '👣 March') },
@@ -1553,6 +1449,9 @@ function RouteSettings({ element, patch, chapter }: {
                 );
               }
               if (mkShape === 'bubble' || mkShape === 'text') {
+                // 默认色与渲染端一致（renderLine / renderArrow 的标记气泡）：
+                // bubble = 白底 #FFFFFF + 黑字；text = 透明底 + 黑字
+                const isBubbleMI = mkShape === 'bubble';
                 return (
                   <>
                     <Field label={t('标记标签', 'Marker Label')}>
@@ -1560,7 +1459,11 @@ function RouteSettings({ element, patch, chapter }: {
                         onChange={(e) => setMI({ labelText: e.target.value })} />
                     </Field>
                     <LabelStyleFields
-                      label={{ text: miNow.labelText || '', color: miNow.labelColor || '#FFFFFF', bgColor: miNow.labelBg }}
+                      label={{
+                        text: miNow.labelText || '',
+                        color: miNow.labelColor || '#000000',
+                        bgColor: miNow.labelBg ?? (isBubbleMI ? '#FFFFFF' : 'rgba(0,0,0,0)'),
+                      }}
                       fixedCenter
                       onChange={(l: any) => setMI({ labelText: l.text, labelColor: l.color, labelBg: l.bgColor })}
                     />

@@ -18,25 +18,29 @@ import { useProjectStore, setHistoryMuted, snapshotHistory } from '../stores/pro
 import { useInteractionStore } from '../stores/interactionStore';
 import { useEditorStore } from '../stores/editorStore';
 import { generateId } from '../types';
-import { defaultTerritoryDisplay, coordKey, distToRingBoundary, insertRingVertex, moveSharedVertices, removeSharedVertex, ringOpen, traceRingPath, trimPlotOverlap } from '../lib/territory';
+import { defaultVisualFor } from '../lib/pin-visual';
+import { defaultTerritoryDisplay, coordKey, distToRingBoundary, insertRingVertex, moveSharedVertices, removeSharedVertex, ringOpen, traceRingPath, trimPlotOverlap, splitPlotByLine } from '../lib/territory';
 import type {
-  Chapter, MapVideoProject, MapElement, PointElement,
+  MapVideoProject, MapElement, PointElement, PointShape,
   MovingPointElement, LineElement, PolygonElement, ArrowElement, DoubleArrowElement,
   EncirclementElement, GatheringElement, FlagElement, CameraKeyframe, TerritoryElement
 } from '../types';
 
 interface EditableMapProps {
   project: MapVideoProject;
-  chapter: Chapter;
   currentFrame: number;
 }
 
-const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot', 'terr_annex'];
+const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot', 'terr_split', 'terr_annex'];
 
 const POLY_DRAW_MODES = new Set(['add_polygon', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot']);
-const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line', 'add_moving_bezier', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_front_line', 'add_shape_front_curve']);
+const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line', 'add_moving_bezier', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_front_line', 'add_shape_front_curve', 'terr_split']);
 
-export function EditableMap({ project, chapter, currentFrame }: EditableMapProps) {
+/** 分割地块模式的光标：剪刀（白描边 + 黑线，保证深浅底图上都清晰） */
+const SCISSORS_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#ffffff" stroke-width="5"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></g><g stroke="#111111" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></g></svg>`;
+const SCISSORS_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(SCISSORS_SVG)}") 8 8, crosshair`;
+
+export function EditableMap({ project, currentFrame }: EditableMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const cameraRef = useRef({ center: [104.0, 35.0] as [number, number], zoom: 4, pitch: 0, bearing: 0 });
@@ -70,15 +74,15 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
   // 若直接作 effect 依赖，地图 move → setCurrentCamera → 重渲染 → 重建地图，无限循环狂闪。
   // 以底图/高程配置的内容签名做 memo，仅在真正切换/修改底图或高程时重建地图。
   const baseMapStyleKey = JSON.stringify(
-    project.baseMaps.find((b) => b.id === (chapter.baseMapId || project.activeBaseMapId))?.style ?? null
+    project.baseMaps.find((b) => b.id === project.activeBaseMapId)?.style ?? null
   );
   const elevationKey = JSON.stringify(
-    project.elevationMaps.find((e) => e.id === (chapter.elevationMapId !== undefined ? chapter.elevationMapId : project.activeElevationMapId) && e.url) ?? null
+    project.elevationMaps.find((e) => e.id === project.activeElevationMapId && e.url) ?? null
   );
   const styleUrl = useMemo(
-    () => getStyleUrl(project, chapter),
+    () => getStyleUrl(project),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseMapStyleKey, elevationKey, chapter.baseMapId, project.activeBaseMapId, chapter.elevationMapId, project.activeElevationMapId]
+    [baseMapStyleKey, elevationKey, project.activeBaseMapId, project.activeElevationMapId]
   );
 
   // ===== 初始化地图 =====
@@ -119,17 +123,15 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       mapRef.current = map;
       sharedMap.set(map);
       setStyleTick((n) => n + 1);
-      if (chapter.camera && chapter.camera.length > 0 && prevCam.zoom === 4 && prevCam.center[0] === 104) {
-        const cam = chapter.camera[0];
+      if (project.camera && project.camera.length > 0 && prevCam.zoom === 4 && prevCam.center[0] === 104) {
+        const cam = project.camera[0];
         map.jumpTo({ center: cam.center, zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 });
       }
       // 3D 球体投影（读全局配置最新值，避免闭包过期）
-      const st = useProjectStore.getState();
-      const chNow = st.project?.chapters.find((c) => c.id === chapter.id);
-      applyProjection(map, ((chNow?.projection ?? st.project?.globalConfig.projection) ?? 'mercator') === 'globe');
+      const st = useProjectStore.getState();      applyProjection(map, ((st.project?.globalConfig.projection) ?? 'mercator') === 'globe');
       // 元素刷新
       // 编辑端：传 interactive=true（绘制编辑辅助图形；导出端 MapScene 不传）
-      renderElements(map, chapter.elements, currentFrame, project.globalConfig.defaultFPS, true);
+      renderElements(map, project.elements, currentFrame, project.globalConfig.defaultFPS, true);
 
       // ===== 地图事件注册（一次性；回调经 handlersRef 取最新） =====
       const H = () => handlersRef.current;
@@ -196,23 +198,51 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
 
     let el: MapElement | null = null;
     if (kind === 'pin') {
-      el = {
-        id: generateId(), type: 'point', name: '标记点', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
-        coordinates: lngLat, color: '#FF4444', iconSize: 10, shape: 'pin',
-        label: { text: '标记点', fontSize: 13, color: '#000000', position: 'top', bgColor: '#FFFFFF', bgPadding: 6, bgRadius: 6 },
-      } as PointElement;
+      const s = pendingPlace.pinStyle ?? 'pin';
+      const base = {
+        id: generateId(), visible: true, locked: false,
+        startFrame: 0, endFrame: project.endFrame, style: {},
+        coordinates: lngLat,
+      };
+      if (s === 'flag') {
+        el = {
+          ...base, type: 'flag', name: '旗帜', text: '旗',
+          flagColor: '#E23B3B', textColor: '#FFFFFF', fontSize: 28, flagWidth: 216, scale: 1,
+        } as FlagElement;
+      } else if (s === 'text') {
+        el = {
+          ...base, type: 'point', name: '文字标记', shape: 'text', iconSize: 0, color: '#FF4444',
+          label: { text: '文字', fontSize: 14, color: '#000000', position: 'center', bgColor: '#FFFFFF', bgPadding: 3, bgRadius: 3, fontWeight: 'bold' },
+        } as PointElement;
+      } else if (s === 'bubble' || s === 'emoji') {
+        el = {
+          ...base, type: 'point', name: s === 'bubble' ? '气泡标记' : '表情标记', shape: s, iconSize: 10, color: '#FF4444',
+          ...(s === 'emoji' ? { emoji: '📍' } : {}),
+          // 气泡默认标签（白底黑字）与渲染端 renderPoint 的默认一致，避免面板/实际不符
+          ...(s === 'bubble' ? { label: { text: '气泡', fontSize: 13, color: '#000000', position: 'center', bgColor: '#FFFFFF', bgPadding: 8, bgRadius: 6 } } : {}),
+        } as PointElement;
+      } else if (s === 'image' || s === 'gif' || s === 'model' || s === 'icon' || s === 'milsym') {
+        // 资源形态：交给能力矩阵补默认值（军标 = milsymbol 生成，符号图 builtinId 'milsym:<SIDC>'）
+        const visual = defaultVisualFor(s === 'milsym' ? 'military_symbol' : (s as unknown as PointShape), { coordinates: lngLat } as PointElement);
+        const nameOf = { image: '图片标记', gif: '动图标记', model: '模型标记', icon: '图标标记', milsym: '军标' } as const;
+        el = { ...base, type: 'point', name: nameOf[s], color: '#FF4444', iconSize: 10, ...visual } as PointElement;
+      } else {
+        el = {
+          ...base, type: 'point', name: '标记点', color: '#FF4444', iconSize: 10, shape: 'pin',
+          label: { text: '标记点', fontSize: 13, color: '#000000', position: 'top', bgColor: '#FFFFFF', bgPadding: 6, bgRadius: 6 },
+        } as PointElement;
+      }
     } else if (kind === 'territory') {
       el = {
         id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         countries: [{ id: generateId(), name: '势力1', color: '#E23B3B' }],
         plots: [], events: [], display: defaultTerritoryDisplay(),
       } as TerritoryElement;
     }
 
     if (el) {
-      addElement(chapter.id, el);
+      addElement(el);
       selectElement(el.id);
     }
     useInteractionStore.getState().clearPendingPlace();
@@ -224,8 +254,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (mode === 'add_region') loadRegionData().catch(() => { /* 点击时提示 */ });
   }, [mode]);
 
-  // ===== 3D 球体开关实时切换（投影按章节绑定，缺省继承项目默认） =====
-  const globeOn = (chapter.projection ?? project.globalConfig.projection ?? 'mercator') === 'globe';
+  // ===== 3D 球体开关实时切换（投影项目固定） =====
+  const globeOn = (project.globalConfig.projection ?? 'mercator') === 'globe';
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
@@ -250,29 +280,29 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (!map) return;
     try {
       // 编辑端：传 interactive=true（绘制编辑辅助图形；导出端 MapScene 不传）
-      renderElements(map, chapter.elements, currentFrame, project.globalConfig.defaultFPS, true);
+      renderElements(map, project.elements, currentFrame, project.globalConfig.defaultFPS, true);
     } catch { /* style 未就绪，下一帧重试 */ }
-  }, [chapter, currentFrame, project.globalConfig.defaultFPS, styleTick]);
+  }, [project, currentFrame, project.globalConfig.defaultFPS, styleTick]);
 
 
   // ===== 镜头插值：播放/改帧时应用到镜头关键帧 =====
   // 注意 1：不要用 isStyleLoaded 作门禁——字形/瓦片未就绪时它常为 false，
   //         会把离散跳帧（⏩/点击时间线）的相机更新全部吞掉；jumpTo 不依赖 style。
-  // 注意 2：依赖用 chapter.camera（数组引用）而非 chapter——否则任何元素属性修改
-  //         都会重建 chapter 对象，把用户手动平移的地图拽回关键帧位置。
+  // 注意 2：依赖用 project.camera（数组引用）而非 project——否则任何元素属性修改
+  //         都会重建 project 对象，把用户手动平移的地图拽回关键帧位置。
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    if (chapter.camera && chapter.camera.length > 0) {
-      const kfs = [...chapter.camera].sort((a, b) => a.frame - b.frame);
+    if (project.camera && project.camera.length > 0) {
+      const kfs = [...project.camera].sort((a, b) => a.frame - b.frame);
       const fps = project.globalConfig.defaultFPS;
-      const cam = interpolateCamera(chapter.camera, currentFrame, fps);
+      const cam = interpolateCamera(project.camera, currentFrame, fps);
       // 跟随视角：center 动态跟随选中路线的动画进度点，bearing 按切线方向
       let jump = { center: cam.center, zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 };
       const kfIdx = resolveKfIndex(kfs, currentFrame, fps);
       const kf = kfIdx >= 0 ? kfs[Math.min(kfIdx, kfs.length - 1)] : undefined;
       if (kf?.followRoute) {
-        const fc = resolveFollowCam(chapter.elements, kf, currentFrame);
+        const fc = resolveFollowCam(project.elements, kf, currentFrame);
         if (fc) jump = fc;
       } else if (kf?.orbit) {
         const oc = resolveOrbitCam(kf, currentFrame, fps);
@@ -282,14 +312,14 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         map.jumpTo(jump);
       } catch { /* 相机尚未可用 */ }
     }
-  }, [currentFrame, chapter.camera]);
+  }, [currentFrame, project.camera]);
 
   // ===== 移动点选中：高亮圈跟随移动点（逐帧） =====
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const srcId = 'selection-move';
-    const el = chapter.elements.find((x) => x.id === selectedElementId);
+    const el = project.elements.find((x) => x.id === selectedElementId);
     let coord: [number, number] | null = null;
     if (el && el.type === 'moving_point') {
       const prog = el.pathProgress?.length
@@ -315,7 +345,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         });
       }
     } catch { /* style 未就绪：load 后（styleTick）随下一帧重试 */ }
-  }, [currentFrame, selectedElementId, chapter, styleTick]);
+  }, [currentFrame, selectedElementId, project, styleTick]);
 
   // ===== 兼并模式：已选地块高亮 =====
   const terrSelPlots = useEditorStore((s) => s.terrSelPlots);
@@ -327,7 +357,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const srcId = 'terr-sel';
     const feats: any[] = [];
     if (terrSelPlots.length) {
-      for (const el of chapter.elements) {
+      for (const el of project.elements) {
         if (el.type !== 'territory') continue;
         for (const p of (el as TerritoryElement).plots) {
           if (terrSelPlots.includes(p.id) && p.rings?.[0]?.length >= 4) {
@@ -348,7 +378,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       map.setLayoutProperty('terr-sel-fill', 'visibility', feats.length ? 'visible' : 'none');
       map.setLayoutProperty('terr-sel-line', 'visibility', feats.length ? 'visible' : 'none');
     } catch { /* style 未就绪：styleTick 后重试 */ }
-  }, [terrSelPlots, chapter, styleTick]);
+  }, [terrSelPlots, project, styleTick]);
 
   // ===== 镜头跳转指令（从镜头面板跳到对应视角，沿用关键帧缓动/时长） =====
   const cameraSeek = useEditorStore((s) => s.cameraSeek);
@@ -372,16 +402,18 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (!map) return;
     if (DRAW_MODES.includes(mode)) {
       map.doubleClickZoom.disable();
-    } else if (mode === 'select' && chapter.elements.some((x) => x.type === 'territory')) {
+    } else if (mode === 'select' && project.elements.some((x) => x.type === 'territory')) {
       // 选择模式：双击保留给「编辑地块边界」，禁用双击缩放（滚轮/捏合仍可缩放）
       map.doubleClickZoom.disable();
     } else {
       map.doubleClickZoom.enable();
     }
-    if (mode !== 'add_terr_plot' && map.getLayer('terr-snap')) {
+    // 切换模式一律先隐藏吸附指示圈（避免上次未隐藏时在非绘制态残留蓝色空心圈），
+    // 进入 add_terr_plot 后由 mousemove 按需重新显示。
+    if (map.getLayer('terr-snap')) {
       map.setLayoutProperty('terr-snap', 'visibility', 'none');
     }
-  }, [mode, styleUrl, chapter]);
+  }, [mode, styleUrl, project]);
 
   // ===== 重置绘制状态 =====
   const resetDraw = useCallback(() => {
@@ -405,7 +437,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const anchorLat = (points[0]?.[1] ?? cursor?.[1] ?? 35);
     const arrowWidth = pixelsToDegrees(ARROW_PX, map.getZoom(), anchorLat);
 
-    if ((mode === 'add_line' || mode === 'add_bezier' || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_front_line' || mode === 'add_shape_front_curve') && cursor) {
+    if ((mode === 'add_line' || mode === 'add_bezier' || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_front_line' || mode === 'add_shape_front_curve' || mode === 'terr_split') && cursor) {
       const coords = [...points, cursor];
       const eff = (mode === 'add_bezier' || mode === 'add_shape_bezier' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_front_curve') ? approxBezier(coords) : coords;
       if (eff.length >= 2) fc.push(turf.lineString(eff));
@@ -420,25 +452,22 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         fc.push(turf.lineString(eff));
       } else if (cursor) fc.push(turf.point(cursor));
     } else if (mode === 'add_curved' && (points.length > 0 || cursor)) {
-      const basePts = points.length >= 2 ? points : (cursor && points.length === 1 ? [...points, cursor] : points);
+      // 燕尾箭头（curved）：跟随鼠标实时预览
+      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
     } else if (mode === 'add_shape_march' && (points.length > 0 || cursor)) {
-      // 行军箭头（curved-simple）：方向以最后两个已采集点为准，避免悬停鼠标回勾
-      const basePts = points.length >= 2
-        ? points
-        : (cursor && points.length === 1 ? [...points, cursor] : points);
+      // 行军箭头（curved-simple）：跟随鼠标实时预览
+      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved-simple', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
     } else if (mode === 'add_shape_swallowtail' && (points.length > 0 || cursor)) {
-      // 燕尾箭头（curved）：方向以最后两个已采集点为准
-      const basePts = points.length >= 2
-        ? points
-        : (cursor && points.length === 1 ? [...points, cursor] : points);
+      // 燕尾箭头（curved）：跟随鼠标实时预览
+      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
@@ -534,7 +563,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (mode === 'add_point') {
       createElementAndSelect({
         id: generateId(), type: 'point', name: '标记点', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: lngLat, color: '#FF4444', iconSize: 10,
       } as PointElement);
       return;
@@ -542,7 +571,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (mode === 'add_text') {
       createElementAndSelect({
         id: generateId(), type: 'point', name: '文字', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: lngLat, shape: 'text', iconSize: 0,
         label: { text: '文字', fontSize: 14, color: '#FFFFFF', position: 'center', bgColor: 'rgba(0,0,0,0)', bgPadding: 3, bgRadius: 3, fontWeight: 'bold' },
       } as PointElement);
@@ -551,7 +580,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (mode === 'add_flag') {
       createElementAndSelect({
         id: generateId(), type: 'flag', name: '旗帜', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: lngLat, text: '旗帜', flagColor: '#E23B3B', textColor: '#FFFFFF',
         fontSize: 14, flagWidth: 72,
       } as FlagElement);
@@ -563,9 +592,9 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         try {
           const hits = await findRegionsAt(lngLat);
           if (!hits.length) return;
-          const els = regionHitsToShapes(hits).map((s) => makeRegionPolygon(s.name, s.rings as [number, number][][], chapter));
+          const els = regionHitsToShapes(hits).map((s) => makeRegionPolygon(s.name, s.rings as [number, number][][], project));
           if (els.length) {
-            addElements(chapter.id, els);
+            addElements(els);
             selectElement(els[0].id);
             setMode('select');
           }
@@ -585,9 +614,9 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       } else {
         createElementAndSelect({
           id: generateId(), type: 'arrow', name: '箭头', visible: true, locked: false,
-          startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+          startFrame: 0, endFrame: project.endFrame, style: {},
           from: d.points[0], to: lngLat, arrowType: 'swallowtail', width: 15, color: '#E23B3B',
-          progress: [{ frame: chapter.startFrame, value: 1 }], drawZoom: map.getZoom(),
+          progress: [{ frame: 0, value: 1 }], drawZoom: map.getZoom(),
         } as ArrowElement);
         resetDraw();
       }
@@ -612,7 +641,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         const ring: [number, number][] = [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]];
         createElementAndSelect({
           id: generateId(), type: 'polygon', name: '矩形', visible: true, locked: false,
-          startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+          startFrame: 0, endFrame: project.endFrame, style: {},
           coordinates: [ring],
           fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
           shapeKind: 'rect',
@@ -632,10 +661,10 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         const pts = dedupePoints(d.points);
         createElementAndSelect({
           id: generateId(), type: 'double_arrow', name: '钳形攻势', visible: true, locked: false,
-          startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+          startFrame: 0, endFrame: project.endFrame, style: {},
           points: pts.slice(0, 4) as [number, number][],
           color: '#E23B3B',
-          progress: [{ frame: chapter.startFrame, value: 1 }],
+          progress: [{ frame: 0, value: 1 }],
           shapeCategory: 'special',
         } as DoubleArrowElement);
         resetDraw();
@@ -660,20 +689,20 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         if (mode === 'add_encirclement') {
           createElementAndSelect({
             id: generateId(), type: 'encirclement', name: '包围圈', visible: true, locked: false,
-            startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+            startFrame: 0, endFrame: project.endFrame, style: {},
             center: d.points[0], radius, fillColor: '#D33030', strokeColor: '#D33030',
           } as EncirclementElement);
         } else if (mode === 'add_gathering') {
           createElementAndSelect({
             id: generateId(), type: 'gathering', name: '集结点', visible: true, locked: false,
-            startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+            startFrame: 0, endFrame: project.endFrame, style: {},
             center: d.points[0], radius, color: '#FF6600', pulseAnimation: true,
             shapeCategory: 'two',
           } as GatheringElement);
         } else if (mode === 'add_shape_circle') {
           createElementAndSelect({
             id: generateId(), type: 'polygon', name: '圆', visible: true, locked: false,
-            startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+            startFrame: 0, endFrame: project.endFrame, style: {},
             coordinates: [circleCoords(d.points[0], radius)],
             fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
             shapeKind: 'circle',
@@ -683,7 +712,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         } else {
           createElementAndSelect({
             id: generateId(), type: 'polygon', name: '五角星', visible: true, locked: false,
-            startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+            startFrame: 0, endFrame: project.endFrame, style: {},
             coordinates: [polyStarCoords(d.points[0], radius)],
             fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
             shapeKind: 'star',
@@ -698,7 +727,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
 
     // —— 疆域地块绘制：吸附已有顶点/边 + 沿边界描幕 ——
     if (mode === 'add_terr_plot') {
-      const terrs = (chapter.elements.filter((x) => x.type === 'territory') || []) as TerritoryElement[];
+      const terrs = (project.elements.filter((x) => x.type === 'territory') || []) as TerritoryElement[];
       const snap = terrSnapNear(map, lngLat, terrs, { vertexPx: 12, edgePx: 12 });
       const pt: [number, number] = snap ? snap.pt : lngLat;
       // 描幕：上一点与本点吸附到同一地块（顶点或边）→ 自动插入两点间整段边界。
@@ -728,6 +757,44 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       return;
     }
 
+    // —— 疆域：分割地块（两点画切线，切开当前编辑地块） ——
+    if (mode === 'terr_split') {
+      if (d.points.length === 0) {
+        d.points = [lngLat];
+        d.cursor = lngLat;
+        updatePreview();
+        return;
+      }
+      const a = d.points[0];
+      const b = lngLat;
+      const st = useEditorStore.getState();
+      const proj = useProjectStore.getState();
+      const terr = (project.elements.find((x) => x.id === st.selectedElementId && x.type === 'territory')
+        || project.elements.find((x) => x.type === 'territory')) as TerritoryElement | undefined;
+      const plotId = st.terrPlotId ?? terr?.plots[0]?.id ?? null;
+      const plot = terr?.plots.find((p) => p.id === plotId);
+      if (!terr || !plot) {
+        void confirm({ message: '请先选中要分割的地块（在「疆域」面板点 ⊙ 或双击地图上的地块）', confirmText: '知道了', danger: false });
+        resetDraw();
+        return;
+      }
+      const pieces = splitPlotByLine(plot.rings, [a, b]);
+      if (!pieces) {
+        void confirm({ message: '切线未贯穿该地块：请让起点与终点分别落在地块外侧', confirmText: '知道了', danger: false });
+        resetDraw();
+        return;
+      }
+      const baseName = plot.name || '地块';
+      const kept = terr.plots.filter((p) => p.id !== plot.id);
+      const added = pieces.map((rings, i) => ({
+        id: generateId(), name: `${baseName}·${i + 1}`, rings, ownerId: plot.ownerId,
+      }));
+      proj.updateElement(terr.id, { plots: [...kept, ...added] } as Partial<MapElement>);
+      st.setTerrPlotId(added[0]?.id ?? null);
+      resetDraw();
+      return;
+    }
+
     // —— 移动路径 / 线 / 贝塞尔 / 大圆弧 / 面：采点，双击或回车完成 ——
     if (mode === 'add_moving_line' || mode === 'add_moving_bezier' || mode === 'add_line' || mode === 'add_bezier' || mode === 'add_line_arc' || POLY_DRAW_MODES.has(mode as any) || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow' || mode === 'add_shape_march' || mode === 'add_shape_swallowtail' || mode === 'add_special_swallow' || mode === 'add_shape_front_line' || mode === 'add_shape_front_curve') {
       d.points.push(lngLat);
@@ -754,15 +821,15 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
 
     // —— 选择模式：命中检测 ——
     if (mode === 'select') {
-      selectElement(pickElement(map, e.point, chapter.elements));
+      selectElement(pickElement(map, e.point, project.elements));
     }
-  }, [mode, chapter, project, addElement, addElements, selectElement, setMode, updatePreview, resetDraw]);
+  }, [mode, project, project, addElement, addElements, selectElement, setMode, updatePreview, resetDraw, confirm]);
 
   const createElementAndSelect = useCallback((element: MapElement) => {
-    addElement(chapter.id, element);
+    addElement(element);
     selectElement(element.id);
     setMode('select');
-  }, [chapter.id, addElement, selectElement, setMode]);
+  }, [project.id, addElement, selectElement, setMode]);
 
   // ===== 双击完成绘制 =====
   const finishDrawing = useCallback(() => {
@@ -777,29 +844,29 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       if (pts.length < 3) return;
       createElementAndSelect({
         id: generateId(), type: 'double_arrow', name: '钳形攻势', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         points: pts as [number, number][],
         color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 1 }],
+        progress: [{ frame: 0, value: 1 }],
         shapeCategory: 'special',
       } as DoubleArrowElement);
     } else if (mode === 'add_attack') {
       if (pts.length < 2) return;
       createElementAndSelect({
         id: generateId(), type: 'arrow', name: '自定义箭头', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 1 }], drawZoom: map.getZoom(),
+        progress: [{ frame: 0, value: 1 }], drawZoom: map.getZoom(),
         shapeCategory: 'special',
       } as ArrowElement);
     } else if (mode === 'add_moving_line') {
       if (pts.length < 2) return;
       createElementAndSelect({
         id: generateId(), type: 'moving_point', name: '移动点(直线)', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         path: pts,
-        pathProgress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
+        pathProgress: [{ frame: 0, value: 0 }, { frame: project.endFrame, value: 1 }],
         color: '#FF6600',
       } as MovingPointElement);
     } else if (mode === 'add_moving_bezier') {
@@ -808,18 +875,18 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       const smooth = approxBezier(pts);
       createElementAndSelect({
         id: generateId(), type: 'moving_point', name: '移动点(曲线)', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         path: smooth,
-        pathProgress: [{ frame: chapter.startFrame, value: 0 }, { frame: chapter.endFrame, value: 1 }],
+        pathProgress: [{ frame: 0, value: 0 }, { frame: project.endFrame, value: 1 }],
         color: '#FF6600',
       } as MovingPointElement);
     } else if (mode === 'add_line_arc') {
       if (pts.length < 2) return;
       createElementAndSelect({
         id: generateId(), type: 'line', name: '大圆弧航线', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: pts,
-        drawProgress: [{ frame: chapter.startFrame, value: 1 }],
+        drawProgress: [{ frame: 0, value: 1 }],
         lineWidth: 8, lineColor: '#2277FF', lineType: 'arc',
       } as LineElement);
     } else if (mode === 'add_line' || mode === 'add_bezier' || mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow') {
@@ -827,40 +894,53 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       const shape = mode === 'add_shape_line' || mode === 'add_shape_bezier' || mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow';
       const bez = mode === 'add_bezier' || mode === 'add_shape_bezier' || mode === 'add_shape_bezier_arrow';
       const arrow = mode === 'add_shape_line_arrow' || mode === 'add_shape_bezier_arrow';
+      // 路线弹窗的样式请求：仅在模式匹配时套用（无样式路线 / 归入路线类）
+      const rr = useInteractionStore.getState().pendingRouteStyle;
+      const rstyle = rr && rr.mode === mode ? rr.style : null;
+      if (rstyle) useInteractionStore.getState().clearPendingRouteStyle();
+      const isPlain = rstyle === 'plain-straight' || rstyle === 'plain-bezier';
+      const asRoute = isPlain || rstyle === 'arrow-line' || rstyle === 'arrow-curve';
       createElementAndSelect({
         id: generateId(), type: 'line',
-        name: arrow ? (bez ? '带箭头曲线' : '带箭头直线') : bez ? '曲线' : (shape ? '直线' : '路线'),
+        name: isPlain ? (bez ? '无样式曲线' : '无样式直线') : arrow ? (bez ? '带箭头曲线' : '带箭头直线') : bez ? '曲线' : (shape ? '直线' : '路线'),
         visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: pts,
-        drawProgress: [{ frame: chapter.startFrame, value: 1 }],
-        showIcon: !shape,
+        drawProgress: [{ frame: 0, value: 1 }],
+        showIcon: !shape || asRoute,
         uniformMove: true,
+        // 路线默认动画：路线移动（move），起止与显示区间一致
+        ...((!shape || asRoute) ? { animEffect: 'move' as const, moveStartFrame: 0, moveEndFrame: project.endFrame } : {}),
         lineWidth: 8, lineColor: '#FF4444',
-        ...(bez ? { lineType: 'bezier' as const } : {}),
+        ...(bez ? { lineType: 'bezier' as const } : (isPlain || rstyle === 'arrow-line') ? { lineType: 'straight' as const } : {}),
         ...(arrow ? { lineArrow: true } : {}),
-        ...(shape ? { shapeCategory: 'multi' as const } : {}),
+        ...(isPlain ? { plainPath: true as const } : {}),
+        ...(asRoute ? { shapeCategory: 'route' as const } : shape ? { shapeCategory: 'multi' as const } : {}),
       } as LineElement);
     } else if (mode === 'add_shape_march') {
       if (pts.length < 2) return;
+      const rr = useInteractionStore.getState().pendingRouteStyle;
+      const asRoute = rr?.mode === mode;
+      if (asRoute) useInteractionStore.getState().clearPendingRouteStyle();
       createElementAndSelect({
         id: generateId(), type: 'arrow', name: '行军箭头', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved-simple', path: pts,
         width: 15, color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 1 }],
+        progress: [{ frame: 0, value: 1 }],
         showIcon: true, uniformMove: true,
+        ...(asRoute ? { animEffect: 'move' as const, moveStartFrame: 0, moveEndFrame: project.endFrame } : {}),
         drawZoom: map.getZoom(),
-        shapeCategory: 'multi',
+        shapeCategory: asRoute ? 'route' : 'multi',
       } as ArrowElement);
     } else if (mode === 'add_shape_swallowtail') {
       if (pts.length < 2) return;
       createElementAndSelect({
         id: generateId(), type: 'arrow', name: '燕尾箭头', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
         width: 15, color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 1 }],
+        progress: [{ frame: 0, value: 1 }],
         showIcon: true, uniformMove: true,
         drawZoom: map.getZoom(),
         shapeCategory: 'multi',
@@ -869,10 +949,10 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       if (pts.length < 2) return;
       createElementAndSelect({
         id: generateId(), type: 'arrow', name: '自定义燕尾箭头', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 1 }],
+        progress: [{ frame: 0, value: 1 }],
         showIcon: true, uniformMove: true,
         drawZoom: map.getZoom(),
         shapeCategory: 'special',
@@ -884,9 +964,9 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         id: generateId(), type: 'line',
         name: curved ? '弯曲战线' : '直线战线',
         visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: pts,
-        drawProgress: [{ frame: chapter.startFrame, value: 1 }],
+        drawProgress: [{ frame: 0, value: 1 }],
         lineWidth: 8, lineColor: '#FF6600',
         lineType: curved ? ('bezier' as const) : ('straight' as const),
         frontStyle: { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 },
@@ -901,8 +981,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       const ring = [...pts, pts[0]] as [number, number][];
       const st = useEditorStore.getState();
       const proj = useProjectStore.getState();
-      let target = chapter.elements.find((x) => x.id === st.selectedElementId && x.type === 'territory') as TerritoryElement | undefined
-        || chapter.elements.find((x) => x.type === 'territory') as TerritoryElement | undefined;
+      let target = project.elements.find((x) => x.id === st.selectedElementId && x.type === 'territory') as TerritoryElement | undefined
+        || project.elements.find((x) => x.type === 'territory') as TerritoryElement | undefined;
       // T 型分叉：吸附到邻边上的点同时插入相邻地块环，保证共享边界可联动
       const splitPlots = new Map<string, TerritoryElement['plots']>();
       const splitSeen = new Set<string>();
@@ -911,7 +991,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         const sig = `${mk.pid}:${coordKey(mk.pt)}`; // 双击附加采点会重复同一吸附 → 去重
         if (splitSeen.has(sig)) continue;
         splitSeen.add(sig);
-        const terrEl = chapter.elements.find((x) => x.id === mk.elId && x.type === 'territory') as TerritoryElement | undefined;
+        const terrEl = project.elements.find((x) => x.id === mk.elId && x.type === 'territory') as TerritoryElement | undefined;
         if (!terrEl) continue;
         const cur = splitPlots.get(mk.elId) ?? terrEl.plots;
         if (!cur.find((p) => p.id === mk.pid)) continue;
@@ -921,18 +1001,18 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       if (!target) {
         target = {
           id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
-          startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+          startFrame: 0, endFrame: project.endFrame, style: {},
           countries: [newCountry], plots: [], events: [], display: defaultTerritoryDisplay(),
         } as TerritoryElement;
-        addElement(chapter.id, target);
+        addElement(target);
       }
       // 本轮全部地块更新（T 分叉 + 重叠修剪回插）先累积，统一一次写回，避免相互覆盖
       const pend = new Map<string, TerritoryElement['plots']>(splitPlots);
-      const baseOf = (elId: string) => pend.get(elId) ?? (chapter.elements.find((x) => x.id === elId && x.type === 'territory') as TerritoryElement | undefined)?.plots;
+      const baseOf = (elId: string) => pend.get(elId) ?? (project.elements.find((x) => x.id === elId && x.type === 'territory') as TerritoryElement | undefined)?.plots;
       const countryId = target.countries[0]?.id || newCountry.id;
       // 重叠修剪：与既有地块的重叠沿既有边界裁齐（顶点与邻块一致 → 自动共享），完全被覆盖则放弃
       const others: { elId: string; pid: string; ring: [number, number][]; keys: Set<string> }[] = [];
-      for (const el of chapter.elements) {
+      for (const el of project.elements) {
         if (el.type !== 'territory') continue;
         for (const p of baseOf(el.id) ?? []) {
           if (p.rings?.[0] && p.rings[0].length >= 4) {
@@ -961,10 +1041,10 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         }
       }
       for (const [elId, nextPlots] of pend) {
-        if (elId !== target.id) proj.updateElement(chapter.id, elId, { plots: nextPlots } as Partial<MapElement>);
+        if (elId !== target.id) proj.updateElement(elId, { plots: nextPlots } as Partial<MapElement>);
       }
       const plot = { id: generateId(), name: `地块${target.plots.length + 1}`, rings: trimmed, ownerId: countryId };
-      proj.updateElement(chapter.id, target.id, {
+      proj.updateElement(target.id, {
         plots: [...(pend.get(target.id) ?? target.plots), plot],
         ...(target.countries.length ? {} : { countries: [newCountry] }),
       } as Partial<MapElement>);
@@ -981,7 +1061,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         id: generateId(), type: 'polygon',
         name: curve ? (defend ? '曲线防御圈' : '曲线多边') : (defend ? '直线防御圈' : '多边形'),
         visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: [pts],
         fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: defend ? 8 : 2,
         shapeKind: 'poly',
@@ -991,18 +1071,23 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       } as PolygonElement);
     } else if (mode === 'add_curved') {
       if (pts.length < 2) return;
+      const rr = useInteractionStore.getState().pendingRouteStyle;
+      const asRoute = rr?.mode === mode;
+      if (asRoute) useInteractionStore.getState().clearPendingRouteStyle();
       createElementAndSelect({
-        id: generateId(), type: 'arrow', name: '弯曲箭头', visible: true, locked: false,
-        startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+        id: generateId(), type: 'arrow', name: asRoute ? '燕尾箭头' : '弯曲箭头', visible: true, locked: false,
+        startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
         width: 15, color: '#E23B3B',
-        progress: [{ frame: chapter.startFrame, value: 1 }], drawZoom: map.getZoom(),
-        shapeCategory: 'special',
+        progress: [{ frame: 0, value: 1 }],
+        ...(asRoute ? { showIcon: true, uniformMove: true, animEffect: 'move' as const, moveStartFrame: 0, moveEndFrame: project.endFrame } : {}),
+        drawZoom: map.getZoom(),
+        shapeCategory: asRoute ? 'route' : 'special',
       } as ArrowElement);
     }
 
     resetDraw();
-  }, [mode, chapter, addElement, selectElement, setMode, resetDraw, createElementAndSelect]);
+  }, [mode, project, addElement, selectElement, setMode, resetDraw, createElementAndSelect]);
 
   const handleDblClick = useCallback((e?: maplibregl.MapMouseEvent) => {
     // 任何相关模式双击已有地块 → 进入该地块边界编辑（绘制模式限空笔，避免与"完成绘制"冲突）
@@ -1021,7 +1106,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       const tid = f?.properties?.tid as string | undefined;
       if (pid && tid) {
         const st = useProjectStore.getState();
-        const terr = (st.project?.chapters.find((c) => c.id === chapter.id) || chapter)
+        const terr = (st.project || project)
           .elements.find((x) => x.id === tid && x.type === 'territory') as TerritoryElement | undefined;
         if (terr) {
           if (m === 'add_terr_plot') { resetDraw(); setMode('select'); } // 编辑需退出绘制模式（顶点拖拽在选择模式）
@@ -1033,7 +1118,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     }
     finishDrawing();
     useEditorStore.getState().setRouteEdit('none');
-  }, [finishDrawing, chapter, selectElement, resetDraw, setMode]);
+  }, [finishDrawing, project, selectElement, resetDraw, setMode]);
 
   // ===== 悬停元素 → 移动光标（select 模式） =====
   const setCanvasCursor = useCallback((c: string) => {
@@ -1047,33 +1132,42 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (useInteractionStore.getState().mode !== 'select') return; // 其他模式由 getCursor 处理
     if (dragRef.current.active) { m.getCanvas().style.cursor = 'move'; return; }
     if (useEditorStore.getState().routeEdit === 'add') { m.getCanvas().style.cursor = 'crosshair'; return; }
-    const hit = pickElement(m, e.point, chapter.elements);
+    const hit = pickElement(m, e.point, project.elements);
     m.getCanvas().style.cursor = hit ? 'move' : '';
-  }, [chapter.elements]);
+  }, [project.elements]);
 
   const handleHoverOut = useCallback(() => {
+    // 鼠标移出地图：隐藏吸附指示圈（否则会在上次吸附点残留蓝色空心圈），复位光标
+    const m = mapRef.current;
+    if (m?.getLayer('terr-snap')) {
+      try { m.setLayoutProperty('terr-snap', 'visibility', 'none'); } catch { /* style 未就绪 */ }
+    }
     if (useInteractionStore.getState().mode === 'select') setCanvasCursor('');
   }, [setCanvasCursor]);
 
   // 模式切换时同步画布光标
   useEffect(() => {
-    setCanvasCursor(mode === 'select' ? '' : mode.startsWith('add_') ? 'crosshair' : '');
+    setCanvasCursor(mode === 'select' ? '' : mode === 'terr_split' ? SCISSORS_CURSOR : mode.startsWith('add_') ? 'crosshair' : '');
   }, [mode, setCanvasCursor]);
 
   // ===== 拖拽移动元素 / 顶点编辑 =====
-  const dragRef = useRef<{ active: boolean; elementId: string | null; x: number; y: number; vertex?: number }>({
-    active: false, elementId: null, x: 0, y: 0,
+  // pendingLngLat：整元素拖拽期间的「地图预览位置」。点/旗标拖动只改地图源、不写 store，
+  // 松手时再一次性提交（避免每个 mousemove 触发全量元素重渲染造成明显延迟）。
+  const dragRef = useRef<{ active: boolean; elementId: string | null; x: number; y: number; vertex?: number; pendingLngLat?: [number, number] | null }>({
+    active: false, elementId: null, x: 0, y: 0, pendingLngLat: null,
   });
   // 顶点命中后抑制紧随的 click 取消（否则刚选中的路线被空白点击取消）
   const skipClickRef = useRef(false);
+  // 元素整体拖拽是否真正移动过（用于抑制松手后 MapLibre 补发的 click 改选）
+  const dragMovedRef = useRef(false);
 
   const handleMouseDown = useCallback((e: maplibregl.MapMouseEvent) => {
     const map = mapRef.current;
     if (!map || mode !== 'select') return;
-    // 用 getState() 现取，避免闭包章旧（selectedElementId/chapter 每次择/样式切换都会变）
+    // 用 getState() 现取，避免闭包章旧（selectedElementId/project 每次择/样式切换都会变）
     const st = useProjectStore.getState();
     const selId = useEditorStore.getState().selectedElementId;
-    const ch = st.project?.chapters.find((c) => c.id === chapter.id) || chapter;
+    const ch = st.project || project;
     const rEdit = useEditorStore.getState().routeEdit;
     const selEl = rEdit !== 'none' && selId ? ch.elements.find((x) => x.id === selId) : undefined;
     const editPath = selEl ? routePathOf(selEl) : null;
@@ -1092,7 +1186,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         if (Math.abs(last[0] - np[0]) < 1e-7 && Math.abs(last[1] - np[1]) < 1e-7) return;
         c.push(np);
         const fAdd = (selEl as MapElement).type === 'moving_point' || (selEl as MapElement).type === 'arrow' ? 'path' : (selEl as MapElement).type === 'double_arrow' ? 'points' : 'coordinates';
-        useProjectStore.getState().updateElement(ch.id, (selEl as MapElement).id, { [fAdd]: c } as Partial<MapElement>);
+        useProjectStore.getState().updateElement((selEl as MapElement).id, { [fAdd]: c } as Partial<MapElement>);
         skipClickRef.current = true;
         return;
       }
@@ -1113,7 +1207,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         if (open && victim && open.length > 3) {
           const { plots: nextPlots, removedPlotIds } = removeSharedVertex(terr.plots, victim);
           snapshotHistory();
-          useProjectStore.getState().updateElement(ch.id, terr.id, { plots: nextPlots } as Partial<MapElement>);
+          useProjectStore.getState().updateElement(terr.id, { plots: nextPlots } as Partial<MapElement>);
           if (pid && removedPlotIds.includes(pid)) {
             const next = nextPlots[0];
             useEditorStore.getState().setTerrPlotId(next?.id ?? null);
@@ -1136,10 +1230,11 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       setHistoryMuted(true);
       snapshotHistory();
       dragRef.current = { active: true, elementId: hit, x: e.point.x, y: e.point.y };
+      dragMovedRef.current = false;
       selectElement(hit);
       map.dragPan.disable();
     }
-  }, [mode, selectElement, chapter.id]);
+  }, [mode, selectElement, project.id]);
 
   const handleWindowMouseMove = useCallback((e: globalThis.MouseEvent) => {
     const map = mapRef.current;
@@ -1148,8 +1243,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (map && useEditorStore.getState().routeEdit === 'add') {
       const st = useProjectStore.getState();
       const selId = useEditorStore.getState().selectedElementId;
-      const addCh = st.project?.chapters.find((c) => c.id === chapter.id);
-      const addEl = (addCh?.elements || chapter.elements).find((x) => x.id === selId);
+      const addCh = st.project;
+      const addEl = (addCh?.elements || project.elements).find((x) => x.id === selId);
       const addPath = addEl ? routePathOf(addEl) : null;
       const abox = containerRef.current?.getBoundingClientRect();
       if (addPath && abox) {
@@ -1184,7 +1279,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         const cur: [number, number] = [p.lng, p.lat];
         if (useInteractionStore.getState().mode === 'add_terr_plot') {
           const st = useProjectStore.getState();
-          const terrs = ((st.project?.chapters.find((c) => c.id === chapter.id) || chapter).elements.filter((x) => x.type === 'territory') || []) as TerritoryElement[];
+          const terrs = ((st.project || project).elements.filter((x) => x.type === 'territory') || []) as TerritoryElement[];
           const snap = terrSnapNear(map, cur, terrs, { vertexPx: 12, edgePx: 12 });
           if (snap) {
             drawRef.current.cursor = snap.pt;
@@ -1205,11 +1300,11 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
 
     // 顶点拖拽：只更新被拖动的路径点（起点/终点/中间点）
     if (drag.vertex !== undefined) {
-      const el = chapter.elements.find((x) => x.id === drag.elementId);
+      const el = project.elements.find((x) => x.id === drag.elementId);
       if (!el) return;
       const bb = containerRef.current?.getBoundingClientRect();
       if (!bb) return;
-      const changed = patchElementVertex(el, drag.vertex, e.clientX, e.clientY, bb, map, chapter.id);
+      const changed = patchElementVertex(el, drag.vertex, e.clientX, e.clientY, bb, map, project.id);
       if (changed) {
         drag.x = e.clientX;
         drag.y = e.clientY;
@@ -1220,20 +1315,44 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const dx = Math.abs(e.clientX - drag.x);
     const dy = Math.abs(e.clientY - drag.y);
     if (dx < 3 && dy < 3) return;
+    dragMovedRef.current = true;
 
     const bbox = containerRef.current?.getBoundingClientRect();
     if (!bbox) return;
     const lngLat = map.unproject([e.clientX - bbox.left, e.clientY - bbox.top]);
-    moveElementTo(chapter, drag.elementId, [lngLat.lng, lngLat.lat]);
+    const pt: [number, number] = [lngLat.lng, lngLat.lat];
+    // 点 / 旗标：只改地图源（零 React 重渲染），松手再提交 store —— 消除拖动延迟
+    const el = project.elements.find((x) => x.id === drag.elementId);
+    if (el && (el.type === 'point' || el.type === 'flag') && previewMoveElementOnMap(map, el, pt)) {
+      drag.pendingLngLat = pt;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      return;
+    }
+    moveElementTo(project, drag.elementId, pt);
     drag.x = e.clientX;
     drag.y = e.clientY;
-  }, [chapter, updatePreview]);
+  }, [project, updatePreview]);
 
   const handleWindowMouseUp = useCallback(() => {
-    if (dragRef.current.active) {
+    const drag = dragRef.current;
+    if (drag.active) {
       mapRef.current?.dragPan.enable();
     }
-    dragRef.current = { active: false, elementId: null, x: 0, y: 0 };
+    // 真正拖动过：抑制紧随的 map click —— 否则拖到别的元素上松手会改选成那个元素
+    if (drag.active && dragMovedRef.current) {
+      skipClickRef.current = true;
+      // 兜底：若 MapLibre 没有补发 click，避免残留标志吞掉下一次点击
+      setTimeout(() => { skipClickRef.current = false; }, 300);
+    }
+    dragMovedRef.current = false;
+    // 点 / 旗标：拖动期间只改了地图源，这里把最终位置一次性写回 store
+    if (drag.active && drag.elementId && drag.pendingLngLat) {
+      const st = useProjectStore.getState();
+      const ch = st.project?.elements.some((x) => x.id === drag.elementId) ? st.project : undefined;
+      if (ch) moveElementTo(ch, drag.elementId, drag.pendingLngLat);
+    }
+    dragRef.current = { active: false, elementId: null, x: 0, y: 0, pendingLngLat: null };
     // 无条件复位：拖拽被中断时若留 true，undo/redo 会从此**静默失效**
     setHistoryMuted(false);
   }, []);
@@ -1276,21 +1395,21 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         const id = useEditorStore.getState().selectedElementId;
         if (id) {
           e.preventDefault();
-          const el = chapter.elements.find((x) => x.id === id);
+          const el = project.elements.find((x) => x.id === id);
           void confirm({
             message: `删除「${el?.name || '元素'}」？`,
             danger: true,
             confirmText: '删除',
           }).then((ok) => {
             if (!ok) return;
-            useProjectStore.getState().deleteElement(chapter.id, id);
+            useProjectStore.getState().deleteElement(id);
             selectElement(null);
           });
         } else if (useEditorStore.getState().fxSelId) {
           // 选中了特效/弹窗项：Del 删除该项（天气/画面/弹窗）
           e.preventDefault();
           const fxId = useEditorStore.getState().fxSelId;
-          const ch = useProjectStore.getState().project?.chapters.find((c) => c.id === chapter.id);
+          const ch = useProjectStore.getState().project;
           const sfx = ch?.fx?.find((f) => f.id === fxId);
           const ov = ch?.overlays?.find((o) => o.id === fxId);
           if (!sfx && !ov) return;
@@ -1301,8 +1420,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
           }).then((ok) => {
             if (!ok) return;
             const s2 = useProjectStore.getState();
-            if (sfx) s2.removeScreenFx(chapter.id, sfx.id);
-            else if (ov) s2.deleteOverlay(chapter.id, ov.id);
+            if (sfx) s2.removeScreenFx(sfx.id);
+            else if (ov) s2.deleteOverlay(ov.id);
             useEditorStore.getState().setFxSelId(null);
           });
         }
@@ -1310,7 +1429,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finishDrawing, chapter.id, setMode, selectElement, resetDraw, updatePreview]);
+  }, [finishDrawing, project.id, setMode, selectElement, resetDraw, updatePreview]);
 
   // ===== 每次渲染同步最新回调，供一次性注册的地图事件调用 =====
   handlersRef.current = {
@@ -1332,7 +1451,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     });
     if (map.getSource(sourceId)) map.removeSource(sourceId);
 
-    const el = chapter.elements.find((x) => x.id === selectedElementId);
+    const el = project.elements.find((x) => x.id === selectedElementId);
     if (!el) return;
     // 路线类元素不做线状高亮，顶点标识已足够
     if (el.type === 'line' || el.type === 'moving_point' || el.type === 'arrow' || el.type === 'double_arrow') return;
@@ -1375,7 +1494,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       });
     }
     } catch { /* style 未就绪：下次选择或 load 后（styleTick）重试 */ }
-  }, [selectedElementId, chapter, styleTick]);
+  }, [selectedElementId, project, styleTick]);
 
   // ===== 选中变化：路径点编辑模式自动复位 =====
   useEffect(() => {
@@ -1384,9 +1503,9 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       map0.setLayoutProperty('route-add-preview', 'visibility', 'none');
     }
     if (routeEditMode === 'none') return;
-    const el = selectedElementId ? chapter.elements.find((x) => x.id === selectedElementId) : null;
+    const el = selectedElementId ? project.elements.find((x) => x.id === selectedElementId) : null;
     if (!el || !routePathOf(el)) useEditorStore.getState().setRouteEdit('none');
-  }, [selectedElementId, chapter, routeEditMode]);
+  }, [selectedElementId, project, routeEditMode]);
 
   // ===== 路线顶点标识：所有路线元素显示路径点，选中的更大更亮 =====
   useEffect(() => {
@@ -1394,7 +1513,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     if (!map) return;
     const srcId = 'vertex-markers';
     const feats: any[] = [];
-    for (const el of chapter.elements) {
+    for (const el of project.elements) {
       const path = routePathOf(el);
       if (!path) continue;
       const sel = el.id === selectedElementId;
@@ -1418,24 +1537,26 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         });
       }
     } catch { /* style 未就绪：styleTick 后重试 */ }
-  }, [chapter, selectedElementId, styleTick, terrPlotId]);
+  }, [project, selectedElementId, styleTick, terrPlotId]);
 
   // ===== 播放时隐藏编辑辅助（顶点标识 / 选中高亮） =====
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const vis = isPlaying ? 'none' : 'visible';
-    ['vertex-dot', 'selection-line', 'selection-fill', 'selection-point', 'selection-move', 'terr-snap'].forEach((id) => {
+    // 注意：不包含 'terr-snap'（吸附指示圈）——它只由绘制悬停逻辑按需显示/隐藏，
+    // 否则选中元素/项目变化时会把上次残留的蓝圈重新设为 visible。
+    ['vertex-dot', 'selection-line', 'selection-fill', 'selection-point', 'selection-move'].forEach((id) => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
     });
-  }, [isPlaying, chapter, selectedElementId, styleTick]);
+  }, [isPlaying, project, selectedElementId, styleTick]);
 
   // ===== 左侧列表定位请求 =====
   const focusReq = useInteractionStore((s) => s.focusReq);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !focusReq) return;
-    const el = chapter.elements.find((x) => x.id === focusReq.elementId);
+    const el = project.elements.find((x) => x.id === focusReq.elementId);
     if (!el) return;
 
     try {
@@ -1451,34 +1572,61 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     } finally {
       useInteractionStore.getState().clearFocus();
     }
-  }, [focusReq, chapter]);
+  }, [focusReq, project]);
 
-  const getCursor = () => (mode.startsWith('add_') || routeEditMode === 'add' ? 'crosshair' : 'default');
+  const getCursor = () => (mode === 'terr_split' ? SCISSORS_CURSOR : (mode.startsWith('add_') || routeEditMode === 'add') ? 'crosshair' : 'default');
 
   /** Update View：镜头流有选中视角 → 更新该视角；无选中 → 新增视角 */
   const handleUpdateView = useCallback(() => {
     const st = useProjectStore.getState();
     if (!st.project) return;
-    const ch = st.project.chapters.find((c) => c.id === chapter.id) || chapter;
+    const ch = [st.project].find((c) => c.id === project.id) || project;
     const cam = useEditorStore.getState().currentCamera;
     const fps = st.project.globalConfig.defaultFPS;
-    let frame = Math.max(ch.startFrame, Math.round(useEditorStore.getState().currentFrame));
+    let frame = Math.max(0, Math.round(useEditorStore.getState().currentFrame));
     const kfs = [...(ch.camera || [])].sort((a, b) => a.frame - b.frame);
-    const selIdx = useEditorStore.getState().selectedKeyframeIdx;
 
-    // 无镜头流 / 未选中视角 → 新增视角
-    if (kfs.length === 0 || selIdx === null) {
+    // 当前播放头所在的视角（与时间线自动选中同一套区间判定）；不在任何视角区间 → null。
+    // 不能用 selectedKeyframeIdx：只有 1 个视角时时间线会恒选第 0 个，
+    // 拖动播放头到别处再「更新视角」就会误改第 0 帧那个视角。
+    const activeIdx = (() => {
+      if (kfs.length === 0) return null;
+      if (frame <= kfs[0].frame) return 0;
+      for (let i = 1; i < kfs.length; i++) {
+        const prev = kfs[i - 1];
+        const kf = kfs[i];
+        let start: number;
+        let end: number;
+        if (kf.followRoute) {
+          start = kf.followRoute.startFrame ?? kf.frame;
+          end = kf.followRoute.endFrame ?? kf.frame;
+        } else if (kf.orbit) {
+          start = kf.frame;
+          end = kf.frame + Math.round((kf.orbit.duration ?? 2) * fps);
+        } else {
+          const gap = Math.max(0, kf.frame - prev.frame);
+          const move = typeof kf.moveDuration === 'number' ? Math.min(kf.moveDuration, gap) : Math.min(2 * fps, gap);
+          start = kf.frame - move;
+          end = kf.frame;
+        }
+        if (frame >= start && frame <= end) return i;
+      }
+      return null;
+    })();
+
+    // 无镜头流 / 播放头不在任何视角区间 → 在播放头处新增视角
+    if (kfs.length === 0 || activeIdx === null) {
       while (kfs.some((k) => Math.abs(k.frame - frame) < 1)) frame += fps;
       // 前一个视角：所有 frame < 新 frame 的视角中最大者（中间插入时不能用最后一个视角）
       const prevKfs = kfs.filter((k) => k.frame < frame);
-      const prevF = prevKfs.length ? prevKfs[prevKfs.length - 1].frame : ch.startFrame;
+      const prevF = prevKfs.length ? prevKfs[prevKfs.length - 1].frame : 0;
       const newKf: CameraKeyframe = {
         frame, center: [cam.center[0], cam.center[1]], zoom: cam.zoom,
         pitch: cam.pitch || 0, bearing: cam.bearing || 0, easing: 'easeInOut',
         moveDuration: Math.min(2 * fps, Math.max(0, frame - prevF)),
       };
       const next = [...kfs, newKf].sort((a, b) => a.frame - b.frame);
-      st.setChapterCamera(ch.id, next);
+      st.setProjectCamera(next);
       useEditorStore.getState().selectKeyframe(next.findIndex((k) => k.frame === frame));
       useEditorStore.getState().setCurrentFrame(frame);
       setViewSaved(true);
@@ -1486,11 +1634,12 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       return;
     }
 
-    // 有选中视角 → 更新它
-    const target = kfs[Math.min(selIdx, kfs.length - 1)];
+    // 命中视角 → 更新它
+    const idx = Math.min(activeIdx, kfs.length - 1);
+    const target = kfs[idx];
     const isOrbit = target.cameraType === 'orbit' || !!target.orbit;
     const isFollow = target.cameraType === 'follow' || !!target.followRoute;
-    kfs[Math.min(selIdx, kfs.length - 1)] = {
+    kfs[idx] = {
       ...target,
       // 环绕视角：保留环绕中心与环绕配置，只更新俯仰/缩放
       ...(isOrbit ? { center: target.center, zoom: cam.zoom, pitch: cam.pitch || 0 } : {}),
@@ -1499,40 +1648,40 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
         ? { center: [cam.center[0], cam.center[1]], zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 }
         : {}),
     };
-    st.setChapterCamera(ch.id, kfs);
-    useEditorStore.getState().selectKeyframe(Math.min(selIdx, kfs.length - 1));
+    st.setProjectCamera(kfs);
+    useEditorStore.getState().selectKeyframe(idx);
     // 播放头吸附到该视角的到达帧：镜头插值 effect 会精确返回刚保存的画面，
     // 避免飞行窗口内播放头继续插值、把刚保存的视角拽回旧位置。
-    const tgtFrame = kfs[Math.min(selIdx, kfs.length - 1)].frame;
+    const tgtFrame = kfs[idx].frame;
     useEditorStore.getState().setCurrentFrame(tgtFrame);
     setViewSaved(true);
     setTimeout(() => setViewSaved(false), 1200);
-  }, [chapter]);
+  }, [project]);
 
   /** ⟳ 预览：飞到"播放头所在视角"的原始设置 */
   const handlePreviewKf = useCallback(() => {
     const st = useProjectStore.getState();
     if (!st.project) return;
-    const ch = st.project.chapters.find((c) => c.id === chapter.id) || chapter;
+    const ch = [st.project].find((c) => c.id === project.id) || project;
     const kfs = [...(ch.camera || [])].sort((a, b) => a.frame - b.frame);
     if (kfs.length === 0) return;
-    const frame = Math.max(ch.startFrame, Math.round(useEditorStore.getState().currentFrame));
+    const frame = Math.max(0, Math.round(useEditorStore.getState().currentFrame));
     const fps = st.project.globalConfig.defaultFPS;const idx = resolveKfIndex(kfs, frame, fps);
     const kf = kfs[Math.max(0, idx)];
-    const prevF = idx > 0 ? kfs[idx - 1].frame : ch.startFrame;
+    const prevF = idx > 0 ? kfs[idx - 1].frame : 0;
     const moveFrames = typeof kf.moveDuration === 'number' ? Math.min(kf.moveDuration, kf.frame - prevF) : Math.min(2 * fps, kf.frame - prevF);
     useEditorStore.getState().seekCamera(
       { center: kf.center, zoom: kf.zoom, pitch: kf.pitch || 0, bearing: kf.bearing || 0 },
       kf.easing || 'linear',
       Math.max(0.2, Math.min(6, moveFrames / st.project.globalConfig.defaultFPS))
     );
-  }, [chapter]);
+  }, [project]);
 
   /** 添加跟随视角：center 动态跟随选中路线的动画进度点 */
   const handleFollowView = useCallback(() => {
     const st = useProjectStore.getState();
     if (!st.project) return;
-    const ch = st.project.chapters.find((c) => c.id === chapter.id) || chapter;
+    const ch = [st.project].find((c) => c.id === project.id) || project;
     const selId = useEditorStore.getState().selectedElementId;
     if (!selId) { void confirm({ message: '请先在地图上选中一条路线，再添加跟随视角', confirmText: '知道了', danger: false }); return; }
     const route = ch.elements.find((e) => e.id === selId);
@@ -1546,13 +1695,13 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     const kfs = [...(ch.camera || [])].sort((a, b) => a.frame - b.frame);
     const conflict = kfs.find((k) => k.frame >= startF && k.frame <= endF);
     if (conflict) {
-      void confirm({ message: `现有视角（t=${((conflict.frame - ch.startFrame) / st.project.globalConfig.defaultFPS).toFixed(1)}s）落在该路线的显示时间区间内，无法添加跟随视角`, confirmText: '知道了', danger: true });
+      void confirm({ message: `现有视角（t=${((conflict.frame - 0) / st.project.globalConfig.defaultFPS).toFixed(1)}s）落在该路线的显示时间区间内，无法添加跟随视角`, confirmText: '知道了', danger: true });
       return;
     }
     const cam = useEditorStore.getState().currentCamera;
     const fps = st.project.globalConfig.defaultFPS;
     // 跟随视角帧 = 路线显示开始（保证不与区间内现有视角冲突）
-    const frame = Math.max(ch.startFrame, startF);
+    const frame = Math.max(0, startF);
     const newKf: CameraKeyframe = {
       frame,
       center: [cam.center[0], cam.center[1]] as [number, number],
@@ -1560,26 +1709,26 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       pitch: cam.pitch || 0,
       bearing: cam.bearing || 0,
       easing: 'easeInOut',
-      moveDuration: Math.min(2 * fps, Math.max(0, frame - (kfs.length ? kfs[kfs.length - 1].frame : ch.startFrame))),
+      moveDuration: Math.min(2 * fps, Math.max(0, frame - (kfs.length ? kfs[kfs.length - 1].frame : 0))),
       cameraType: 'follow' as const,
       followRoute: { routeElementId: route.id, followDirection: true, startFrame: startF, endFrame: endF },
     };
     const next = [...kfs, newKf].sort((a, b) => a.frame - b.frame);
-    st.setChapterCamera(ch.id, next);
+    st.setProjectCamera(next);
     useEditorStore.getState().selectKeyframe(next.findIndex((k) => k === newKf));
     // 点击「跟随」不跳转播放头/视角（视角保持当前地图画面，播放时才跟随）
     setViewSaved(true);
     setTimeout(() => setViewSaved(false), 1200);
-  }, [chapter, confirm]);
+  }, [project, confirm]);
 
   /** 添加环绕视角：相机绕当前中心点旋转（bearing 随时间变化） */
   const handleOrbitView = useCallback(() => {
     const st = useProjectStore.getState();
     if (!st.project) return;
-    const ch = st.project.chapters.find((c) => c.id === chapter.id) || chapter;
+    const ch = [st.project].find((c) => c.id === project.id) || project;
     const cam = useEditorStore.getState().currentCamera;
     const fps = st.project.globalConfig.defaultFPS;
-    const frame = Math.max(ch.startFrame, Math.round(useEditorStore.getState().currentFrame));
+    const frame = Math.max(0, Math.round(useEditorStore.getState().currentFrame));
     // 环绕时长默认 2 秒
     const orbitDur = 2;
     const kfs = [...(ch.camera || [])].sort((a, b) => a.frame - b.frame);
@@ -1588,7 +1737,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
     // 校验：与其他视角时间是否重叠（frame 落在 [spanStart, spanEnd]）
     const conflict = kfs.find((k) => k.frame >= spanStart && k.frame <= spanEnd);
     if (conflict) {
-      void confirm({ message: `环绕视角时长 ${orbitDur}s，与现有视角（t=${((conflict.frame - ch.startFrame) / fps).toFixed(1)}s）时间重叠，无法添加`, confirmText: '知道了', danger: true });
+      void confirm({ message: `环绕视角时长 ${orbitDur}s，与现有视角（t=${((conflict.frame - 0) / fps).toFixed(1)}s）时间重叠，无法添加`, confirmText: '知道了', danger: true });
       return;
     }
     const newKf: CameraKeyframe = {
@@ -1602,12 +1751,12 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
       orbit: { speed: 45, duration: orbitDur },
     };
     const next = [...kfs, newKf].sort((a, b) => a.frame - b.frame);
-    st.setChapterCamera(ch.id, next);
+    st.setProjectCamera(next);
     useEditorStore.getState().selectKeyframe(next.findIndex((k) => k === newKf));
     useEditorStore.getState().setCurrentFrame(frame);
     setViewSaved(true);
     setTimeout(() => setViewSaved(false), 1200);
-  }, [chapter, confirm]);
+  }, [project, confirm]);
 
   return (
     <div className="relative w-full h-full">
@@ -1615,8 +1764,8 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
 
       {/* TILT 倾斜滑块已移除（俯仰在右侧视角属性中设置） */}
 
-      {/* 视角工具条（Mapimator 风格胶囊）：更新视角 / 预览飞回 / 收起 */}
-      {mode === 'select' && !viewBarHidden && (
+      {/* 视角工具条（Mapimator 风格胶囊）：更新视角 / 预览飞回 / 收起；播放预览时隐藏 */}
+      {mode === 'select' && !viewBarHidden && !isPlaying && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[30] flex items-center gap-1 h-10 px-1.5 rounded-full bg-[#1c1917]/95 backdrop-blur border border-white/10 shadow-lg">
           <button
             onClick={handleUpdateView}
@@ -1662,7 +1811,7 @@ export function EditableMap({ project, chapter, currentFrame }: EditableMapProps
           )}
         </div>
       )}
-      {mode === 'select' && viewBarHidden && (
+      {mode === 'select' && viewBarHidden && !isPlaying && (
         <button
           onClick={() => setViewBarHidden(false)}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[30] w-9 h-9 flex items-center justify-center rounded-full bg-[#1c1917]/95 backdrop-blur border border-white/10 shadow-lg text-muted-foreground hover:text-foreground transition-colors"
@@ -1717,6 +1866,7 @@ function modeHint(mode: string): string {
     case 'add_shape_front_line': return '单击加点 · 双击完成直线战线（一侧梳齿） · Esc取消';
     case 'add_shape_front_curve': return '单击加控制点(≥2) · 双击完成弯曲战线（一侧梳齿） · Esc取消';
     case 'add_terr_plot': return '单击加顶点(≥3) · 靠邻边吸附，两点间自动描幕边界(Alt反向/Ctrl直连) · 双击完成 · 空笔双击已有地块=编辑边界 · Esc取消';
+    case 'terr_split': return '点两下画一条切线（两端落在地块外）→ 切开当前编辑地块 · Esc取消';
     case 'terr_annex': return '点击地块加入/移出选择 · 双击地块编辑边界 · 右侧面板「生成兼并事件」 · Esc取消';
     default: return '';
   }
@@ -1774,6 +1924,10 @@ function routePathOf(el: MapElement): [number, number][] | null {
     const closed = Math.abs(ring[0][0] - ring[ring.length - 1][0]) < 1e-9 && Math.abs(ring[0][1] - ring[ring.length - 1][1]) < 1e-9;
     return closed ? ring.slice(0, -1) : ring;
   }
+  if (el.type === 'geo_image') {
+    // 贴图：控制点网格即可拖拽的配准点
+    return (el.grid?.length ?? 0) >= 4 ? el.grid : null;
+  }
   return null;
 }
 
@@ -1788,7 +1942,7 @@ function starRadiusHandle(center: [number, number], radiusKm: number, rotDeg = 0
 }
 
 /** 顶点拖拽写回：按元素类型更新对应字段；返回是否已写。bbox=地图容器盒。 */
-function patchElementVertex(el: MapElement, idx: number, clientX: number, clientY: number, bbox: DOMRect, map: maplibregl.Map, chapterId: string): boolean {
+function patchElementVertex(el: MapElement, idx: number, clientX: number, clientY: number, bbox: DOMRect, map: maplibregl.Map, _chapterId: string): boolean {
   const lngLat = map.unproject([clientX - bbox.left, clientY - bbox.top]);
   const pt: [number, number] = [lngLat.lng, lngLat.lat];
 
@@ -1797,21 +1951,21 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
     if (!path || idx >= path.length) return false;
     const c = path.map((p) => [p[0], p[1]] as [number, number]);
     c[idx] = pt;
-    useProjectStore.getState().updateElement(chapterId, el.id, { path: c } as Partial<MapElement>);
+    useProjectStore.getState().updateElement(el.id, { path: c } as Partial<MapElement>);
     return true;
   }
   if (el.type === 'double_arrow') {
     if (idx >= el.points.length) return false;
     const c = el.points.map((p) => [p[0], p[1]] as [number, number]);
     c[idx] = pt;
-    useProjectStore.getState().updateElement(chapterId, el.id, { points: c } as Partial<MapElement>);
+    useProjectStore.getState().updateElement(el.id, { points: c } as Partial<MapElement>);
     return true;
   }
   if (el.type === 'line') {
     if (idx >= el.coordinates.length) return false;
     const c = el.coordinates.map((p) => [p[0], p[1]] as [number, number]);
     c[idx] = pt;
-    useProjectStore.getState().updateElement(chapterId, el.id, { coordinates: c } as Partial<MapElement>);
+    useProjectStore.getState().updateElement(el.id, { coordinates: c } as Partial<MapElement>);
     return true;
   }
   if (el.type === 'polygon') {
@@ -1824,7 +1978,7 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
       const invPt = rotatePt(pt, [cx, cy], -rot);
       const c1 = idx === 0 ? invPt : el.rectMeta.c1;
       const c2 = idx === 1 ? invPt : el.rectMeta.c2;
-      useProjectStore.getState().updateElement(chapterId, el.id, {
+      useProjectStore.getState().updateElement(el.id, {
         rectMeta: { c1, c2 },
         coordinates: [shapeRectRing(c1, c2)],
       } as Partial<MapElement>);
@@ -1836,7 +1990,7 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
         const patch = el.shapeKind === 'circle'
           ? { circleMeta: { ...meta, center: pt } as PolygonElement['circleMeta'], coordinates: [circleCoords(pt, meta.radius)] }
           : { starMeta: { ...meta, center: pt } as PolygonElement['starMeta'], coordinates: [polyStarCoords(pt, meta.radius)] };
-        useProjectStore.getState().updateElement(chapterId, el.id, patch as Partial<MapElement>);
+        useProjectStore.getState().updateElement(el.id, patch as Partial<MapElement>);
         return true;
       }
       if (idx === 1) {
@@ -1844,7 +1998,7 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
         const patch = el.shapeKind === 'circle'
           ? { circleMeta: { ...meta, radius: rkm } as PolygonElement['circleMeta'], coordinates: [circleCoords(meta.center, rkm)] }
           : { starMeta: { ...meta, radius: rkm } as PolygonElement['starMeta'], coordinates: [polyStarCoords(meta.center, rkm)] };
-        useProjectStore.getState().updateElement(chapterId, el.id, patch as Partial<MapElement>);
+        useProjectStore.getState().updateElement(el.id, patch as Partial<MapElement>);
         return true;
       }
       return false;
@@ -1859,19 +2013,19 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
     // 闭合环的末尾闭合点与首点本就是同一几何点：拖起点(idx 0)时若不同步改它，
     // 闭合点会残留在原位置，导致图形不随动（直线）或 smoothClosedRing 追加首点多出一条边（曲线）。
     if (closed) c[c.length - 1] = c[0];
-    useProjectStore.getState().updateElement(chapterId, el.id, { coordinates: [c] } as Partial<MapElement>);
+    useProjectStore.getState().updateElement(el.id, { coordinates: [c] } as Partial<MapElement>);
     return true;
   }
   if (el.type === 'gathering') {
     const rkm = idx === 0 ? el.radius : Math.max(0.5, turf.distance(el.center, pt, { units: 'kilometers' }));
     const center = idx === 0 ? pt : el.center;
-    useProjectStore.getState().updateElement(chapterId, el.id, { center, radius: rkm } as Partial<MapElement>);
+    useProjectStore.getState().updateElement(el.id, { center, radius: rkm } as Partial<MapElement>);
     return true;
   }
   if (el.type === 'encirclement') {
     const rkm = idx === 0 ? el.radius : Math.max(0.5, turf.distance(el.center, pt, { units: 'kilometers' }));
     const center = idx === 0 ? pt : el.center;
-    useProjectStore.getState().updateElement(chapterId, el.id, { center, radius: rkm } as Partial<MapElement>);
+    useProjectStore.getState().updateElement(el.id, { center, radius: rkm } as Partial<MapElement>);
     return true;
   }
   if (el.type === 'territory') {
@@ -1889,7 +2043,14 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
     const weld = terrSnapNear(map, pt, [terr], { vertexPx: 8, edgePx: 0, excludePlotId: pid, excludeKey: coordKey(ring[idx]) });
     if (weld?.kind === 'vertex') target = weld.pt;
     const nextPlots = moveSharedVertices(terr.plots, ring[idx], target);
-    useProjectStore.getState().updateElement(chapterId, el.id, { plots: nextPlots } as Partial<MapElement>);
+    useProjectStore.getState().updateElement(el.id, { plots: nextPlots } as Partial<MapElement>);
+    return true;
+  }
+  if (el.type === 'geo_image') {
+    if (!el.grid || idx >= el.grid.length) return false;
+    const g = el.grid.map((p) => [p[0], p[1]] as [number, number]);
+    g[idx] = pt;
+    useProjectStore.getState().updateElement(el.id, { grid: g } as Partial<MapElement>);
     return true;
   }
   return false;
@@ -2068,14 +2229,25 @@ function elementIdFromLayerId(layerId: string, elements: MapElement[]): string {
   return suffix;
 }
 
-function moveElementTo(chapter: Chapter, elementId: string, lngLat: [number, number]) {
-  const el = chapter.elements.find((e) => e.id === elementId);
+/** 整元素拖动期间的**地图源直改**（点 / 旗标）：不触碰 store，避免全量重渲染导致的拖动延迟。
+ *  返回 false 表示源还没建好（尚未渲染），调用方回退到写 store。 */
+function previewMoveElementOnMap(map: maplibregl.Map, el: MapElement, lngLat: [number, number]): boolean {
+  const sid = el.type === 'flag' ? `flag-${el.id}` : `point-${el.id}`;
+  const src = map.getSource(sid) as { setData?: (d: unknown) => void } | undefined;
+  if (!src || typeof src.setData !== 'function') return false;
+  const name = (el as { label?: { text?: string } }).label?.text || el.name;
+  src.setData(turf.featureCollection([turf.point(lngLat, { name })]));
+  return true;
+}
+
+function moveElementTo(project: MapVideoProject, elementId: string, lngLat: [number, number]) {
+  const el = project.elements.find((e) => e.id === elementId);
   if (!el) return;
 
   if (el.type === 'point' || el.type === 'flag') {
-    useProjectStore.getState().updateElement(chapter.id, elementId, { coordinates: lngLat });
+    useProjectStore.getState().updateElement(elementId, { coordinates: lngLat });
   } else if (el.type === 'moving_point') {
-    useProjectStore.getState().updateElement(chapter.id, elementId, { path: [lngLat, ...el.path.slice(1)] });
+    useProjectStore.getState().updateElement(elementId, { path: [lngLat, ...el.path.slice(1)] });
   } else if (el.type === 'polygon') {
     // 整体拖动：遍历所有环移动
     const base = routePathOf(el);
@@ -2094,12 +2266,20 @@ function moveElementTo(chapter: Chapter, elementId: string, lngLat: [number, num
         c2: [el.rectMeta.c2[0] + dx, el.rectMeta.c2[1] + dy],
       };
     }
-    useProjectStore.getState().updateElement(chapter.id, elementId, meta);
+    useProjectStore.getState().updateElement(elementId, meta);
   } else if (el.type === 'gathering' || el.type === 'encirclement') {
     const dx = lngLat[0] - el.center[0];
     const dy = lngLat[1] - el.center[1];
-    useProjectStore.getState().updateElement(chapter.id, elementId, {
+    useProjectStore.getState().updateElement(elementId, {
       center: [el.center[0] + dx, el.center[1] + dy],
+    } as Partial<MapElement>);
+  } else if (el.type === 'geo_image') {
+    const g = el.grid;
+    if (!g?.length) return;
+    const dx = lngLat[0] - g[0][0];
+    const dy = lngLat[1] - g[0][1];
+    useProjectStore.getState().updateElement(elementId, {
+      grid: g.map((p) => [p[0] + dx, p[1] + dy] as [number, number]),
     } as Partial<MapElement>);
   }
 }
@@ -2111,10 +2291,10 @@ function applyProjection(map: maplibregl.Map, globe: boolean) {
   } catch { /* 样式未就绪时忽略，load 后会再应用 */ }
 }
 
-function makeRegionPolygon(name: string, rings: [number, number][][], chapter: Chapter): PolygonElement {
+function makeRegionPolygon(name: string, rings: [number, number][][], project: MapVideoProject): PolygonElement {
   return {
     id: generateId(), type: 'polygon', name, visible: true, locked: false,
-    startFrame: chapter.startFrame, endFrame: chapter.endFrame, style: {},
+    startFrame: 0, endFrame: project.endFrame, style: {},
     coordinates: rings,
     fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#FF6666', strokeWidth: 2,
   } as PolygonElement;

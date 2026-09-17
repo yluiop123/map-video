@@ -1,16 +1,15 @@
 import { create } from 'zustand';
 
-export type FxTab = 'weather' | 'screen' | 'popup' | 'title' | 'subtitle' | 'music';
+export type FxTab = 'weather' | 'screen' | 'popup' | 'subtitle' | 'music';
 
 interface EditorState {
   currentFrame: number;
   isPlaying: boolean;
   selectedElementId: string | null;
-  selectedChapterId: string | null;
 
   // 右侧面板模式：元素属性 / 镜头关键帧属性 / 特效 / 无面板
   panelMode: 'element' | 'keyframe' | 'fx' | 'none';
-  // 底部 Storyboard 选中的镜头关键帧序号（进入关键帧属性面板）
+  // 视角属性面板选中的镜头关键帧序号（进入关键帧属性面板）
   selectedKeyframeIdx: number | null;
 
   // 当前地图视角（用于新增镜关键帧时的默认值）
@@ -49,7 +48,6 @@ interface EditorState {
   setCurrentFrame: (frame: number) => void;
   setIsPlaying: (playing: boolean) => void;
   selectElement: (id: string | null) => void;
-  selectChapter: (id: string | null) => void;
   setPanelMode: (mode: 'element' | 'keyframe' | 'fx' | 'none') => void;
   /** 选中镜头关键帧（进入右侧视角属性面板） */
   selectKeyframe: (idx: number | null) => void;
@@ -61,7 +59,6 @@ export const useEditorStore = create<EditorState>()((set) => ({
   currentFrame: 0,
   isPlaying: false,
   selectedElementId: null,
-  selectedChapterId: null,
   panelMode: 'element',
   selectedKeyframeIdx: null,
   currentCamera: { center: [104.0, 35.0], zoom: 4, pitch: 0, bearing: 0 },
@@ -70,7 +67,6 @@ export const useEditorStore = create<EditorState>()((set) => ({
   setCurrentFrame: (frame) => set({ currentFrame: frame }),
   setIsPlaying: (playing) => set({ isPlaying: playing }),
   selectElement: (id) => set({ selectedElementId: id, panelMode: 'element' }),
-  selectChapter: (id) => set({ selectedChapterId: id }),
   setPanelMode: (mode) => set({ panelMode: mode }),
   selectKeyframe: (idx) => set({ selectedKeyframeIdx: idx, panelMode: idx !== null ? 'keyframe' : 'none' }),
   setCurrentCamera: (cam) => set({ currentCamera: cam }),

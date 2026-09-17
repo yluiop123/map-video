@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useProjectStore } from '../stores/projectStore';
+import { useProjectStore, isProjectNameTaken } from '../stores/projectStore';
 import { useConfirm } from './ui/ConfirmHost';
 import { IS_DESKTOP } from '../lib/backend';
 import { storage } from '../lib/storage';
@@ -17,6 +17,7 @@ export function ProjectManager() {
   const [newCollection, setNewCollection] = useState('');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [createError, setCreateError] = useState('');
   const { createProject, loadProject, deleteProject, listProjects, importProjectConfig } = useProjectStore();
   const fileRef = useRef<HTMLInputElement>(null);
   const confirm = useConfirm();
@@ -47,12 +48,23 @@ export function ProjectManager() {
       on ? 'bg-white/[0.1] text-foreground font-medium' : 'text-foreground/75 hover:bg-white/[0.05]'
     }`;
 
+  const nameDuplicated = isProjectNameTaken(newName, projects.map((p) => p.name));
+
   const handleCreate = async () => {
     const name = newName.trim();
     if (!name) return;
-    await createProject(name, targetCollectionId);
-    setNewName('');
-    await reload();
+    if (isProjectNameTaken(name, projects.map((p) => p.name))) {
+      setCreateError('已存在同名项目，请换一个名称');
+      return;
+    }
+    try {
+      await createProject(name, targetCollectionId);
+      setNewName('');
+      setCreateError('');
+      await reload();
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : '创建失败');
+    }
   };
 
   const handleAddCollection = async () => {
@@ -214,20 +226,21 @@ export function ProjectManager() {
                 <input
                   type="text"
                   value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
+                  onChange={(e) => { setNewName(e.target.value); setCreateError(''); }}
                   placeholder="项目名称"
-                  className="flex-1 px-3 py-2 border border-white/10 bg-white/[0.045] rounded-md text-sm"
-                  onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                  className={`flex-1 px-3 py-2 border bg-white/[0.045] rounded-md text-sm ${nameDuplicated ? 'border-red-500/60' : 'border-white/10'}`}
+                  onKeyDown={(e) => e.key === 'Enter' && !nameDuplicated && handleCreate()}
                 />
                 <button
                   onClick={handleCreate}
-                  className="px-4 py-2 bg-white text-black rounded-md text-sm font-medium hover:bg-white/90"
+                  disabled={!newName.trim() || nameDuplicated}
+                  className="px-4 py-2 bg-white text-black rounded-md text-sm font-medium hover:bg-white/90 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
                 >
                   创建
                 </button>
               </div>
-              <p className="text-xs text-muted-foreground mt-1.5">
-                未选择合集时自动存入「{DEFAULT_COLLECTION_NAME}」。
+              <p className={`text-xs mt-1.5 ${nameDuplicated || createError ? 'text-red-400' : 'text-muted-foreground'}`}>
+                {createError || (nameDuplicated ? '已存在同名项目，请换一个名称' : `未选择合集时自动存入「${DEFAULT_COLLECTION_NAME}」。`)}
               </p>
             </div>
 

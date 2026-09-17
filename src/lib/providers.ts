@@ -4,25 +4,19 @@ import { IS_DESKTOP } from './backend';
 // ========== 内置厂商预设（均可复制修改，用户可在设置里自建/扩展） ==========
 
 export const LLM_PRESETS: ProviderPreset[] = [
-  { id: 'gpt', label: 'OpenAI GPT', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', keyHint: 'platform.openai.com/api-keys' },
-  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', keyHint: 'platform.deepseek.com' },
-  { id: 'glm', label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash', keyHint: 'open.bigmodel.cn' },
-  { id: 'kimi', label: 'Kimi (月之暗面)', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k', keyHint: 'platform.moonshot.cn' },
-  { id: 'qwen', label: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', keyHint: 'bailian.console.aliyun.com' },
-  { id: 'mimo', label: '小米 MiMo', baseUrl: 'https://api.mimo.xiaomi.com/v1', model: 'mimo-vl', keyHint: '以官方文档为准，可改地址' },
-  { id: 'minimax', label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1/text/chatcompletion_v2', model: 'abab6.5s-chat', keyHint: 'platform.minimaxi.com', note: 'URL 已含完整路径，不再自动拼接 /chat/completions' },
-  { id: 'seedance', label: '火山豆包 (Seed)', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-1-6-250615', keyHint: 'console.volcengine.com/ark', note: 'OpenAI 兼容接口' },
-  { id: 'custom-llm', label: '自定义 (OpenAI 兼容)', baseUrl: '', model: '', note: '任何 OpenAI /chat/completions 兼容服务' },
+  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', models: ['deepseek-flash', 'deepseek-v4-pro'], keyHint: 'platform.deepseek.com（API 文档：api-docs.deepseek.com）', note: '只需填 API Key；deepseek-flash = DeepSeek-V4.1-Flash，deepseek-v4-pro = 更强版' },
+  { id: 'custom-llm', label: '自定义供应商', baseUrl: '', model: '', note: '自己输入名称、Base URL、API Key（OpenAI /chat/completions 兼容）' },
 ];
 
 export const TTS_PRESETS: ProviderPreset[] = [
-  { id: 'qwen-tts', label: '通义 CosyVoice', baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation', model: 'cosyvoice-v2', voice: 'longxiaochun', protocol: 'qwen-tts', keyHint: 'bailian.console.aliyun.com' },
-  { id: 'mimo-tts', label: '小米 MiMo Audio', baseUrl: '', model: '', voice: '', protocol: 'custom', keyHint: '以官方文档为准，可改地址' },
-  { id: 'minimax-tts', label: 'MiniMax 语音', baseUrl: 'https://api.minimax.chat/v1/t2a_v2', model: 'speech-02-turbo', voice: 'male-qn-qingse', protocol: 'minimax-t2a', keyHint: 'platform.minimaxi.com' },
-  { id: 'seedance-tts', label: '火山豆包语音', baseUrl: 'https://openspeech.bytedance.com/api/v1/tts', model: 'seed-tts', voice: 'zh_female_cancan', protocol: 'volc-tts', keyHint: '控制台需 AppID + Access Token' },
-  { id: 'openai-tts', label: 'OpenAI 语音', baseUrl: 'https://api.openai.com/v1', model: 'tts-1', voice: 'alloy', protocol: 'openai-speech', keyHint: 'platform.openai.com' },
-  { id: 'sovits', label: 'GPT-SoVITS (本地)', baseUrl: 'http://127.0.0.1:9880', model: '', voice: '', protocol: 'custom', note: '本地推理服务，POST JSON 返回音频' },
-  { id: 'custom-tts', label: '自定义', baseUrl: '', model: '', voice: '', protocol: 'custom', note: 'POST JSON（含 extra 合并），响应为音频或 JSON 内 base64' },
+  { id: 'qwen-tts', label: '通义语音 (Qwen)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'qwen3-tts', models: ['qwen3-tts', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus'], voice: 'longxiaochun', protocol: 'qwen-tts', keyHint: 'bailian.console.aliyun.com（DashScope Key）', note: '只需填 DashScope API Key；音色可填预设名或克隆得到 voice_id' },
+  { id: 'custom-tts', label: '自定义语音', baseUrl: '', model: '', voice: '', protocol: 'custom', note: 'POST JSON（含 extra 合并），响应为音频或 JSON 内 base64 / url' },
+];
+
+/** 图片生成预设（文生图） */
+export const IMAGE_PRESETS: ProviderPreset[] = [
+  { id: 'qwen-image', label: '通义图片 (Qwen)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'qwen-image', models: ['qwen-image', 'z-image-turbo'], keyHint: 'bailian.console.aliyun.com（DashScope Key）', note: '只需填 DashScope API Key；模型 qwen-image / z-image-turbo，默认尺寸 2048*1152' },
+  { id: 'custom-image', label: '自定义图片', baseUrl: '', model: '', note: '任何兼容的文生图接口' },
 ];
 
 function findById(list: ProviderPreset[], id: string): ProviderPreset {
@@ -30,8 +24,9 @@ function findById(list: ProviderPreset[], id: string): ProviderPreset {
 }
 
 /** 从预设创建一份用户配置（key 留空待填） */
-export function configFromPreset(presetId: string, kind: 'llm' | 'tts'): ProviderConfig {
-  const p = findById(kind === 'llm' ? LLM_PRESETS : TTS_PRESETS, presetId);
+export function configFromPreset(presetId: string, kind: 'llm' | 'tts' | 'image'): ProviderConfig {
+  const list = kind === 'llm' ? LLM_PRESETS : kind === 'tts' ? TTS_PRESETS : IMAGE_PRESETS;
+  const p = findById(list, presetId);
   return {
     id: `${presetId}-${Math.random().toString(36).slice(2, 8)}`,
     kind,
@@ -181,14 +176,14 @@ export async function callTTS(cfg: ProviderConfig, text: string): Promise<TtsRes
         }
         break;
       case 'qwen-tts':
+        // 通义 CosyVoice（参照 createVideo/scripts）：POST /services/audio/tts/SpeechSynthesizer
         headers.Authorization = `Bearer ${cfg.apiKey}`;
         body = {
-          model: cfg.model,
+          model: cfg.model || 'cosyvoice-v3.5-flash',
           input: { text, voice: cfg.voice },
-          parameters: { rate: speed },
-          ...extra,
+          parameters: { format: 'mp3', sample_rate: 24000, ...extra },
         };
-        res = await fetch(cfg.baseUrl.replace(/\/+$/, ''), { method: 'POST', headers, body: JSON.stringify(body) });
+        res = await fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/services/audio/tts/SpeechSynthesizer`, { method: 'POST', headers, body: JSON.stringify(body) });
         break;
       case 'openai-speech':
         headers.Authorization = `Bearer ${cfg.apiKey}`;
@@ -238,6 +233,128 @@ export async function callTTS(cfg: ProviderConfig, text: string): Promise<TtsRes
   const dataUrl = await blobToDataUrl(blob);
   const durationSec = await decodeAudioDuration(dataUrl, text);
   return { dataUrl, durationSec };
+}
+
+/**
+ * 文生图（通义万相 / 兼容接口）：返回图片 URL 或 dataURL。
+ * 参照 createVideo/scripts：POST /services/aigc/multimodal-generation/generation，
+ * 取 output.choices[0].message.content[0].image。
+ */
+/** 统一图片返回：http(s)/dataURL 原样；纯 base64 补 dataURL 前缀，否则 <img> 无法显示 */
+function normalizeImage(s: string): string {
+  const v = (s || '').trim();
+  if (!v) return v;
+  if (/^https?:\/\//i.test(v) || v.startsWith('data:')) return v;
+  return `data:image/png;base64,${v}`;
+}
+
+export async function callImage(cfg: ProviderConfig, prompt: string): Promise<string> {
+  if (IS_DESKTOP) {
+    const res = await window.mapvideo!.aiImage(cfg, prompt);
+    if (res.error) throw new Error(res.error);
+    if (!res.image) throw new Error('桌面端未返回图片');
+    return normalizeImage(res.image);
+  }
+  if (!cfg.baseUrl) throw new Error('未配置服务地址 (baseUrl)');
+  const url = `${cfg.baseUrl.replace(/\/+$/, '')}/services/aigc/multimodal-generation/generation`;
+  const body = {
+    model: cfg.model || 'z-image-turbo',
+    input: { messages: [{ role: 'user', content: [{ text: prompt }] }] },
+    parameters: { prompt_extend: false, size: '2048*1152' },
+  };
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('请求失败（可能被 CORS 拦截）——建议用桌面版');
+  }
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}${txt ? `: ${txt.slice(0, 200)}` : ''}`);
+  }
+  const data = await res.json().catch(() => null);
+  const img = data?.output?.choices?.[0]?.message?.content?.[0]?.image;
+  if (typeof img !== 'string') throw new Error('响应中无 image 字段');
+  return normalizeImage(img);
+}
+
+/** 任意音频 → WAV 16k 单声道 s16（CosyVoice 参考音频要求，参照 clone_qwen_voice.py 的 ffmpeg 步骤） */
+async function toWav16kMono(bytes: ArrayBuffer): Promise<Uint8Array> {
+  const AC: typeof AudioContext = window.AudioContext
+    || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const ctx = new AC();
+  const decoded = await ctx.decodeAudioData(bytes.slice(0));
+  void ctx.close();
+  const target = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+  const src = target.createBufferSource();
+  src.buffer = decoded;
+  src.connect(target.destination);
+  src.start();
+  const rendered = await target.startRendering();
+  const ch = rendered.getChannelData(0);
+  const len = ch.length;
+  const buf = new ArrayBuffer(44 + len * 2);
+  const dv = new DataView(buf);
+  const ws = (off: number, s: string) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  ws(0, 'RIFF'); dv.setUint32(4, 36 + len * 2, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, 16000, true); dv.setUint32(28, 16000 * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  ws(36, 'data'); dv.setUint32(40, len * 2, true);
+  let off = 44;
+  for (let i = 0; i < len; i++, off += 2) {
+    const s = Math.max(-1, Math.min(1, ch[i]));
+    dv.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Uint8Array(buf);
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+/** CosyVoice 声音克隆：参考音频字节（3~60s）→ voice_id（绑定 targetModel）。参照 clone_qwen_voice.py。 */
+export async function cloneVoice(cfg: ProviderConfig, refBytes: ArrayBuffer, targetModel: string, prefix = 'mv'): Promise<string> {
+  const wav = await toWav16kMono(refBytes);
+  if (wav.length > 10 * 1024 * 1024) throw new Error('参考音频超过 10MB');
+  const body = {
+    model: 'voice-enrollment',
+    input: {
+      action: 'create_voice',
+      target_model: targetModel || cfg.model || 'cosyvoice-v3.5-flash',
+      prefix: String(prefix || 'mv').replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv',
+      url: `data:audio/wav;base64,${bytesToBase64(wav)}`,
+    },
+  };
+  if (IS_DESKTOP) {
+    const res = await window.mapvideo!.aiVoiceClone(cfg, body);
+    if (res.error) throw new Error(res.error);
+    if (!res.voiceId) throw new Error('未返回 voice_id');
+    return res.voiceId;
+  }
+  if (!cfg.baseUrl) throw new Error('未配置服务地址 (baseUrl)');
+  let res: Response;
+  try {
+    res = await fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/services/audio/tts/customization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('请求失败（可能被 CORS 拦截）——建议用桌面版');
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json().catch(() => null);
+  const voice = data?.output?.voice_id || data?.output?.voice;
+  if (typeof voice !== 'string') throw new Error('响应中无 voice_id');
+  return voice;
 }
 
 /** 解析 dataURL 音频为 Blob（导入时用） */

@@ -16,7 +16,7 @@ import type {
   PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
   GatheringElement, ConnectorElement,
   FlagElement, CameraKeyframe,
-  TerritoryElement,
+  TerritoryElement, GeoImageElement,
 } from '../types';
 import { getPinCapability, resolvePinVisualSource } from './pin-visual';
 import { getBuiltinAsset } from './builtin-assets';
@@ -104,6 +104,7 @@ export function removeElementLayers(map: maplibregl.Map, elementId: string): voi
   clearDefendJob(map, elementId);
   clearFlyRibbons(map, elementId);
   clearFlyMarkers(map, elementId);
+  geoTileSig.delete(elementId);
 }
 
 /** 隐藏元素的所有图层（显示时间之外时调用，避免图层残留） */
@@ -192,6 +193,7 @@ export function renderElements(
       case 'connector': renderConnector(map, element); break;
       case 'flag': renderFlag(map, element); break;
       case 'territory': renderTerritory(map, element as TerritoryElement, frame); break;
+      case 'geo_image': renderGeoImage(map, element as GeoImageElement); break;
     }
   }
 }
@@ -403,7 +405,7 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   const cap = getPinCapability(shape);
   /** 资源形态（image / gif / model / icon） */
   const isResourceShape = cap.source !== 'none';
-  /** 走位图管线的形态（model 走 3D custom layer，见渲染端模型章节） */
+  /** 走位图管线的形态（model 走 3D custom layer，见渲染端模型时间线） */
   const isVisualShape = shape === 'image' || shape === 'gif' || shape === 'icon' || shape === 'model' || shape === 'military_symbol';
   const visualSrc = isResourceShape ? resolvePinVisualSource(element) : ({ type: 'none' } as const);
   const legacyIconUrl = element.iconUrl;
@@ -435,8 +437,8 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
 
   // 形状图（水滴/气泡/emoji）缓存 id
   const pinColor = element.color || '#FF4444';
-  const bubbleBg = element.label?.bgColor || '#111111';
-  const bubbleFg = element.label?.color || '#FFFFFF';
+  const bubbleBg = element.label?.bgColor || '#FFFFFF';
+  const bubbleFg = element.label?.color || '#000000';
   const bubbleText = element.label?.text || element.name || '';
   const shapeImgId = shape === 'pin'
     ? `pt-pin-${pinColor.replace('#', '')}`
@@ -985,7 +987,8 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const isShapeLine = element.shapeCategory === 'multi' || element.shapeCategory === 'special';
   const animStart = (!isShapeLine && element.moveStartFrame !== undefined) ? element.moveStartFrame : element.startFrame;
   const animEnd = (!isShapeLine && element.moveEndFrame !== undefined) ? element.moveEndFrame : element.endFrame;
-  const anim = element.animEffect || 'grow';
+  // 路线默认动画 = 路线移动（move）；形状线不套用动画，保留 grow 语义
+  const anim = element.animEffect || (isShapeLine ? 'grow' : 'move');
   const isGrowOrFill = anim === 'grow' || anim === 'fill';
   const isMarch = (anim === 'march' || anim === 'marchplain') && !isShapeLine;
   const isFlyMode = !!element.flyMode && !isShapeLine;
@@ -1249,10 +1252,18 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       : 0;
   if (needMarker && effective.length >= 2) {
     const ratio = iconRatio;
-    // march：标记骑在定长亮段头部；其余：沿路线（弧长）取点
-    const iconCoord: [number, number] = (isMarch && marchHead)
-      ? marchHead
-      : interpolatePath(effective, Math.max(0, Math.min(1, ratio)));
+    // 标记所在的路段比例：march 骑在定长亮段头部（测地弧长分数 hf），其余按动画比例。
+    const markerFrac = Math.max(0, Math.min(1, isMarch ? flyFracB : ratio));
+    // 飞行模式下，标记的地面点必须与飞行管**同一采样**（geoPointAt 的线性经纬插值）——
+    // 否则用 interpolatePath(turf.along 大圆) 会与拱形错开（470km 段差 ~3km，高 zoom 下肉眼明显）。
+    // 非飞行模式沿用 turf.along（与 2D 线/图标既有行为一致）。
+    const iconCoord: [number, number] = flyActive && flyFullCumGeo
+      ? geoPointAt(effective, flyFullCumGeo, markerFrac)
+      : ((isMarch && marchHead)
+        ? marchHead
+        : interpolatePath(effective, Math.max(0, Math.min(1, ratio))));
+    // 标记抬升比例同样取拱形剖面上的分数（march 用 hf，否则用动画比例）
+    const markerLift01 = flyHeight01(markerFrac);
     const iconData = turf.featureCollection([turf.point(iconCoord, { name: element.name })]);
     try {
       if (mShape === 'pin') ensureShapeImage(map, mImgId, getCached(`pin-${mColor}`, () => makePinImageData(mColor)));
@@ -1343,7 +1354,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         const imgH = (map.getImage(mImgId) as any)?.data?.height || 32;
         setFlyMarker(map, `${element.id}|icon`, [{
           imgId: mImgId, lnglat: iconCoord,
-          lift01: flyHeight01(Math.max(0, Math.min(1, iconRatio))),
+          lift01: markerLift01,
           heightM: flyHeightM,
           sizePx: imgH * mScale,
           anchorX: 0.5, anchorY: mShape === 'pin' ? 1 : 0.5,
@@ -2085,6 +2096,129 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
   } catch { /* style 未就绪，下一帧重试 */ }
 }
 
+// ========== 渲染：地理配准图片（网格切片贴图） ==========
+
+/** 已解码图片（assetId → HTMLImageElement） */
+const geoImgCache = new Map<string, HTMLImageElement>();
+const geoImgPending = new Set<string>();
+/** 元素 → 已建切片的签名（assetId|cols|rows|尺寸），变化时重建 */
+const geoTileSig = new Map<string, string>();
+
+const geoTileId = (elId: string, key: string) => `geoimg-${elId}-${key}`;
+const geoTileLayerId = (elId: string, key: string) => `geoimg-layer-${elId}-${key}`;
+
+/** 把原图裁出单元格 (r,c) → DataURL */
+function geoTileDataUrl(img: HTMLImageElement, cols: number, rows: number, r: number, c: number): string {
+  const W = img.naturalWidth, H = img.naturalHeight;
+  const sx = Math.round((c / cols) * W);
+  const sy = Math.round((r / rows) * H);
+  const sw = Math.max(1, Math.round(((c + 1) / cols) * W) - sx);
+  const sh = Math.max(1, Math.round(((r + 1) / rows) * H) - sy);
+  const cv = document.createElement('canvas');
+  cv.width = sw; cv.height = sh;
+  const ctx = cv.getContext('2d')!;
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+  return cv.toDataURL('image/png');
+}
+
+/** 单元格 (r,c) 的四角：TL,TR,BR,BL（行优先网格） */
+function geoCellCoords(el: GeoImageElement, r: number, c: number): [number, number][] {
+  const cols = Math.max(1, Math.round(el.cols || 1));
+  const rows = Math.max(1, Math.round(el.rows || 1));
+  const n = cols + 1;
+  const g = el.grid || [];
+  const at = (rr: number, cc: number): [number, number] => g[Math.min(rr, rows) * n + Math.min(cc, cols)] || [0, 0];
+  return [at(r, c), at(r, c + 1), at(r + 1, c + 1), at(r + 1, c)];
+}
+
+/** 预加载贴图图片（导出端在 delayRender 中调用，保证首帧即已解码、且时序确定） */
+export async function preloadGeoImageAssets(elements: MapElement[]): Promise<void> {
+  const ids = elements.filter((e): e is GeoImageElement => e.type === 'geo_image').map((e) => e.assetId);
+  await Promise.all(ids.map(async (assetId) => {
+    if (!assetId || geoImgCache.has(assetId)) return;
+    const url = await getAssetUrl(assetId);
+    if (!url) return;
+    const im = new Image();
+    await new Promise<void>((res) => { im.onload = () => res(); im.onerror = () => res(); im.src = url; });
+    geoImgCache.set(assetId, im);
+  }));
+}
+
+/** 网格外轮廓环（选择高亮 / 命中用） */
+function geoOuterRing(el: GeoImageElement): [number, number][] {
+  const nc = Math.max(1, Math.round(el.cols || 1));
+  const nr = Math.max(1, Math.round(el.rows || 1));
+  const g = el.grid || [];
+  const at = (r: number, c: number): [number, number] => g[r * (nc + 1) + c] || [0, 0];
+  const ring: [number, number][] = [];
+  for (let c = 0; c <= nc; c++) ring.push(at(0, c));
+  for (let r = 1; r <= nr; r++) ring.push(at(r, nc));
+  for (let c = nc - 1; c >= 0; c--) ring.push(at(nr, c));
+  for (let r = nr - 1; r >= 1; r--) ring.push(at(r, 0));
+  ring.push(at(0, 0));
+  return ring;
+}
+
+function renderGeoImage(map: maplibregl.Map, el: GeoImageElement): void {
+  const img = geoImgCache.get(el.assetId);
+  if (!img) {
+    if (!geoImgPending.has(el.assetId)) {
+      geoImgPending.add(el.assetId);
+      void (async () => {
+        const url = await getAssetUrl(el.assetId);
+        if (!url) return;
+        const im = new Image();
+        await new Promise<void>((res, rej) => { im.onload = () => res(); im.onerror = () => rej(); im.src = url; });
+        geoImgCache.set(el.assetId, im);
+        notifyVisualReady(map);
+      })().catch(() => { /* 图片缺失：保持不渲染 */ }).finally(() => geoImgPending.delete(el.assetId));
+    }
+    return;
+  }
+  const cols = Math.max(1, Math.round(el.cols || 1));
+  const rows = Math.max(1, Math.round(el.rows || 1));
+  const opacity = typeof el.opacity === 'number' ? el.opacity : 1;
+  const sig = `${el.assetId}|${cols}|${rows}|${img.naturalWidth}x${img.naturalHeight}`;
+  const hitSrc = `geoimg-src-${el.id}-hit`;
+  const hitLayer = `geoimg-layer-${el.id}-hit`;
+  try {
+    if (geoTileSig.get(el.id) !== sig) {
+      // 清理旧切片（上限范围，避免记录旧行列数）
+      for (let r = 0; r < 32; r++) for (let c = 0; c < 32; c++) {
+        const key = `${r}-${c}`;
+        const lid = geoTileLayerId(el.id, key);
+        if (map.getLayer(lid)) { try { map.removeLayer(lid); } catch { /* */ } }
+        const sid = geoTileId(el.id, key);
+        if (map.getSource(sid)) { try { map.removeSource(sid); } catch { /* */ } }
+      }
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+        const key = `${r}-${c}`;
+        const sid = geoTileId(el.id, key);
+        map.addSource(sid, { type: 'image', url: geoTileDataUrl(img, cols, rows, r, c), coordinates: geoCellCoords(el, r, c) } as never);
+        map.addLayer({ id: geoTileLayerId(el.id, key), type: 'raster', source: sid, paint: { 'raster-opacity': opacity, 'raster-fade-duration': 0 } } as never);
+      }
+      geoTileSig.set(el.id, sig);
+    } else {
+      // 已建：仅更新四角与不透明度
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+        const key = `${r}-${c}`;
+        const src = map.getSource(geoTileId(el.id, key)) as { setCoordinates?: (p: [number, number][]) => void } | undefined;
+        if (src?.setCoordinates) src.setCoordinates(geoCellCoords(el, r, c));
+        map.setPaintProperty(geoTileLayerId(el.id, key), 'raster-opacity', opacity);
+      }
+    }
+    // 透明命中/高亮轮廓（raster 层无法被 queryRenderedFeatures 命中，故用矢量面兜底）
+    const hitData = turf.featureCollection([turf.polygon([geoOuterRing(el)])]);
+    if (map.getSource(hitSrc)) {
+      (map.getSource(hitSrc) as GeoJSONSource).setData(hitData);
+    } else {
+      map.addSource(hitSrc, { type: 'geojson', data: hitData } as never);
+      map.addLayer({ id: hitLayer, type: 'fill', source: hitSrc, paint: { 'fill-color': '#000000', 'fill-opacity': 0 } } as never);
+    }
+    if (map.getLayer(hitLayer)) map.moveLayer(hitLayer);
+  } catch { /* style 未就绪：下一帧重试 */ }
+}
+
 // ========== 渲染：军事箭头（燕尾） ==========
 
 /**
@@ -2433,9 +2567,10 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
 
   const animStart = (element as any).moveStartFrame ?? element.startFrame;
   const animEnd = (element as any).moveEndFrame ?? element.endFrame;
-  const animEff = (element as any).animEffect;
-  const isGrowFill = animEff === 'grow' || animEff === 'fill';
   const isShapeArrow = element.shapeCategory === 'multi' || element.shapeCategory === 'special';
+  // 路线默认动画 = 路线移动（move）；形状箭头不套用动画
+  const animEff: string | undefined = (element as any).animEffect || (isShapeArrow ? undefined : 'move');
+  const isGrowFill = animEff === 'grow' || animEff === 'fill';
   const isMarchA = (animEff === 'march' || animEff === 'marchplain') && !isShapeArrow;
   // 注：飞行模式仅支持 line 类路线（直线 / 曲线 / 带箭头直线 / 箭头曲线），
   // 箭头元素（燕尾 / 行军）不再有飞行渲染。
@@ -3182,6 +3317,8 @@ export function buildSelectionFeature(element: MapElement): any | null {
         type: 'Polygon',
         coordinates: [[...buildDoubleArrow(element.points as any), buildDoubleArrow(element.points as any)[0]]],
       } as any);
+    case 'geo_image':
+      return turf.polygon([geoOuterRing(element)]);
     default:
       return null;
   }

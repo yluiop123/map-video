@@ -1,8 +1,8 @@
 /**
- * 特效窗口面板主体：天气 / 画面 / 弹窗 / 标题 / 字幕 / 音乐 六个标签。
- * ChapterSettingsPanel（章节设置页签）与 FxDialog（弹窗）共用本组件。
+ * 特效窗口面板主体：天气 / 画面 / 弹窗 / 字幕 / 音乐 五个标签。
+ * FxDialog（弹窗）使用本组件。
  */
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore, type FxTab } from '../stores/editorStore';
 import { useProviderStore, activeProvider } from '../stores/providerStore';
@@ -10,22 +10,22 @@ import { IS_DESKTOP, aiAvailable } from '../lib/backend';
 import { useT, Section, Field, OptionBlocks, Toggle, ColorPicker, NumberInput } from './ui/primitives';
 import { FrameTimeField } from './FrameTimeField';
 import {
-  generateId, TITLE_PRESETS, POS_BASE, normalizeTitleStyle,
-  defaultPersonContent, normalizePersonContent, PERSON_PRESETS,
+  generateId, POS_BASE,
+  defaultPersonContent, normalizePersonContent, PERSON_PRESETS, PERSON_STYLE_DEFAULTS,
   estimateTextDurationFrames, defaultNarrationStyle,
-  type Chapter, type ScreenFxItem, type WeatherType, type ScreenFxType,
+  type MapVideoProject, type ScreenFxItem, type WeatherType, type ScreenFxType,
   type OverlayItem, type OverlayType, type OverlayBlock, type ChartType,
-  type OverlayPosition, type AnimationPreset, type TitleStyle,
-  type PersonContent, type PersonLayoutCfg, type PersonBlock, type PersonBlockKind,
+  type OverlayPosition, type AnimationPreset,
+  type PersonContent, type PersonStyle,
   type NarrationEntry, type MusicTrack, type TtsProtocol,
 } from '../types';
-import { callLLM, callTTS, readAudioFile, srtTime, parseSrt, LLM_PRESETS, TTS_PRESETS } from '../lib/providers';
+import { callLLM, callTTS, callImage, cloneVoice, readAudioFile, srtTime, parseSrt, LLM_PRESETS, TTS_PRESETS, IMAGE_PRESETS } from '../lib/providers';
+import { projectContentEndFrame } from '../lib/project-duration';
 
 const FPS_FALLBACK = 30;
 
-function useChapterFps(chapter: Chapter): number {
+function useChapterFps(_project?: MapVideoProject): number {
   const project = useProjectStore((s) => s.project);
-  void chapter;
   return project?.globalConfig.defaultFPS ?? FPS_FALLBACK;
 }
 
@@ -35,6 +35,31 @@ async function fileToDataUrl(file: File): Promise<string> {
     r.onload = () => resolve(String(r.result));
     r.onerror = () => reject(r.error);
     r.readAsDataURL(file);
+  });
+}
+
+/** 读取音频真实时长（秒）；失败/超时返回 null */
+function probeAudioDuration(url: string, timeoutMs = 5000): Promise<number | null> {
+  return new Promise((resolve) => {
+    const el = new Audio();
+    el.preload = 'metadata';
+    let settled = false;
+    const finish = (v: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      el.onloadedmetadata = null;
+      el.onerror = null;
+      el.removeAttribute('src');
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    el.onloadedmetadata = () => {
+      const d = el.duration;
+      finish(Number.isFinite(d) && d > 0 ? d : null);
+    };
+    el.onerror = () => finish(null);
+    el.src = url;
   });
 }
 
@@ -58,15 +83,15 @@ function UploadButton({ label, accept, onPick }: { label: string; accept: string
   );
 }
 
-function FxTimeRow({ fx, chapterId, fps }: { fx: ScreenFxItem; chapterId: string; fps: number }) {
+function FxTimeRow({ fx, fps }: { fx: ScreenFxItem; fps: number }) {
   const t = useT();
   const updateScreenFx = useProjectStore((s) => s.updateScreenFx);
   return (
     <div className="flex items-center gap-2">
       <span className="text-[11px] text-muted-foreground shrink-0">{t('时间', 'Time')}</span>
-      <div className="w-24"><FrameTimeField value={fx.startFrame} fps={fps} onFrameChange={(f) => updateScreenFx(chapterId, fx.id, { startFrame: f })} /></div>
+      <div className="w-24"><FrameTimeField value={fx.startFrame} fps={fps} onFrameChange={(f) => updateScreenFx(fx.id, { startFrame: Math.max(0, Math.min(Math.round(f), fx.endFrame - 1)) })} /></div>
       <span className="text-muted-foreground">→</span>
-      <div className="w-24"><FrameTimeField value={fx.endFrame} fps={fps} onFrameChange={(f) => updateScreenFx(chapterId, fx.id, { endFrame: f })} /></div>
+      <div className="w-24"><FrameTimeField value={fx.endFrame} fps={fps} onFrameChange={(f) => updateScreenFx(fx.id, { endFrame: Math.max(fx.startFrame + 1, Math.round(f)) })} /></div>
     </div>
   );
 }
@@ -102,16 +127,16 @@ export const WEATHERS: { type: WeatherType; label: string; icon: string }[] = [
   { type: 'fog', label: '雾', icon: '🌫' },
 ];
 
-function WeatherTab({ chapter }: { chapter: Chapter }) {
+function WeatherTab({ project }: { project: MapVideoProject }) {
   const t = useT();
-  const fps = useChapterFps(chapter);
+  const fps = useChapterFps(project);
   const addScreenFx = useProjectStore((s) => s.addScreenFx);
   const updateScreenFx = useProjectStore((s) => s.updateScreenFx);
   const removeScreenFx = useProjectStore((s) => s.removeScreenFx);
   const currentFrame = useEditorStore((s) => s.currentFrame);
   const fxSelId = useEditorStore((s) => s.fxSelId);
   const setFxSelId = useEditorStore((s) => s.setFxSelId);
-  const list = (chapter.fx || []).filter((f) => f.kind === 'weather');
+  const list = (project.fx || []).filter((f) => f.kind === 'weather');
   const sel = list.find((f) => f.id === fxSelId) || list[0] || null;
   const idx = sel ? list.indexOf(sel) : -1;
 
@@ -120,7 +145,7 @@ function WeatherTab({ chapter }: { chapter: Chapter }) {
     if (sel) {
       // 已有天气：原地切换类型，不新增条目
       if (sel.weather?.type === w) return;
-      updateScreenFx(chapter.id, sel.id, {
+      updateScreenFx(sel.id, {
         name: info.label,
         weather: { type: w, intensity: sel.weather?.intensity ?? 0.6, wind: sel.weather?.wind ?? 0.15 },
       });
@@ -129,15 +154,15 @@ function WeatherTab({ chapter }: { chapter: Chapter }) {
     }
     const fx: ScreenFxItem = {
       id: generateId(), kind: 'weather', name: `${info.label}`,
-      startFrame: Math.max(chapter.startFrame, currentFrame), endFrame: chapter.endFrame,
+      startFrame: Math.max(0, currentFrame), endFrame: Math.max(0, currentFrame) + Math.max(1, Math.round(DEFAULT_FX_SEC * fps)),
       weather: { type: w, intensity: 0.6, wind: 0.15 }, enabled: true,
     };
-    addScreenFx(chapter.id, fx);
+    addScreenFx(fx);
     setFxSelId(fx.id);
   };
   const remove = () => {
     if (!sel) return;
-    removeScreenFx(chapter.id, sel.id);
+    removeScreenFx(sel.id);
     const rest = list.filter((f) => f.id !== sel.id);
     setFxSelId(rest.length ? rest[Math.min(idx, rest.length - 1)].id : null);
   };
@@ -163,10 +188,10 @@ function WeatherTab({ chapter }: { chapter: Chapter }) {
       </Section>
       {sel ? (
         <div className="space-y-2.5">
-          <FxTimeRow fx={sel} chapterId={chapter.id} fps={fps} />
-          <IntensityRow label={t('强度', 'Level')} value={sel.weather?.intensity ?? 0.6} onChange={(v) => updateScreenFx(chapter.id, sel.id, { weather: { ...(sel.weather || { type: 'rain', wind: 0 }), intensity: v, type: sel.weather?.type || 'rain' } })} />
+          <FxTimeRow fx={sel} fps={fps} />
+          <IntensityRow label={t('强度', 'Level')} value={sel.weather?.intensity ?? 0.6} onChange={(v) => updateScreenFx(sel.id, { weather: { ...(sel.weather || { type: 'rain', wind: 0 }), intensity: v, type: sel.weather?.type || 'rain' } })} />
           {sel.weather?.type !== 'fog' && sel.weather?.type !== 'lightning' && (
-            <IntensityRow label={t('风向', 'Wind')} value={sel.weather?.wind ?? 0} onChange={(v) => updateScreenFx(chapter.id, sel.id, { weather: { ...(sel.weather || { type: 'rain', intensity: 0.6 }), wind: Math.max(-1, Math.min(1, v)), type: sel.weather?.type || 'rain' } })} />
+            <IntensityRow label={t('风向', 'Wind')} value={sel.weather?.wind ?? 0} onChange={(v) => updateScreenFx(sel.id, { weather: { ...(sel.weather || { type: 'rain', intensity: 0.6 }), wind: Math.max(-1, Math.min(1, v)), type: sel.weather?.type || 'rain' } })} />
           )}
           <button onClick={remove} className="w-full h-8 rounded-md border border-red-500/30 text-red-400/90 hover:bg-red-500/10 text-xs transition-colors">
             {t('删除该天气', 'Delete weather')}
@@ -179,45 +204,51 @@ function WeatherTab({ chapter }: { chapter: Chapter }) {
   );
 }
 
-// ========== 画面特效 ==========
+// ========== 画面特效（screen fx） ==========
 
-export const SCREEN_FXS: { type: ScreenFxType; label: string; icon: string; dur: number }[] = [
-  { type: 'shake', label: '震动', icon: '💥', dur: 60 },
-  { type: 'flash', label: '闪光', icon: '✨', dur: 60 },
-  { type: 'vignette', label: '暗角', icon: '🌑', dur: 3000 },
-  { type: 'cloudReveal', label: '云层散开', icon: '☁️', dur: 120 },
-  { type: 'fadeBlack', label: '黑场淡入', icon: '⬛', dur: 60 },
-  { type: 'fadeWhite', label: '白场淡入', icon: '⬜', dur: 60 },
+export const SCREEN_FXS: { type: ScreenFxType; label: string; icon: string }[] = [
+  { type: 'shake', label: '震动', icon: '💥' },
+  { type: 'flash', label: '闪光', icon: '✨' },
+  { type: 'vignette', label: '暗角', icon: '🌑' },
+  { type: 'cloudReveal', label: '云层散开', icon: '☁️' },
+  { type: 'fadeBlack', label: '黑场淡入', icon: '⬛' },
+  { type: 'fadeWhite', label: '白场淡入', icon: '⬜' },
 ];
 
-function ScreenTab({ chapter }: { chapter: Chapter }) {
+/** 新增天气 / 画面特效 / 弹窗的默认时长（秒） */
+const DEFAULT_FX_SEC = 3;
+
+function ScreenTab({ project }: { project: MapVideoProject }) {
   const t = useT();
-  const fps = useChapterFps(chapter);
+  const fps = useChapterFps(project);
   const addScreenFx = useProjectStore((s) => s.addScreenFx);
   const updateScreenFx = useProjectStore((s) => s.updateScreenFx);
   const removeScreenFx = useProjectStore((s) => s.removeScreenFx);
   const currentFrame = useEditorStore((s) => s.currentFrame);
   const fxSelId = useEditorStore((s) => s.fxSelId);
   const setFxSelId = useEditorStore((s) => s.setFxSelId);
-  const list = (chapter.fx || []).filter((f) => f.kind === 'screen');
+  const list = (project.fx || []).filter((f) => f.kind === 'screen');
   const sel = list.find((f) => f.id === fxSelId) || list[0] || null;
   const idx = sel ? list.indexOf(sel) : -1;
 
   const add = (type: ScreenFxType) => {
     const info = SCREEN_FXS.find((x) => x.type === type)!;
-    const start = Math.max(chapter.startFrame, currentFrame);
+    const start = Math.max(0, currentFrame);
     const fx: ScreenFxItem = {
       id: generateId(), kind: 'screen', name: info.label,
-      startFrame: start, endFrame: Math.min(chapter.endFrame, start + info.dur),
-      effect: { type, intensity: type === 'shake' ? 0.5 : 0.6, color: type === 'fadeBlack' ? '#000000' : '#FFFFFF' },
+      startFrame: start, endFrame: start + Math.max(1, Math.round(DEFAULT_FX_SEC * fps)),
+      effect: {
+        type, intensity: type === 'shake' ? 0.5 : 0.6,
+        color: type === 'fadeBlack' ? '#000000' : '#FFFFFF',
+      },
       enabled: true,
     };
-    addScreenFx(chapter.id, fx);
+    addScreenFx(fx);
     setFxSelId(fx.id);
   };
   const remove = () => {
     if (!sel) return;
-    removeScreenFx(chapter.id, sel.id);
+    removeScreenFx(sel.id);
     const rest = list.filter((f) => f.id !== sel.id);
     setFxSelId(rest.length ? rest[Math.min(idx, rest.length - 1)].id : null);
   };
@@ -243,11 +274,11 @@ function ScreenTab({ chapter }: { chapter: Chapter }) {
       </Section>
       {sel ? (
         <div className="space-y-2.5">
-          <FxTimeRow fx={sel} chapterId={chapter.id} fps={fps} />
-          <IntensityRow label={t('强度', 'Level')} value={sel.effect?.intensity ?? 0.6} onChange={(v) => updateScreenFx(chapter.id, sel.id, { effect: { ...(sel.effect || { type: 'shake' }), intensity: v, type: sel.effect?.type || 'shake' } })} />
+          <FxTimeRow fx={sel} fps={fps} />
+          <IntensityRow label={t('强度', 'Level')} value={sel.effect?.intensity ?? 0.6} onChange={(v) => updateScreenFx(sel.id, { effect: { ...(sel.effect || { type: 'shake' }), intensity: v, type: sel.effect?.type || 'shake' } })} />
           {(sel.effect?.type === 'flash' || sel.effect?.type === 'fadeWhite') && (
             <Field label={t('闪光/遮罩颜色', 'Color')}>
-              <ColorPicker value={sel.effect?.color || '#FFFFFF'} onChange={(c) => updateScreenFx(chapter.id, sel.id, { effect: { ...(sel.effect || { type: 'flash', intensity: 0.6 }), color: c, type: sel.effect?.type || 'flash' } })} />
+              <ColorPicker value={sel.effect?.color || '#FFFFFF'} onChange={(c) => updateScreenFx(sel.id, { effect: { ...(sel.effect || { type: 'flash', intensity: 0.6 }), color: c, type: sel.effect?.type || 'flash' } })} />
             </Field>
           )}
           <button onClick={remove} className="w-full h-8 rounded-md border border-red-500/30 text-red-400/90 hover:bg-red-500/10 text-xs transition-colors">
@@ -264,16 +295,12 @@ function ScreenTab({ chapter }: { chapter: Chapter }) {
 // ========== 弹窗卡片 ==========
 
 export const POPUP_TYPES: { type: OverlayType; label: string; icon: string }[] = [
-  { type: 'custom', label: '自定义', icon: '🧱' },
   { type: 'chart', label: '图表', icon: '📊' },
   { type: 'person', label: '人物', icon: '👤' },
-  { type: 'report', label: '战报', icon: '📋' },
   { type: 'timeline', label: '时间线', icon: '🕒' },
   { type: 'quote', label: '引用', icon: '❝' },
   { type: 'compare', label: '对比', icon: '⚖️' },
-  { type: 'counter', label: '计数', icon: '🔢' },
-  { type: 'dialogue', label: '对话', icon: '💬' },
-  { type: 'place', label: '地点', icon: '📍' },
+  { type: 'stat', label: '数字', icon: '🔢' },
 ];
 
 const POS_GRID: { value: OverlayPosition; label: string }[] = [
@@ -304,8 +331,6 @@ function createPopupContent(type: OverlayType): OverlayItem['content'] {
       };
     case 'person':
       return { type, person: defaultPersonContent() };
-    case 'report':
-      return { type, report: { title: '战报', value: '3.2万', unit: '人', note: '补充说明…' } };
     case 'timeline':
       return {
         type,
@@ -321,54 +346,45 @@ function createPopupContent(type: OverlayType): OverlayItem['content'] {
         type,
         compare: { title: '双方对比', left: { label: '我方', value: 80000 }, right: { label: '敌方', value: 52000 }, unit: '人' },
       };
-    case 'counter':
-      return { type, counter: { value: 32000, label: '伤亡统计', prefix: '', unit: '人', durationFrames: 90 } };
-    case 'dialogue':
-      return {
-        type,
-        dialogue: {
-          title: '往来电文',
-          items: [{ who: '张司令', text: '命令：即刻渡江！' }, { who: '李军长', text: '收到，部队已集结完毕。' }],
-        },
-      };
-    case 'place':
-      return { type, place: { name: '地名', description: '地点简介…', imageUrl: '' } };
     case 'chart':
       return { type, chart: { type: 'bar', title: '图表', data: [{ label: '兵力', value: 5000 }, { label: '装备', value: 1200 }] } };
+    case 'stat':
+      return { type, stat: { value: 221, label: '公元前', unit: '年', countUp: true } };
     default:
       return { type };
   }
 }
 
-function PopupTab({ chapter }: { chapter: Chapter }) {
+function PopupTab({ project }: { project: MapVideoProject }) {
   const t = useT();
-  const fps = useChapterFps(chapter);
+  const fps = useChapterFps(project);
   const addOverlay = useProjectStore((s) => s.addOverlay);
   const deleteOverlay = useProjectStore((s) => s.deleteOverlay);
   const currentFrame = useEditorStore((s) => s.currentFrame);
   const fxSelId = useEditorStore((s) => s.fxSelId);
   const setFxSelId = useEditorStore((s) => s.setFxSelId);
-  const list = chapter.overlays || [];
+  const list = project.overlays || [];
   const sel = list.find((o) => o.id === fxSelId) || list[0] || null;
   const idx = sel ? list.indexOf(sel) : -1;
 
   const add = (type: OverlayType) => {
     const info = POPUP_TYPES.find((x) => x.type === type)!;
+    const start = Math.max(0, currentFrame);
     const overlay: OverlayItem = {
       id: generateId(), type, name: info.label,
-      position: type === 'quote' || type === 'counter' ? 'top' : 'bottomLeft',
+      position: type === 'quote' ? 'top' : 'bottomLeft',
       content: createPopupContent(type),
-      startFrame: Math.max(chapter.startFrame, currentFrame),
-      endFrame: chapter.endFrame,
+      startFrame: start,
+      endFrame: start + Math.max(1, Math.round(DEFAULT_FX_SEC * fps)),
       animation: 'fadeIn', exitAnimation: 'fadeOut',
       scale: 1,
     };
-    addOverlay(chapter.id, overlay);
+    addOverlay(overlay);
     setFxSelId(overlay.id);
   };
   const remove = () => {
     if (!sel) return;
-    deleteOverlay(chapter.id, sel.id);
+    deleteOverlay(sel.id);
     const rest = list.filter((o) => o.id !== sel.id);
     setFxSelId(rest.length ? rest[Math.min(idx, rest.length - 1)].id : null);
   };
@@ -390,7 +406,7 @@ function PopupTab({ chapter }: { chapter: Chapter }) {
       </Section>
       {sel ? (
         <div className="space-y-2.5">
-          <PopupItemEditor overlay={sel} chapter={chapter} fps={fps} />
+          <PopupItemEditor overlay={sel} project={project} fps={fps} />
           <button onClick={remove} className="w-full h-8 rounded-md border border-red-500/30 text-red-400/90 hover:bg-red-500/10 text-xs transition-colors">
             {t('删除该弹窗', 'Delete popup')}
           </button>
@@ -402,15 +418,16 @@ function PopupTab({ chapter }: { chapter: Chapter }) {
   );
 }
 
-function PopupItemEditor({ overlay: o, chapter, fps }: { overlay: OverlayItem; chapter: Chapter; fps: number }) {
+function PopupItemEditor({ overlay: o, fps }: { overlay: OverlayItem; project: MapVideoProject; fps: number }) {
   const t = useT();
-  const update = (changes: Partial<OverlayItem>) => useProjectStore.getState().updateOverlay(chapter.id, o.id, changes);
+  const update = (changes: Partial<OverlayItem>) => useProjectStore.getState().updateOverlay(o.id, changes);
 
   return (
     <div className="space-y-2">
       <FxTimeLikeRow fps={fps} label={t('时间', 'Time')}
         start={o.startFrame} end={o.endFrame}
-        onStart={(f) => update({ startFrame: f })} onEnd={(f) => update({ endFrame: f })} />
+        onStart={(f) => update({ startFrame: Math.max(0, Math.min(Math.round(f), o.endFrame - 1)) })}
+        onEnd={(f) => update({ endFrame: Math.max(o.startFrame + 1, Math.round(f)) })} />
 
       <Field label={t('位置（九宫格）', 'Position')}>
         <div className="grid grid-cols-3 gap-1 w-fit">
@@ -466,20 +483,22 @@ function FxTimeLikeRow({ fps, label, start, end, onStart, onEnd }: {
   );
 }
 
-/** 位置微调滑杆：显示值=九宫格标准位(POS_BASE)+微调量，写入的是相对标准位的 delta */
-function PopupOffsetSliders({ o, update, t }: {
+/** 位置微调滑杆：显示值=九宫格标准位(POS_BASE)+微调量，写入的是相对标准位的 delta。
+ *  range = 微调可达的最大正负值（弹窗卡默认 40）。 */
+function PopupOffsetSliders({ o, update, t, range = 40 }: {
   o: OverlayItem;
   update: (changes: Partial<OverlayItem>) => void;
   t: (zh: string, en: string) => string;
+  range?: number;
 }) {
   const base = POS_BASE[o.position] ?? [0, 0];
   const hx = base[0] + (o.offsetX ?? 0);
   const vy = base[1] + (o.offsetY ?? 0);
   return (
     <>
-      <SliderRow label={t('横向微调', 'H-Offset')} min={-40} max={40} value={hx}
+      <SliderRow label={t('横向微调', 'H-Offset')} min={-range} max={range} value={hx}
         onChange={(v) => update({ offsetX: v - base[0] })} display={`${Math.round(hx)}%`} />
-      <SliderRow label={t('纵向微调', 'V-Offset')} min={-40} max={40} value={vy}
+      <SliderRow label={t('纵向微调', 'V-Offset')} min={-range} max={range} value={vy}
         onChange={(v) => update({ offsetY: v - base[1] })} display={`${Math.round(vy)}%`} />
     </>
   );
@@ -577,112 +596,57 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
     case 'person': {
       const pc = normalizePersonContent(c.person);
       const setP = (next: Partial<PersonContent>) => onContent({ ...c, person: { ...pc, ...next } });
-      const setLayout = (ch: Partial<PersonLayoutCfg>) => setP({ layout: { ...pc.layout, ...ch } });
-      const setBlock = (kind: PersonBlockKind, ch: Partial<PersonBlock>) =>
-        setP({ blocks: pc.blocks.map((b) => (b.kind === kind ? { ...b, ...ch } : b)) });
-      const move = (kind: PersonBlockKind, dir: -1 | 1) => {
-        const arr = [...pc.blocks];
-        const i = arr.findIndex((b) => b.kind === kind);
-        const j = i + dir;
-        if (i < 0 || j < 0 || j >= arr.length) return;
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-        setP({ blocks: arr });
-      };
-      const applyPreset = (id: string) => {
-        const p = PERSON_PRESETS.find((x) => x.id === id);
-        if (!p) return;
-        const order = [...p.order];
-        const blocks = [...pc.blocks]
-          .sort((a, b) => {
-            const ia = order.indexOf(a.kind);
-            const ib = order.indexOf(b.kind);
-            return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-          })
-          .map((b) => ({ ...b, show: p.order.includes(b.kind) ? (p.show[b.kind] ?? true) : false }));
-        setP({ layout: { ...p.layout }, blocks });
-      };
-      const blk = (kind: PersonBlockKind) => pc.blocks.find((b) => b.kind === kind);
+      const applyStyle = (style: PersonStyle) => setP({ style, ...PERSON_STYLE_DEFAULTS[style] });
       const rowMini = 'px-1.5 h-7 text-xs rounded-md border bg-white/[0.03] border-white/10 text-muted-foreground hover:bg-white/[0.07] transition-colors';
-      const textKinds: { kind: PersonBlockKind; label: string; ph: string }[] = [
-        { kind: 'name', label: t('姓名', 'Name'), ph: t('姓名', 'Name') },
-        { kind: 'intro', label: t('介绍', 'Intro'), ph: t('人物介绍…', 'Bio…') },
-        { kind: 'quote', label: t('名言', 'Quote'), ph: t('名言/引语…', 'Quote…') },
-        { kind: 'dialogue', label: t('对话', 'Speech'), ph: t('说的话（单角色）', 'Speech (single role)') },
-      ];
       return (
         <div className="space-y-2">
-          <Field label={t('布局预设', 'Layout')}>
-            <OptionBlocks value="" options={PERSON_PRESETS.map((p) => ({ value: p.id, label: t(p.zh, p.en) }))} onChange={applyPreset} />
-          </Field>
-          <Field label={t('图片方位', 'Image side')}>
-            <OptionBlocks<PersonLayoutCfg['imageSide']>
-              value={pc.layout.imageSide}
-              options={[
-                { value: 'left', label: t('左', 'L') }, { value: 'right', label: t('右', 'R') },
-                { value: 'top', label: t('上', 'T') }, { value: 'bottom', label: t('下', 'B') },
-              ]}
-              onChange={(v) => setLayout({ imageSide: v })}
+          <Field label={t('样式', 'Style')}>
+            <OptionBlocks<PersonStyle>
+              value={pc.style}
+              options={PERSON_PRESETS.map((x) => ({ value: x.id, label: t(x.zh, x.en) }))}
+              onChange={applyStyle}
             />
           </Field>
-          <Field label={t('对齐', 'Align')}>
-            <OptionBlocks<PersonLayoutCfg['align']>
-              value={pc.layout.align}
-              options={[{ value: 'left', label: t('左', 'Left') }, { value: 'center', label: t('中', 'Center') }]}
-              onChange={(v) => setLayout({ align: v })}
-            />
-          </Field>
-          <SliderRow label={t('卡片宽度', 'Width')} min={240} max={560} step={10} value={pc.layout.width} onChange={(v) => setLayout({ width: v })} display={`${Math.round(pc.layout.width)}px`} />
-          <Toggle checked={!!pc.layout.textOverImage} onChange={(v) => setLayout({ textOverImage: v })} label={t('文字叠加图片（海报式）', 'Text over image (poster)')} />
-
-          <Section title={t('图片', 'Image')}>
-            <div className="flex items-center gap-2">
-              <UploadButton label={t('上传图片', 'Image')} accept="image/*" onPick={(url) => setBlock('image', { imageUrl: url })} />
-              {blk('image')?.imageUrl && <img src={blk('image')!.imageUrl} className="w-8 h-8 rounded object-cover border border-white/15" alt="" />}
-              {blk('image')?.imageUrl && (
-                <button className={rowMini} onClick={() => setBlock('image', { imageUrl: '' })} title={t('移除', 'Remove')}>✕</button>
-              )}
-            </div>
-            <SliderRow label={t('图片大小', 'Size')} min={60} max={360} step={4} value={blk('image')?.size ?? 72} onChange={(v) => setBlock('image', { size: v })} display={`${Math.round(blk('image')?.size ?? 72)}px`} />
-            <Field label={t('遮罩', 'Mask')}>
-              <OptionBlocks<NonNullable<PersonBlock['mask']>>
-                value={blk('image')?.mask || 'none'}
-                options={[
-                  { value: 'none', label: t('无', 'None') },
-                  { value: 'bottom', label: t('下渐变', 'Bottom') },
-                  { value: 'top', label: t('上渐变', 'Top') },
-                  { value: 'circle', label: t('圆形', 'Circle') },
-                  { value: 'feather', label: t('羽化', 'Feather') },
-                ]}
-                onChange={(v) => setBlock('image', { mask: v })}
-              />
-            </Field>
-          </Section>
-
-          {textKinds.map(({ kind, label, ph }) => {
-            const b = blk(kind);
-            if (!b) return null;
-            return (
-              <Section key={kind} title={label}>
-                <Toggle checked={b.show !== false} onChange={(v) => setBlock(kind, { show: v })} label={t('显示', 'Show')} />
-                {b.show !== false && (
-                  <>
-                    <textarea
-                      value={b.text || ''}
-                      onChange={(e) => setBlock(kind, { text: e.target.value })}
-                      className="input h-14 resize-none text-xs"
-                      placeholder={ph}
-                    />
-                    <div className="flex items-center gap-2">
-                      <span className="flex-1" />
-                      <button className={rowMini} onClick={() => move(kind, -1)} title={t('上移', 'Up')}>▲</button>
-                      <button className={rowMini} onClick={() => move(kind, 1)} title={t('下移', 'Down')}>▼</button>
-                    </div>
-                  </>
+          <Toggle checked={pc.showImage} onChange={(v) => setP({ showImage: v })} label={t('显示照片', 'Show photo')} />
+          {pc.showImage && (
+            <>
+              <div className="flex items-center gap-2">
+                <UploadButton label={t('上传照片', 'Photo')} accept="image/*" onPick={(url) => setP({ imageUrl: url })} />
+                {pc.imageUrl && <img src={pc.imageUrl} className="w-8 h-8 rounded object-cover border border-white/15" alt="" />}
+                {pc.imageUrl && (
+                  <button className={rowMini} onClick={() => setP({ imageUrl: undefined })} title={t('移除', 'Remove')}>✕</button>
                 )}
-              </Section>
-            );
-          })}
-
+              </div>
+              <Field label={t('形状', 'Shape')}>
+                <OptionBlocks<PersonContent['imageShape']>
+                  value={pc.imageShape}
+                  options={[{ value: 'square', label: t('方形', 'Square') }, { value: 'circle', label: t('圆形', 'Circle') }]}
+                  onChange={(v) => setP({ imageShape: v })}
+                />
+              </Field>
+              {pc.style === 'profile' && (
+                <Field label={t('照片方位', 'Side')}>
+                  <OptionBlocks<PersonContent['imageSide']>
+                    value={pc.imageSide}
+                    options={[{ value: 'left', label: t('左', 'L') }, { value: 'right', label: t('右', 'R') }]}
+                    onChange={(v) => setP({ imageSide: v })}
+                  />
+                </Field>
+              )}
+            </>
+          )}
+          <Field label={t('姓名', 'Name')}>
+            <input value={pc.name || ''} onChange={(e) => setP({ name: e.target.value })} className="input h-7 text-xs" placeholder={t('姓名', 'Name')} />
+          </Field>
+          <Field label={t('职务/身份', 'Title')}>
+            <input value={pc.title || ''} onChange={(e) => setP({ title: e.target.value })} className="input h-7 text-xs" placeholder={t('职务 / 身份（可选）', 'Title (optional)')} />
+          </Field>
+          <Field label={t('简介', 'Intro')}>
+            <textarea value={pc.intro || ''} onChange={(e) => setP({ intro: e.target.value })} className="input h-14 resize-none text-xs" placeholder={t('人物简介…', 'Bio…')} />
+          </Field>
+          <Field label={t('名言/台词', 'Quote')}>
+            <textarea value={pc.quote || ''} onChange={(e) => setP({ quote: e.target.value })} className="input h-14 resize-none text-xs" placeholder={t('名言 / 台词（可选）', 'Quote (optional)')} />
+          </Field>
           <Section title={t('语音（整卡一条）', 'Voice (one per card)')}>
             <div className="flex items-center gap-2">
               <UploadButton label={t('上传语音', 'Upload voice')} accept="audio/*" onPick={(u) => setP({ audioUrl: u })} />
@@ -693,21 +657,8 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
                 </>
               )}
             </div>
-            <p className="text-[11px] text-muted-foreground mt-1">{t('卡片出现后可在预览中点击播放（交互演示用；导出 MP4 的声音请用「字幕→配音」或「音乐」轨道）', 'Click to play in preview; use Subs/Music tracks for exported audio')}</p>
+            <p className="text-[11px] text-muted-foreground mt-1">{t('卡片出现后可在预览中点击播放（交互演示用）。', 'Click to play in preview (demo only).')}</p>
           </Section>
-        </div>
-      );
-    }
-    case 'report': {
-      const r = c.report || { value: '' };
-      return (
-        <div className="space-y-2">
-          <input value={r.title || ''} onChange={(e) => onContent({ ...c, report: { ...r, title: e.target.value } })} className="input h-7 text-xs" placeholder={t('标题', 'Title')} />
-          <div className="flex gap-2">
-            <input value={String(r.value ?? '')} onChange={(e) => onContent({ ...c, report: { ...r, value: e.target.value } })} className="input h-7 flex-1 text-xs" placeholder={t('战果数字（如 3.2万）', 'Value')} />
-            <input value={r.unit || ''} onChange={(e) => onContent({ ...c, report: { ...r, unit: e.target.value } })} className="input h-7 w-16 text-xs" placeholder={t('单位', 'Unit')} />
-          </div>
-          <textarea value={r.note || ''} onChange={(e) => onContent({ ...c, report: { ...r, note: e.target.value } })} className="input h-12 resize-none text-xs" placeholder={t('注释（可选）', 'Note')} />
         </div>
       );
     }
@@ -760,56 +711,23 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
         </div>
       );
     }
-    case 'counter': {
-      const ct = c.counter || { value: 0 };
+    case 'stat': {
+      const st = c.stat || { value: 0 };
       return (
         <div className="space-y-2">
-          <input value={ct.label || ''} onChange={(e) => onContent({ ...c, counter: { ...ct, label: e.target.value } })} className="input h-7 text-xs" placeholder={t('标签（如：伤亡统计）', 'Label')} />
-          <div className="flex gap-2">
-            <NumberInput className="input h-7 flex-1 text-xs" value={ct.value ?? 0} step={100} onCommit={(v) => onContent({ ...c, counter: { ...ct, value: Math.max(0, v) } })} title={t('终值', 'Value')} />
-            <input value={ct.prefix || ''} onChange={(e) => onContent({ ...c, counter: { ...ct, prefix: e.target.value } })} className="input h-7 w-14 text-xs" placeholder={t('前缀', 'Prefix')} />
-            <input value={ct.unit || ''} onChange={(e) => onContent({ ...c, counter: { ...ct, unit: e.target.value } })} className="input h-7 w-14 text-xs" placeholder={t('单位', 'Unit')} />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-muted-foreground shrink-0">{t('计数时长(帧)', 'Count dur')}</span>
-            <NumberInput className="input h-7 w-20 text-xs" value={ct.durationFrames ?? 90} step={10} min={10} max={600} onCommit={(v) => onContent({ ...c, counter: { ...ct, durationFrames: Math.max(10, Math.min(600, v || 90)) } })} />
-          </div>
-        </div>
-      );
-    }
-    case 'dialogue': {
-      const dl = c.dialogue || { items: [] };
-      return (
-        <div className="space-y-2">
-          <input value={dl.title || ''} onChange={(e) => onContent({ ...c, dialogue: { ...dl, title: e.target.value } })} className="input h-7 text-xs" placeholder={t('标题(可选)', 'Title (optional)')} />
-          <textarea
-            value={(dl.items || []).map((it) => `${it.who}|${it.text}`).join('\n')}
-            onChange={(e) => onContent({
-              ...c,
-              dialogue: {
-                ...dl,
-                items: e.target.value.split('\n').filter((x) => x.trim()).map((line) => {
-                  const [who, text] = line.split('|');
-                  return { who: (who || '').trim(), text: (text || '').trim() };
-                }),
-              },
-            })}
-            className="input h-20 resize-none text-xs"
-            placeholder={t('每行一条：说话人|内容', 'One per line: who|text')}
-          />
-        </div>
-      );
-    }
-    case 'place': {
-      const pl = c.place || { name: '' };
-      return (
-        <div className="space-y-2">
-          <input value={pl.name} onChange={(e) => onContent({ ...c, place: { ...pl, name: e.target.value } })} className="input h-7 text-xs" placeholder={t('地名', 'Name')} />
-          <textarea value={pl.description || ''} onChange={(e) => onContent({ ...c, place: { ...pl, description: e.target.value } })} className="input h-14 resize-none text-xs" placeholder={t('简介', 'Description')} />
-          <div className="flex items-center gap-2">
-            <UploadButton label={t('配图', 'Image')} accept="image/*" onPick={(u) => onContent({ ...c, place: { ...pl, imageUrl: u } })} />
-            {pl.imageUrl && <img src={pl.imageUrl} className="w-8 h-8 rounded object-cover border border-white/15" alt="" />}
-          </div>
+          <Field label={t('数值', 'Value')}>
+            <input type="number" value={st.value} onChange={(e) => onContent({ ...c, stat: { ...st, value: parseFloat(e.target.value) || 0 } })} className="input h-7 text-xs" />
+          </Field>
+          <Field label={t('标签', 'Label')}>
+            <input value={st.label || ''} onChange={(e) => onContent({ ...c, stat: { ...st, label: e.target.value } })} className="input h-7 text-xs" placeholder={t('说明文字', 'Caption')} />
+          </Field>
+          <Field label={t('前缀 / 单位', 'Prefix / Unit')}>
+            <div className="flex gap-2">
+              <input value={st.prefix || ''} onChange={(e) => onContent({ ...c, stat: { ...st, prefix: e.target.value } })} className="input h-7 text-xs w-20" placeholder={t('前缀', 'Prefix')} />
+              <input value={st.unit || ''} onChange={(e) => onContent({ ...c, stat: { ...st, unit: e.target.value } })} className="input h-7 text-xs w-20" placeholder={t('单位', 'Unit')} />
+            </div>
+          </Field>
+          <Toggle checked={st.countUp !== false} onChange={(v) => onContent({ ...c, stat: { ...st, countUp: v } })} label={t('滚动计数', 'Count up')} />
         </div>
       );
     }
@@ -858,75 +776,7 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
   }
 }
 
-// ========== 章节标题 ==========
-
-function TitleTab({ chapter }: { chapter: Chapter }) {
-  const t = useT();
-  const updateChapter = useProjectStore((s) => s.updateChapter);
-  const st: TitleStyle = normalizeTitleStyle(chapter.titleStyle);
-  const set = (changes: Partial<TitleStyle>) => updateChapter(chapter.id, { titleStyle: { ...st, ...changes, preset: changes.preset ?? 'custom' } });
-  const FONTS: { value: string; label: string }[] = [
-    { value: "'Geist', 'Noto Sans SC', system-ui, sans-serif", label: t('无衬线', 'Sans') },
-    { value: "Georgia, 'Noto Serif SC', 'SimSun', serif", label: t('宋体衬线', 'Serif') },
-    { value: "'KaiTi', 'STKaiti', serif", label: t('楷体', 'Kai') },
-    { value: "'Courier New', monospace", label: t('等宽', 'Mono') },
-  ];
-
-  return (
-    <div className="space-y-2">
-      <Toggle checked={st.show} onChange={(v) => set({ show: v })} label={t('显示章节标题', 'Show title')} />
-      <Field label={t('内置样式', 'Preset')}>
-        <OptionBlocks
-          value={st.preset || ''}
-          options={TITLE_PRESETS.map((p) => ({ value: p.id, label: t(p.zh, p.en) }))}
-          onChange={(id) => {
-            const p = TITLE_PRESETS.find((x) => x.id === id);
-            if (p) set({ ...p.values, preset: id });
-          }}
-        />
-      </Field>
-      <Toggle checked={st.shadow} onChange={(v) => set({ shadow: v })} label={t('文字阴影', 'Text shadow')} />
-      <Field label={t('字体', 'Font')}>
-        <OptionBlocks value={st.fontFamily} options={FONTS} onChange={(v) => set({ fontFamily: v })} />
-      </Field>
-      <SliderRow label={t('字号', 'Size')} min={12} max={120} value={st.fontSize} onChange={(v) => set({ fontSize: v })} display={`${Math.round(st.fontSize)}px`} />
-      <SliderRow label={t('粗细', 'Weight')} min={300} max={900} step={100} value={st.weight} onChange={(v) => set({ weight: v })} display={String(Math.round(st.weight))} />
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground shrink-0">{t('颜色', 'Color')}</span>
-        <div className="w-32"><ColorPicker value={st.color} onChange={(c) => set({ color: c })} /></div>
-      </div>
-      <Field label={t('位置', 'Position')}>
-        <div className="grid grid-cols-3 gap-1 w-fit">
-          {POS_GRID.map((p) => (
-            <button
-              key={p.value}
-              onClick={() => set({ pos: p.value, offsetX: 0, offsetY: 0 })}
-              title={p.label}
-              className={`w-8 h-8 flex items-center justify-center text-xs rounded-md border transition-colors ${
-                st.pos === p.value && !st.offsetX && !st.offsetY
-                  ? 'bg-brand/25 border-brand text-foreground'
-                  : 'bg-white/[0.03] border-white/10 text-foreground/70 hover:bg-white/[0.07]'
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-      </Field>
-      <PopupOffsetSliders o={{ position: st.pos, offsetX: st.offsetX, offsetY: st.offsetY } as OverlayItem}
-        update={(ch) => set(ch as Partial<TitleStyle>)} t={t} />
-      <Field label={t('背景样式', 'Background')}>
-        <OptionBlocks value={st.bg} options={[{ value: 'none', label: t('无', 'None') }, { value: 'bar', label: t('条带', 'Bar') }, { value: 'card', label: t('卡片', 'Card') }]} onChange={(v) => set({ bg: v })} />
-      </Field>
-      {st.bg !== 'none' && (
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-muted-foreground shrink-0">{t('背景色', 'BG')}</span>
-          <div className="w-32"><ColorPicker value={st.bgColor} onChange={(c) => set({ bgColor: c })} /></div>
-        </div>
-      )}
-    </div>
-  );
-}
+// ========== 弹窗微调辅助 ==========
 
 // ========== 字幕 / 配音 ==========
 
@@ -940,9 +790,9 @@ function resequenceEntries(entries: NarrationEntry[], chapterStart: number): Nar
   });
 }
 
-function SubtitleTab({ chapter }: { chapter: Chapter }) {
+function SubtitleTab({ project }: { project: MapVideoProject }) {
   const t = useT();
-  const fps = useChapterFps(chapter);
+  const fps = useChapterFps(project);
   const setNarrationStyleOp = useProjectStore((s) => s.setNarrationStyle);
   const setNarrationEntries = useProjectStore((s) => s.setNarrationEntries);
   const updateNarrationEntry = useProjectStore((s) => s.updateNarrationEntry);
@@ -950,12 +800,12 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
   const [showProviders, setShowProviders] = useState(false);
   const [genIdx, setGenIdx] = useState<number | null>(null); // 正在生成配音的条目下标
   const [auditingId, setAuditingId] = useState<string | null>(null);
-  const narration = chapter.narration || { entries: [], style: defaultNarrationStyle() };
+  const narration = project.narration || { entries: [], style: defaultNarrationStyle() };
   const entries = narration.entries;
   const ttsCfg = activeProvider('tts');
   const canAi = aiAvailable();
 
-  const setStyle = (patch: Partial<typeof narration.style>) => setNarrationStyleOp(chapter.id, patch);
+  const setStyle = (patch: Partial<typeof narration.style>) => setNarrationStyleOp(patch);
 
   /** 更新文本：有配音保持配音时长（时长由音频决定），否则按字数估算；统一顺排 */
   const updateText = (id: string, text: string) => {
@@ -964,7 +814,7 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
         ? { ...e, text, durationFrames: e.audioUrl ? e.durationFrames : estimateTextDurationFrames(text, fps) }
         : e
     );
-    setNarrationEntries(chapter.id, resequenceEntries(next, chapter.startFrame));
+    setNarrationEntries(resequenceEntries(next, 0));
   };
 
   const addEntry = () => {
@@ -973,20 +823,14 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
       id: generateId(),
       text: '',
       durationFrames: estimateTextDurationFrames('', fps),
-      startFrame: last ? last.startFrame + last.durationFrames : chapter.startFrame,
+      startFrame: last ? last.startFrame + last.durationFrames : 0,
       status: 'none',
     };
-    setNarrationEntries(chapter.id, [...entries, e]);
+    setNarrationEntries([...entries, e]);
   };
 
   const deleteEntry = (id: string) => {
-    setNarrationEntries(chapter.id, resequenceEntries(entries.filter((e) => e.id !== id), chapter.startFrame));
-  };
-
-  /** 手动改起始帧 → 锁定该条，其后顺排 */
-  const changeStart = (id: string, f: number) => {
-    const next = entries.map((e) => (e.id === id ? { ...e, startFrame: f, locked: true } : e));
-    setNarrationEntries(chapter.id, resequenceEntries(next, chapter.startFrame));
+    setNarrationEntries(resequenceEntries(entries.filter((e) => e.id !== id), 0));
   };
 
   /** 单条生成配音（时长回填 + 顺排） */
@@ -996,7 +840,7 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
     const cfg = ttsCfg;
     if (!cfg || !cfg.baseUrl) { alert(t('请先在「配音服务」里配置 TTS 服务', 'Configure TTS provider first')); setShowProviders(true); return; }
     setGenIdx(idx);
-    updateNarrationEntry(chapter.id, e.id, { status: 'pending', error: undefined });
+    updateNarrationEntry(e.id, { status: 'pending', error: undefined });
     try {
       const { dataUrl, durationSec } = await callTTS(cfg, e.text);
       const next = entries.map((x) =>
@@ -1004,9 +848,9 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
           ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const }
           : x
       );
-      setNarrationEntries(chapter.id, resequenceEntries(next, chapter.startFrame));
+      setNarrationEntries(resequenceEntries(next, 0));
     } catch (err) {
-      updateNarrationEntry(chapter.id, e.id, { status: 'error', error: err instanceof Error ? err.message : String(err) });
+      updateNarrationEntry(e.id, { status: 'error', error: err instanceof Error ? err.message : String(err) });
     } finally {
       setGenIdx(null);
     }
@@ -1017,21 +861,6 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
     for (let i = 0; i < entries.length; i++) {
       if (!entries[i].text.trim()) continue;
       await genOne(i);
-    }
-  };
-
-  /** 导入配音音频文件（时长自动解析） */
-  const importAudio = async (id: string, file: File) => {
-    try {
-      const { dataUrl, durationSec } = await readAudioFile(file);
-      const next = entries.map((x) =>
-        x.id === id
-          ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const }
-          : x
-      );
-      setNarrationEntries(chapter.id, resequenceEntries(next, chapter.startFrame));
-    } catch (err) {
-      alert(`${t('音频解析失败', 'Audio parse failed')}: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -1046,21 +875,21 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
   const importSrt = async (file: File) => {
     const text = await file.text();
     const lines = parseSrt(text);
-    let cursor = chapter.startFrame;
+    let cursor = 0;
     const list: NarrationEntry[] = lines.map((l) => {
       const dur = estimateTextDurationFrames(l, fps);
       const e: NarrationEntry = { id: generateId(), text: l, durationFrames: dur, startFrame: cursor, status: 'none' };
       cursor += dur;
       return e;
     });
-    setNarrationEntries(chapter.id, list);
+    setNarrationEntries(list);
   };
 
   const exportSrt = () => {
     let t0 = 0;
     const srt = entries
       .map((e, i) => {
-        const startSec = (e.startFrame - chapter.startFrame) / fps;
+        const startSec = (e.startFrame - 0) / fps;
         const durSec = e.durationFrames / fps;
         const entry = `${i + 1}\n${srtTime(startSec)} --> ${srtTime(startSec + durSec)}\n${e.text}\n`;
         t0 += durSec;
@@ -1071,7 +900,7 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
     const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${chapter.title || 'chapter'}.srt`;
+    a.download = `${project.name || 'narration'}.srt`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -1148,20 +977,6 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
                   <button onClick={() => deleteEntry(e.id)} className="h-7 w-7 rounded border border-white/10 bg-white/[0.05] text-[11px] text-red-400/80 hover:bg-red-500/10 transition-colors" title={t('删除', 'Delete')}>✕</button>
                 </div>
               </div>
-              <div className="flex items-center gap-2 mt-1.5 pl-6">
-                <span className="text-[11px] text-muted-foreground">{t('时长', 'Dur')}</span>
-                <span className="text-[11px] tabular-nums w-12">{(e.durationFrames / fps).toFixed(1)}s</span>
-                <span className="text-[11px] text-muted-foreground">{t('起始', 'Start')}</span>
-                <div className="w-24"><FrameTimeField value={e.startFrame} fps={fps} onFrameChange={(f) => changeStart(e.id, f)} /></div>
-                {e.locked && <span className="text-[10px] text-amber-400/80" title={t('手动定位，不再自动顺排', 'Manually locked')}>🔒</span>}
-                <label className="text-[11px] text-muted-foreground cursor-pointer hover:text-foreground" title={t('导入配音音频', 'Import audio')}>
-                  {e.audioUrl ? '🎵' : '⬆'}
-                  <input type="file" accept="audio/*" className="hidden" onChange={(ev) => { const f = ev.target.files?.[0]; if (f) importAudio(e.id, f); ev.target.value = ''; }} />
-                </label>
-                <span className="text-[10px] text-muted-foreground truncate">
-                  {e.status === 'pending' ? t('生成中…', 'Generating…') : e.status === 'error' ? `⚠ ${e.error || 'error'}` : e.audioUrl ? t('配音已就绪', 'TTS ready') : ''}
-                </span>
-              </div>
             </div>
           ))}
         </div>
@@ -1169,6 +984,18 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
 
       {/* 字幕样式 */}
       <Section title={t('字幕样式', 'Style')}>
+        <Field label={t('字体', 'Font')}>
+          <OptionBlocks<string>
+            value={narration.style.fontFamily || "'KaiTi', 'STKaiti', 'SimSun', serif"}
+            options={[
+              { value: "'KaiTi', 'STKaiti', 'SimSun', serif", label: t('楷体', 'KaiTi') },
+              { value: "'SimSun', 'Songti SC', serif", label: t('宋体', 'SimSun') },
+              { value: "'SimHei', 'Microsoft YaHei', sans-serif", label: t('黑体', 'SimHei') },
+              { value: 'system-ui, sans-serif', label: t('系统', 'System') },
+            ]}
+            onChange={(v) => setStyle({ fontFamily: v })}
+          />
+        </Field>
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-muted-foreground shrink-0 w-14">{t('字号', 'Size')}</span>
           <NumberInput className="input h-7 w-16 text-xs" value={narration.style.fontSize} step={2} min={12} onCommit={(v) => setStyle({ fontSize: Math.max(12, v) })} />
@@ -1196,7 +1023,7 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
         )}
       </Section>
 
-      {showAi && <AiScriptDialog chapter={chapter} onClose={() => setShowAi(false)} />}
+      {showAi && <AiScriptDialog project={project} onClose={() => setShowAi(false)} />}
       {showProviders && <ProviderSettingsDialog kind="tts" onClose={() => setShowProviders(false)} />}
     </>
   );
@@ -1204,13 +1031,12 @@ function SubtitleTab({ chapter }: { chapter: Chapter }) {
 
 // ========== AI 文案生成 ==========
 
-function AiScriptDialog({ chapter, onClose }: { chapter: Chapter; onClose: () => void }) {
+function AiScriptDialog({ project, onClose }: { project: MapVideoProject; onClose: () => void }) {
   const t = useT();
-  const fps = useChapterFps(chapter);
+  const fps = useChapterFps(project);
   const setNarrationEntries = useProjectStore((s) => s.setNarrationEntries);
   const [material, setMaterial] = useState('');
   const [requirement, setRequirement] = useState('');
-  const [segCount, setSegCount] = useState(6);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string[]>([]);
@@ -1226,7 +1052,7 @@ function AiScriptDialog({ chapter, onClose }: { chapter: Chapter; onClose: () =>
       const user = [
         material && `【素材】\n${material}`,
         requirement && `【要求】\n${requirement}`,
-        `输出 ${segCount} 条字幕（JSON 字符串数组）。`,
+        '输出多条字幕（JSON 字符串数组）。',
       ].filter(Boolean).join('\n\n');
       const raw = await callLLM(cfg, sys, user);
       let arr: string[] = [];
@@ -1245,13 +1071,15 @@ function AiScriptDialog({ chapter, onClose }: { chapter: Chapter; onClose: () =>
   };
 
   const apply = (replace: boolean) => {
-    const list: NarrationEntry[] = result.map((txt, i) => {
+    let cursor = 0;
+    const list: NarrationEntry[] = result.map((txt) => {
       const dur = estimateTextDurationFrames(txt, fps);
-      const prev = i > 0 ? list[i - 1] : null;
-      return { id: generateId(), text: txt, durationFrames: dur, startFrame: prev ? prev.startFrame + prev.durationFrames : chapter.startFrame, status: 'none' as const };
+      const entry: NarrationEntry = { id: generateId(), text: txt, durationFrames: dur, startFrame: cursor, status: 'none' };
+      cursor += dur;   // 顺序累加，避免在 map 回调里引用尚未初始化的 list（TDZ）
+      return entry;
     });
-    const base = replace ? [] : chapter.narration?.entries || [];
-    setNarrationEntries(chapter.id, resequenceEntries([...base, ...list], chapter.startFrame));
+    const base = replace ? [] : project.narration?.entries || [];
+    setNarrationEntries(resequenceEntries([...base, ...list], 0));
     onClose();
   };
 
@@ -1270,11 +1098,17 @@ function AiScriptDialog({ chapter, onClose }: { chapter: Chapter; onClose: () =>
             </button>
           );
         })()}
-        <textarea value={material} onChange={(e) => setMaterial(e.target.value)} rows={4} className="input text-xs resize-none mb-2" placeholder={t('粘贴素材/要点/史实资料…', 'Paste source material…')} />
-        <input value={requirement} onChange={(e) => setRequirement(e.target.value)} className="input text-xs mb-2" placeholder={t('要求：风格/受众/口吻…', 'Requirements: style/tone…')} />
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-[11px] text-muted-foreground shrink-0">{t('段数', 'Lines')}</span>
-          <NumberInput className="input h-7 w-16 text-xs" value={segCount} step={1} min={1} onCommit={(v) => setSegCount(Math.max(1, v))} />
+        <textarea value={requirement} onChange={(e) => setRequirement(e.target.value)} rows={3} className="input text-xs resize-none mb-2" placeholder={t('要求：主题 / 风格 / 受众 / 口吻…', 'Requirements: topic / style / tone…')} />
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[11px] text-muted-foreground shrink-0">{t('参考文档', 'Reference')}</span>
+          <label className="inline-flex items-center gap-1.5 h-6 px-2 rounded-md border border-white/15 bg-white/[0.045] text-[11px] hover:border-white/25 cursor-pointer transition-colors">
+            ⬆ {t('上传（txt/md/json）', 'Upload (txt/md/json)')}
+            <input type="file" accept=".txt,.md,.json,.csv,text/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then((txt) => setMaterial((prev) => (prev ? `${prev}\n\n${txt}` : txt))); e.target.value = ''; }} />
+          </label>
+          {material && <button onClick={() => setMaterial('')} className="text-[11px] text-red-400/80 hover:text-red-400">{t('清空', 'Clear')}</button>}
+        </div>
+        <textarea value={material} onChange={(e) => setMaterial(e.target.value)} rows={4} className="input text-xs resize-none mb-2" placeholder={t('参考文档内容（可直接粘贴，或点上方上传）', 'Reference material (paste or upload)…')} />
+        <div className="flex items-center mb-2">
           <button onClick={gen} disabled={busy} className="h-7 px-3 rounded-md bg-[var(--brand)] text-white text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50 ml-auto">
             {busy ? t('生成中…', 'Generating…') : t('生成', 'Generate')}
           </button>
@@ -1305,19 +1139,86 @@ function AiScriptDialog({ chapter, onClose }: { chapter: Chapter; onClose: () =>
 
 // ========== 配音 / AI 服务设置（可扩展） ==========
 
-function ProviderSettingsDialog({ kind, onClose }: { kind: 'llm' | 'tts'; onClose: () => void }) {
+export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind: 'llm' | 'tts' | 'image'; onClose?: () => void; inline?: boolean }) {
   const t = useT();
-  const list = useProviderStore((s) => (kind === 'llm' ? s.llm : s.tts));
-  const activeId = useProviderStore((s) => (kind === 'llm' ? s.activeLlmId : s.activeTtsId));
-  const presets = kind === 'llm' ? LLM_PRESETS : TTS_PRESETS;
+  const list = useProviderStore((s) => (kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image));
+  const activeId = useProviderStore((s) => (kind === 'llm' ? s.activeLlmId : kind === 'tts' ? s.activeTtsId : s.activeImageId));
+  const presets = kind === 'llm' ? LLM_PRESETS : kind === 'tts' ? TTS_PRESETS : IMAGE_PRESETS;
   const [selId, setSelId] = useState<string | null>(activeId || list[0]?.id || null);
   const sel = list.find((c) => c.id === selId) || null;
   const store = useProviderStore.getState();
+  // 内置供应商（非自定义）：只展示模型下拉 + API Key；名称/Base URL 固定内置
+  const matchedPreset = sel ? presets.find((p) => p.label === sel.label) : undefined;
+  const builtin = !!matchedPreset && !matchedPreset.id.startsWith('custom');
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-card border border-white/10 rounded-xl shadow-2xl p-4 w-[30rem] max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold mb-2">{kind === 'llm' ? '🤖 ' + t('AI 服务设置', 'AI providers') : '🔊 ' + t('配音服务设置', 'TTS providers')}</h3>
+  // 内置默认供应商：文案=DeepSeek、语音/图片=通义千问；首次进入且无配置时自动预置，用户只需填 API Key
+  useEffect(() => {
+    const st = useProviderStore.getState();
+    if (kind === 'llm' && st.llm.length === 0) setSelId(st.addFromPreset('deepseek', 'llm'));
+    else if (kind === 'tts' && st.tts.length === 0) setSelId(st.addFromPreset('qwen-tts', 'tts'));
+    else if (kind === 'image' && st.image.length === 0) setSelId(st.addFromPreset('qwen-image', 'image'));
+  }, [kind]);
+
+  // 连通性测试
+  const [test, setTest] = useState<{ s: 'idle' | 'run' | 'ok' | 'err'; m?: string }>({ s: 'idle' });
+  useEffect(() => { setTest({ s: 'idle' }); }, [selId, kind]);
+  // 声音克隆（克隆只能用 CosyVoice 模型：qwen3-tts 无 enroll 预处理服务）
+  const [cloneMsg, setCloneMsg] = useState('');
+  const [cloneModel, setCloneModel] = useState('cosyvoice-v3.5-flash');
+  useEffect(() => { setCloneMsg(''); }, [selId]);
+  const runClone = async (file: File) => {
+    if (!sel) return;
+    setCloneMsg(t('上传中…', 'Uploading…'));
+    try {
+      let bytes = await file.arrayBuffer();
+      // 先存到本地素材库（桌面端：userData/media/audio），再读回字节用于克隆
+      // ——与 clone_qwen_voice.py「读取本地参考音频 → 转 wav → dataURI」一致。
+      if (IS_DESKTOP && window.mapvideo?.assets) {
+        const saved = await window.mapvideo.assets.save({
+          mime: file.type || 'audio/mpeg', bytes: new Uint8Array(bytes), name: file.name, kind: 'audio',
+        });
+        const back = await window.mapvideo.assets.read(saved.assetId);
+        if (back?.bytes?.length) {
+          bytes = back.bytes.buffer.slice(back.bytes.byteOffset, back.bytes.byteOffset + back.bytes.byteLength);
+        }
+      }
+      setCloneMsg(t('克隆中…', 'Cloning…'));
+      const vid = await cloneVoice(sel, bytes, cloneModel);
+      // 克隆出的音色绑定在 cosyvoice 模型上：合成模型一并切过去，否则音色不可用
+      useProviderStore.getState().update(sel.id, { voice: vid, model: cloneModel });
+      setCloneMsg('✓ ' + vid);
+    } catch (e) {
+      setCloneMsg('✕ ' + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+  const runTest = async () => {
+    if (!sel) return;
+    setTest({ s: 'run' });
+    try {
+      if (kind === 'llm') {
+        const out = await callLLM(sel, '你是连通性测试助手。', '只回复两个字：正常');
+        setTest({ s: 'ok', m: (out || '').trim().slice(0, 60) || '连接正常' });
+      } else if (kind === 'tts') {
+        const r = await callTTS(sel, '连通性测试');
+        setTest(r?.dataUrl ? { s: 'ok', m: '语音合成成功' } : { s: 'err', m: '返回为空' });
+      } else {
+        const img = await callImage(sel, '一只戴宇航员头盔的橘猫，赛博朋克风格，8k');
+        setTest(img ? { s: 'ok', m: '图片生成成功' } : { s: 'err', m: '返回为空' });
+      }
+    } catch (e) {
+      setTest({ s: 'err', m: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const KIND_TITLE = {
+    llm: '🤖 ' + t('文案生成 AI', 'Text AI'),
+    tts: '🔊 ' + t('语音克隆 / 配音', 'Voice (clone / TTS)'),
+    image: '🖼 ' + t('图片生成 AI', 'Image AI'),
+  } as const;
+
+  const body = (
+    <>
+        <h3 className="text-sm font-semibold mb-2">{KIND_TITLE[kind]}</h3>
         <p className="text-[11px] text-muted-foreground mb-2">
           {IS_DESKTOP
             ? t('配置存本机 SQLite 数据库；请求经主进程转发（无 CORS）。Key 不出本机。', 'Stored in local SQLite; requests go through the main process. Keys never leave this machine.')
@@ -1347,27 +1248,66 @@ function ProviderSettingsDialog({ kind, onClose }: { kind: 'llm' | 'tts'; onClos
         {sel && (
           <div className="space-y-2 border-t border-white/10 pt-2">
             <div className="flex gap-2">
-              <input value={sel.label} onChange={(e) => store.update(sel.id, { label: e.target.value })} className="input h-7 text-xs flex-1" placeholder={t('名称', 'Label')} />
-              <input value={sel.model} onChange={(e) => store.update(sel.id, { model: e.target.value })} className="input h-7 text-xs w-32" placeholder={kind === 'llm' ? t('模型', 'Model') : t('TTS 模型', 'TTS model')} />
+              {!builtin && (
+                <input value={sel.label} onChange={(e) => store.update(sel.id, { label: e.target.value })} className="input h-7 text-xs flex-1" placeholder={t('名称', 'Label')} />
+              )}
+              {(() => {
+                const presetModels = presets.find((p) => p.label === sel.label)?.models;
+                if (presetModels && presetModels.length) {
+                  const opts = sel.model && !presetModels.includes(sel.model) ? [sel.model, ...presetModels] : presetModels;
+                  return (
+                    <select value={sel.model} onChange={(e) => store.update(sel.id, { model: e.target.value })} className="input h-7 text-xs w-32">
+                      {opts.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  );
+                }
+                return (
+                  <input value={sel.model} onChange={(e) => store.update(sel.id, { model: e.target.value })} className="input h-7 text-xs w-32" placeholder={kind === 'llm' ? t('模型', 'Model') : kind === 'tts' ? t('TTS 模型', 'TTS model') : t('图片模型', 'Image model')} />
+                );
+              })()}
             </div>
-            <input value={sel.baseUrl} onChange={(e) => store.update(sel.id, { baseUrl: e.target.value })} className="input h-7 text-xs w-full" placeholder="https://…/v1" />
-            <input value={sel.apiKey} onChange={(e) => store.update(sel.id, { apiKey: e.target.value })} type="password" className="input h-7 text-xs w-full" placeholder={t('API Key', 'API Key')} />
+            {!builtin && (
+              <input value={sel.baseUrl} onChange={(e) => store.update(sel.id, { baseUrl: e.target.value })} className="input h-7 text-xs w-full" placeholder="https://…/v1" />
+            )}
+            <input value={sel.apiKey} onChange={(e) => store.update(sel.id, { apiKey: e.target.value })} type="password" className="input h-7 text-xs w-full" placeholder={t('API Key（内置供应商只需填这里）', 'API Key')} />
             {kind === 'tts' && (
               <>
-                <div className="flex gap-2">
-                  <input value={sel.voice || ''} onChange={(e) => store.update(sel.id, { voice: e.target.value })} className="input h-7 text-xs flex-1" placeholder={t('音色/说话人 ID', 'Voice ID')} />
-                  <select value={sel.protocol || 'custom'} onChange={(e) => store.update(sel.id, { protocol: e.target.value as TtsProtocol })} className="input h-7 text-xs w-36">
-                    <option value="openai-speech">OpenAI /audio/speech</option>
-                    <option value="minimax-t2a">MiniMax t2a_v2</option>
-                    <option value="volc-tts">火山 TTS (appid|token)</option>
-                    <option value="qwen-tts">DashScope CosyVoice</option>
-                    <option value="custom">{t('自定义协议', 'Custom')}</option>
-                  </select>
-                </div>
-                <input value={sel.extra || ''} onChange={(e) => store.update(sel.id, { extra: e.target.value })} className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（可选）', 'Extra JSON (optional)')} />
+                {!builtin && (
+                  <>
+                    <div className="flex gap-2">
+                      <input value={sel.voice || ''} onChange={(e) => store.update(sel.id, { voice: e.target.value })} className="input h-7 text-xs flex-1" placeholder={t('音色/说话人 ID', 'Voice ID')} />
+                      <select value={sel.protocol || 'custom'} onChange={(e) => store.update(sel.id, { protocol: e.target.value as TtsProtocol })} className="input h-7 text-xs w-36">
+                        <option value="openai-speech">OpenAI /audio/speech</option>
+                        <option value="minimax-t2a">MiniMax t2a_v2</option>
+                        <option value="volc-tts">火山 TTS (appid|token)</option>
+                        <option value="qwen-tts">DashScope CosyVoice</option>
+                        <option value="custom">{t('自定义协议', 'Custom')}</option>
+                      </select>
+                    </div>
+                    <input value={sel.extra || ''} onChange={(e) => store.update(sel.id, { extra: e.target.value })} className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（可选）', 'Extra JSON (optional)')} />
+                  </>
+                )}
+                {/* 声音克隆：参考音频 → voice_id（参照 clone_qwen_voice.py） */}
+                {sel.protocol === 'qwen-tts' && (
+                  <div className="border-t border-white/10 pt-2 space-y-1.5">
+                    <p className="text-[11px] text-muted-foreground">{t('声音克隆：上传 3~60s 参考音频，克隆出绑定 CosyVoice 模型的 voice_id（成功后自动填入音色并切换模型）', 'Voice clone: upload 3–60s reference audio to create a voice_id for a CosyVoice model')}</p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-muted-foreground shrink-0">{t('克隆模型', 'Clone model')}</span>
+                      <select value={cloneModel} onChange={(e) => setCloneModel(e.target.value)} className="input h-7 text-xs flex-1">
+                        <option value="cosyvoice-v3.5-flash">cosyvoice-v3.5-flash</option>
+                        <option value="cosyvoice-v3-plus">cosyvoice-v3-plus</option>
+                      </select>
+                    </div>
+                    <label className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-white/15 bg-white/[0.045] text-[11px] text-foreground/80 hover:border-white/25 cursor-pointer transition-colors">
+                      ⬆ {t('上传参考音频', 'Upload reference audio')}
+                      <input type="file" accept="audio/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void runClone(f); e.target.value = ''; }} />
+                    </label>
+                    {cloneMsg && <p className="text-[11px] text-muted-foreground break-all">{cloneMsg}</p>}
+                  </div>
+                )}
               </>
             )}
-            {kind === 'llm' && (
+            {kind === 'llm' && !builtin && (
               <input value={sel.extra || ''} onChange={(e) => store.update(sel.id, { extra: e.target.value })} className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（可选，如 max_tokens）', 'Extra JSON (optional)')} />
             )}
             <p className="text-[10px] text-muted-foreground">
@@ -1375,9 +1315,34 @@ function ProviderSettingsDialog({ kind, onClose }: { kind: 'llm' | 'tts'; onClos
               {kind === 'tts' && (sel.protocol === 'volc-tts') ? ' Key 填 AppID|AccessToken' : ''}
               {kind === 'tts' && (sel.protocol === 'minimax-t2a') ? ' Key 填 Key&&GroupId' : ''}
             </p>
+            {/* 连通性测试 */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={runTest}
+                disabled={test.s === 'run'}
+                className="h-7 px-3 rounded-md border border-white/15 bg-white/[0.05] text-[11px] hover:bg-white/10 disabled:opacity-50 transition-colors shrink-0"
+              >
+                {test.s === 'run' ? t('测试中…', 'Testing…') : t('测试连通性', 'Test connection')}
+              </button>
+              {test.s !== 'idle' && test.s !== 'run' && (
+                <span className={`text-[11px] truncate ${test.s === 'ok' ? 'text-emerald-400' : 'text-red-400'}`} title={test.m}>
+                  {test.s === 'ok' ? '✓ ' : '✕ '}{test.m}
+                </span>
+              )}
+            </div>
           </div>
         )}
-        <button onClick={onClose} className="mt-3 w-full text-xs text-muted-foreground hover:text-foreground">{t('完成', 'Done')}</button>
+        {!inline && (
+          <button onClick={onClose} className="mt-3 w-full text-xs text-muted-foreground hover:text-foreground">{t('完成', 'Done')}</button>
+        )}
+    </>
+  );
+
+  if (inline) return <div className="space-y-2">{body}</div>;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
+      <div className="bg-card border border-white/10 rounded-xl shadow-2xl p-4 w-[30rem] max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        {body}
       </div>
     </div>
   );
@@ -1385,54 +1350,187 @@ function ProviderSettingsDialog({ kind, onClose }: { kind: 'llm' | 'tts'; onClos
 
 // ========== 背景音乐 ==========
 
-function MusicTab({ chapter }: { chapter: Chapter }) {
+function MusicTab({ project }: { project: MapVideoProject }) {
   const t = useT();
-  const fps = useChapterFps(chapter);
-  const setMusicTracks = useProjectStore((s) => s.setMusicTracks);
-  const updateMusicTrack = useProjectStore((s) => s.updateMusicTrack);
+  const fps = useChapterFps(project);
+  const setProjectMusic = useProjectStore((s) => s.setProjectMusic);
+  const updateProjectMusic = useProjectStore((s) => s.updateProjectMusic);
   const [auditingId, setAuditingId] = useState<string | null>(null);
-  const tracks = chapter.music || [];
-  const chapterDur = chapter.endFrame - chapter.startFrame;
+  const tracks = project?.music || [];
+  const projectEnd = Math.max(1, project?.endFrame ?? 1);
+  /** 音乐可用长轴：与时间线一致（内容结束 / 项目长度 / 至少 60s），避免编辑结束时间被过小的 endFrame 卡住 */
+  const laneMax = Math.max(projectEnd, projectContentEndFrame(project), Math.round(60 * fps));
+
+  // 试听音频：删除该段 / 关闭面板 / 退出项目时都要停止
+  const auditRef = useRef<HTMLAudioElement | null>(null);
+  const stopAudit = () => {
+    const el = auditRef.current;
+    if (el) { el.pause(); auditRef.current = null; }
+  };
+  useEffect(() => stopAudit, []);
+  useEffect(() => {
+    if (auditingId && !tracks.some((x) => x.id === auditingId)) {
+      stopAudit();
+      setAuditingId(null);
+    }
+  }, [tracks, auditingId]);
+
+  // 内置音乐库：读取 public/bgm/manifest.json（打包随附）
+  const [builtin, setBuiltin] = useState<{ name: string; file: string }[]>([]);
+  useEffect(() => {
+    fetch(new URL('bgm/manifest.json', document.baseURI).href)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list) => setBuiltin(Array.isArray(list) ? list : []))
+      .catch(() => setBuiltin([]));
+  }, []);
+
+  /** 相邻段（单轨顺序即时间顺序；用相邻边界保证段与段不重合） */
+  const neighborsOf = (id: string) => {
+    const i = tracks.findIndex((x) => x.id === id);
+    return {
+      index: i,
+      prev: i > 0 ? tracks[i - 1] : null,
+      next: i >= 0 && i < tracks.length - 1 ? tracks[i + 1] : null,
+    };
+  };
+
+  /** 从 idx 之后重新顺排：每段接在上一段结束处；循环段铺满到片尾，其余保持原时长 */
+  const rippleAfter = (list: MusicTrack[], idx: number): MusicTrack[] => {
+    const out = [...list];
+    for (let i = idx + 1; i < out.length; i++) {
+      const start = Math.min(out[i - 1].endFrame, Math.max(0, laneMax - 1));
+      const len = Math.max(1, out[i].endFrame - out[i].startFrame);
+      const end = out[i].loop ? laneMax : Math.min(laneMax, start + len);
+      out[i] = { ...out[i], startFrame: start, endFrame: Math.max(start + 1, end) };
+    }
+    return out;
+  };
+
+  /**
+   * 追加一段音乐（单条轨道，接在上一段之后、不重合）：
+   * 上一段若循环铺满到片尾，先把它收短为「开始 + 音频时长」腾出位置；新段铺满剩余到片尾。
+   */
+  const appendTrack = async (name: string, url: string) => {
+    const last = tracks[tracks.length - 1];
+    let base = tracks;
+    if (last && last.endFrame >= laneMax) {
+      const dur = await probeAudioDuration(last.url);
+      const shortenTo = dur != null
+        ? Math.min(laneMax, last.startFrame + Math.max(1, Math.round(dur * fps)))
+        : laneMax;
+      if (shortenTo < last.endFrame) {
+        base = tracks.map((x) => (x.id === last.id
+          ? { ...x, loop: false, endFrame: Math.max(x.startFrame + 1, shortenTo) }
+          : x));
+      }
+    }
+    const prev = base[base.length - 1];
+    const start = Math.min(prev ? prev.endFrame : 0, laneMax);
+    if (start >= laneMax) {
+      alert(t('片尾已铺满，无法再追加音乐（可先关闭某段的循环或缩短时长）', 'No room left at the end — turn off loop or shorten a segment first.'));
+      return;
+    }
+    const next: MusicTrack = {
+      id: generateId(), name, url,
+      startFrame: start, endFrame: laneMax,
+      volume: 0.6, loop: true, fadeIn: 1, fadeOut: 1,
+    };
+    setProjectMusic([...base, next]);
+  };
+
+  /** 循环开关：关 → 时长=音频时长（并顺排后续段）；开 → 铺满到下一段开始 / 片尾 */
+  const setLoop = async (m: MusicTrack, loop: boolean) => {
+    const { index, next } = neighborsOf(m.id);
+    if (index < 0) return;
+    if (loop) {
+      const end = next ? next.startFrame : laneMax;
+      const list = [...tracks];
+      list[index] = { ...m, loop: true, endFrame: Math.max(m.startFrame + 1, end) };
+      setProjectMusic(list);
+      return;
+    }
+    const dur = await probeAudioDuration(m.url);
+    const durF = dur != null ? Math.max(1, Math.round(dur * fps)) : (m.endFrame - m.startFrame);
+    const end = Math.max(m.startFrame + 1, Math.min(m.startFrame + durF, laneMax));
+    const list = [...tracks];
+    list[index] = { ...m, loop: false, endFrame: end };
+    setProjectMusic(rippleAfter(list, index));
+  };
+
+  /** 手动改区间：拖动结束时间会顺排其后各段，保证不重合且编辑一定生效 */
+  const changeRange = (m: MusicTrack, which: 'start' | 'end', frame: number) => {
+    const { index, prev, next } = neighborsOf(m.id);
+    if (index < 0) return;
+    const list = [...tracks];
+    if (which === 'start') {
+      const lo = prev ? prev.endFrame : 0;
+      const start = Math.max(lo, Math.min(Math.round(frame), m.endFrame - 1));
+      const cap = next ? next.startFrame : laneMax;
+      const end = m.loop ? cap : Math.min(cap, start + (m.endFrame - m.startFrame));
+      list[index] = { ...m, startFrame: start, endFrame: Math.max(start + 1, end) };
+      setProjectMusic(rippleAfter(list, index));
+      return;
+    }
+    const end = Math.max(m.startFrame + 1, Math.min(Math.round(frame), laneMax));
+    list[index] = { ...m, endFrame: end };
+    setProjectMusic(rippleAfter(list, index));
+  };
+
+  const pickBuiltin = (b: { name: string; file: string }) => {
+    void appendTrack(b.name, new URL('bgm/' + b.file, document.baseURI).href);
+  };
 
   const importMusic = async (file: File) => {
     try {
       const { dataUrl } = await readAudioFile(file);
-      const track: MusicTrack = {
-        id: generateId(),
-        name: file.name.replace(/\.[^.]+$/, ''),
-        url: dataUrl,
-        startFrame: 0,
-        endFrame: chapterDur,
-        volume: 0.6,
-        loop: true,
-        fadeIn: 1,
-        fadeOut: 1,
-      };
-      setMusicTracks(chapter.id, [...tracks, track]);
+      await appendTrack(file.name.replace(/\.[^.]+$/, ''), dataUrl);
     } catch (err) {
       alert(`${t('音频解析失败', 'Audio parse failed')}: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
   const audit = (m: MusicTrack) => {
-    if (auditingId) { setAuditingId(null); return; }
+    const same = auditingId === m.id;
+    stopAudit();
+    if (same) { setAuditingId(null); return; }
     const el = new Audio(m.url);
     el.volume = m.volume;
     el.loop = true;
+    auditRef.current = el;
     setAuditingId(m.id);
-    el.onended = () => setAuditingId(null);
-    el.play().catch(() => setAuditingId(null));
+    const done = () => {
+      if (auditRef.current === el) auditRef.current = null;
+      setAuditingId(null);
+    };
+    el.onended = done;
+    el.play().catch(done);
   };
 
   return (
     <>
-      <Section title={t('音乐轨', 'Music tracks')}>
+      {builtin.length > 0 && (
+        <Section title={t('内置音乐', 'Built-in BGM')}>
+          <div className="grid grid-cols-2 gap-1.5">
+            {builtin.map((b) => (
+              <button
+                key={b.file}
+                onClick={() => pickBuiltin(b)}
+                className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-[11px] truncate hover:border-white/25 transition-colors text-left"
+                title={t('点击添加一段音乐（串在上一段之后）', 'Click to append a music segment')}
+              >
+                ＋ 🎵 {b.name}
+              </button>
+            ))}
+          </div>
+        </Section>
+      )}
+      <Section title={t('项目音乐（一条轨道）', 'Project music (one lane)')}>
         <label className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border bg-white/[0.045] text-xs text-foreground/80 hover:border-white/25 cursor-pointer transition-colors w-fit mb-2">
           ⬆ {t('导入音乐', 'Import music')}
           <input type="file" accept="audio/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) importMusic(f); e.target.value = ''; }} />
         </label>
         {tracks.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">{t('导入背景音乐（支持多段，可循环、调音量、淡入淡出）。', 'Import BGM (multiple segments, loop, volume, fades).')}</p>
+          <p className="text-[11px] text-muted-foreground">{t('整个项目共用一条音乐轨：新段接在上一段之后、互不重合。关闭循环时长度=音频时长（自动计算）；开启循环时铺满到下一段开始 / 片尾。', 'One music lane: new segments append after the previous without overlapping. Loop off = length follows the audio duration; loop on = fills until the next segment / project end.')}</p>
         )}
         <div className="space-y-2">
           {tracks.map((m) => (
@@ -1441,27 +1539,27 @@ function MusicTab({ chapter }: { chapter: Chapter }) {
                 <button onClick={() => audit(m)} className="h-7 w-7 rounded border border-white/10 bg-white/[0.05] text-[11px] hover:bg-white/10 transition-colors shrink-0">
                   {auditingId === m.id ? '⏸' : '▶'}
                 </button>
-                <input value={m.name} onChange={(e) => updateMusicTrack(chapter.id, m.id, { name: e.target.value })} className="flex-1 input h-7 text-xs" placeholder={t('音乐名', 'Name')} />
-                <button onClick={() => setMusicTracks(chapter.id, tracks.filter((x) => x.id !== m.id))} className="h-7 w-7 rounded border border-white/10 bg-white/[0.05] text-[11px] text-red-400/80 hover:bg-red-500/10 transition-colors shrink-0">✕</button>
+                <input value={m.name} onChange={(e) => updateProjectMusic(m.id, { name: e.target.value })} className="flex-1 input h-7 text-xs" placeholder={t('音乐名', 'Name')} />
+                <button onClick={() => setProjectMusic(tracks.filter((x) => x.id !== m.id))} className="h-7 w-7 rounded border border-white/10 bg-white/[0.05] text-[11px] text-red-400/80 hover:bg-red-500/10 transition-colors shrink-0">✕</button>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-muted-foreground shrink-0">{t('音量', 'Vol')}</span>
-                <input type="range" min={0} max={1} step={0.05} value={m.volume} onChange={(e) => updateMusicTrack(chapter.id, m.id, { volume: parseFloat(e.target.value) })} className="flex-1 h-1 accent-[var(--brand)]" />
+                <input type="range" min={0} max={1} step={0.05} value={m.volume} onChange={(e) => updateProjectMusic(m.id, { volume: parseFloat(e.target.value) })} className="flex-1 h-1 accent-[var(--brand)]" />
                 <span className="text-[11px] text-muted-foreground w-8 text-right tabular-nums">{Math.round(m.volume * 100)}%</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-muted-foreground shrink-0">{t('区间', 'Range')}</span>
-                <div className="w-24"><FrameTimeField value={chapter.startFrame + m.startFrame} fps={fps} onFrameChange={(f) => updateMusicTrack(chapter.id, m.id, { startFrame: Math.max(0, f - chapter.startFrame) })} /></div>
+                <div className="w-24"><FrameTimeField value={m.startFrame} fps={fps} onFrameChange={(f) => changeRange(m, 'start', f)} /></div>
                 <span className="text-muted-foreground">→</span>
-                <div className="w-24"><FrameTimeField value={chapter.startFrame + m.endFrame} fps={fps} onFrameChange={(f) => updateMusicTrack(chapter.id, m.id, { endFrame: Math.max(chapter.startFrame + m.startFrame + 1, f - chapter.startFrame) })} /></div>
+                <div className="w-24"><FrameTimeField value={m.endFrame} fps={fps} onFrameChange={(f) => changeRange(m, 'end', f)} /></div>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-muted-foreground shrink-0">{t('淡入', 'Fade in')}</span>
-                <NumberInput className="input h-7 w-14 text-xs" value={m.fadeIn} step={0.5} min={0} onCommit={(v) => updateMusicTrack(chapter.id, m.id, { fadeIn: Math.max(0, v) })} />
+                <NumberInput className="input h-7 w-14 text-xs" value={m.fadeIn} step={0.5} min={0} onCommit={(v) => updateProjectMusic(m.id, { fadeIn: Math.max(0, v) })} />
                 <span className="text-[11px] text-muted-foreground shrink-0">{t('淡出', 'Fade out')}</span>
-                <NumberInput className="input h-7 w-14 text-xs" value={m.fadeOut} step={0.5} min={0} onCommit={(v) => updateMusicTrack(chapter.id, m.id, { fadeOut: Math.max(0, v) })} />
+                <NumberInput className="input h-7 w-14 text-xs" value={m.fadeOut} step={0.5} min={0} onCommit={(v) => updateProjectMusic(m.id, { fadeOut: Math.max(0, v) })} />
                 <div className="ml-auto w-28">
-                  <Toggle label={t('循环', 'Loop')} checked={m.loop} onChange={(v) => updateMusicTrack(chapter.id, m.id, { loop: v })} />
+                  <Toggle label={t('循环', 'Loop')} checked={m.loop} onChange={(v) => void setLoop(m, v)} />
                 </div>
               </div>
             </div>
@@ -1469,24 +1567,22 @@ function MusicTab({ chapter }: { chapter: Chapter }) {
         </div>
       </Section>
       <p className="text-[11px] text-muted-foreground mt-1">
-        {t('音乐随当前章节播放；导出 MP4 会混入配音与音乐（Loop 循环）。预览播放时自动同步。', 'Plays with this chapter; mixed into exported MP4. Auto-synced during preview.')}
+        {t('音乐按项目绝对时间播放；导出 MP4 会混入配音与音乐（段内 Loop）。预览播放时自动同步。', 'Plays on the project timeline; mixed into exported MP4 (per-segment Loop). Auto-synced during preview.')}
       </p>
     </>
   );
 }
-
 // ========== 面板主体 ==========
 
 const FX_TABS: { id: FxTab; label: string }[] = [
   { id: 'weather', label: '天气' },
   { id: 'screen', label: '画面' },
   { id: 'popup', label: '弹窗' },
-  { id: 'title', label: '标题' },
   { id: 'subtitle', label: '字幕' },
   { id: 'music', label: '音乐' },
 ];
 
-export function FxPanelBody({ chapter }: { chapter: Chapter }) {
+export function FxPanelBody({ project }: { project: MapVideoProject }) {
   const t = useT();
   const fxTab = useEditorStore((s) => s.fxTab);
   const setFxTab = useEditorStore((s) => s.setFxTab);
@@ -1496,16 +1592,15 @@ export function FxPanelBody({ chapter }: { chapter: Chapter }) {
         <OptionBlocks<FxTab>
           value={fxTab}
           onChange={setFxTab}
-          options={FX_TABS.map((x) => ({ value: x.id, label: t(x.label, { weather: 'Weather', screen: 'Screen', popup: 'Popup', title: 'Title', subtitle: 'Subs', music: 'Music' }[x.id]) }))}
+          options={FX_TABS.map((x) => ({ value: x.id, label: t(x.label, { weather: 'Weather', screen: 'Screen', popup: 'Popup', subtitle: 'Subs', music: 'Music' }[x.id]) }))}
         />
       </div>
       <div className="flex-1 overflow-y-auto px-3 pb-4">
-        {fxTab === 'weather' && <WeatherTab chapter={chapter} />}
-        {fxTab === 'screen' && <ScreenTab chapter={chapter} />}
-        {fxTab === 'popup' && <PopupTab chapter={chapter} />}
-        {fxTab === 'title' && <TitleTab chapter={chapter} />}
-        {fxTab === 'subtitle' && <SubtitleTab chapter={chapter} />}
-        {fxTab === 'music' && <MusicTab chapter={chapter} />}
+        {fxTab === 'weather' && <WeatherTab project={project} />}
+        {fxTab === 'screen' && <ScreenTab project={project} />}
+        {fxTab === 'popup' && <PopupTab project={project} />}
+        {fxTab === 'subtitle' && <SubtitleTab project={project} />}
+        {fxTab === 'music' && <MusicTab project={project} />}
       </div>
     </div>
   );

@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { TopBar, FloatingTools } from './components/Toolbar';
 import { EditableMap } from './components/EditableMap';
 import { ElementsPanel } from './components/ElementsPanel';
 import { TimelineEditor } from './components/TimelineEditor';
 import { PropertiesPanel } from './components/PropertiesPanel';
 import { ExportDialog } from './components/ExportDialog';
+import { SettingsDialog } from './components/SettingsDialog';
 import { ProjectManager } from './components/ProjectManager';
 import { KeyframePanel } from './components/KeyframePanel';
 import { MapStyleChip } from './components/MapStyleChip';
@@ -23,11 +24,21 @@ import { generateId, type MapElement } from './types';
 /** 自动保存：停止编辑这么久后静默落盘 */
 const AUTOSAVE_DELAY_MS = 5000;
 
+/** 在容器内按目标画幅等比居中（contain），返回舞台 box 的像素尺寸与偏移 */
+function computeStageFit(container: { w: number; h: number }, res: { width: number; height: number }) {
+  const cw = Math.max(1, container.w);
+  const ch = Math.max(1, container.h);
+  const ratio = (res.width || 16) / (res.height || 9);
+  let w = cw;
+  let h = cw / ratio;
+  if (h > ch) { h = ch; w = ch * ratio; }
+  return { left: (cw - w) / 2, top: (ch - h) / 2, w, h };
+}
+
 export default function App() {
   const project = useProjectStore((s) => s.project);
 
   const currentFrame = useEditorStore((s) => s.currentFrame);
-  const selectedChapterId = useEditorStore((s) => s.selectedChapterId);
   const panelMode = useEditorStore((s) => s.panelMode);
   const selectedKeyframeIdx = useEditorStore((s) => s.selectedKeyframeIdx);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
@@ -36,6 +47,18 @@ export default function App() {
   const setPanelMode = useEditorStore((s) => s.setPanelMode);
 
   const [exportOpen, setExportOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 画幅：地图舞台按项目画幅等比居中（黑边 letterbox），预览即导出取景
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setStageSize({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    setStageSize({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, [project]);
 
   // 桌面端：启动时从 SQLite 加载 AI/配音配置
   useEffect(() => {
@@ -54,13 +77,12 @@ export default function App() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
       const ed = useEditorStore.getState();
-      const chapterId = ed.selectedChapterId;
       const elId = ed.selectedElementId;
 
       // Delete / Backspace：删除选中元素（无需 Ctrl）
-      if ((e.key === 'Delete' || e.key === 'Backspace') && chapterId && elId) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && elId) {
         e.preventDefault();
-        useProjectStore.getState().deleteElement(chapterId, elId);
+        useProjectStore.getState().deleteElement(elId);
         ed.selectElement(null);
         return;
       }
@@ -76,15 +98,15 @@ export default function App() {
       } else if (e.key === 's') {
         e.preventDefault();
         void useProjectStore.getState().saveProject();
-      } else if (e.key === 'd' && chapterId && elId) {
+      } else if (e.key === 'd' && elId) {
         // 复制选中元素：新 id、位置相同，随后直接拖动即可
         e.preventDefault();
         const st = useProjectStore.getState();
-        const el = st.project?.chapters.find((c) => c.id === chapterId)?.elements.find((x) => x.id === elId);
+        const el = st.project?.elements.find((x) => x.id === elId);
         if (el) {
           const copy = JSON.parse(JSON.stringify(el)) as MapElement;
           copy.id = generateId();
-          st.addElements(chapterId, [copy]);
+          st.addElements([copy]);
           ed.selectElement(copy.id);
         }
       }
@@ -125,7 +147,6 @@ export default function App() {
     );
   }
 
-  const currentChapter = project.chapters.find((c) => c.id === selectedChapterId) || project.chapters[0];
   // 右侧浮层：元素模式需有选中元素；关键帧/特效模式始终显示；播放预览时隐藏
   const showRightPanel =
     !isPlaying &&
@@ -135,30 +156,34 @@ export default function App() {
 
   // 特效窗口的「画面震动」：编辑器与导出端同源（整体画面位移包络）
   const fps = project.globalConfig.defaultFPS ?? 30;
-  const shake = screenFxCombinedAt(currentChapter.fx, currentFrame, fps).shake;
+  const shake = screenFxCombinedAt(project.fx, currentFrame, fps).shake;
+  // 画幅：地图舞台按项目画幅等比居中（黑边），改画幅后地图区域随之变化
+  const fit = computeStageFit(stageSize, project.globalConfig.defaultResolution);
+  const stageBoxStyle = stageSize.w > 0
+    ? { left: fit.left, top: fit.top, width: fit.w, height: fit.h }
+    : { left: 0, top: 0, right: 0, bottom: 0 } as const;
 
   return (
     <div className="relative flex flex-col h-screen bg-background text-foreground">
       {/* 顶部栏：Logo + 项目芯片 + 底图/高程/3D + 撤销重做/保存/导出 */}
-      <TopBar onOpenExport={() => setExportOpen(true)} />
+      <TopBar onOpenExport={() => setExportOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
 
       {/* 地图舞台：全幅画布 + 特效预览层 + 浮动工具条/面板（震动=整体画面位移） */}
-      <div className="relative flex-1 overflow-hidden bg-[#0c0a09]">
+      <div ref={stageRef} className="relative flex-1 overflow-hidden bg-[#0c0a09]">
         <div
-          className="absolute inset-0"
-          style={{ transform: shake ? `translate(${shake.x.toFixed(2)}px, ${shake.y.toFixed(2)}px)` : undefined }}
+          className="absolute overflow-hidden"
+          style={{ ...stageBoxStyle, transform: shake ? `translate(${shake.x.toFixed(2)}px, ${shake.y.toFixed(2)}px)` : undefined }}
         >
           <EditableMap
             project={project}
-            chapter={currentChapter}
             currentFrame={currentFrame}
           />
-          {/* 特效窗口预览层：弹窗卡片/章节标题/天气/画面特效（双端同源渲染） */}
-          <FxPreviewLayer chapter={currentChapter} frame={currentFrame} fps={fps} />
+          {/* 特效窗口预览层：弹窗卡片/字幕/天气/画面特效（双端同源渲染） */}
+          <FxPreviewLayer project={project} frame={currentFrame} fps={fps} />
         </div>
 
-        {/* 浮动工具条（选择 + 六大工具） */}
-        <FloatingTools />
+        {/* 浮动工具条（选择 + 六大工具）；播放预览时隐藏 */}
+        {!isPlaying && <FloatingTools />}
 
         {/* 左下角底图/高程/3D 芯片 */}
         <MapStyleChip />
@@ -180,12 +205,12 @@ export default function App() {
           {panelMode === 'element' ? (
             <PropertiesPanel />
           ) : panelMode === 'keyframe' ? (
-            <KeyframePanel chapter={currentChapter} index={selectedKeyframeIdx ?? 0} />
+            <KeyframePanel project={project} index={selectedKeyframeIdx ?? 0} />
           ) : panelMode === 'fx' ? (
             <div className="h-full flex flex-col min-h-0">
               <PanelHeader title="特效" icon={<span className="text-base">✨</span>} onClose={() => setPanelMode('none')} />
               <div className="flex-1 min-h-0">
-                <FxPanelBody chapter={currentChapter} />
+                <FxPanelBody project={project} />
               </div>
             </div>
           ) : null}
@@ -193,6 +218,7 @@ export default function App() {
       )}
 
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       <ConfirmHost />
     </div>
   );

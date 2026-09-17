@@ -1,14 +1,15 @@
 /**
  * 时间线：播放条 + 轨道区（镜头流 / 特效 / 弹窗 / 元素分道）。
- * 轨道行统一「左侧标签槽 + 右侧轨道区」结构，所有块按章节时长百分比定位；
+ * 轨道行统一「左侧标签槽 + 右侧轨道区」结构，所有块按时间线时长百分比定位；
  * 特效/弹窗块点击跳转并打开特效面板对应标签；元素按时间不重叠自动分道。
  */
-import { useEffect, useMemo, useState } from 'react';
-import { Play, Pause, SkipBack, SkipForward, ChevronsLeft, ChevronsRight, Layers, Keyboard, Sparkles } from 'lucide-react';
-import { useProjectStore } from '../stores/projectStore';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Play, Pause, SkipBack, SkipForward, ChevronsLeft, ChevronsRight, Layers, Keyboard, Sparkles, RectangleHorizontal } from 'lucide-react';
+import { useProjectStore, setHistoryMuted } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { formatClock } from '../lib/time';
-import { chapterContentEndFrame } from '../lib/chapter-duration';
+import { EXPORT_PRESETS } from '../lib/export-video';
+import { projectContentEndFrame, fullDisplayEnd } from '../lib/project-duration';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { WEATHERS, SCREEN_FXS, POPUP_TYPES } from './FxPanelBody';
 import type { CameraKeyframe, ScreenFxItem, OverlayItem } from '../types';
@@ -54,13 +55,28 @@ function TrackRow({ label, height, children }: { label: string; height: number; 
   );
 }
 
+/** 轨道块两端的拖拽手柄：拖动改开始/结束时间 */
+function DragHandles({ onDrag }: { onDrag: (e: React.PointerEvent, mode: 'left' | 'right') => void }) {
+  return (
+    <>
+      <span
+        className="absolute left-0 top-0 bottom-0 w-1.5 z-20 cursor-ew-resize"
+        onPointerDown={(e) => onDrag(e, 'left')}
+      />
+      <span
+        className="absolute right-0 top-0 bottom-0 w-1.5 z-20 cursor-ew-resize"
+        onPointerDown={(e) => onDrag(e, 'right')}
+      />
+    </>
+  );
+}
+
 export function TimelineEditor() {
   const project = useProjectStore((s) => s.project);
   const currentFrame = useEditorStore((s) => s.currentFrame);
   const setCurrentFrame = useEditorStore((s) => s.setCurrentFrame);
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const setIsPlaying = useEditorStore((s) => s.setIsPlaying);
-  const selectedChapterId = useEditorStore((s) => s.selectedChapterId);
   const selectedKeyframeIdx = useEditorStore((s) => s.selectedKeyframeIdx);
   const selectKeyframe = useEditorStore((s) => s.selectKeyframe);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
@@ -68,7 +84,9 @@ export function TimelineEditor() {
   const elementsOpen = useEditorStore((s) => s.elementsOpen);
   const setElementsOpen = useEditorStore((s) => s.setElementsOpen);
   const openFx = useEditorStore((s) => s.openFx);
+  const updateGlobalConfig = useProjectStore((s) => s.updateGlobalConfig);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [aspectOpen, setAspectOpen] = useState(false);
 
   useEffect(() => {
     if (!project) return;
@@ -89,23 +107,32 @@ export function TimelineEditor() {
   if (!project) return null;
 
   const fps = project.globalConfig.defaultFPS;
-  const chapter = project.chapters.find((c) => c.id === selectedChapterId) || project.chapters[0];
-  const chapterStart = chapter.startFrame;
-  const chapterEnd = chapter.endFrame;
-  const chapterDur = Math.max(1, chapterEnd - chapterStart);
+  const resolution = project.globalConfig.defaultResolution;
+  // 用最大公约数换算出简比（1920×1080 → 16:9）
+  const aspectLabel = (() => {
+    const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+    const d = gcd(resolution.width, resolution.height) || 1;
+    return `${resolution.width / d}:${resolution.height / d}`;
+  })();
+  const timelineStart = 0;
+  // 播放/时间线终点 = max(内容实际结束帧, 60s)：改元素/弹窗/字幕时间后总时长即时跟随；
+  // 内容不足 60 秒时预览/时间线也至少铺满 60 秒（便于摆放与拖拽）。
+  const minFrames = Math.max(1, Math.round(60 * fps));
+  const contentEnd = useMemo(() => projectContentEndFrame(project), [project]);
+  const timelineEnd = Math.max(minFrames, contentEnd || project.endFrame);
+  const timelineDur = Math.max(1, timelineEnd - timelineStart);
+  // 「自定义显示时间」的全程结束基准（与属性面板一致）：元素处于全程显示时不可拖动改时间
+  const elFullEnd = fullDisplayEnd(project);
 
-  // 选中章节变化时，把当前帧钳制到章节范围内（便于编辑当前章节）
+  // 播放头超出总范围时（如内容被缩短）回到起点
   useEffect(() => {
-    if (currentFrame < chapterStart || currentFrame > chapterEnd) {
-      setCurrentFrame(chapterStart);
+    if (currentFrame < timelineStart || currentFrame > timelineEnd) {
+      setCurrentFrame(timelineStart);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chapter.id]);
+  }, [project.id, timelineEnd]);
 
-  // 播放终点 = 内容实际结束帧（与导出一致）：章节 endFrame 只是容器长度，尾部空白不播
-  const contentEnd = useMemo(() => chapterContentEndFrame(chapter), [chapter]);
-
-  // 播放（仅当前章节内循环）
+  // 播放（仅当前时间线内循环）
   useEffect(() => {
     if (!isPlaying) return;
     let raf = 0;
@@ -115,8 +142,8 @@ export function TimelineEditor() {
       const dt = Math.max(0, Math.min(0.25, (now - last) / 1000));
       last = now;
       const next = useEditorStore.getState().currentFrame + dt * fps;
-      if (next >= contentEnd) {
-        useEditorStore.getState().setCurrentFrame(contentEnd);
+      if (next >= timelineEnd) {
+        useEditorStore.getState().setCurrentFrame(timelineStart);
         useEditorStore.getState().setIsPlaying(false);
         return;
       }
@@ -125,15 +152,15 @@ export function TimelineEditor() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isPlaying, fps, contentEnd]);
+  }, [isPlaying, fps, timelineEnd, timelineStart]);
 
-  const localFrame = Math.max(0, Math.min(chapterDur, currentFrame - chapterStart));
+  const localFrame = Math.max(0, Math.min(timelineDur, currentFrame - timelineStart));
 
   // 播放头完全落在某视角的镜头动画区间（移动段）才选中该视角；否则取消选中
   useEffect(() => {
     // 正在编辑元素/特效/无面板时，播放头移动不打断当前面板
     if (['element', 'fx', 'none'].includes(useEditorStore.getState().panelMode)) return;
-    const kfs = chapter.camera;
+    const kfs = project.camera;
     const clear = () => {
       if (useEditorStore.getState().selectedKeyframeIdx !== null) {
         useEditorStore.getState().selectKeyframe(null);
@@ -180,41 +207,249 @@ export function TimelineEditor() {
       selectKeyframe(hit);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFrame, chapter.camera]);
+  }, [currentFrame, project.camera]);
   const localSeconds = localFrame / fps;
-  const chapterSeconds = chapterDur / fps;
+  const chapterSeconds = timelineDur / fps;
 
   const togglePlay = () => {
-    if (currentFrame >= chapterEnd) setCurrentFrame(chapterStart);
+    if (currentFrame >= timelineEnd) setCurrentFrame(timelineStart);
     setIsPlaying(!isPlaying);
   };
 
-  // ===== 轨道数据准备（统一钳制到章节内，按 % 定位） =====
-  const clampF = (f: number) => Math.max(chapterStart, Math.min(chapterEnd, f));
-  const leftPct = (f: number) => `${((clampF(f) - chapterStart) / chapterDur) * 100}%`;
-  const widthPct = (s: number, e: number) => `${Math.max(0.5, ((clampF(e) - clampF(s)) / chapterDur) * 100)}%`;
+  // ===== 拖动播放头 scrub：轨道区按下并左右拖动即可控制当前时间（拖动时暂停播放） =====
+  const trackAreaRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const scrubClientXRef = useRef<(clientX: number) => void>(() => {});
+  scrubClientXRef.current = (clientX: number) => {
+    const el = trackAreaRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const bodyLeft = rect.left + 56;               // 左侧标签槽宽 w-14
+    const bodyW = Math.max(1, rect.width - 56);
+    const pct = Math.max(0, Math.min(1, (clientX - bodyLeft) / bodyW));
+    setCurrentFrame(Math.round(timelineStart + pct * timelineDur));
+  };
+  const startScrub = (clientX: number) => {
+    setIsPlaying(false);
+    draggingRef.current = true;
+    scrubClientXRef.current(clientX);
+  };
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => { if (draggingRef.current) scrubClientXRef.current(e.clientX); };
+    const onUp = () => { draggingRef.current = false; };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, []);
+
+  // ===== 拖动轨道块：整体平移 / 拖两端改起止时间（特效 · 弹窗 · 元素 · 视角） =====
+  const suppressClickRef = useRef(false);
+  const blockDragRef = useRef<null | {
+    kind: 'fx' | 'popup' | 'element' | 'camera';
+    id?: string;
+    kf?: CameraKeyframe;
+    frameNow?: number;
+    minFrame?: number;
+    maxFrame?: number;
+    mode: 'move' | 'left' | 'right';
+    startClientX: number;
+    origStart: number;
+    origEnd: number;
+    moved: boolean;
+  }>(null);
+
+  // 拖动期间冻结轨道分道：否则块横向移动与别的元素时间重叠时会被重新分道 → 上下跳
+  const [laneFreeze, setLaneFreeze] = useState<{ kind: 'fx' | 'popup' | 'element'; lanes: number; idx: Map<string, number> } | null>(null);
+
+  /** 客户端 X → 时间线内的帧偏移（相对 timelineStart） */
+  const frameOffsetAt = (clientX: number) => {
+    const el = trackAreaRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    const bodyLeft = rect.left + 56;               // 左侧标签槽宽 w-14
+    const bodyW = Math.max(1, rect.width - 56);
+    const pct = Math.max(0, Math.min(1, (clientX - bodyLeft) / bodyW));
+    return pct * timelineDur;
+  };
+
+  const beginBlockDrag = (
+    e: React.PointerEvent,
+    spec: { kind: 'fx' | 'popup' | 'element' | 'camera'; mode: 'move' | 'left' | 'right'; start: number; end: number; id?: string; kf?: CameraKeyframe; minFrame?: number; maxFrame?: number },
+  ) => {
+    e.stopPropagation();
+    setIsPlaying(false);
+    blockDragRef.current = {
+      kind: spec.kind, id: spec.id, kf: spec.kf, frameNow: spec.kf?.frame,
+      minFrame: spec.minFrame, maxFrame: spec.maxFrame,
+      mode: spec.mode, startClientX: e.clientX, origStart: spec.start, origEnd: spec.end, moved: false,
+    };
+    // 冻结当前分道（用拖动开始前的布局），拖动中不再重排（视角轨道不分道）
+    if (spec.kind === 'fx') setLaneFreeze({ kind: 'fx', lanes: fxLanes, idx: new Map(fxNorm.map((n, i) => [n.fx.id, fxLaneIdx[i]])) });
+    else if (spec.kind === 'popup') setLaneFreeze({ kind: 'popup', lanes: popLanes, idx: new Map(popNorm.map((n, i) => [n.ov.id, popLaneIdx[i]])) });
+    else if (spec.kind === 'element') setLaneFreeze({ kind: 'element', lanes: elLanes, idx: new Map(elNorm.map((n, i) => [n.el.id, elLaneIdx[i]])) });
+  };
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const d = blockDragRef.current;
+      if (!d) return;
+      if (!d.moved && Math.abs(e.clientX - d.startClientX) < 3) return;
+      document.body.style.userSelect = 'none';
+      const delta = frameOffsetAt(e.clientX) - frameOffsetAt(d.startClientX);
+
+      // 视角块：平移到达帧 / 拖边界改移动时长（跟随、环绕各有对应字段）
+      if (d.kind === 'camera' && d.kf) {
+        const orig = d.kf;
+        const lo = d.minFrame ?? 1;
+        const hi = d.maxFrame ?? timelineEnd;
+        let updated: CameraKeyframe;
+        if (orig.followRoute) {
+          const fr = orig.followRoute;
+          const s0 = fr.startFrame ?? orig.frame;
+          const e0 = fr.endFrame ?? orig.frame;
+          if (d.mode === 'left') {
+            updated = { ...orig, followRoute: { ...fr, startFrame: Math.round(Math.max(lo, Math.min(s0 + delta, e0 - 1))), endFrame: e0 } };
+          } else if (d.mode === 'right') {
+            updated = { ...orig, followRoute: { ...fr, startFrame: s0, endFrame: Math.round(Math.max(s0 + 1, Math.min(e0 + delta, hi))) } };
+          } else {
+            const nf = Math.round(Math.max(lo, Math.min(hi, orig.frame + delta)));
+            const rd = nf - orig.frame;
+            updated = { ...orig, frame: nf, followRoute: { ...fr, startFrame: s0 + rd, endFrame: e0 + rd } };
+          }
+        } else if (orig.orbit) {
+          const s0 = orig.frame;
+          const e0 = orig.frame + Math.round((orig.orbit.duration ?? 2) * fps);
+          if (d.mode === 'left') {
+            const ns = Math.round(Math.max(lo, Math.min(s0 + delta, e0 - 1)));
+            updated = { ...orig, frame: ns, orbit: { ...orig.orbit, duration: Math.max(1 / fps, (e0 - ns) / fps) } };
+          } else if (d.mode === 'right') {
+            const ne = Math.round(Math.max(s0 + 1, Math.min(e0 + delta, hi)));
+            updated = { ...orig, frame: s0, orbit: { ...orig.orbit, duration: Math.max(1 / fps, (ne - s0) / fps) } };
+          } else {
+            updated = { ...orig, frame: Math.round(Math.max(lo, Math.min(hi, orig.frame + delta))) };
+          }
+        } else {
+          const prevF = Math.max(0, (d.minFrame ?? 1) - 1);
+          const md0 = typeof orig.moveDuration === 'number' ? orig.moveDuration : Math.min(2 * fps, Math.max(0, orig.frame - prevF));
+          const s0 = orig.frame - md0;
+          const e0 = orig.frame;
+          // 普通视角：到达时间 = 结束时间，持续时间 = 结束 - 开始。
+          // 拖右边界改结束（开始固定）→ 持续时间随之变化；拖左边界改开始（结束固定）。
+          if (d.mode === 'left') {
+            const ns = Math.round(Math.max(lo, Math.min(s0 + delta, e0 - 1)));
+            updated = { ...orig, moveDuration: Math.max(1, e0 - ns) };
+          } else if (d.mode === 'right') {
+            const ne = Math.round(Math.max(s0 + 1, Math.min(e0 + delta, hi)));
+            updated = { ...orig, frame: ne, moveDuration: Math.max(1, ne - s0) };
+          } else {
+            updated = { ...orig, frame: Math.round(Math.max(lo, Math.min(hi, orig.frame + delta))) };
+          }
+        }
+        setHistoryMuted(d.moved);
+        const st = useProjectStore.getState();
+        const cam = st.project?.camera || [];
+        st.setProjectCamera(cam.map((k) => (k.frame === d.frameNow ? updated : k)));
+        d.frameNow = updated.frame;
+        d.moved = true;
+        return;
+      }
+
+      const minLen = Math.max(1, Math.round(fps * 0.1));
+      let s = d.origStart;
+      let en = d.origEnd;
+      if (d.mode === 'move') {
+        s = d.origStart + delta;
+        en = d.origEnd + delta;
+        if (s < timelineStart) { en += timelineStart - s; s = timelineStart; }
+        if (en > timelineEnd) { s -= en - timelineEnd; en = timelineEnd; }
+        s = Math.max(timelineStart, s);
+        en = Math.min(timelineEnd, en);
+      } else if (d.mode === 'left') {
+        s = Math.max(timelineStart, Math.min(d.origStart + delta, d.origEnd - minLen));
+      } else {
+        en = Math.min(timelineEnd, Math.max(d.origEnd + delta, d.origStart + minLen));
+      }
+      s = Math.round(s);
+      en = Math.round(en);
+      // 整段拖动只压一次历史：首次移动提交，其余静默
+      setHistoryMuted(d.moved);
+      const st = useProjectStore.getState();
+      if (d.kind === 'fx') st.updateScreenFx(d.id!, { startFrame: s, endFrame: en });
+      else if (d.kind === 'popup') st.updateOverlay(d.id!, { startFrame: s, endFrame: en });
+      else st.updateElement(d.id!, { startFrame: s, endFrame: en });
+      d.moved = true;
+    };
+    const onUp = () => {
+      const d = blockDragRef.current;
+      blockDragRef.current = null;
+      document.body.style.userSelect = '';
+      setHistoryMuted(false);
+      setLaneFreeze(null);
+      if (d?.moved) {
+        suppressClickRef.current = true;
+        setTimeout(() => { suppressClickRef.current = false; }, 0);
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineStart, timelineEnd, timelineDur, fps]);
+
+  // ===== 轨道数据准备（统一钳制到时间线内，按 % 定位） =====
+  const clampF = (f: number) => Math.max(timelineStart, Math.min(timelineEnd, f));
+  const leftPct = (f: number) => `${((clampF(f) - timelineStart) / timelineDur) * 100}%`;
+  const widthPct = (s: number, e: number) => `${Math.max(0.5, ((clampF(e) - clampF(s)) / timelineDur) * 100)}%`;
 
   // 特效块（天气 + 画面）
-  const fxItems: ScreenFxItem[] = (chapter.fx || []).filter((f) => f.enabled !== false);
+  /** 应用拖动冻结：拖动中的轨道沿用拖动前的分道，避免上下跳 */
+  const applyFreeze = (kind: 'fx' | 'popup' | 'element', ids: string[], idx: number[], lanes: number) => {
+    if (!laneFreeze || laneFreeze.kind !== kind) return { idx, lanes };
+    return {
+      idx: idx.map((v, i) => laneFreeze.idx.get(ids[i]) ?? v),
+      lanes: Math.max(lanes, laneFreeze.lanes),
+    };
+  };
+
+  const fxItems: ScreenFxItem[] = (project.fx || []).filter((f) => f.enabled !== false);
   const fxNorm = fxItems.map((f) => ({ fx: f, start: clampF(f.startFrame), end: Math.max(clampF(f.startFrame) + 1, clampF(f.endFrame)) }));
-  const fxLaneIdx = packLanes(fxNorm);
-  const fxLanes = fxNorm.length ? Math.max(...fxLaneIdx) + 1 : 1;
+  const fxRaw = packLanes(fxNorm);
+  const fxRawLanes = fxNorm.length ? Math.max(...fxRaw) + 1 : 1;
+  const fxView = applyFreeze('fx', fxNorm.map((n) => n.fx.id), fxRaw, fxRawLanes);
+  const fxLaneIdx = fxView.idx;
+  const fxLanes = fxView.lanes;
   const fxMetaOf = (fx: ScreenFxItem) =>
     fx.kind === 'weather'
       ? WEATHERS.find((w) => w.type === fx.weather?.type)
       : SCREEN_FXS.find((s) => s.type === fx.effect?.type);
 
   // 弹窗块
-  const popItems: OverlayItem[] = (chapter.overlays || []);
+  const popItems: OverlayItem[] = (project.overlays || []);
   const popNorm = popItems.map((o) => ({ ov: o, start: clampF(o.startFrame), end: Math.max(clampF(o.startFrame) + 1, clampF(o.endFrame)) }));
-  const popLaneIdx = packLanes(popNorm);
-  const popLanes = popNorm.length ? Math.max(...popLaneIdx) + 1 : 1;
+  const popRaw = packLanes(popNorm);
+  const popRawLanes = popNorm.length ? Math.max(...popRaw) + 1 : 1;
+  const popView = applyFreeze('popup', popNorm.map((n) => n.ov.id), popRaw, popRawLanes);
+  const popLaneIdx = popView.idx;
+  const popLanes = popView.lanes;
 
   // 元素分道
-  const els = chapter.elements;
+  const els = project.elements;
   const elNorm = els.map((el) => ({ el, start: clampF(el.startFrame), end: Math.max(clampF(el.startFrame) + 1, clampF(el.endFrame)) }));
-  const elLaneIdx = packLanes(elNorm);
-  const elLanes = elNorm.length ? Math.max(...elLaneIdx) + 1 : 1;
+  const elRaw = packLanes(elNorm);
+  const elRawLanes = elNorm.length ? Math.max(...elRaw) + 1 : 1;
+  const elView = applyFreeze('element', elNorm.map((n) => n.el.id), elRaw, elRawLanes);
+  const elLaneIdx = elView.idx;
+  const elLanes = elView.lanes;
 
   // 行高：刻度 24 + 镜头流 28 + 特效/弹窗道 20/道 + 元素道 18/道 + 配音/音乐行 22×2
   // 另计入每行 mt-1（4px）行距与底部余量，避免内容被裁切出现滚动条
@@ -237,28 +472,28 @@ export function TimelineEditor() {
           播放预览
         </button>
         <button
-          onClick={() => { setCurrentFrame(chapterStart); setIsPlaying(false); }}
+          onClick={() => { setCurrentFrame(timelineStart); setIsPlaying(false); }}
           className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
           title="回本段开头"
         >
           <SkipBack size={15} />
         </button>
         <button
-          onClick={() => setCurrentFrame(Math.max(chapterStart, currentFrame - fps))}
+          onClick={() => setCurrentFrame(Math.max(timelineStart, currentFrame - fps))}
           className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
           title="后退 1 秒"
         >
           <ChevronsLeft size={15} />
         </button>
         <button
-          onClick={() => setCurrentFrame(Math.min(chapterEnd, currentFrame + fps))}
+          onClick={() => setCurrentFrame(Math.min(timelineEnd, currentFrame + fps))}
           className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
           title="前进 1 秒"
         >
           <ChevronsRight size={15} />
         </button>
         <button
-          onClick={() => { setCurrentFrame(chapterEnd); setIsPlaying(false); }}
+          onClick={() => { setCurrentFrame(timelineEnd); setIsPlaying(false); }}
           className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
           title="跳至本段结尾"
         >
@@ -269,6 +504,43 @@ export function TimelineEditor() {
           {formatClock(localSeconds)} / {formatClock(chapterSeconds)}
         </div>
 
+        {/* 画幅切换（导出分辨率；位于「元素」按钮之前） */}
+        <div className="relative ml-2">
+          <button
+            onClick={() => setAspectOpen((v) => !v)}
+            className={`h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-medium transition-colors ${
+              aspectOpen ? 'bg-white/10 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+            }`}
+            title="切换常用画幅（导出分辨率）"
+          >
+            <RectangleHorizontal size={13} /> 画幅 {aspectLabel}
+          </button>
+          {aspectOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setAspectOpen(false)} />
+              <div className="absolute bottom-full mb-2 left-0 z-50 w-56 bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] rounded-xl shadow-2xl p-1.5">
+                {EXPORT_PRESETS.map((p) => {
+                  const on = p.width === resolution.width && p.height === resolution.height;
+                  return (
+                    <button
+                      key={p.label}
+                      onClick={() => {
+                        updateGlobalConfig({ defaultResolution: { width: p.width, height: p.height, label: p.label } });
+                        setAspectOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-xs transition-colors ${
+                        on ? 'bg-brand/20 text-foreground' : 'text-foreground/80 hover:bg-white/[0.06]'
+                      }`}
+                    >
+                      <span className="truncate">{p.label}</span>
+                      <span className="text-[10px] text-muted-foreground shrink-0">{p.width}×{p.height}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
         {/* 元素面板开关 + 特效 + 快捷键速查（紧跟时钟，靠左） */}
         <button
           onClick={() => setElementsOpen(!elementsOpen)}
@@ -296,21 +568,27 @@ export function TimelineEditor() {
 
         <div className="flex-1" />
 
-        <span className="text-xs text-muted-foreground truncate max-w-[200px]">{chapter.title}</span>
+        <span className="text-xs text-muted-foreground truncate max-w-[200px]">{project.name}</span>
         <div className="text-xs text-muted-foreground shrink-0">FPS: {fps}</div>
       </div>
 
       {/* 轨道区（内容超高时纵向滚动，播放头贯穿全部行） */}
-      <div className="overflow-y-auto overflow-x-hidden" style={{ height: trackVisibleH }}>
+      <div ref={trackAreaRef} className="overflow-y-auto overflow-x-hidden" style={{ height: trackVisibleH }}>
         <div className="relative" style={{ height: contentH }}>
-          {/* 播放头 */}
+          {/* 播放头（可拖动 scrub） */}
           <div
             className="absolute top-0 bottom-0 left-14 right-0 pointer-events-none"
             style={{ zIndex: 30 }}
           >
             <div
               className="absolute top-0 bottom-0 w-0.5 bg-red-500"
-              style={{ left: `${(localFrame / chapterDur) * 100}%` }}
+              style={{ left: `${(localFrame / timelineDur) * 100}%` }}
+            />
+            <div
+              className="absolute top-0 bottom-0 -ml-1.5 w-3 cursor-col-resize pointer-events-auto"
+              style={{ left: `${(localFrame / timelineDur) * 100}%` }}
+              title="拖动控制时间"
+              onPointerDown={(e) => { e.preventDefault(); startScrub(e.clientX); }}
             />
           </div>
 
@@ -341,9 +619,9 @@ export function TimelineEditor() {
           {/* 镜头流轨道：块长 = 移动持续时长，点选进入右侧属性 */}
           <TrackRow label="🎥 镜头流" height={28}>
             {(() => {
-              const kfs: CameraKeyframe[] = [...(chapter.camera || [])].sort((a, b) => a.frame - b.frame);
+              const kfs: CameraKeyframe[] = [...(project.camera || [])].sort((a, b) => a.frame - b.frame);
               return kfs.map((kf, i) => {
-                const prevFrame = i > 0 ? kfs[i - 1].frame : chapterStart;
+                const prevFrame = i > 0 ? kfs[i - 1].frame : timelineStart;
                 const follow = !!kf.followRoute;
                 const orbit = !!kf.orbit;
                 const moveFrames = i === 0
@@ -356,11 +634,11 @@ export function TimelineEditor() {
                 let end: number;
                 if (follow) {
                   const fr = kf.followRoute!;
-                  start = Math.max(chapterStart, fr.startFrame ?? kf.frame);
-                  end = Math.max(start, Math.min(chapterEnd, fr.endFrame ?? kf.frame));
+                  start = Math.max(timelineStart, fr.startFrame ?? kf.frame);
+                  end = Math.max(start, Math.min(timelineEnd, fr.endFrame ?? kf.frame));
                 } else if (orbit) {
-                  start = Math.max(chapterStart, kf.frame);
-                  end = Math.max(start, Math.min(chapterEnd, kf.frame + Math.round((kf.orbit?.duration ?? 2) * fps)));
+                  start = Math.max(timelineStart, kf.frame);
+                  end = Math.max(start, Math.min(timelineEnd, kf.frame + Math.round((kf.orbit?.duration ?? 2) * fps)));
                 } else {
                   start = i === 0 ? kf.frame : kf.frame - moveFrames;
                   end = i === 0 ? kf.frame : kf.frame;
@@ -377,24 +655,34 @@ export function TimelineEditor() {
                         active ? 'bg-brand ring-2 ring-brand/40' : 'bg-brand/60 hover:bg-brand/80'
                       }`}
                       style={{ left: leftPct(kf.frame) }}
-                      title={`视角1 · 起点锚定 · t=${((kf.frame - chapterStart) / fps).toFixed(1)}s`}
+                      title={`视角1 · 起点锚定 · t=${((kf.frame - timelineStart) / fps).toFixed(1)}s`}
                     />
                   );
                 }
                 return (
                   <button
                     key={`kf-${kf.frame}-${i}`}
-                    onClick={() => { selectKeyframe(i); setCurrentFrame(start); }}
+                    onPointerDown={(e) => beginBlockDrag(e, {
+                      kind: 'camera', kf, mode: 'move', start, end,
+                      minFrame: prevFrame + 1,
+                      maxFrame: (kfs[i + 1]?.frame ?? timelineEnd) - 1,
+                    })}
+                    onClick={() => { if (suppressClickRef.current) return; selectKeyframe(i); setCurrentFrame(start); }}
                     className={`absolute top-1 h-6 rounded-md z-10 overflow-hidden border ${
                       active ? 'bg-brand ring-2 ring-brand/40 border-brand' : 'bg-brand/50 hover:bg-brand/70 border-brand/60'
                     }`}
                     style={{ left: leftPct(start), width: widthPct(start, end) }}
                     title={follow
-                      ? `跟随视角${i + 1} · 跟随 ${moveSec}s · ${((start - chapterStart) / fps).toFixed(1)}s → ${((end - chapterStart) / fps).toFixed(1)}s`
+                      ? `跟随视角${i + 1} · 跟随 ${moveSec}s · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s（拖动可调整时间）`
                       : orbit
-                        ? `环绕视角${i + 1} · 开始 ${((start - chapterStart) / fps).toFixed(1)}s · 持续 ${moveSec}s`
-                        : `视角${i + 1} · 移动 ${moveSec}s · 到达 t=${((kf.frame - chapterStart) / fps).toFixed(1)}s`}
+                        ? `环绕视角${i + 1} · 开始 ${((start - timelineStart) / fps).toFixed(1)}s · 持续 ${moveSec}s（拖动可调整时间）`
+                        : `视角${i + 1} · 移动 ${moveSec}s · 到达 t=${((kf.frame - timelineStart) / fps).toFixed(1)}s（拖动可调整时间）`}
                   >
+                    <DragHandles onDrag={(e, mode) => beginBlockDrag(e, {
+                      kind: 'camera', kf, mode, start, end,
+                      minFrame: prevFrame + 1,
+                      maxFrame: (kfs[i + 1]?.frame ?? timelineEnd) - 1,
+                    })} />
                     <span className="block h-full w-full text-[10px] leading-6 text-white text-left pl-1 truncate">
                       {i + 1}
                     </span>
@@ -416,11 +704,13 @@ export function TimelineEditor() {
                     return (
                       <button
                         key={fx.id}
-                        onClick={() => { setCurrentFrame(start); openFx(fx.kind === 'weather' ? 'weather' : 'screen', fx.id); }}
+                        onPointerDown={(e) => beginBlockDrag(e, { kind: 'fx', id: fx.id, mode: 'move', start, end })}
+                        onClick={() => { if (suppressClickRef.current) return; setCurrentFrame(start); openFx(fx.kind === 'weather' ? 'weather' : 'screen', fx.id); }}
                         className={`absolute top-0.5 bottom-0.5 rounded border flex items-center overflow-hidden z-10 hover:brightness-110 transition-[filter] ${color}`}
                         style={{ left: leftPct(start), width: widthPct(start, end) }}
-                        title={`${meta?.label || fx.name} · ${((start - chapterStart) / fps).toFixed(1)}s → ${((end - chapterStart) / fps).toFixed(1)}s`}
+                        title={`${meta?.label || fx.name} · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s（拖动可调整时间）`}
                       >
+                        <DragHandles onDrag={(e, mode) => beginBlockDrag(e, { kind: 'fx', id: fx.id, mode, start, end })} />
                         <span className="px-1 text-[10px] leading-none truncate">{meta?.icon || '✨'} {fx.name}</span>
                       </button>
                     );
@@ -441,11 +731,13 @@ export function TimelineEditor() {
                     return (
                       <button
                         key={ov.id}
-                        onClick={() => { setCurrentFrame(start); openFx('popup', ov.id); }}
+                        onPointerDown={(e) => beginBlockDrag(e, { kind: 'popup', id: ov.id, mode: 'move', start, end })}
+                        onClick={() => { if (suppressClickRef.current) return; setCurrentFrame(start); openFx('popup', ov.id); }}
                         className={`absolute top-0.5 bottom-0.5 rounded border flex items-center overflow-hidden z-10 hover:brightness-110 transition-[filter] ${POPUP_BLOCK_COLOR}`}
                         style={{ left: leftPct(start), width: widthPct(start, end) }}
-                        title={`${ov.name} · ${((start - chapterStart) / fps).toFixed(1)}s → ${((end - chapterStart) / fps).toFixed(1)}s`}
+                        title={`${ov.name} · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s（拖动可调整时间）`}
                       >
+                        <DragHandles onDrag={(e, mode) => beginBlockDrag(e, { kind: 'popup', id: ov.id, mode, start, end })} />
                         <span className="px-1 text-[10px] leading-none truncate">{meta?.icon || '💬'} {ov.name}</span>
                       </button>
                     );
@@ -463,20 +755,24 @@ export function TimelineEditor() {
                   {elNorm.map(({ el, start, end }, i) => {
                     if (elLaneIdx[i] !== lane) return null;
                     const selected = selectedElementId === el.id;
-                    const wPct = ((clampF(end) - clampF(start)) / chapterDur) * 100;
+                    const wPct = ((clampF(end) - clampF(start)) / timelineDur) * 100;
+                    // 全程显示（自定义显示时间关闭）时不可拖动改时间，避免误触发开关状态
+                    const customOn = el.startFrame !== 0 || el.endFrame !== elFullEnd;
                     return (
                       <button
                         key={el.id}
-                        onClick={() => selectElement(el.id)}
+                        onPointerDown={customOn ? (e) => beginBlockDrag(e, { kind: 'element', id: el.id, mode: 'move', start, end }) : undefined}
+                        onClick={() => { if (suppressClickRef.current) return; selectElement(el.id); }}
                         className={`absolute top-0.5 bottom-0.5 rounded-sm border flex items-center overflow-hidden z-10 transition-colors ${
                           selected
                             ? 'bg-emerald-300/90 border-emerald-100 ring-1 ring-brand text-emerald-950'
                             : 'bg-emerald-500/60 border-emerald-400/50 text-emerald-50 hover:bg-emerald-500/80'
                         }`}
                         style={{ left: leftPct(start), width: widthPct(start, end) }}
-                        title={`${el.name} · ${((start - chapterStart) / fps).toFixed(1)}s → ${((end - chapterStart) / fps).toFixed(1)}s`}
+                        title={`${el.name} · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s${customOn ? '（拖动可调整时间）' : '（全程显示）'}`}
                       >
-                        {wPct > 7 && <span className="px-1 text-[9px] leading-none truncate">{el.name}</span>}
+                        {customOn && <DragHandles onDrag={(e, mode) => beginBlockDrag(e, { kind: 'element', id: el.id, mode, start, end })} />}
+                        <span className={`px-1 text-[9px] leading-none truncate ${wPct > 1.5 ? '' : 'sr-only'}`}>{el.name}</span>
                       </button>
                     );
                   })}
@@ -487,7 +783,7 @@ export function TimelineEditor() {
 
           {/* 配音/字幕轨道：每条字幕一块（宽=显示时长），点击打开字幕页签 */}
           <TrackRow label="🎙 配音" height={22}>
-            {(chapter.narration?.entries || []).map((e) => {
+            {(project.narration?.entries || []).map((e) => {
               const start = e.startFrame;
               const end = e.startFrame + e.durationFrames;
               const st = e.status || 'none';
@@ -499,41 +795,37 @@ export function TimelineEditor() {
                     st === 'ready' ? 'bg-sky-500/60 border-sky-400/50' : st === 'error' ? 'bg-red-500/50 border-red-400/50' : st === 'pending' ? 'bg-amber-500/60 border-amber-400/50' : 'bg-sky-500/30 border-sky-400/40'
                   }`}
                   style={{ left: leftPct(start), width: widthPct(start, end) }}
-                  title={`${e.text.slice(0, 24)} · ${((start - chapterStart) / fps).toFixed(1)}s → ${((end - chapterStart) / fps).toFixed(1)}s`}
+                  title={`${e.text.slice(0, 24)} · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s`}
                 >
-                  {e.durationFrames / chapterDur > 0.07 && <span className="px-1 text-[9px] leading-none truncate">{e.text}</span>}
+                  {e.durationFrames / timelineDur > 0.07 && <span className="px-1 text-[9px] leading-none truncate">{e.text}</span>}
                 </button>
               );
             })}
           </TrackRow>
 
-          {/* 背景音乐轨道：每段音乐一块（startFrame/endFrame 为章内相对帧），点击打开音乐页签 */}
+          {/* 背景音乐轨道（项目级单轨多段，绝对帧）：只显示与本章相交的段，点击打开音乐页签 */}
           <TrackRow label="🎵 音乐" height={22}>
-            {(chapter.music || []).map((m) => {
-              const start = chapterStart + m.startFrame;
-              const end = chapterStart + m.endFrame;
+            {(project.music || []).filter((m) => m.endFrame > timelineStart && m.startFrame < timelineEnd).map((m) => {
+              const start = m.startFrame;
+              const end = m.endFrame;
               return (
                 <button
                   key={m.id}
-                  onClick={() => { setCurrentFrame(start); openFx('music'); }}
+                  onClick={() => { setCurrentFrame(Math.max(timelineStart, Math.min(timelineEnd, start))); openFx('music'); }}
                   className="absolute top-0.5 bottom-0.5 rounded border flex items-center overflow-hidden z-10 hover:brightness-110 transition-[filter] bg-violet-500/60 border-violet-400/50"
                   style={{ left: leftPct(start), width: widthPct(start, end) }}
-                  title={`${m.name}${m.loop ? '（循环）' : ''} · ${((start - chapterStart) / fps).toFixed(1)}s → ${((end - chapterStart) / fps).toFixed(1)}s`}
+                  title={`${m.name}${m.loop ? '（循环）' : ''} · ${(start / fps).toFixed(1)}s → ${(end / fps).toFixed(1)}s`}
                 >
-                  {(end - start) / chapterDur > 0.07 && <span className="px-1 text-[9px] leading-none truncate">🎵 {m.name}</span>}
+                  {(Math.min(end, timelineEnd) - Math.max(start, timelineStart)) / timelineDur > 0.07 && <span className="px-1 text-[9px] leading-none truncate">🎵 {m.name}</span>}
                 </button>
               );
             })}
           </TrackRow>
 
-          {/* 点击跳转（章节内，位于轨道下层） */}
+          {/* 点击/拖动跳转（时间线内，位于轨道下层）：点击定位、按住左右拖动 scrub */}
           <div
-            className="absolute inset-0 cursor-pointer z-0"
-            onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const percent = Math.max(0, Math.min(1, (e.clientX - rect.left - 56) / (rect.width - 56)));
-              setCurrentFrame(Math.round(chapterStart + percent * chapterDur));
-            }}
+            className="absolute inset-0 cursor-col-resize z-0"
+            onPointerDown={(e) => { e.preventDefault(); startScrub(e.clientX); }}
           />
         </div>
       </div>

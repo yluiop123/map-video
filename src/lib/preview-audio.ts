@@ -6,7 +6,7 @@
  */
 import { useEditorStore } from '../stores/editorStore';
 import { useProjectStore } from '../stores/projectStore';
-import type { Chapter } from '../types';
+import type { MapVideoProject } from '../types';
 
 const pool = new Map<string, HTMLAudioElement>();
 
@@ -33,23 +33,27 @@ interface Desired {
   loop: boolean;
 }
 
-function desiredAt(chapter: Chapter, frame: number, fps: number): Map<string, Desired> {
-  const f = frame - chapter.startFrame; // 章内相对帧
+function desiredAt(project: MapVideoProject, frame: number, fps: number): Map<string, Desired> {
   const map = new Map<string, Desired>();
-  // 配音：字幕条激活区间播放，音量恒定
-  const nar = chapter.narration;
+  // 配音：字幕条激活区间播放（条目 startFrame 为**项目绝对帧**），音量恒定
+  const nar = project.narration;
   if (nar) {
     for (const e of nar.entries) {
       if (!e.audioUrl) continue;
-      if (f >= e.startFrame && f < e.startFrame + e.durationFrames) {
-        map.set(e.audioUrl, { vol: 1, offset: (f - e.startFrame) / fps, loop: false });
+      if (frame >= e.startFrame && frame < e.startFrame + e.durationFrames) {
+        map.set(e.audioUrl, { vol: 1, offset: (frame - e.startFrame) / fps, loop: false });
       }
     }
   }
-  // 背景音乐：区间 + 音量淡入淡出
-  for (const m of chapter.music || []) {
-    if (f < m.startFrame || f >= m.endFrame) continue;
-    const local = f - m.startFrame;
+  return map;
+}
+
+/** 项目级背景音乐（绝对帧）：区间 + 音量淡入淡出 */
+function musicAt(project: MapVideoProject, frame: number, fps: number): Map<string, Desired> {
+  const map = new Map<string, Desired>();
+  for (const m of project.music || []) {
+    if (frame < m.startFrame || frame >= m.endFrame) continue;
+    const local = frame - m.startFrame;
     const len = Math.max(1, m.endFrame - m.startFrame);
     const fadeInF = Math.max(1, Math.round((m.fadeIn || 0) * fps));
     const fadeOutF = Math.max(1, Math.round((m.fadeOut || 0) * fps));
@@ -66,19 +70,20 @@ function sync(): void {
   if (syncing) return;
   syncing = true;
   try {
-    const { isPlaying, currentFrame, selectedChapterId } = useEditorStore.getState();
+    const { isPlaying, currentFrame } = useEditorStore.getState();
     const project = useProjectStore.getState().project;
     if (!isPlaying || !project) {
       pauseAll();
       return;
     }
-    const chapter = project.chapters.find((c) => c.id === selectedChapterId) || project.chapters[0];
-    if (!chapter || currentFrame < chapter.startFrame || currentFrame >= chapter.endFrame) {
-      pauseAll();
-      return;
-    }
     const fps = project.globalConfig.defaultFPS || 30;
-    const want = desiredAt(chapter, currentFrame, fps);
+    const want = new Map<string, Desired>();
+    // 配音：仅在本章播放区间内
+    if (project && currentFrame >= 0 && currentFrame < project.endFrame) {
+      for (const [k, v] of desiredAt(project, currentFrame, fps)) want.set(k, v);
+    }
+    // 背景音乐：项目级，跨片段连续播放
+    for (const [k, v] of musicAt(project, currentFrame, fps)) want.set(k, v);
     // 激活需要的音频
     for (const [url, d] of want) {
       const el = getEl(url);
@@ -119,4 +124,11 @@ export function mountPreviewAudio(): void {
   if (mounted) return;
   mounted = true;
   useEditorStore.subscribe(sync);
+  // 项目数据变化也要重算（删除/替换正在播放的音乐、退出项目 → project 变 null）
+  useProjectStore.subscribe(sync);
+}
+
+/** 立即停止全部预览音频（退出项目/卸载时调用） */
+export function stopPreviewAudio(): void {
+  pauseAll();
 }

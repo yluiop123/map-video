@@ -9,6 +9,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2 } from './db-v2.mjs';
 
 const DIST = path.join(app.getAppPath(), 'dist');
 
@@ -18,21 +19,8 @@ function initDb() {
   const dir = app.getPath('userData');
   fs.mkdirSync(dir, { recursive: true });
   db = new DatabaseSync(path.join(dir, 'mapvideo.db'));
+  // 应用配置（providers / 本地 Key）。项目、合集、素材走 V2 关系表（见 db-v2.mjs）。
   db.exec(`
-    CREATE TABLE IF NOT EXISTS projects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      data TEXT NOT NULL,
-      size INTEGER DEFAULT 0,
-      updated_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS collections (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      ord INTEGER DEFAULT 0,
-      created_at INTEGER,
-      updated_at INTEGER
-    );
     CREATE TABLE IF NOT EXISTS providers (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
@@ -48,17 +36,15 @@ function initDb() {
       sort INTEGER DEFAULT 0
     );
   `);
-
-  // 迁移：projects 增加 collection_id 列（旧库没有此列），并保证「默认合集」存在
-  const cols = db.prepare('PRAGMA table_info(projects)').all().map((c) => c.name);
-  if (!cols.includes('collection_id')) {
-    db.exec("ALTER TABLE projects ADD COLUMN collection_id TEXT DEFAULT 'default'");
-  }
   const now = Date.now();
-  db.prepare(`
-    INSERT OR IGNORE INTO collections (id, name, ord, created_at, updated_at)
-    VALUES ('default', '默认合集', -1, ?, ?)
-  `).run(now, now);
+
+  // V2 关系型表（15 表 / 3 视图）+ 旧 JSON 项目一次性迁移
+  if (ensureV2Schema(db)) {
+    try {
+      db.prepare("INSERT OR IGNORE INTO collection (collection_id, name, ord, created_at, updated_at) VALUES ('default','默认合集',-1,?,?)").run(now, now);
+    } catch { /* 忽略 */ }
+    migrateLegacyProjects(db);
+  }
 }
 
 // ---------- AI / TTS（协议实现，与 web 服务端同源） ----------
@@ -88,6 +74,41 @@ async function forwardChat(cfg, system, user) {
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== 'string') throw new Error('上游响应无 choices[0].message.content');
   return content;
+}
+
+/** 文生图（通义万相 / 兼容接口）：返回图片 URL。参照 createVideo/scripts。 */
+async function generateImage(cfg, prompt) {
+  const url = `${String(cfg.baseUrl || '').replace(/\/+$/, '')}/services/aigc/multimodal-generation/generation`;
+  const body = {
+    model: cfg.model || 'z-image-turbo',
+    input: { messages: [{ role: 'user', content: [{ text: prompt }] }] },
+    parameters: { prompt_extend: false, size: '2048*1152' },
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`上游 HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  const img = data?.output?.choices?.[0]?.message?.content?.[0]?.image;
+  if (typeof img !== 'string') throw new Error('上游响应无 image 字段');
+  return img;
+}
+
+/** CosyVoice 声音克隆：转发 customization（body 由渲染端组装，含参考音频 dataURI）。参照 clone_qwen_voice.py。 */
+async function voiceClone(cfg, body) {
+  const url = `${String(cfg.baseUrl || '').replace(/\/+$/, '')}/services/audio/tts/customization`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`上游 HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  const voice = data?.output?.voice_id || data?.output?.voice;
+  if (typeof voice !== 'string') throw new Error('上游响应无 voice_id');
+  return voice;
 }
 
 async function synthAudio(cfg, text) {
@@ -120,8 +141,14 @@ async function synthAudio(cfg, text) {
       break;
     }
     case 'qwen-tts': {
+      // 通义 CosyVoice（参照 createVideo/scripts）：POST /services/audio/tts/SpeechSynthesizer
       headers.Authorization = `Bearer ${cfg.apiKey}`;
-      body = { model: cfg.model, input: { text, voice: cfg.voice }, parameters: { rate: speed } };
+      body = {
+        model: cfg.model || 'cosyvoice-v3.5-flash',
+        input: { text, voice: cfg.voice },
+        parameters: { format: 'mp3', sample_rate: 24000 },
+      };
+      url += '/services/audio/tts/SpeechSynthesizer';
       break;
     }
     case 'openai-speech': {
@@ -163,53 +190,43 @@ async function synthAudio(cfg, text) {
 
 // ---------- IPC ----------
 function registerIpc() {
-  // 项目
-  ipcMain.handle('db:projects:list', () => {
-    return db.prepare('SELECT id, name, updated_at AS updatedAt, size, collection_id AS collectionId FROM projects ORDER BY updated_at DESC').all();
-  });
-  ipcMain.handle('db:projects:get', (_e, id) => {
-    const row = db.prepare('SELECT data FROM projects WHERE id = ?').get(id);
-    return row ? JSON.parse(row.data) : null;
-  });
-  ipcMain.handle('db:projects:save', (_e, { id, name, data, collectionId }) => {
-    // 入参校验：渲染进程的数据一律不可信，缺失时给出明确错误，而不是 TypeError 静默 reject
+  // 项目：V2 多表读写（项目 = 单条连续时间线；旧 JSON 表已废弃）
+  ipcMain.handle('db:projects:list', () => listProjectsV2(db));
+  ipcMain.handle('db:projects:get', (_e, id) => getProjectV2(db, id));
+  ipcMain.handle('db:projects:save', (_e, { id, data }) => {
+    // 入参校验：渲染进程的数据一律不可信，缺失时给出明确错误
     if (typeof id !== 'string' || !id) throw new Error('projects.save: id 无效');
     if (!data || typeof data !== 'object') throw new Error('projects.save: data 无效');
-    const json = JSON.stringify(data);
-    db.prepare(`
-      INSERT INTO projects (id, name, data, size, updated_at, collection_id) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET name = excluded.name, data = excluded.data, size = excluded.size, updated_at = excluded.updated_at, collection_id = excluded.collection_id
-    `).run(id, name || '未命名', json, json.length, Date.now(), collectionId || data?.collectionId || 'default');
+    saveProjectV2(db, data);
     return { id };
   });
   ipcMain.handle('db:projects:remove', (_e, id) => {
-    db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+    removeProjectV2(db, id);
     return { ok: true };
   });
 
   // 合集（项目之上的一层分组）
   ipcMain.handle('db:collections:list', () => {
-    return db.prepare('SELECT id, name, ord AS "order", created_at AS createdAt, updated_at AS updatedAt FROM collections ORDER BY ord ASC, updated_at DESC').all();
+    return db.prepare('SELECT collection_id AS id, name, ord AS "order", created_at AS createdAt, updated_at AS updatedAt FROM collection ORDER BY ord ASC, updated_at DESC').all();
   });
   ipcMain.handle('db:collections:save', (_e, { id, name, order }) => {
     const now = Date.now();
     db.prepare(`
-      INSERT INTO collections (id, name, ord, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET name = excluded.name, ord = excluded.ord, updated_at = excluded.updated_at
+      INSERT INTO collection (collection_id, name, ord, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(collection_id) DO UPDATE SET name = excluded.name, ord = excluded.ord, updated_at = excluded.updated_at
     `).run(id, name || '未命名合集', order ?? 0, now, now);
     return { id };
   });
   ipcMain.handle('db:collections:remove', (_e, id) => {
     if (id === 'default') return { ok: false, reason: 'default-immutable' };
-    db.prepare("UPDATE projects SET collection_id = 'default' WHERE collection_id = ?").run(id);
-    db.prepare('DELETE FROM collections WHERE id = ?').run(id);
+    db.prepare("UPDATE project SET collection_id = 'default' WHERE collection_id = ?").run(id);
+    db.prepare('DELETE FROM collection WHERE collection_id = ?').run(id);
     return { ok: true };
   });
 
-  // 清空项目数据：项目 + 合集 + 素材文件（**保留**应用配置 providers），
-  // 与网页端 Dexie 的 clearAll 语义一致；旧实现只删 projects，会留下孤儿素材与空合集
+  // 清空项目数据：项目 + 合集 + 素材文件（**保留**应用配置 providers）
   ipcMain.handle('db:clearAll', () => {
-    db.exec('DELETE FROM projects; DELETE FROM collections;');
+    try { db.exec('DELETE FROM project; DELETE FROM collection;'); } catch { /* V2 可能未建表 */ }
     try {
       const root = mediaRoot();
       for (const f of fs.readdirSync(root)) {
@@ -220,7 +237,7 @@ function registerIpc() {
     } catch { /* 目录不存在时忽略 */ }
     const now = Date.now();
     db.prepare(`
-      INSERT OR IGNORE INTO collections (id, name, ord, created_at, updated_at)
+      INSERT OR IGNORE INTO collection (collection_id, name, ord, created_at, updated_at)
       VALUES ('default', '默认合集', -1, ?, ?)
     `).run(now, now);
     return { ok: true };
@@ -271,6 +288,32 @@ function registerIpc() {
     try {
       const { bytes, mime } = await synthAudio(config, String(text || '').slice(0, 5000));
       return { bytes, mime };
+    } catch (err) {
+      return { error: err?.message || String(err) };
+    }
+  });
+  ipcMain.handle('ai:image', async (_e, { config, prompt }) => {
+    try {
+      return { image: await generateImage(config, String(prompt || '').slice(0, 2000)) };
+    } catch (err) {
+      return { error: err?.message || String(err) };
+    }
+  });
+  ipcMain.handle('ai:voiceClone', async (_e, { config, body }) => {
+    try {
+      return { voiceId: await voiceClone(config, body) };
+    } catch (err) {
+      return { error: err?.message || String(err) };
+    }
+  });
+
+  // 通用网络：主进程代拉 JSON/GeoJSON 文本（渲染进程直连会被 CORS 拦）
+  ipcMain.handle('net:json', async (_e, url) => {
+    try {
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) throw new Error('invalid url');
+      const res = await fetch(url, { headers: { Accept: 'application/json,application/geo+json,*/*' } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { text: await res.text() };
     } catch (err) {
       return { error: err?.message || String(err) };
     }

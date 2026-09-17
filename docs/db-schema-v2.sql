@@ -4,8 +4,8 @@
 -- 命名约定：表名与 TS 实体同名并转 snake_case（elementMarker ↔ element_marker），
 --          主键统一 <实体>_id，时间统一 *_sec（秒，REAL）/ *_at（epoch ms，仅审计字段用）
 -- 字符集：UTF-8；时间单位：**秒**（REAL，存用户输入的原值）；
---          渲染 / 导出时按 project_config.default_fps 换算为帧（帧是派生量，不入库）
--- 规模：18 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
+--          渲染 / 导出时按 project.default_fps 换算为帧（帧是派生量，不入库）
+-- 规模：15 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -59,22 +59,20 @@ CREATE TABLE IF NOT EXISTS project (
 
   -- 当前生效的底图 / 高程图：存内置配置的 id 字符串（如 'osm' / 'none'），配置本身在代码里
   active_base_map_id      TEXT,
-  active_elevation_map_id TEXT
-);
+  active_elevation_map_id TEXT,
 
--- 项目级配置（GlobalConfig）：与 project 1:1，主键即外键。
---   职责分离：project 只保留身份 / 归属 / 审计字段，配置独立成表 ——
---   配置面板只读写这张表，互不干扰；新增配置项也不改动 project 结构。
-CREATE TABLE IF NOT EXISTS project_config (
-  project_id            TEXT PRIMARY KEY REFERENCES project(project_id) ON DELETE CASCADE,
-  default_duration_sec      REAL NOT NULL CHECK (default_duration_sec > 0),
-  default_fps           INTEGER NOT NULL CHECK (default_fps BETWEEN 1 AND 240),
-  resolution_w          INTEGER NOT NULL CHECK (resolution_w > 0),
-  resolution_h          INTEGER NOT NULL CHECK (resolution_h > 0),
-  resolution_label      TEXT    NOT NULL,
-  default_easing        TEXT    NOT NULL,
+  -- 项目级配置（GlobalConfig；原 project_config 1:1 表已合并进来）
+  default_duration_sec      REAL NOT NULL DEFAULT 5 CHECK (default_duration_sec > 0),
+  default_fps           INTEGER NOT NULL DEFAULT 30 CHECK (default_fps BETWEEN 1 AND 240),
+  resolution_w          INTEGER NOT NULL DEFAULT 1920 CHECK (resolution_w > 0),
+  resolution_h          INTEGER NOT NULL DEFAULT 1080 CHECK (resolution_h > 0),
+  -- 画幅标签（如「1080p 横屏 (16:9)」）由 w×h 推导，不落库
+  default_easing        TEXT    NOT NULL DEFAULT 'easeInOut',
   -- 地形夸张：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例，面板范围 0–50）
   elevation_exaggeration REAL CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)
+,
+  -- 全片总长（秒）
+  end_sec REAL NOT NULL DEFAULT 0 CHECK (end_sec >= 0)
 );
 
 -- -----------------------------------------------------------------------------
@@ -83,11 +81,11 @@ CREATE TABLE IF NOT EXISTS project_config (
 
 -- 【底图 / 高程图不入库】
 -- 它们是代码内置的常量配置（BUILTIN_BASE_MAPS / BUILTIN_ELEVATION_MAPS），
--- 项目与章节只保存所选配置的 id 字符串（project.active_base_map_id / chapter.base_map_id）。
+-- 项目与章节只保存所选配置的 id 字符串（project.active_base_map_id）。
 -- 取舍：省掉两张表与两处外键（连带消除原本的循环外键问题）；
 --       代价是底图 / 高程图配置不可由用户在运行时增删改。
 -- 例外：**地形夸张系数用户可调**（面板滑动条 0–50），因此作为「对当前生效高程图的覆盖值」
---       落在 project_config.elevation_exaggeration（NULL = 沿用内置默认的 1.5）。
+--      落在 project.elevation_exaggeration（NULL = 沿用内置默认的 1.5）。
 
 -- 素材表（**唯一**的素材存储，合并了原 custom_symbol / custom_image）：
 -- 把 base64 dataURL 从项目 JSON 中剥离出来，是本次改造收益最大的一项。
@@ -97,22 +95,16 @@ CREATE TABLE IF NOT EXISTS project_config (
 -- 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份（时间戳命名永不重名）。
 -- 原 custom_symbol（图标库）/ custom_image（图片库）本质上都只是「项目收录的一个素材」，
 -- 由 kind 区分：icon 即原图标库条目，image 即原图片库条目。
+-- ★ 只存输入原值：字节数 / 尺寸 / 时长 / 帧数 / 模型包围盒等都是**从文件解析出来的派生值**，
+--   不入库（需要时按 mime 现场解析——图片取 naturalWidth、音频用 duration、GIF 用 gifuct、模型用 glTF 头）。
 CREATE TABLE IF NOT EXISTS asset (
   asset_id      TEXT PRIMARY KEY,
   kind          TEXT NOT NULL CHECK (kind IN ('image','gif','model','audio','video','font','icon')),
   name          TEXT NOT NULL DEFAULT '',  -- 原文件名 / 展示名
   mime          TEXT NOT NULL,
-  byte_size     INTEGER NOT NULL CHECK (byte_size >= 0),
   storage       TEXT NOT NULL CHECK (storage IN ('file','blob')),
   rel_path      TEXT,                      -- storage='file'：projects/<projectId>/<kind>/<文件名>
   blob          BLOB,                      -- storage='blob'：小文件内联
-  width         INTEGER,
-  height        INTEGER,
-  duration_sec   REAL,
-  -- 媒体元信息（供 UI 预览与校验，避免为了取尺寸而先下载整个文件）
-  --   model: { bbox:[minX,minY,minZ,maxX,maxY,maxZ], animations:[名], triangles:n }
-  --   gif:   { frames:n, fps, loop:bool }
-  meta_json     TEXT CHECK (meta_json IS NULL OR json_valid(meta_json)),
   created_at    INTEGER NOT NULL,
   CHECK ((storage = 'file' AND rel_path IS NOT NULL)
       OR (storage = 'blob' AND blob      IS NOT NULL))
@@ -121,29 +113,13 @@ CREATE INDEX IF NOT EXISTS ix_asset_kind ON asset(kind);
 CREATE INDEX IF NOT EXISTS ix_asset_name ON asset(name);
 
 -- -----------------------------------------------------------------------------
--- 3. 章节与时间轴
+-- 3. 时间轴（项目 = 单条连续时间线，无章节）
 -- -----------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS chapter (
-  chapter_id     TEXT PRIMARY KEY,
-  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  title          TEXT NOT NULL DEFAULT '',
-  order_index    INTEGER NOT NULL DEFAULT 0,
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec      REAL NOT NULL,
-  base_map_id      TEXT,              -- 章节级覆盖：存内置底图 id，空则跟随项目
-  elevation_map_id TEXT,              -- 同上
-  title_style_json TEXT CHECK (title_style_json IS NULL OR json_valid(title_style_json)),
-  transition_json  TEXT CHECK (transition_json  IS NULL OR json_valid(transition_json)),
-  CHECK (end_sec > start_sec)
-);
-CREATE INDEX IF NOT EXISTS ix_chapter_project ON chapter(project_id, order_index);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_chapter_span ON chapter(project_id, start_sec);
 
 -- 相机视角关键帧：sec = 「到达时间」（绝对秒），move_duration_sec = 起飞提前量（秒）
 CREATE TABLE IF NOT EXISTS camera_keyframe (
   kf_id            TEXT PRIMARY KEY,
-  chapter_id       TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id       TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   sec            REAL NOT NULL CHECK (sec >= 0),
   center_lng       REAL NOT NULL,
   center_lat       REAL NOT NULL,
@@ -155,51 +131,56 @@ CREATE TABLE IF NOT EXISTS camera_keyframe (
   camera_type      TEXT CHECK (camera_type IS NULL OR camera_type IN ('fixed','follow','orbit')),
 
   -- follow 视角：跟随目标只能是路线类元素（line / moving_point）
-  -- 单列外键 + SET NULL：复合外键会连带清空 NOT NULL 的 chapter_id（见报告 5.6）
+  -- 单列外键 + SET NULL：复合外键会连带清空 NOT NULL 的 project_id（见报告 5.6）
+  -- 跟随的时间窗口由「被跟随路线的显示起止」推导，不另存 follow_start/end（派生值不入库）
   follow_route_element_id TEXT REFERENCES element_route(element_id) ON DELETE SET NULL,
   follow_direction        INTEGER CHECK (follow_direction IS NULL OR follow_direction IN (0,1)),
-  follow_start_sec      REAL,
-  follow_end_sec        REAL,
 
   -- orbit 视角
   orbit_speed    REAL,
   orbit_duration_sec REAL,
   ord            INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS ix_camera_kf_chapter ON camera_keyframe(chapter_id, sec);
+CREATE INDEX IF NOT EXISTS ix_camera_kf_chapter ON camera_keyframe(project_id, sec);
 CREATE INDEX IF NOT EXISTS ix_camera_kf_follow  ON camera_keyframe(follow_route_element_id);
 
 -- -----------------------------------------------------------------------------
 -- 4. 元素表（4 张类别宽表）
---    公共列（每张表都有）：element_id / chapter_id / type / name / visible /
---    locked / start_sec / end_sec / z_index / shape_category / anim_effect /
---    fly_mode / show_icon / move_icon_json / move_start_sec / move_end_sec /
---    uniform_move / point_times_json / label_json / ord
+--    公共列（每张表都有）：element_id / project_id / type / name / visible /
+--    start_sec / end_sec / anim_effect / keyframes_json / ord，以及平铺后的标签列 label_*。
+--    route / shape 两表另有移动标记列 move_icon_* 与动画列（都是逐项平铺，非 JSON）。
+--    仅「坐标集合」保留 JSON：coords_json / rings_json / path_json / points_json / point_times_json。
 --    类别内子类型用 type 判别列 + CHECK 表达「该子类型必填项」。
 -- -----------------------------------------------------------------------------
 
 -- 5.1 标记类元素（Pin 工具）：point（点/文字/图标）· flag（旗标）· military_symbol（APP-6 军标）
 CREATE TABLE IF NOT EXISTS element_marker (
   element_id     TEXT PRIMARY KEY,
-  chapter_id     TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),
 
   name           TEXT NOT NULL DEFAULT '',
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  locked         INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),
   end_sec      REAL NOT NULL,
-  z_index        INTEGER NOT NULL DEFAULT 0,
-  shape_category TEXT CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route')),
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
-  move_icon_json TEXT CHECK (move_icon_json IS NULL OR json_valid(move_icon_json)),
   move_start_sec REAL,
   move_end_sec   REAL,
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
-  label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),  -- 原 element_label 内联
+  -- 标签（原 label_json 平铺：面板上每个小项 = 一列）
+  label_text        TEXT,
+  label_font_size   REAL,
+  label_color       TEXT,
+  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),
+  label_offset_x    REAL,
+  label_offset_y    REAL,
+  label_bg_color    TEXT,
+  label_bg_padding  REAL,
+  label_bg_radius   REAL,
+  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联：[{property,sec,easing,value_num,value_json}]
   ord            INTEGER NOT NULL DEFAULT 0,
 
@@ -217,16 +198,21 @@ CREATE TABLE IF NOT EXISTS element_marker (
   scale          REAL CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3)),
   orientation    TEXT CHECK (orientation IS NULL OR orientation IN ('faceCam','flat')),
   color          TEXT,                                                  -- 可着色形态的主色（model / gif 禁用）
-  icon_size      REAL,
   asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,    -- 用户上传的图片 / GIF / 模型
   builtin_id     TEXT,                                                  -- 内置资源 id（打包进应用、不入库）：'image:flag-red' / 'gif:radar' / 'model:drone' / 'icon:lucide:MapPin'
   icon_lib       TEXT,                                                  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名
   icon_name      TEXT,                                                  -- 图标名（shape='icon' 时必填）
-  visual_meta_json TEXT CHECK (visual_meta_json IS NULL OR json_valid(visual_meta_json)),  -- P3：表现参数
-  --   image: { fit:'contain'|'cover', tintable:bool }
-  --   gif:   { fps:n, loop:bool }
-  --   model: { scale, altitude, autoRotate, spin, pitchAlign, animation }
-  --   icon:  { strokeWidth }
+  -- 资源形态表现参数（原 visual_meta_json 平铺；面板上每个小项 = 一列）
+  visual_fit        TEXT CHECK (visual_fit IS NULL OR visual_fit IN ('contain','cover')),   -- image
+  visual_tintable   INTEGER CHECK (visual_tintable IS NULL OR visual_tintable IN (0,1)),    -- image
+  visual_fps        REAL,                                                                   -- gif
+  visual_loop       INTEGER CHECK (visual_loop IS NULL OR visual_loop IN (0,1)),            -- gif
+  visual_altitude   REAL,                                                                   -- model 离地高度(米)
+  visual_auto_rotate REAL,                                                                  -- model 自转角速度(度/秒)
+  visual_spin       REAL,                                                                   -- model 初始朝向(度)
+  visual_pitch_align INTEGER CHECK (visual_pitch_align IS NULL OR visual_pitch_align IN (0,1)), -- model
+  visual_animation  TEXT,                                                                   -- model 动画片段
+  visual_stroke_width REAL,                                                                 -- icon 描边粗细
 
   -- flag 专属
   flag_text      TEXT,
@@ -256,33 +242,62 @@ CREATE TABLE IF NOT EXISTS element_marker (
   CHECK (type <> 'flag'  OR flag_text IS NOT NULL),
   CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)
 );
-CREATE INDEX IF NOT EXISTS ix_marker_chapter ON element_marker(chapter_id, z_index, ord);
-CREATE INDEX IF NOT EXISTS ix_marker_type    ON element_marker(chapter_id, type);
+CREATE INDEX IF NOT EXISTS ix_marker_chapter ON element_marker(project_id, ord);
+CREATE INDEX IF NOT EXISTS ix_marker_type    ON element_marker(project_id, type);
 CREATE INDEX IF NOT EXISTS ix_marker_asset   ON element_marker(asset_id);
 
 -- 5.2 路线类元素（Route 工具）：line（线/贝塞尔/大圆弧）· moving_point（移动点）·
 --     connector（连接线，引用其它元素 → 弱引用 from/to）
 CREATE TABLE IF NOT EXISTS element_route (
   element_id     TEXT PRIMARY KEY,
-  chapter_id     TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),
 
   name           TEXT NOT NULL DEFAULT '',
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  locked         INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),
   end_sec      REAL NOT NULL,
-  z_index        INTEGER NOT NULL DEFAULT 0,
-  shape_category TEXT CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route')),
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
-  move_icon_json TEXT CHECK (move_icon_json IS NULL OR json_valid(move_icon_json)),
+  -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
+  move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),
+  move_icon_color          TEXT,
+  move_icon_emoji          TEXT,
+  move_icon_scale          REAL,
+  move_icon_label_text     TEXT,
+  move_icon_label_color    TEXT,
+  move_icon_label_bg       TEXT,
+  move_icon_label_size     REAL,
+  move_icon_label_padding  REAL,
+  move_icon_label_radius   REAL,
+  move_icon_label_pos      TEXT,
+  move_icon_label_offset_x REAL,
+  move_icon_label_offset_y REAL,
+  move_icon_flag_text      TEXT,
+  move_icon_flag_color     TEXT,
+  move_icon_builtin_id     TEXT,
+  move_icon_asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
+  move_icon_icon_lib       TEXT,
+  move_icon_icon_name      TEXT,
+  move_icon_orientation    TEXT CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat')),
+  move_icon_rotation       REAL,
+  move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),
   move_start_sec REAL,
   move_end_sec   REAL,
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
-  label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
+  -- 标签（原 label_json 平铺）
+  label_text        TEXT,
+  label_font_size   REAL,
+  label_color       TEXT,
+  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),
+  label_offset_x    REAL,
+  label_offset_y    REAL,
+  label_bg_color    TEXT,
+  label_bg_padding  REAL,
+  label_bg_radius   REAL,
+  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
   ord            INTEGER NOT NULL DEFAULT 0,
 
@@ -292,13 +307,23 @@ CREATE TABLE IF NOT EXISTS element_route (
   -- line 专属
   line_width        REAL,
   line_color        TEXT,
-  line_dash_json    TEXT CHECK (line_dash_json IS NULL OR json_valid(line_dash_json)),
+  line_dash_on      REAL,             -- 虚线段长（原 line_dash_json[0]）
+  line_dash_off     REAL,             -- 虚线空白长（原 line_dash_json[1]）
   line_type         TEXT CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc')),
   line_arrow        INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),
-  route_effect_json TEXT CHECK (route_effect_json IS NULL OR json_valid(route_effect_json)),
+  -- 行军路线动画（原 route_effect_json 平铺）：光点颜色/宽度/步长/同时存在数量
+  route_dot_enabled    INTEGER CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1)),
+  route_dot_count      INTEGER,
+  route_dot_width      REAL,
+  route_dot_color      TEXT,
+  route_dot_frame_step INTEGER,
   flow_speed        REAL,
   plain_path        INTEGER CHECK (plain_path IS NULL OR plain_path IN (0,1)),
-  front_style_json  TEXT CHECK (front_style_json IS NULL OR json_valid(front_style_json)),
+  -- 战线梳齿（原 front_style_json 平铺）
+  front_tooth_length REAL,
+  front_tooth_gap    REAL,
+  front_tooth_angle  REAL,
+  front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),
 
   -- moving_point 专属（轨迹拖尾）
   trail_color       TEXT,
@@ -318,51 +343,90 @@ CREATE TABLE IF NOT EXISTS element_route (
   CHECK (type <> 'connector'    OR (from_element_id IS NOT NULL AND to_element_id IS NOT NULL)),
   CHECK (from_element_id IS NULL OR to_element_id IS NULL OR from_element_id <> to_element_id)
 );
-CREATE INDEX IF NOT EXISTS ix_route_chapter ON element_route(chapter_id, z_index, ord);
-CREATE INDEX IF NOT EXISTS ix_route_type    ON element_route(chapter_id, type);
+CREATE INDEX IF NOT EXISTS ix_route_chapter ON element_route(project_id, ord);
+CREATE INDEX IF NOT EXISTS ix_route_type    ON element_route(project_id, type);
 -- 连接线端点：应用层按 from/to 反查清理，必须建索引（否则删元素时全表扫描）
-CREATE INDEX IF NOT EXISTS ix_route_from    ON element_route(chapter_id, from_element_id);
-CREATE INDEX IF NOT EXISTS ix_route_to      ON element_route(chapter_id, to_element_id);
+CREATE INDEX IF NOT EXISTS ix_route_from    ON element_route(project_id, from_element_id);
+CREATE INDEX IF NOT EXISTS ix_route_to      ON element_route(project_id, to_element_id);
 
 -- 5.3 形状类元素（Shape 工具，含「区域」行政区高亮）：polygon · arrow · double_arrow ·
 --     gathering（集结地）· encirclement（包围圈）
 CREATE TABLE IF NOT EXISTS element_shape (
   element_id     TEXT PRIMARY KEY,
-  chapter_id     TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),
 
   name           TEXT NOT NULL DEFAULT '',
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  locked         INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),
   end_sec      REAL NOT NULL,
-  z_index        INTEGER NOT NULL DEFAULT 0,
-  shape_category TEXT CHECK (shape_category IS NULL OR shape_category IN ('multi','two','special','route')),
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
-  move_icon_json TEXT CHECK (move_icon_json IS NULL OR json_valid(move_icon_json)),
+  -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
+  move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),
+  move_icon_color          TEXT,
+  move_icon_emoji          TEXT,
+  move_icon_scale          REAL,
+  move_icon_label_text     TEXT,
+  move_icon_label_color    TEXT,
+  move_icon_label_bg       TEXT,
+  move_icon_label_size     REAL,
+  move_icon_label_padding  REAL,
+  move_icon_label_radius   REAL,
+  move_icon_label_pos      TEXT,
+  move_icon_label_offset_x REAL,
+  move_icon_label_offset_y REAL,
+  move_icon_flag_text      TEXT,
+  move_icon_flag_color     TEXT,
+  move_icon_builtin_id     TEXT,
+  move_icon_asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
+  move_icon_icon_lib       TEXT,
+  move_icon_icon_name      TEXT,
+  move_icon_orientation    TEXT CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat')),
+  move_icon_rotation       REAL,
+  move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),
   move_start_sec REAL,
   move_end_sec   REAL,
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
-  label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
+  -- 标签（原 label_json 平铺）
+  label_text        TEXT,
+  label_font_size   REAL,
+  label_color       TEXT,
+  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),
+  label_offset_x    REAL,
+  label_offset_y    REAL,
+  label_bg_color    TEXT,
+  label_bg_padding  REAL,
+  label_bg_radius   REAL,
+  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
   ord            INTEGER NOT NULL DEFAULT 0,
 
   -- polygon 专属
+  --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
   rings_json         TEXT CHECK (rings_json IS NULL OR json_valid(rings_json)),
   fill_color         TEXT,
   fill_opacity       REAL CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1),
   stroke_color       TEXT,
   stroke_width       REAL,
   shape_kind         TEXT CHECK (shape_kind IS NULL OR shape_kind IN ('poly','rect','circle','star')),
-  circle_meta_json   TEXT CHECK (circle_meta_json IS NULL OR json_valid(circle_meta_json)),
-  rect_meta_json     TEXT CHECK (rect_meta_json   IS NULL OR json_valid(rect_meta_json)),
-  star_meta_json     TEXT CHECK (star_meta_json   IS NULL OR json_valid(star_meta_json)),
+  -- rect：两个对角点（原 rect_meta_json 平铺）
+  rect_c1_lng        REAL,
+  rect_c1_lat        REAL,
+  rect_c2_lng        REAL,
+  rect_c2_lat        REAL,
   poly_curve         INTEGER CHECK (poly_curve IS NULL OR poly_curve IN (0,1)),
-  defense_style_json TEXT CHECK (defense_style_json IS NULL OR json_valid(defense_style_json)),
-  fill_gradient_json TEXT CHECK (fill_gradient_json IS NULL OR json_valid(fill_gradient_json)),
+  -- 防御圈锯齿（原 defense_style_json 平铺）
+  defense_tooth_length REAL,
+  defense_tooth_gap    REAL,
+  defense_tooth_angle  REAL,
+  defense_side         INTEGER CHECK (defense_side IS NULL OR defense_side IN (-1,1)),
+  -- 填充渐变（原 fill_gradient_json 平铺）
+  gradient_enabled   INTEGER CHECK (gradient_enabled IS NULL OR gradient_enabled IN (0,1)),
+  gradient_from      TEXT,
+  gradient_to        TEXT,
 
   -- arrow 专属
   from_lng       REAL,
@@ -374,12 +438,11 @@ CREATE TABLE IF NOT EXISTS element_shape (
                    'swallowtail','simple','block','pincer','curved','curved-simple','attack','straight')),
   width          REAL,
   color          TEXT,
-  draw_zoom      REAL,
 
   -- double_arrow 专属（钳形攻势）
   points_json    TEXT CHECK (points_json IS NULL OR json_valid(points_json)),
 
-  -- gathering / encirclement 专属
+  -- gathering / encirclement 专属（circle / star 也复用 center_lng / center_lat / radius）
   center_lng     REAL,
   center_lat     REAL,
   radius         REAL,
@@ -389,10 +452,10 @@ CREATE TABLE IF NOT EXISTS element_shape (
   CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (radius IS NULL OR radius > 0),
-  CHECK (type <> 'polygon' OR rings_json IS NOT NULL),
-  CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR circle_meta_json IS NOT NULL),
-  CHECK (type <> 'polygon' OR shape_kind IS NOT 'rect'   OR rect_meta_json   IS NOT NULL),
-  CHECK (type <> 'polygon' OR shape_kind IS NOT 'star'   OR star_meta_json   IS NOT NULL),
+  CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly'   OR rings_json IS NOT NULL),
+  CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
+  CHECK (type <> 'polygon' OR shape_kind IS NOT 'rect'   OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL)),
+  CHECK (type <> 'polygon' OR shape_kind IS NOT 'star'   OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (type <> 'arrow' OR arrow_type IS NOT NULL),
   CHECK (type <> 'arrow' OR (from_lng IS NOT NULL AND from_lat IS NOT NULL
                              AND to_lng IS NOT NULL AND to_lat IS NOT NULL)),
@@ -400,8 +463,8 @@ CREATE TABLE IF NOT EXISTS element_shape (
   CHECK (type <> 'gathering'    OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
 );
-CREATE INDEX IF NOT EXISTS ix_shape_chapter ON element_shape(chapter_id, z_index, ord);
-CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(chapter_id, type);
+CREATE INDEX IF NOT EXISTS ix_shape_chapter ON element_shape(project_id, ord);
+CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(project_id, type);
 
 -- 5.4 疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件全部 JSON 内联
 --     countries_json: [{ countryId, name, color, ord }]
@@ -409,28 +472,44 @@ CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(chapter_id, type);
 --     events_json:    [{ eventId, sec, toCountryId, preset, duration_sec, highlight, plotIds[], ord }]
 CREATE TABLE IF NOT EXISTS element_territory (
   element_id     TEXT PRIMARY KEY,
-  chapter_id     TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),
 
   name           TEXT NOT NULL DEFAULT '',
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  locked         INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),
   end_sec      REAL NOT NULL,
-  z_index        INTEGER NOT NULL DEFAULT 0,
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
-  label_json     TEXT CHECK (label_json IS NULL OR json_valid(label_json)),
+  -- 标签（原 label_json 平铺）
+  label_text        TEXT,
+  label_font_size   REAL,
+  label_color       TEXT,
+  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),
+  label_offset_x    REAL,
+  label_offset_y    REAL,
+  label_bg_color    TEXT,
+  label_bg_padding  REAL,
+  label_bg_radius   REAL,
+  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
   ord            INTEGER NOT NULL DEFAULT 0,
 
-  display_json   TEXT NOT NULL CHECK (json_valid(display_json)),   -- 显示配置：边界/线宽/透明度/标签
+  -- 显示配置（原 display_json 平铺）：边界 / 线宽 / 透明度 / 标签
+  display_country_borders INTEGER NOT NULL DEFAULT 1 CHECK (display_country_borders IN (0,1)),
+  display_plot_borders    INTEGER NOT NULL DEFAULT 1 CHECK (display_plot_borders IN (0,1)),
+  display_border_width    REAL NOT NULL DEFAULT 3 CHECK (display_border_width >= 0),
+  display_fill_opacity    REAL NOT NULL DEFAULT 0.45 CHECK (display_fill_opacity BETWEEN 0 AND 1),
+  display_country_names   INTEGER NOT NULL DEFAULT 1 CHECK (display_country_names IN (0,1)),
+  display_plot_names      INTEGER NOT NULL DEFAULT 0 CHECK (display_plot_names IN (0,1)),
+  display_label_align     TEXT NOT NULL DEFAULT 'map' CHECK (display_label_align IN ('map','viewport')),
+  display_label_scale     REAL NOT NULL DEFAULT 1 CHECK (display_label_scale > 0),
   countries_json TEXT CHECK (countries_json IS NULL OR json_valid(countries_json)),
   plots_json     TEXT CHECK (plots_json     IS NULL OR json_valid(plots_json)),
   events_json    TEXT CHECK (events_json    IS NULL OR json_valid(events_json)),
 
   CHECK (end_sec >= start_sec)
 );
-CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(chapter_id, z_index, ord);
+CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(project_id, ord);
 
 -- -----------------------------------------------------------------------------
 -- 5. 元素动画关键帧：**已内联**进 4 张类别表的 keyframes_json（P3）
@@ -444,9 +523,10 @@ CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(chapter_id,
 
 CREATE TABLE IF NOT EXISTS overlay (
   overlay_id   TEXT PRIMARY KEY,
-  chapter_id   TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   type         TEXT NOT NULL CHECK (type IN (
                  'custom','chart','person','report','timeline','quote','compare',
+                 'stat','seal','iconRow',
                  'counter','dialogue','place')),
   name         TEXT NOT NULL DEFAULT '',
   position     TEXT NOT NULL CHECK (position IN (
@@ -460,8 +540,13 @@ CREATE TABLE IF NOT EXISTS overlay (
   offset_x     REAL NOT NULL DEFAULT 0,
   offset_y     REAL NOT NULL DEFAULT 0,
   z_index      INTEGER NOT NULL DEFAULT 0,
-  bg_json      TEXT CHECK (bg_json IS NULL OR json_valid(bg_json)),
-  -- P3：report/quote/compare/counter/place/chart 等固定形状载荷整体存取
+  -- 卡片背景（原 bg_json 平铺）
+  bg_color     TEXT,
+  bg_opacity   REAL CHECK (bg_opacity IS NULL OR bg_opacity BETWEEN 0 AND 1),
+  bg_blur      REAL,
+  bg_radius    REAL,
+  bg_border    TEXT,
+  -- P3：类型专属载荷整体存取：custom 的内容块 / person 的人物块 + report/quote/compare/chart 等
   payload_json TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),
   -- person 布局 + 整卡语音
   person_layout_json TEXT CHECK (person_layout_json IS NULL OR json_valid(person_layout_json)),
@@ -470,38 +555,11 @@ CREATE TABLE IF NOT EXISTS overlay (
   ord          INTEGER NOT NULL DEFAULT 0,
   CHECK (end_sec >= start_sec)
 );
-CREATE INDEX IF NOT EXISTS ix_overlay_chapter ON overlay(chapter_id, start_sec);
+CREATE INDEX IF NOT EXISTS ix_overlay_chapter ON overlay(project_id, start_sec);
 CREATE INDEX IF NOT EXISTS ix_overlay_parent  ON overlay(parent_overlay_id);
 
--- custom 类型的内容块（文字/图片/视频纵向堆叠）
-CREATE TABLE IF NOT EXISTS overlay_block (
-  block_id   TEXT PRIMARY KEY,
-  overlay_id TEXT NOT NULL REFERENCES overlay(overlay_id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL CHECK (kind IN ('text','image','video')),
-  text_content TEXT,
-  font_size  REAL,
-  color      TEXT,
-  bold       INTEGER CHECK (bold IS NULL OR bold IN (0,1)),
-  align      TEXT CHECK (align IS NULL OR align IN ('left','center','right')),
-  asset_id   TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
-  url        TEXT,
-  ord        INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS ix_overlay_block ON overlay_block(overlay_id, ord);
-
--- person 类型的人物卡内容块（5 类固定槽位）
-CREATE TABLE IF NOT EXISTS person_block (
-  block_id   TEXT PRIMARY KEY,
-  overlay_id TEXT NOT NULL REFERENCES overlay(overlay_id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL CHECK (kind IN ('image','name','intro','quote','dialogue')),
-  show       INTEGER NOT NULL DEFAULT 1 CHECK (show IN (0,1)),
-  text       TEXT,
-  asset_id   TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
-  image_size REAL CHECK (image_size IS NULL OR (image_size >= 60 AND image_size <= 360)),
-  mask       TEXT CHECK (mask IS NULL OR mask IN ('none','bottom','top','circle','feather')),
-  ord        INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS ix_person_block ON person_block(overlay_id, ord);
+-- 内容块（custom 的 blocks / person 的 5 类块）与 payload、布局一起内联在 overlay.payload_json /
+-- person_layout_json 中：弹窗整体读写，内容块不单独寻址，原 overlay_block / person_block 两张中间表已删除。
 
 -- -----------------------------------------------------------------------------
 -- 7. 章节级特效 / 字幕 / 配乐
@@ -512,7 +570,7 @@ CREATE INDEX IF NOT EXISTS ix_person_block ON person_block(overlay_id, ord);
 -- 特效窗口：天气 / 画面特效（屏幕空间），两分支字段并存
 CREATE TABLE IF NOT EXISTS screen_fx (
   fx_id      TEXT PRIMARY KEY,
-  chapter_id TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   kind       TEXT NOT NULL CHECK (kind IN ('weather','screen')),
   name       TEXT NOT NULL DEFAULT '',
   start_sec REAL NOT NULL CHECK (start_sec >= 0),
@@ -529,43 +587,56 @@ CREATE TABLE IF NOT EXISTS screen_fx (
   CHECK ((kind = 'weather' AND weather_type IS NOT NULL)
       OR (kind = 'screen'  AND effect_type  IS NOT NULL))
 );
-CREATE INDEX IF NOT EXISTS ix_screen_fx ON screen_fx(chapter_id, start_sec);
+CREATE INDEX IF NOT EXISTS ix_screen_fx ON screen_fx(project_id, start_sec);
 
--- 字幕档：1:1 持有样式；字幕条 1:N
+-- 字幕档：1:1 持有样式（原 style_json 平铺为列）；字幕条 1:N
 CREATE TABLE IF NOT EXISTS narration (
-  chapter_id TEXT PRIMARY KEY REFERENCES chapter(chapter_id) ON DELETE CASCADE,
-  style_json TEXT NOT NULL CHECK (json_valid(style_json))
+  project_id   TEXT PRIMARY KEY REFERENCES project(project_id) ON DELETE CASCADE,
+  font_size    REAL NOT NULL CHECK (font_size > 0),
+  font_family  TEXT,                                     -- 字体族（空=楷体默认）
+  color        TEXT NOT NULL,
+  stroke_color TEXT NOT NULL,
+  stroke_width REAL NOT NULL CHECK (stroke_width >= 0),
+  bg           TEXT NOT NULL CHECK (bg IN ('none','bar')),
+  bg_color     TEXT NOT NULL,
+  pos_y        REAL NOT NULL CHECK (pos_y BETWEEN 0 AND 40),   -- 距底百分比
+  max_pct      REAL NOT NULL CHECK (max_pct > 0 AND max_pct <= 100)  -- 最大宽度百分比
 );
 
 CREATE TABLE IF NOT EXISTS narration_entry (
   entry_id      TEXT PRIMARY KEY,
-  chapter_id    TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   text          TEXT NOT NULL DEFAULT '',
   audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
-  duration_sec REAL NOT NULL CHECK (duration_sec >= 1),
+  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径；与 audio_asset_id 二选一）
+  url           TEXT,
+  -- 显示时长（秒）：NULL = 自动（有配音随音频、无配音按字数估算）；非空 = 手动覆盖值
+  duration_sec REAL CHECK (duration_sec IS NULL OR duration_sec >= 1),
   start_sec     REAL NOT NULL CHECK (start_sec >= 0),
   locked        INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
-  status        TEXT CHECK (status IS NULL OR status IN ('none','pending','ready','error')),
-  error         TEXT,
   ord           INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS ix_narration_entry ON narration_entry(chapter_id, start_sec);
+CREATE INDEX IF NOT EXISTS ix_narration_entry ON narration_entry(project_id, start_sec);
 
+-- 项目级背景音乐：单轨多段（段用项目绝对时间），同一轨道不同时间段放不同音乐
 CREATE TABLE IF NOT EXISTS music_track (
   track_id      TEXT PRIMARY KEY,
-  chapter_id    TEXT NOT NULL REFERENCES chapter(chapter_id) ON DELETE CASCADE,
+  project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   name          TEXT NOT NULL DEFAULT '',
   audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
+  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径；与 audio_asset_id 二选一）
+  url           TEXT,
   start_sec   REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec     REAL NOT NULL,
+  -- 结束时间：NULL = 随音频长度（循环则随项目）；非空 = 手动覆盖值
+  end_sec     REAL,
   volume        REAL NOT NULL DEFAULT 1 CHECK (volume BETWEEN 0 AND 1),
   loop          INTEGER NOT NULL DEFAULT 0 CHECK (loop IN (0,1)),
   fade_in       REAL NOT NULL DEFAULT 0 CHECK (fade_in  >= 0),
   fade_out      REAL NOT NULL DEFAULT 0 CHECK (fade_out >= 0),
   ord           INTEGER NOT NULL DEFAULT 0,
-  CHECK (end_sec >= start_sec)
+  CHECK (end_sec IS NULL OR end_sec >= start_sec)
 );
-CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(chapter_id, start_sec);
+CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
 
 -- -----------------------------------------------------------------------------
 -- 8. 应用配置聚合（与项目内容解耦，Key 只存本机）
@@ -573,7 +644,7 @@ CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(chapter_id, start_sec);
 
 CREATE TABLE IF NOT EXISTS provider (
   provider_id TEXT PRIMARY KEY,
-  kind       TEXT NOT NULL CHECK (kind IN ('llm','tts')),
+  kind       TEXT NOT NULL CHECK (kind IN ('llm','tts','image')),   -- llm=文案生成 / tts=语音(含克隆) / image=图片生成
   label      TEXT NOT NULL DEFAULT '',
   base_url   TEXT NOT NULL DEFAULT '',
   api_key    TEXT NOT NULL DEFAULT '',
@@ -605,9 +676,10 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 -- ① 素材引用：asset 的孤儿回收 / 「是否被引用」查询由全表扫描变为索引查找
 CREATE INDEX IF NOT EXISTS ix_overlay_audio_asset  ON overlay(audio_asset_id);
-CREATE INDEX IF NOT EXISTS ix_overlay_block_asset   ON overlay_block(asset_id);
-CREATE INDEX IF NOT EXISTS ix_person_block_asset    ON person_block(asset_id);
 CREATE INDEX IF NOT EXISTS ix_narration_audio_asset ON narration_entry(audio_asset_id);
+-- 元素「移动标记」素材引用（平铺自 move_icon_json）
+CREATE INDEX IF NOT EXISTS ix_route_move_icon_asset ON element_route(move_icon_asset_id);
+CREATE INDEX IF NOT EXISTS ix_shape_move_icon_asset ON element_shape(move_icon_asset_id);
 CREATE INDEX IF NOT EXISTS ix_music_audio_asset     ON music_track(audio_asset_id);
 -- 注：element_marker(asset_id) 的索引见 5.1（ix_marker_asset）
 
@@ -642,20 +714,20 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 
 -- 12.1 跨类别元素索引：取消基表后，轨道 / 列表 / 计数查这里，不必手写 4 表 UNION
 CREATE VIEW IF NOT EXISTS v_element_index AS
-SELECT 'marker' AS category, element_id, chapter_id, type, name, visible, locked,
-       start_sec, end_sec, z_index, ord
+SELECT 'marker' AS category, element_id, project_id, type, name, visible,
+       start_sec, end_sec, ord
   FROM element_marker
 UNION ALL
-SELECT 'route', element_id, chapter_id, type, name, visible, locked,
-       start_sec, end_sec, z_index, ord
+SELECT 'route', element_id, project_id, type, name, visible,
+       start_sec, end_sec, ord
   FROM element_route
 UNION ALL
-SELECT 'shape', element_id, chapter_id, type, name, visible, locked,
-       start_sec, end_sec, z_index, ord
+SELECT 'shape', element_id, project_id, type, name, visible,
+       start_sec, end_sec, ord
   FROM element_shape
 UNION ALL
-SELECT 'territory', element_id, chapter_id, type, name, visible, locked,
-       start_sec, end_sec, z_index, ord
+SELECT 'territory', element_id, project_id, type, name, visible,
+       start_sec, end_sec, ord
   FROM element_territory;
 
 -- 12.2 悬空引用自检（弱引用 + 外键未开启时应为 0；迁移后与老库体检）
@@ -703,7 +775,7 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
 -- =============================================================================
 -- 已知约束与设计取舍
 -- =============================================================================
--- 1) 底图 / 高程图不入库：配置是代码内置常量，project / chapter 只存 id 字符串。
+-- 1) 底图 / 高程图不入库：配置是代码内置常量，project 只存 id 字符串。
 --    理由：配置数量固定、无需用户自定义，入库只会多出两张表与两处外键（还曾形成循环）。
 -- 2) 【本版最大取舍】取消 element 基表后，跨表弱引用失去数据库级外键：
 --    · connector.from/to（可指向任意类别元素）→ 应用层清理 + 自检视图

@@ -1,11 +1,11 @@
 /**
- * 特效窗口的表现层（双端同源）：弹窗卡片 / 章节标题 / 屏幕特效层。
+ * 特效窗口的表现层（双端同源）：弹窗卡片 / 屏幕特效层。
  * 编辑器预览（App 内 FxPreviewLayer）与导出端（compositions/MapVideo）调用同一实现，
  * 全部为 frame 的纯渲染（时间相关样式由 lib/screenfx 确定性计算）。
  */
 import React, { useEffect, useRef, useState } from 'react';
-import type { AnimationPreset, Chapter, OverlayBlock, OverlayContent, OverlayItem, PersonBlock, ScreenFxItem, TitleStyle, NarrationTrack } from '../../types';
-import { normalizeTitleStyle, normalizePersonContent, normalizeNarrationTrack, POS_BASE } from '../../types';
+import type { AnimationPreset, MapVideoProject, OverlayBlock, OverlayContent, OverlayItem, ScreenFxItem, NarrationTrack } from '../../types';
+import { normalizePersonContent, normalizeNarrationTrack, POS_BASE } from '../../types';
 import { screenFxCombinedAt } from '../../lib/screenfx';
 import { FxCanvas } from './FxCanvas';
 
@@ -141,176 +141,94 @@ function OverlayContentView({ content, frame, local, fps, interactive }: { conte
       return <CustomView content={content} frame={frame} interactive={interactive} />;
     case 'person':
       return <PersonView content={content} interactive={interactive} />;
-    case 'report':
-      return <ReportView content={content} />;
     case 'timeline':
       return <TimelineView content={content} local={local} />;
     case 'quote':
       return <QuoteView content={content} />;
     case 'compare':
       return <CompareView content={content} local={local} fps={fps} />;
-    case 'counter':
-      return <CounterView content={content} local={local} />;
-    case 'dialogue':
-      return <DialogueView content={content} local={local} />;
-    case 'place':
-      return <PlaceView content={content} />;
     case 'chart':
       return <ChartView content={content} local={local} />;
+    case 'stat':
+      return <StatView content={content} local={local} fps={fps} />;
     default:
       return null;
   }
 }
 
-// ========== 人物卡（块化） ==========
+// ========== 人物卡（精简） ==========
 
-/** 纯图模式判定：仅图片块可见（渲染为透明浮层，无卡片背景） */
+/** 纯图模式：仅照片、无任何文字（透明浮层，无卡片背景） */
 function isImageOnlyPerson(c: OverlayContent): boolean {
   if (c.type !== 'person' || !c.person) return false;
-  const vis = normalizePersonContent(c.person).blocks.filter((b) => b.show !== false);
-  return vis.length === 1 && vis[0].kind === 'image';
+  const p = normalizePersonContent(c.person);
+  return p.showImage && !!p.imageUrl && !p.name && !p.title && !p.intro && !p.quote;
 }
 
-/** 人物卡：图片(尺寸/遮罩) / 姓名(+职务) / 介绍 / 名言(三样式) / 对话气泡(单角色)，各块开关+语音，布局可配 */
+/** 人物卡：4 种常用样式（简介/名言/海报/纯文字）+ 少量参数；照片形状与方位可调 */
 function PersonView({ content, interactive }: { content: OverlayContent; interactive: boolean }) {
-  const pc = normalizePersonContent(content.person);
-  const { layout } = pc;
-  const vis = pc.blocks.filter((b) => b.show !== false);
-  const imgB = vis.find((b) => b.kind === 'image');
-  const texts = vis.filter((b) => b.kind !== 'image');
-  const imageOnly = !!imgB && texts.length === 0;
-  const center = layout.align === 'center';
+  const p = normalizePersonContent(content.person);
+  const audio = p.audioUrl ? <AutoAudio url={p.audioUrl} interactive={interactive} /> : null;
+  const radius = p.imageShape === 'circle' ? 999 : 10;
 
-  const renderImage = (fullWidth: boolean) => {
-    if (!imgB) return null;
-    const size = Math.max(40, Math.min(360, imgB.size || 72));
-    const radius = imgB.mask === 'circle' ? '50%' : 10;
-    const feather = imgB.mask === 'feather'
-      ? { WebkitMaskImage: 'radial-gradient(ellipse at center, black 55%, transparent 100%)', maskImage: 'radial-gradient(ellipse at center, black 55%, transparent 100%)' }
-      : {};
+  const avatar = (size: number) =>
+    p.imageUrl ? (
+      <img src={p.imageUrl} alt="" style={{ width: size, height: size, objectFit: 'cover', borderRadius: radius, display: 'block', flexShrink: 0 }} />
+    ) : (
+      <div style={{ width: size, height: size, borderRadius: radius, background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.42, flexShrink: 0 }}>👤</div>
+    );
+
+  const nameEl = p.name ? <div style={{ color: '#fff', fontSize: 18, fontWeight: 700, lineHeight: 1.25 }}>{p.name}</div> : null;
+  const titleEl = p.title ? <div style={{ color: '#a8a29e', fontSize: 12, lineHeight: 1.3 }}>{p.title}</div> : null;
+  const introEl = p.intro ? <div style={{ color: '#d6d3d1', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{p.intro}</div> : null;
+  const quoteEl = p.quote ? (
+    <div style={{ color: '#f5f5f4', fontSize: 16, fontWeight: 600, lineHeight: 1.5, whiteSpace: 'pre-wrap', fontStyle: 'italic' }}>“{p.quote}”</div>
+  ) : null;
+
+  // 海报大图：大图 + 底部压暗叠加姓名/职务/简介
+  if (p.style === 'poster' && p.showImage) {
     return (
-      <div style={{ position: 'relative', flexShrink: 0, ...(fullWidth ? { width: '100%' } : { width: size }), height: size }}>
-        {imgB.imageUrl ? (
-          <img src={imgB.imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: radius, ...feather }} />
+      <div style={{ position: 'relative', width: 380, maxWidth: '100%' }}>
+        {p.imageUrl ? (
+          <img src={p.imageUrl} alt="" style={{ width: '100%', height: 240, objectFit: 'cover', borderRadius: 12, display: 'block' }} />
         ) : (
-          <div style={{ width: '100%', height: '100%', borderRadius: radius, background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.42 }}>👤</div>
+          <div style={{ width: '100%', height: 240, borderRadius: 12, background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72 }}>👤</div>
         )}
-        {(imgB.mask === 'bottom' || imgB.mask === 'top') && (
-          <div style={{
-            position: 'absolute', inset: 0, borderRadius: radius, pointerEvents: 'none',
-            background: imgB.mask === 'bottom' ? 'linear-gradient(transparent 35%, rgba(0,0,0,0.62))' : 'linear-gradient(rgba(0,0,0,0.62), transparent 65%)',
-          }} />
-        )}
-      </div>
-    );
-  };
-
-  const renderText = (b: PersonBlock): React.ReactNode => {
-    const align = center ? 'center' : 'left';
-    if (b.kind === 'name') {
-      return b.text ? (
-        <div key={b.id}>
-          <div style={{ color: '#fff', fontSize: 18, fontWeight: 700, lineHeight: 1.25, textAlign: align }}>{b.text}</div>
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: 14, borderRadius: '0 0 12px 12px', background: 'linear-gradient(transparent, rgba(0,0,0,0.72))', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {nameEl}
+          {titleEl}
+          {p.intro ? <div style={{ color: '#e7e5e4', fontSize: 12.5, lineHeight: 1.5 }}>{p.intro}</div> : null}
         </div>
-      ) : null;
-    }
-    if (b.kind === 'intro') {
-      return b.text ? (
-        <div key={b.id}>
-          <div style={{ color: '#d6d3d1', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', textAlign: align }}>{b.text}</div>
-        </div>
-      ) : null;
-    }
-    if (b.kind === 'quote') {
-      if (!b.text) return null;
-      const body: React.CSSProperties = { textAlign: center ? 'center' : 'left' };
-      if (layout.quoteStyle === 'big') {
-        return (
-          <div key={b.id}>
-            <div style={{ ...body, color: '#fff', fontSize: 17, fontWeight: 600, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>“{b.text}”</div>
-          </div>
-        );
-      }
-      if (layout.quoteStyle === 'line') {
-        return (
-          <div key={b.id}>
-            <div style={{ ...body, borderLeft: '3px solid rgba(255,255,255,0.35)', paddingLeft: 10, color: '#e7e5e4', fontSize: 13.5, fontStyle: 'italic', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{b.text}</div>
-          </div>
-        );
-      }
-      return (
-        <div key={b.id}>
-          <div style={{ ...body, background: 'rgba(76,158,255,0.14)', borderLeft: '3px solid #4C9EFF', borderRadius: 8, padding: '8px 12px', color: '#e7e5e4', fontSize: 13, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{b.text}</div>
-        </div>
-      );
-    }
-    // dialogue：单角色自述气泡（圆角带尾巴暗示说话）
-    if (!b.text) return null;
-    return (
-      <div key={b.id}>
-        <div style={{
-          background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: center ? 10 : '10px 10px 10px 2px',
-          padding: '8px 12px', color: '#e7e5e4', fontSize: 13, lineHeight: 1.55, whiteSpace: 'pre-wrap', textAlign: align,
-        }}>{b.text}</div>
-      </div>
-    );
-  };
-
-  const textCol = (
-    <div style={{
-      display: 'flex', flexDirection: 'column', gap: Math.max(4, layout.gap), minWidth: 0, flex: 1,
-      alignItems: center ? 'center' : 'stretch',
-    }}>
-      {texts.map((b) => renderText(b))}
-    </div>
-  );
-
-  // 整卡唯一语音
-  const cardAudio = pc.audioUrl ? <AutoAudio url={pc.audioUrl} interactive={interactive} /> : null;
-
-  // 海报式：文字叠加在图片底部（配合 bottom 遮罩）
-  if (layout.textOverImage && imgB && texts.length > 0) {
-    return (
-      <div style={{ position: 'relative', width: Math.max(240, Math.min(560, layout.width)), maxWidth: '100%' }}>
-        {renderImage(true)}
-        {!imgB.mask || imgB.mask === 'none' || imgB.mask === 'feather' ? (
-          <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(transparent 45%, rgba(0,0,0,0.68))', borderRadius: 10 }} />
-        ) : null}
-        <div style={{
-          position: 'absolute', left: 0, right: 0, bottom: 0, padding: 14,
-          display: 'flex', flexDirection: 'column', gap: Math.max(4, layout.gap),
-        }}>
-          {texts.map((b) => renderText(b))}
-        </div>
-        {cardAudio}
+        {audio}
       </div>
     );
   }
 
-  // 纯图模式：只渲染图片（透明浮层）
-  if (imageOnly) return <div style={{ maxWidth: '100%' }}>{imgB ? renderImage(false) : null}{cardAudio}</div>;
-
-  // 常规布局：图片按方位与文字列排布
-  const cardWidth = Math.max(240, Math.min(560, layout.width));
-  const side = layout.imageSide;
-  if (!imgB || side === 'none') {
-    return <div style={{ width: cardWidth, maxWidth: '100%' }}>{textCol}{cardAudio}</div>;
-  }
-  if (side === 'top' || side === 'bottom') {
+  // 名言台词：居中大字引用（可选小头像）
+  if (p.style === 'quote') {
     return (
-      <div style={{ width: cardWidth, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: Math.max(4, layout.gap) }}>
-        {side === 'top' ? renderImage(false) : null}
-        {textCol}
-        {side === 'bottom' ? renderImage(false) : null}
-        {cardAudio}
+      <div style={{ width: 360, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center', textAlign: 'center' }}>
+        {p.showImage ? avatar(84) : null}
+        {quoteEl}
+        {(nameEl || titleEl) ? <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>{nameEl}{titleEl}</div> : null}
+        {audio}
       </div>
     );
   }
+
+  // 纯文字：仅文字
+  if (p.style === 'text') {
+    return <div style={{ width: 340, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>{nameEl}{titleEl}{introEl}{quoteEl}{audio}</div>;
+  }
+
+  // 人物简介（默认）：左/右 照片 + 文字
+  const info = <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, flex: 1 }}>{nameEl}{titleEl}{introEl}{quoteEl}</div>;
+  if (!p.showImage) return <div style={{ width: 340, maxWidth: '100%' }}>{info}{audio}</div>;
   return (
-    <div style={{ width: cardWidth, maxWidth: '100%', display: 'flex', flexDirection: side === 'right' ? 'row-reverse' : 'row', gap: Math.max(8, layout.gap), alignItems: 'flex-start' }}>
-      {renderImage(false)}
-      {textCol}
-      {cardAudio}
+    <div style={{ width: 380, maxWidth: '100%', display: 'flex', flexDirection: p.imageSide === 'right' ? 'row-reverse' : 'row', gap: 14, alignItems: 'flex-start' }}>
+      {avatar(84)}
+      {info}
+      {audio}
     </div>
   );
 }
@@ -754,22 +672,6 @@ function CustomView({ content, frame, interactive }: { content: OverlayContent; 
   );
 }
 
-function ReportView({ content }: { content: OverlayContent }) {
-  const r = content.report;
-  return (
-    <div style={{ minWidth: 180 }}>
-      {r?.title && <div style={{ color: '#a8a29e', fontSize: 13, letterSpacing: 2, marginBottom: 4 }}>{r.title}</div>}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={{ fontSize: 46, fontWeight: 800, color: '#FFD166', lineHeight: 1.1, fontVariantNumeric: 'tabular-nums', textShadow: '0 2px 10px rgba(0,0,0,0.6)' }}>
-          {typeof r?.value === 'number' ? fmtInt(r.value) : (r?.value ?? '')}
-        </span>
-        {r?.unit && <span style={{ color: '#d6d3d1', fontSize: 16 }}>{r.unit}</span>}
-      </div>
-      {r?.note && <div style={{ color: '#a8a29e', fontSize: 12, marginTop: 6, lineHeight: 1.5 }}>{r.note}</div>}
-    </div>
-  );
-}
-
 function TimelineView({ content, local }: { content: OverlayContent; local: number }) {
   const tl = content.timeline;
   const items = tl?.items || [];
@@ -840,115 +742,22 @@ function CompareView({ content, local, fps }: { content: OverlayContent; local: 
   );
 }
 
-function CounterView({ content, local }: { content: OverlayContent; local: number }) {
-  const ct = content.counter;
-  const dur = Math.max(1, ct?.durationFrames || 60);
-  const p = clamp01(local / dur);
-  const eased = 1 - Math.pow(1 - p, 3);
-  const shown = Math.round((ct?.value || 0) * eased);
+function StatView({ content, local, fps }: { content: OverlayContent; local: number; fps: number }) {
+  const s = content.stat;
+  const target = s?.value ?? 0;
+  const p = s?.countUp === false ? 1 : clamp01(local / fps);
+  const shown = s?.countUp === false ? target : Math.round(target * (1 - Math.pow(1 - p, 3)));
   return (
-    <div style={{ textAlign: 'center', minWidth: 160 }}>
-      {ct?.label && <div style={{ color: '#a8a29e', fontSize: 13, letterSpacing: 2, marginBottom: 2 }}>{ct.label}</div>}
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 5 }}>
-        {ct?.prefix && <span style={{ color: '#d6d3d1', fontSize: 18 }}>{ct.prefix}</span>}
-        <span style={{ fontSize: 46, fontWeight: 800, color: '#FFD166', fontVariantNumeric: 'tabular-nums', lineHeight: 1.1, textShadow: '0 2px 10px rgba(0,0,0,0.6)' }}>{fmtInt(shown)}</span>
-        {ct?.unit && <span style={{ color: '#d6d3d1', fontSize: 15 }}>{ct.unit}</span>}
+    <div style={{ textAlign: 'center', minWidth: 180 }}>
+      {s?.label && <div style={{ color: '#a8a29e', fontSize: 12, marginBottom: 2 }}>{s.label}</div>}
+      <div style={{ color: '#fff', fontSize: 40, fontWeight: 800, lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>
+        {s?.prefix || ''}{fmtInt(shown)}
+        {s?.unit && <span style={{ fontSize: 16, fontWeight: 600, color: '#e7e5e4', marginLeft: 4 }}>{s.unit}</span>}
       </div>
     </div>
   );
 }
 
-function DialogueView({ content, local }: { content: OverlayContent; local: number }) {
-  const dl = content.dialogue;
-  const items = dl?.items || [];
-  return (
-    <div style={{ minWidth: 240, maxWidth: 380 }}>
-      {dl?.title && <div style={{ color: '#fff', fontSize: 15, fontWeight: 700, marginBottom: 8 }}>{dl.title}</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {items.map((it, i) => {
-          const op = clamp01((local - 8 - i * 10) / 10);
-          return (
-            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', opacity: op }}>
-              {it.avatarUrl ? (
-                <img src={it.avatarUrl} alt={it.who} style={{ width: 28, height: 28, borderRadius: 999, objectFit: 'cover', flexShrink: 0 }} />
-              ) : (
-                <div style={{ width: 28, height: 28, borderRadius: 999, background: 'rgba(76,158,255,0.25)', color: '#9ecbff', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  {(it.who || '?').slice(0, 1)}
-                </div>
-              )}
-              <div style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 10, padding: '7px 10px', minWidth: 0 }}>
-                <div style={{ color: '#9ecbff', fontSize: 11, marginBottom: 2 }}>{it.who}</div>
-                <div style={{ color: '#e7e5e4', fontSize: 13, lineHeight: 1.5 }}>{it.text}</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function PlaceView({ content }: { content: OverlayContent }) {
-  const pl = content.place;
-  return (
-    <div style={{ maxWidth: 320 }}>
-      {pl?.imageUrl && <img src={pl.imageUrl} alt={pl.name} style={{ display: 'block', width: '100%', maxHeight: 170, objectFit: 'cover', borderRadius: 10, marginBottom: 8 }} />}
-      <div style={{ color: '#fff', fontSize: 19, fontWeight: 700 }}>{pl?.name}</div>
-      {pl?.description && <div style={{ color: '#d6d3d1', fontSize: 13, lineHeight: 1.55, marginTop: 4 }}>{pl.description}</div>}
-    </div>
-  );
-}
-
-// ========== 章节标题 ==========
-
-export function ChapterTitleView({ chapter, frame }: { chapter: Chapter; frame: number }) {
-  const st: TitleStyle = normalizeTitleStyle(chapter.titleStyle);
-  if (!st.show && !chapter.title) return null;
-  if (st.show === false) return null;
-  if (!chapter.title) return null;
-  const local = frame - chapter.startFrame;
-  const op = Math.max(0, Math.min(1, local / ANIM_DUR));
-  if (op <= 0.01) return null;
-  const pos = st.pos || 'bottomLeft';
-  // 位置 = 九宫格标准位（POS_BASE）+ 微调量，锚点=盒子中心：与弹窗同语义，左右/上下完全对称
-  const p = pos.toLowerCase();
-  const leftLike = p.includes('left');
-  const rightLike = p.includes('right');
-  const base = POS_BASE[pos] ?? POS_BASE.bottomLeft;
-  const offX = Math.max(-40, Math.min(40, base[0] + (st.offsetX || 0)));
-  const offY = Math.max(-40, Math.min(40, base[1] + (st.offsetY || 0)));
-  const textAlign: React.CSSProperties['textAlign'] = leftLike ? 'left' : rightLike ? 'right' : 'center';
-  const bgStyle: React.CSSProperties =
-    st.bg === 'card'
-      ? { background: hexToRgba(st.bgColor, 0.72), padding: '14px 26px', borderRadius: 14, border: '1px solid rgba(255,255,255,0.10)', backdropFilter: 'blur(6px)' }
-      : st.bg === 'bar'
-        ? { background: hexToRgba(st.bgColor, 0.55), padding: '10px 22px' }
-        : {};
-  return (
-    <div style={{ position: 'absolute', inset: 0, zIndex: 40, pointerEvents: 'none', opacity: op }}>
-      <div
-        style={{
-          position: 'absolute',
-          left: `calc(50% + ${offX}%)`,
-          top: `calc(50% + ${offY}%)`,
-          transform: 'translate(-50%, -50%)',
-          width: 'max-content',
-          maxWidth: '86%',
-        }}
-      >
-        <div style={{ ...bgStyle, textAlign }}>
-          <div style={{
-            fontFamily: st.fontFamily, color: st.color, fontSize: st.fontSize, fontWeight: st.weight,
-            lineHeight: 1.25,
-            textShadow: st.shadow ? '0 2px 12px rgba(0,0,0,0.75)' : undefined,
-          }}>
-            {chapter.title}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ========== 屏幕特效层（天气/云层/闪光/暗角/黑白场；震动由调用方做 transform） ==========
 
@@ -983,16 +792,15 @@ export function ScreenFxLayer({ fxList, frame, fps }: { fxList: ScreenFxItem[] |
   );
 }
 
-/** 编辑器舞台预览层：弹窗卡片 + 屏幕特效 + 章节标题 + 字幕（不含震动 transform，调用方处理） */
-export function FxPreviewLayer({ chapter, frame, fps }: { chapter: Chapter; frame: number; fps: number }) {
+/** 编辑器舞台预览层：弹窗卡片 + 屏幕特效 + 字幕（不含震动 transform，调用方处理） */
+export function FxPreviewLayer({ project, frame, fps }: { project: MapVideoProject; frame: number; fps: number }) {
   return (
     <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
-      {(chapter.overlays || []).map((o) => (
+      {(project.overlays || []).map((o) => (
         <OverlayCard key={o.id} overlay={o} frame={frame} fps={fps} interactive />
       ))}
-      <ChapterTitleView chapter={chapter} frame={frame} />
-      <SubtitleLayer narration={chapter.narration} frame={frame - chapter.startFrame} fps={fps} />
-      <ScreenFxLayer fxList={chapter.fx} frame={frame} fps={fps} />
+      <SubtitleLayer narration={project.narration} frame={frame} fps={fps} />
+      <ScreenFxLayer fxList={project.fx} frame={frame} fps={fps} />
     </div>
   );
 }
@@ -1005,7 +813,7 @@ export function SubtitleLayer({
   fps,
 }: {
   narration: NarrationTrack | undefined;
-  /** 章内相对帧 */
+  /** 项目绝对帧（与条目 startFrame 同基准） */
   frame: number;
   fps: number;
 }) {
@@ -1020,7 +828,7 @@ export function SubtitleLayer({
   const op = Math.min(fadeIn, fadeOut);
   const barBg: React.CSSProperties =
     st.bg === 'bar'
-      ? { background: hexToRgba(st.bgColor, 0.62), padding: '8px 20px', borderRadius: 6 }
+      ? { background: hexToRgba(st.bgColor, 0.55), padding: '8px 20px', borderRadius: 6 }
       : {};
   return (
     <div
@@ -1043,6 +851,7 @@ export function SubtitleLayer({
           maxWidth: `${st.maxPct}%`,
           textAlign: 'center',
           color: st.color,
+          fontFamily: st.fontFamily || "'KaiTi', 'STKaiti', 'SimSun', serif",
           fontSize: st.fontSize,
           fontWeight: 500,
           lineHeight: 1.35,
