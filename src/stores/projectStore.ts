@@ -5,10 +5,11 @@ import type {
   ElevationMapConfig, OverlayItem, CameraKeyframe,
   ProjectExport, ScreenFxItem, ExportedAsset,
   NarrationEntry, NarrationStyle, MusicTrack, ConnectorElement,
-  GeneratedChapterPlan
+  GeneratedChapterPlan, Layer,
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
+import { deriveElements, layerForAppend } from '../lib/layers';
 import { planChapterCamera } from '../lib/camera-plan';
 import { releaseAssetUrls, getAssetBytes, uploadAsset, type AssetKind } from '../lib/assets';
 import { clearGifCache } from '../lib/gif-decoder';
@@ -23,6 +24,27 @@ function normalizeElement(raw: MapElement): MapElement {
   const legacyFly = (e as any).animEffect === 'fly';
   const el = legacyFly ? { ...e, flyMode: true, animEffect: 'move' as const } : e;
   return (e.type === 'territory' ? { ...el, display: normalizeTerritoryDisplay((el as any).display) } : el) as MapElement;
+}
+
+/** 新建默认图层（用于无图层时承接新元素） */
+function makeDefaultLayer(p: MapVideoProject): Layer {
+  return {
+    id: generateId(), name: `图层 ${(p.layers?.length || 0) + 1}`, visible: true,
+    startFrame: 0, endFrame: Math.max(1, p.endFrame || 1), elements: [],
+  };
+}
+
+/** 平移元素的所有时间字段（图层显示起点变化时同步，保持相对观感） */
+function shiftElementTime(el: MapElement, d: number): MapElement {
+  const out = {
+    ...el,
+    startFrame: el.startFrame + d,
+    endFrame: el.endFrame + d,
+  } as MapElement & { moveStartFrame?: number; moveEndFrame?: number; pointTimes?: number[] };
+  if (typeof out.moveStartFrame === 'number') out.moveStartFrame += d;
+  if (typeof out.moveEndFrame === 'number') out.moveEndFrame += d;
+  if (Array.isArray(out.pointTimes)) out.pointTimes = out.pointTimes.map((t) => t + d);
+  return out as MapElement;
 }
 
 function normalizeOverlays(overlays: OverlayItem[] | undefined): OverlayItem[] {
@@ -53,7 +75,11 @@ export function projectContentEnd(project: MapVideoProject): number {
 
 /** load/import 入口统一归一化 */
 function normalizeProject(project: MapVideoProject): MapVideoProject {
-  const elements = (project.elements || []).map(normalizeElement);
+  // 图层：新格式用 layers；旧数据（只有扁平 elements）包进一个默认图层
+  const rawLayers: Layer[] = project.layers?.length
+    ? project.layers.map((L) => ({ ...L, elements: (L.elements || []).map(normalizeElement) }))
+    : [{ id: generateId(), name: '图层 1', visible: true, startFrame: 0, endFrame: Math.max(1, project.endFrame || 1), elements: (project.elements || []).map(normalizeElement) }];
+  const elements = deriveElements(rawLayers);
   const endFrame = project.endFrame && project.endFrame > 0 ? project.endFrame : Math.max(1, projectContentEnd({ ...project, elements }));
   return {
     ...project,
@@ -63,6 +89,7 @@ function normalizeProject(project: MapVideoProject): MapVideoProject {
     elevationMaps: project.elevationMaps?.length ? project.elevationMaps : [...DEFAULT_ELEVATION_MAPS],
     activeBaseMapId: project.activeBaseMapId || 'satellite',
     activeElevationMapId: project.activeElevationMapId ?? 'none',
+    layers: rawLayers,
     elements,
     camera: project.camera?.length ? project.camera : [{ frame: 0, center: [104.0, 35.0], zoom: 4 }],
     overlays: normalizeOverlays(project.overlays),
@@ -207,11 +234,18 @@ interface ProjectState {
   applyGeneratedProject: (segments: GeneratedChapterPlan[], secondsPerSegment: number) => void;
   setProjectEndFrame: (endFrame: number) => void;
 
-  // 元素操作（项目级）
-  addElement: (element: MapElement) => void;
+  // 图层操作
+  addLayer: (name?: string) => Layer;
+  addLayerFull: (layer: Layer) => void;
+  updateLayer: (layerId: string, changes: Partial<Pick<Layer, 'name' | 'visible' | 'startFrame' | 'endFrame'>>) => void;
+  deleteLayer: (layerId: string) => void;
+  moveElementsToLayer: (elementIds: string[], layerId: string) => void;
+
+  // 元素操作（项目级；归属图层，缺省并入首个图层）
+  addElement: (element: MapElement, layerId?: string) => void;
   updateElement: (elementId: string, changes: Partial<MapElement>) => void;
   deleteElement: (elementId: string) => void;
-  addElements: (elements: MapElement[]) => void;
+  addElements: (elements: MapElement[], layerId?: string) => void;
 
   // Overlay 操作
   addOverlay: (overlay: OverlayItem) => void;
@@ -294,10 +328,14 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     set({ history: next, future: [] });
   };
 
-  /** 项目级不可变更新（自动压历史） */
+  /** 项目级不可变更新（自动压历史）。每次更新后从 layers 重算 elements 派生镜像 */
   const patch = (fn: (p: MapVideoProject) => MapVideoProject, withHistory = true) => {
     if (withHistory) commit();
-    set((state) => (state.project ? { project: fn(state.project) } : state));
+    set((state) => {
+      if (!state.project) return state;
+      const p = fn(state.project);
+      return { project: { ...p, elements: deriveElements(p.layers) } };
+    });
   };
 
   return {
@@ -318,6 +356,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         globalConfig: { ...DEFAULT_GLOBAL_CONFIG },
         startFrame: 0,
         endFrame: DEFAULT_GLOBAL_CONFIG.defaultDuration,
+        layers: [{ id: generateId(), name: '图层 1', visible: true, startFrame: 0, endFrame: DEFAULT_GLOBAL_CONFIG.defaultDuration, elements: [] }],
         elements: [],
         camera: [{ frame: 0, center: [104.0, 35.0], zoom: 4 }],
         overlays: [],
@@ -422,10 +461,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
           cursor = end;
           void i;
         });
+        const genLayer: Layer = { id: generateId(), name: '生成图层', visible: true, startFrame: 0, endFrame: Math.max(1, cursor), elements };
         return {
           project: {
             ...p,
-            elements: [...p.elements, ...elements],
+            layers: [...p.layers, genLayer],
+            elements: [],
             overlays: [...p.overlays, ...overlays],
             fx: [...p.fx, ...fx],
             camera,
@@ -438,31 +479,91 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
 
     setProjectEndFrame: (endFrame: number) => patch((p) => ({ ...p, endFrame: Math.max(1, Math.round(endFrame)) })),
 
-    // ----- 元素 -----
-    addElement: (element: MapElement) => patch((p) => ({ ...p, elements: [...p.elements, element] })),
-    addElements: (elements: MapElement[]) => patch((p) => ({ ...p, elements: [...p.elements, ...elements] })),
-    updateElement: (elementId: string, changes: Partial<MapElement>) =>
-      patch((p) => ({ ...p, elements: p.elements.map((el) => (el.id === elementId ? ({ ...el, ...changes } as MapElement) : el)) })),
+    // ----- 图层 -----
+    addLayer: (name?: string) => {
+      const id = generateId();
+      const p0 = useProjectStore.getState().project;
+      const layer: Layer = {
+        id, name: name || `图层 ${(p0?.layers.length || 0) + 1}`, visible: true,
+        startFrame: 0, endFrame: Math.max(1, p0?.endFrame || DEFAULT_GLOBAL_CONFIG.defaultDuration), elements: [],
+      };
+      patch((p) => ({ ...p, layers: [...p.layers, layer] }));
+      return layer;
+    },
+    addLayerFull: (layer: Layer) => patch((p) => ({ ...p, layers: [...p.layers, layer] })),
+    updateLayer: (layerId, changes) =>
+      patch((p) => ({
+        ...p,
+        layers: p.layers.map((L) => {
+          if (L.id !== layerId) return L;
+          const next: Layer = { ...L, ...changes };
+          // 图层显示起点变化 → 同步平移元素，保持「相对图层」的观感
+          if (changes.startFrame != null && changes.startFrame !== L.startFrame) {
+            const d = changes.startFrame - L.startFrame;
+            next.elements = L.elements.map((el) => shiftElementTime(el, d));
+          }
+          return next;
+        }),
+      })),
+    deleteLayer: (layerId) => patch((p) => ({ ...p, layers: p.layers.filter((L) => L.id !== layerId) })),
+    moveElementsToLayer: (elementIds, layerId) =>
+      patch((p) => {
+        const ids = new Set(elementIds);
+        const moving: MapElement[] = [];
+        const layers = p.layers.map((L) => {
+          const keep = L.elements.filter((el) => {
+            if (L.id !== layerId && ids.has(el.id)) { moving.push(el); return false; }
+            return true;
+          });
+          return keep.length === L.elements.length ? L : { ...L, elements: keep };
+        });
+        return { ...p, layers: layers.map((L) => (L.id === layerId ? { ...L, elements: [...L.elements, ...moving] } : L)) };
+      }),
+
+    // ----- 元素（归属图层；elements 为派生镜像，由 patch 自动重算） -----
+    addElement: (element, layerId) =>
+      patch((p) => {
+        const { layers, targetId } = layerForAppend(p.layers, layerId, () => makeDefaultLayer(p));
+        return { ...p, layers: layers.map((L) => (L.id === targetId ? { ...L, elements: [...L.elements, element] } : L)) };
+      }),
+    addElements: (elements, layerId) =>
+      patch((p) => {
+        if (!elements.length) return p;
+        const { layers, targetId } = layerForAppend(p.layers, layerId, () => makeDefaultLayer(p));
+        return { ...p, layers: layers.map((L) => (L.id === targetId ? { ...L, elements: [...L.elements, ...elements] } : L)) };
+      }),
+    updateElement: (elementId, changes) =>
+      patch((p) => ({
+        ...p,
+        layers: p.layers.map((L) => (
+          L.elements.some((el) => el.id === elementId)
+            ? { ...L, elements: L.elements.map((el) => (el.id === elementId ? ({ ...el, ...changes } as MapElement) : el)) }
+            : L
+        )),
+      })),
 
     /**
      * 删除元素 —— 一并清理弱引用：
      *   1) 以该元素为端点的连接线整条移除
      *   2) 跟随机位指向该元素的相机关键帧退化为固定镜头
      */
-    deleteElement: (elementId: string) =>
+    deleteElement: (elementId) =>
       patch((p) => {
-        const elements = p.elements.filter((el) => {
-          if (el.id === elementId) return false;
-          if (el.type === 'connector') {
-            const c = el as ConnectorElement;
-            return c.fromElementId !== elementId && c.toElementId !== elementId;
-          }
-          return true;
-        });
+        const layers = p.layers.map((L) => ({
+          ...L,
+          elements: L.elements.filter((el) => {
+            if (el.id === elementId) return false;
+            if (el.type === 'connector') {
+              const c = el as ConnectorElement;
+              return c.fromElementId !== elementId && c.toElementId !== elementId;
+            }
+            return true;
+          }),
+        }));
         const camera = p.camera.map((kf) =>
           kf.followRoute?.routeElementId === elementId ? { ...kf, cameraType: 'fixed' as const, followRoute: undefined } : kf,
         );
-        return { ...p, elements, camera };
+        return { ...p, layers, camera };
       }),
 
     // ----- Overlay -----

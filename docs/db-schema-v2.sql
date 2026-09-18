@@ -36,43 +36,43 @@ PRAGMA journal_mode = WAL;
 --   · 默认合集 id 恒为 'default'（不可改名、不可删除），新建项目 / 导入未指定归属时落在这里
 --   · 删合集只把其下项目移回默认合集（应用层先迁移再删，故用 RESTRICT 防误删）
 CREATE TABLE IF NOT EXISTS collection (
-  collection_id TEXT PRIMARY KEY,
-  name          TEXT    NOT NULL,
-  ord           INTEGER NOT NULL DEFAULT 0,
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL
+  collection_id TEXT PRIMARY KEY,  -- 合集 id（默认合集恒为 default，不可删除）
+  name          TEXT    NOT NULL,  -- 合集名（默认合集名为「默认合集」，不可改名）
+  ord           INTEGER NOT NULL DEFAULT 0,  -- 合集排序（默认合集固定 -1，恒排最前）
+  created_at    INTEGER NOT NULL,  -- 创建时间（毫秒时间戳）
+  updated_at    INTEGER NOT NULL  -- 最后修改时间（毫秒时间戳）
 );
 
 CREATE TABLE IF NOT EXISTS project (
-  project_id            TEXT PRIMARY KEY,
-  name                  TEXT    NOT NULL,
-  description           TEXT,
+  project_id            TEXT PRIMARY KEY,  -- 项目 id
+  name                  TEXT    NOT NULL,  -- 项目名
+  description           TEXT,  -- 项目描述
   -- 所属合集；缺省即默认合集（见上）
-  collection_id         TEXT    NOT NULL DEFAULT 'default'
+  collection_id         TEXT    NOT NULL DEFAULT 'default'  -- 所属合集（默认 default）；删合集时其下项目回落到默认合集
                         REFERENCES collection(collection_id) ON DELETE RESTRICT,
-  created_at            INTEGER NOT NULL,
-  updated_at            INTEGER NOT NULL,
+  created_at            INTEGER NOT NULL,  -- 创建时间（毫秒时间戳）
+  updated_at            INTEGER NOT NULL,  -- 最后保存时间（毫秒时间戳）
 
   -- 地图投影：渲染方式，属于项目本身（随项目走，与内容类配置分离）
-  projection            TEXT    NOT NULL DEFAULT 'mercator'
+  projection            TEXT    NOT NULL DEFAULT 'mercator'  -- 地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走）
                         CHECK (projection IN ('mercator','globe')),
 
   -- 当前生效的底图 / 高程图：存内置配置的 id 字符串（如 'osm' / 'none'），配置本身在代码里
-  active_base_map_id      TEXT,
-  active_elevation_map_id TEXT,
+  active_base_map_id      TEXT,  -- 当前生效底图的配置 id（底图是代码内置常量，不入库）
+  active_elevation_map_id TEXT,  -- 当前生效高程图的配置 id（同上）
 
   -- 项目级配置（GlobalConfig；原 project_config 1:1 表已合并进来）
-  default_duration_sec      REAL NOT NULL DEFAULT 5 CHECK (default_duration_sec > 0),
-  default_fps           INTEGER NOT NULL DEFAULT 30 CHECK (default_fps BETWEEN 1 AND 240),
-  resolution_w          INTEGER NOT NULL DEFAULT 1920 CHECK (resolution_w > 0),
-  resolution_h          INTEGER NOT NULL DEFAULT 1080 CHECK (resolution_h > 0),
+  default_duration_sec      REAL NOT NULL DEFAULT 5 CHECK (default_duration_sec > 0),  -- 默认章节时长（秒）
+  default_fps           INTEGER NOT NULL DEFAULT 30 CHECK (default_fps BETWEEN 1 AND 240),  -- 默认帧率（1–240）
+  resolution_w          INTEGER NOT NULL DEFAULT 1920 CHECK (resolution_w > 0),  -- 默认导出宽度（px）
+  resolution_h          INTEGER NOT NULL DEFAULT 1080 CHECK (resolution_h > 0),  -- 默认导出高度（px）
   -- 画幅标签（如「1080p 横屏 (16:9)」）由 w×h 推导，不落库
-  default_easing        TEXT    NOT NULL DEFAULT 'easeInOut',
+  default_easing        TEXT    NOT NULL DEFAULT 'easeInOut',  -- 默认缓动类型
   -- 地形夸张：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例，面板范围 0–50）
-  elevation_exaggeration REAL CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)
+  elevation_exaggeration REAL CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)  -- 地形夸张系数（覆盖内置默认 1.5；0=平坦、1=真实比例；空=用内置默认）
 ,
   -- 全片总长（秒）
-  end_sec REAL NOT NULL DEFAULT 0 CHECK (end_sec >= 0)
+  end_sec REAL NOT NULL DEFAULT 0 CHECK (end_sec >= 0)  -- 全片总长（秒）
 );
 
 -- -----------------------------------------------------------------------------
@@ -98,14 +98,14 @@ CREATE TABLE IF NOT EXISTS project (
 -- ★ 只存输入原值：字节数 / 尺寸 / 时长 / 帧数 / 模型包围盒等都是**从文件解析出来的派生值**，
 --   不入库（需要时按 mime 现场解析——图片取 naturalWidth、音频用 duration、GIF 用 gifuct、模型用 glTF 头）。
 CREATE TABLE IF NOT EXISTS asset (
-  asset_id      TEXT PRIMARY KEY,
-  kind          TEXT NOT NULL CHECK (kind IN ('image','gif','model','audio','video','font','icon')),
+  asset_id      TEXT PRIMARY KEY,  -- 素材 id（随机生成，与文件名/内容解耦，改名不影响引用）
+  kind          TEXT NOT NULL CHECK (kind IN ('image','gif','model','audio','video','font','icon')),  -- 素材种类：image 图片 / gif 动图 / model 3D 模型 / audio 音频 / video 视频 / font 字体 / icon 用户图标库条目（合并了原 custom_symbol / custom_image）
   name          TEXT NOT NULL DEFAULT '',  -- 原文件名 / 展示名
-  mime          TEXT NOT NULL,
-  storage       TEXT NOT NULL CHECK (storage IN ('file','blob')),
-  rel_path      TEXT,                      -- storage='file'：projects/<projectId>/<kind>/<文件名>
-  blob          BLOB,                      -- storage='blob'：小文件内联
-  created_at    INTEGER NOT NULL,
+  mime          TEXT NOT NULL,  -- MIME 类型（如 image/png）
+  storage       TEXT NOT NULL CHECK (storage IN ('file','blob')),  -- 存放方式：file 外置文件 / blob 库内联
+  rel_path      TEXT,  -- 外置方式下的相对路径（相对 userData/projects/）
+  blob          BLOB,  -- 内联方式下的小文件二进制
+  created_at    INTEGER NOT NULL,  -- 入库时间（毫秒时间戳）
   CHECK ((storage = 'file' AND rel_path IS NOT NULL)
       OR (storage = 'blob' AND blob      IS NOT NULL))
 );
@@ -118,28 +118,28 @@ CREATE INDEX IF NOT EXISTS ix_asset_name ON asset(name);
 
 -- 相机视角关键帧：sec = 「到达时间」（绝对秒），move_duration_sec = 起飞提前量（秒）
 CREATE TABLE IF NOT EXISTS camera_keyframe (
-  kf_id            TEXT PRIMARY KEY,
-  project_id       TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  sec            REAL NOT NULL CHECK (sec >= 0),
-  center_lng       REAL NOT NULL,
-  center_lat       REAL NOT NULL,
-  zoom             REAL NOT NULL,
-  pitch            REAL,
-  bearing          REAL,
-  easing           TEXT,
-  move_duration_sec    REAL CHECK (move_duration_sec IS NULL OR move_duration_sec >= 0),
-  camera_type      TEXT CHECK (camera_type IS NULL OR camera_type IN ('fixed','follow','orbit')),
+  kf_id            TEXT PRIMARY KEY,  -- 视角关键帧 id
+  project_id       TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  sec            REAL NOT NULL CHECK (sec >= 0),  -- 到达时间（秒，项目绝对时间轴）—— 语义为「停留 → 飞行 → 落位」的落位时刻
+  center_lng       REAL NOT NULL,  -- 视角中心经度
+  center_lat       REAL NOT NULL,  -- 视角中心纬度
+  zoom             REAL NOT NULL,  -- 缩放级别
+  pitch            REAL,  -- 俯仰角（度）
+  bearing          REAL,  -- 方向角（度）
+  easing           TEXT,  -- 飞行缓动类型
+  move_duration_sec    REAL CHECK (move_duration_sec IS NULL OR move_duration_sec >= 0),  -- 起飞提前量（秒，默认 2 秒）
+  camera_type      TEXT CHECK (camera_type IS NULL OR camera_type IN ('fixed','follow','orbit')),  -- 视角类型：fixed 固定 / follow 跟随 / orbit 环绕
 
   -- follow 视角：跟随目标只能是路线类元素（line / moving_point）
   -- 单列外键 + SET NULL：复合外键会连带清空 NOT NULL 的 project_id（见报告 5.6）
   -- 跟随的时间窗口由「被跟随路线的显示起止」推导，不另存 follow_start/end（派生值不入库）
-  follow_route_element_id TEXT REFERENCES element_route(element_id) ON DELETE SET NULL,
-  follow_direction        INTEGER CHECK (follow_direction IS NULL OR follow_direction IN (0,1)),
+  follow_route_element_id TEXT REFERENCES element_route(element_id) ON DELETE SET NULL,  -- 跟随的路线元素（外键指向 element_route，只能是 line / moving_point；删除后置空，退化为固定视角）
+  follow_direction        INTEGER CHECK (follow_direction IS NULL OR follow_direction IN (0,1)),  -- 跟随视角是否按路线切线自动定向
 
   -- orbit 视角
-  orbit_speed    REAL,
-  orbit_duration_sec REAL,
-  ord            INTEGER NOT NULL DEFAULT 0
+  orbit_speed    REAL,  -- 环绕速度（度/秒）
+  orbit_duration_sec REAL,  -- 环绕时长（秒）
+  ord            INTEGER NOT NULL DEFAULT 0  -- 同章节内排序
 );
 CREATE INDEX IF NOT EXISTS ix_camera_kf_chapter ON camera_keyframe(project_id, sec);
 CREATE INDEX IF NOT EXISTS ix_camera_kf_follow  ON camera_keyframe(follow_route_element_id);
@@ -155,77 +155,77 @@ CREATE INDEX IF NOT EXISTS ix_camera_kf_follow  ON camera_keyframe(follow_route_
 
 -- 5.1 标记类元素（Pin 工具）：point（点/文字/图标）· flag（旗标）· military_symbol（APP-6 军标）
 CREATE TABLE IF NOT EXISTS element_marker (
-  element_id     TEXT PRIMARY KEY,
-  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
 
-  name           TEXT NOT NULL DEFAULT '',
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec      REAL NOT NULL,
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
-  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
-  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
-  move_start_sec REAL,
-  move_end_sec   REAL,
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
+  name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
+  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
+  end_sec      REAL NOT NULL,  -- 消失时间（秒）
+  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进
+  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式：按高度剖面离地显示
+  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
+  move_start_sec REAL,  -- 移动图标出发时间（秒）
+  move_end_sec   REAL,  -- 移动图标到达时间（秒）
+  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
+  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒，非匀速时使用）
   -- 标签（原 label_json 平铺：面板上每个小项 = 一列）
-  label_text        TEXT,
-  label_font_size   REAL,
-  label_color       TEXT,
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),
-  label_offset_x    REAL,
-  label_offset_y    REAL,
-  label_bg_color    TEXT,
-  label_bg_padding  REAL,
-  label_bg_radius   REAL,
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联：[{property,sec,easing,value_num,value_json}]
-  ord            INTEGER NOT NULL DEFAULT 0,
+  label_text        TEXT,  -- 标签文字（与元素名同步）
+  label_font_size   REAL,  -- 标签字号
+  label_color       TEXT,  -- 标签文字颜色
+  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
+  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
+  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
+  label_bg_color    TEXT,  -- 标签背景色（默认透明）
+  label_bg_padding  REAL,  -- 标签背景内边距
+  label_bg_radius   REAL,  -- 标签背景圆角
+  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
+  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
 
   -- 位置（三类标记都落在单点）
-  lng            REAL NOT NULL,
-  lat            REAL NOT NULL,
-  rotation       REAL,
+  lng            REAL NOT NULL,  -- 经度（三类标记都落在单点）
+  lat            REAL NOT NULL,  -- 纬度
+  rotation       REAL,  -- 贴地旋转角（0–360 度）
 
   -- point 专属：视觉形态（9 种）+ 资源引用
   --   circle 圆点 · text 文字 · pin 水滴针 · bubble 气泡 · emoji 表情
   --   image 图片 · gif 动图 · model 3D 模型（three.js + custom layer）· icon 图标库（lucide / react-icons / 自建）
-  shape          TEXT CHECK (shape IS NULL OR shape IN (
+  shape          TEXT CHECK (shape IS NULL OR shape IN (  -- 点呈现形态（9 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库
                    'circle','text','pin','bubble','emoji','image','gif','model','icon')),
-  emoji          TEXT,
-  scale          REAL CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3)),
-  orientation    TEXT CHECK (orientation IS NULL OR orientation IN ('faceCam','flat')),
-  color          TEXT,                                                  -- 可着色形态的主色（model / gif 禁用）
-  asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,    -- 用户上传的图片 / GIF / 模型
-  builtin_id     TEXT,                                                  -- 内置资源 id（打包进应用、不入库）：'image:flag-red' / 'gif:radar' / 'model:drone' / 'icon:lucide:MapPin'
-  icon_lib       TEXT,                                                  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名
-  icon_name      TEXT,                                                  -- 图标名（shape='icon' 时必填）
+  emoji          TEXT,  -- 表情字符（type=point 且 shape=emoji 时必填）
+  scale          REAL CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3)),  -- 等比缩放（0.3–3，同时影响点与标签字号）
+  orientation    TEXT CHECK (orientation IS NULL OR orientation IN ('faceCam','flat')),  -- 朝向：faceCam 面向镜头 / flat 贴地（shape=model 不能贴地，CHECK 保证）
+  color          TEXT,  -- 可着色形态的主色（shape=model / gif 时禁用，CHECK 保证）
+  asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 用户上传的图片 / GIF / 模型素材（删除素材则置空）
+  builtin_id     TEXT,  -- 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin
+  icon_lib       TEXT,  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用）
+  icon_name      TEXT,  -- 图标名（shape=icon 时必填，可指向内置库或 custom_symbol.name）
   -- 资源形态表现参数（原 visual_meta_json 平铺；面板上每个小项 = 一列）
-  visual_fit        TEXT CHECK (visual_fit IS NULL OR visual_fit IN ('contain','cover')),   -- image
-  visual_tintable   INTEGER CHECK (visual_tintable IS NULL OR visual_tintable IN (0,1)),    -- image
-  visual_fps        REAL,                                                                   -- gif
-  visual_loop       INTEGER CHECK (visual_loop IS NULL OR visual_loop IN (0,1)),            -- gif
-  visual_altitude   REAL,                                                                   -- model 离地高度(米)
-  visual_auto_rotate REAL,                                                                  -- model 自转角速度(度/秒)
-  visual_spin       REAL,                                                                   -- model 初始朝向(度)
-  visual_pitch_align INTEGER CHECK (visual_pitch_align IS NULL OR visual_pitch_align IN (0,1)), -- model
-  visual_animation  TEXT,                                                                   -- model 动画片段
-  visual_stroke_width REAL,                                                                 -- icon 描边粗细
+  visual_fit        TEXT CHECK (visual_fit IS NULL OR visual_fit IN ('contain','cover')),  -- image 适配方式：contain / cover
+  visual_tintable   INTEGER CHECK (visual_tintable IS NULL OR visual_tintable IN (0,1)),  -- image 是否允许着色（0/1）
+  visual_fps        REAL,  -- gif 帧率
+  visual_loop       INTEGER CHECK (visual_loop IS NULL OR visual_loop IN (0,1)),  -- gif 是否循环（0/1）
+  visual_altitude   REAL,  -- model 离地高度（米）
+  visual_auto_rotate REAL,  -- model 自转角速度（度/秒）
+  visual_spin       REAL,  -- model 初始朝向（度）
+  visual_pitch_align INTEGER CHECK (visual_pitch_align IS NULL OR visual_pitch_align IN (0,1)),  -- model 是否随地图俯仰倾斜（0/1）
+  visual_animation  TEXT,  -- model 播放的动画片段名
+  visual_stroke_width REAL,  -- icon 描边粗细
 
   -- flag 专属
-  flag_text      TEXT,
-  flag_color     TEXT,
-  flag_text_color TEXT,
-  flag_font_size REAL,
-  flag_width     REAL,
+  flag_text      TEXT,  -- 旗面文字（type=flag 时必填）
+  flag_color     TEXT,  -- 旗面颜色
+  flag_text_color TEXT,  -- 旗面文字颜色
+  flag_font_size REAL,  -- 旗面字号
+  flag_width     REAL,  -- 旗面宽度（px）
 
   -- military_symbol 专属
-  sidc           TEXT,
-  symbol_size    REAL,
-  echelon        TEXT,
-  symbol_label   TEXT,
+  sidc           TEXT,  -- APP-6 军标符号编码（type=military_symbol 时必填）
+  symbol_size    REAL,  -- 军标尺寸
+  echelon        TEXT,  -- 军标梯队 / 规模标注
+  symbol_label   TEXT,  -- 军标旁附加文字
 
   CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
@@ -249,92 +249,92 @@ CREATE INDEX IF NOT EXISTS ix_marker_asset   ON element_marker(asset_id);
 -- 5.2 路线类元素（Route 工具）：line（线/贝塞尔/大圆弧）· moving_point（移动点）·
 --     connector（连接线，引用其它元素 → 弱引用 from/to）
 CREATE TABLE IF NOT EXISTS element_route (
-  element_id     TEXT PRIMARY KEY,
-  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),  -- 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）
 
-  name           TEXT NOT NULL DEFAULT '',
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec      REAL NOT NULL,
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
-  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
-  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
+  name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
+  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
+  end_sec      REAL NOT NULL,  -- 消失时间（秒）
+  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
+  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式：路线与图标按高度剖面离地显示
+  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
   -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
-  move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),
-  move_icon_color          TEXT,
-  move_icon_emoji          TEXT,
-  move_icon_scale          REAL,
-  move_icon_label_text     TEXT,
-  move_icon_label_color    TEXT,
-  move_icon_label_bg       TEXT,
-  move_icon_label_size     REAL,
-  move_icon_label_padding  REAL,
-  move_icon_label_radius   REAL,
-  move_icon_label_pos      TEXT,
-  move_icon_label_offset_x REAL,
-  move_icon_label_offset_y REAL,
-  move_icon_flag_text      TEXT,
-  move_icon_flag_color     TEXT,
-  move_icon_builtin_id     TEXT,
-  move_icon_asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
-  move_icon_icon_lib       TEXT,
-  move_icon_icon_name      TEXT,
-  move_icon_orientation    TEXT CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat')),
-  move_icon_rotation       REAL,
-  move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),
-  move_start_sec REAL,
-  move_end_sec   REAL,
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
+  move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),  -- 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标
+  move_icon_color          TEXT,  -- 移动图标主色
+  move_icon_emoji          TEXT,  -- 移动图标表情字符（形态=emoji）
+  move_icon_scale          REAL,  -- 移动图标等比缩放
+  move_icon_label_text     TEXT,  -- 移动图标标签文字
+  move_icon_label_color    TEXT,  -- 移动图标标签文字颜色
+  move_icon_label_bg       TEXT,  -- 移动图标标签背景色（默认透明）
+  move_icon_label_size     REAL,  -- 移动图标标签字号
+  move_icon_label_padding  REAL,  -- 移动图标标签内边距
+  move_icon_label_radius   REAL,  -- 移动图标标签圆角
+  move_icon_label_pos      TEXT,  -- 移动图标标签位置（旧枚举：top/bottom/left/right）
+  move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
+  move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
+  move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
+  move_icon_flag_color     TEXT,  -- 移动图标为旗帜时的旗面颜色
+  move_icon_builtin_id     TEXT,  -- 移动图标内置资源 id（不入库资源）
+  move_icon_asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 移动图标上传素材 id（删素材置空）
+  move_icon_icon_lib       TEXT,  -- 移动图标图标库命名空间
+  move_icon_icon_name      TEXT,  -- 移动图标图标名
+  move_icon_orientation    TEXT CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat')),  -- 移动图标朝向：faceCam 面向镜头 / flat 贴地
+  move_icon_rotation       REAL,  -- 移动图标贴地旋转角（度）
+  move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),  -- 移动图标是否显示标签（0/1）
+  move_start_sec REAL,  -- 移动图标出发时间（秒）
+  move_end_sec   REAL,  -- 移动图标到达时间（秒）
+  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
+  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
   -- 标签（原 label_json 平铺）
-  label_text        TEXT,
-  label_font_size   REAL,
-  label_color       TEXT,
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),
-  label_offset_x    REAL,
-  label_offset_y    REAL,
-  label_bg_color    TEXT,
-  label_bg_padding  REAL,
-  label_bg_radius   REAL,
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
-  ord            INTEGER NOT NULL DEFAULT 0,
+  label_text        TEXT,  -- 标签文字（与元素名同步）
+  label_font_size   REAL,  -- 标签字号
+  label_color       TEXT,  -- 标签文字颜色
+  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
+  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
+  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
+  label_bg_color    TEXT,  -- 标签背景色（默认透明）
+  label_bg_padding  REAL,  -- 标签背景内边距
+  label_bg_radius   REAL,  -- 标签背景圆角
+  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
+  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
 
   -- line / moving_point 路径（line_type=bezier 时为控制点，arc 时为大圆弧端点）
-  coords_json       TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),
+  coords_json       TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填）
 
   -- line 专属
-  line_width        REAL,
-  line_color        TEXT,
-  line_dash_on      REAL,             -- 虚线段长（原 line_dash_json[0]）
-  line_dash_off     REAL,             -- 虚线空白长（原 line_dash_json[1]）
-  line_type         TEXT CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc')),
-  line_arrow        INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),
+  line_width        REAL,  -- 线宽（px）
+  line_color        TEXT,  -- 线条颜色（moving_point 时为主色）
+  line_dash_on      REAL,  -- 虚线段长（原 line_dash_json[0]）
+  line_dash_off     REAL,  -- 虚线空白长（原 line_dash_json[1]）
+  line_type         TEXT CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc')),  -- 线型：straight 直线 / bezier 贝塞尔 / arc 大圆弧航线
+  line_arrow        INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 线末端是否带方向箭头（0/1）
   -- 行军路线动画（原 route_effect_json 平铺）：光点颜色/宽度/步长/同时存在数量
-  route_dot_enabled    INTEGER CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1)),
-  route_dot_count      INTEGER,
-  route_dot_width      REAL,
-  route_dot_color      TEXT,
-  route_dot_frame_step INTEGER,
-  flow_speed        REAL,
-  plain_path        INTEGER CHECK (plain_path IS NULL OR plain_path IN (0,1)),
+  route_dot_enabled    INTEGER CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1)),  -- 行军光点动画是否开启（0/1）
+  route_dot_count      INTEGER,  -- 同时存在的光点数量
+  route_dot_width      REAL,  -- 光点宽度（px）
+  route_dot_color      TEXT,  -- 光点颜色
+  route_dot_frame_step INTEGER,  -- 每 N 帧光点前进一步
+  flow_speed        REAL,  -- 流动速度（0 关闭；>0 每 N 帧相位前进一步，行军蚁效果）
+  plain_path        INTEGER CHECK (plain_path IS NULL OR plain_path IN (0,1)),  -- 无样式路线：预览与导出不画线，仅显示移动图标
   -- 战线梳齿（原 front_style_json 平铺）
-  front_tooth_length REAL,
-  front_tooth_gap    REAL,
-  front_tooth_angle  REAL,
-  front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),
+  front_tooth_length REAL,  -- 战线梳齿长度（px）
+  front_tooth_gap    REAL,  -- 战线梳齿间距（px）
+  front_tooth_angle  REAL,  -- 梳齿偏角（度）
+  front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),  -- 梳齿朝向侧：1 右 / -1 左
 
   -- moving_point 专属（轨迹拖尾）
-  trail_color       TEXT,
-  trail_width       REAL,
-  trail_length      INTEGER,
+  trail_color       TEXT,  -- 拖尾颜色（type=moving_point）
+  trail_width       REAL,  -- 拖尾宽度（px）
+  trail_length      INTEGER,  -- 拖尾长度（帧）
 
   -- connector 专属：端点弱引用（可指向任意类别元素，因元素已分表，无法建外键）
-  from_element_id   TEXT,
-  to_element_id     TEXT,
-  animated          INTEGER CHECK (animated  IS NULL OR animated  IN (0,1)),
-  arrowhead         INTEGER CHECK (arrowhead IS NULL OR arrowhead IN (0,1)),
+  from_element_id   TEXT,  -- 连接线起点元素（弱引用：可指向任意类别元素，元素已分表故无外键；删元素时由应用层连带删除本行）
+  to_element_id     TEXT,  -- 连接线终点元素（弱引用；与起点不得相同）
+  animated          INTEGER CHECK (animated  IS NULL OR animated  IN (0,1)),  -- 连接线是否流动动画（0/1）
+  arrowhead         INTEGER CHECK (arrowhead IS NULL OR arrowhead IN (0,1)),  -- 连接线是否显示末端箭头（0/1）
 
   CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
@@ -352,102 +352,102 @@ CREATE INDEX IF NOT EXISTS ix_route_to      ON element_route(project_id, to_elem
 -- 5.3 形状类元素（Shape 工具，含「区域」行政区高亮）：polygon · arrow · double_arrow ·
 --     gathering（集结地）· encirclement（包围圈）
 CREATE TABLE IF NOT EXISTS element_shape (
-  element_id     TEXT PRIMARY KEY,
-  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
 
-  name           TEXT NOT NULL DEFAULT '',
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec      REAL NOT NULL,
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
-  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),
-  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),
+  name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
+  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
+  end_sec      REAL NOT NULL,  -- 消失时间（秒）
+  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
+  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式
+  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
   -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
-  move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),
-  move_icon_color          TEXT,
-  move_icon_emoji          TEXT,
-  move_icon_scale          REAL,
-  move_icon_label_text     TEXT,
-  move_icon_label_color    TEXT,
-  move_icon_label_bg       TEXT,
-  move_icon_label_size     REAL,
-  move_icon_label_padding  REAL,
-  move_icon_label_radius   REAL,
-  move_icon_label_pos      TEXT,
-  move_icon_label_offset_x REAL,
-  move_icon_label_offset_y REAL,
-  move_icon_flag_text      TEXT,
-  move_icon_flag_color     TEXT,
-  move_icon_builtin_id     TEXT,
-  move_icon_asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
-  move_icon_icon_lib       TEXT,
-  move_icon_icon_name      TEXT,
-  move_icon_orientation    TEXT CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat')),
-  move_icon_rotation       REAL,
-  move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),
-  move_start_sec REAL,
-  move_end_sec   REAL,
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),
+  move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),  -- 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标
+  move_icon_color          TEXT,  -- 移动图标主色
+  move_icon_emoji          TEXT,  -- 移动图标表情字符（形态=emoji）
+  move_icon_scale          REAL,  -- 移动图标等比缩放
+  move_icon_label_text     TEXT,  -- 移动图标标签文字
+  move_icon_label_color    TEXT,  -- 移动图标标签文字颜色
+  move_icon_label_bg       TEXT,  -- 移动图标标签背景色（默认透明）
+  move_icon_label_size     REAL,  -- 移动图标标签字号
+  move_icon_label_padding  REAL,  -- 移动图标标签内边距
+  move_icon_label_radius   REAL,  -- 移动图标标签圆角
+  move_icon_label_pos      TEXT,  -- 移动图标标签位置（旧枚举：top/bottom/left/right）
+  move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
+  move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
+  move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
+  move_icon_flag_color     TEXT,  -- 移动图标为旗帜时的旗面颜色
+  move_icon_builtin_id     TEXT,  -- 移动图标内置资源 id（不入库资源）
+  move_icon_asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 移动图标上传素材 id（删素材置空）
+  move_icon_icon_lib       TEXT,  -- 移动图标图标库命名空间
+  move_icon_icon_name      TEXT,  -- 移动图标图标名
+  move_icon_orientation    TEXT CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat')),  -- 移动图标朝向：faceCam 面向镜头 / flat 贴地
+  move_icon_rotation       REAL,  -- 移动图标贴地旋转角（度）
+  move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),  -- 移动图标是否显示标签（0/1）
+  move_start_sec REAL,  -- 移动图标出发时间（秒）
+  move_end_sec   REAL,  -- 移动图标到达时间（秒）
+  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
+  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
   -- 标签（原 label_json 平铺）
-  label_text        TEXT,
-  label_font_size   REAL,
-  label_color       TEXT,
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),
-  label_offset_x    REAL,
-  label_offset_y    REAL,
-  label_bg_color    TEXT,
-  label_bg_padding  REAL,
-  label_bg_radius   REAL,
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
-  ord            INTEGER NOT NULL DEFAULT 0,
+  label_text        TEXT,  -- 标签文字（与元素名同步）
+  label_font_size   REAL,  -- 标签字号
+  label_color       TEXT,  -- 标签文字颜色
+  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
+  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
+  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
+  label_bg_color    TEXT,  -- 标签背景色（默认透明）
+  label_bg_padding  REAL,  -- 标签背景内边距
+  label_bg_radius   REAL,  -- 标签背景圆角
+  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
+  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
 
   -- polygon 专属
   --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
-  rings_json         TEXT CHECK (rings_json IS NULL OR json_valid(rings_json)),
-  fill_color         TEXT,
-  fill_opacity       REAL CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1),
-  stroke_color       TEXT,
-  stroke_width       REAL,
-  shape_kind         TEXT CHECK (shape_kind IS NULL OR shape_kind IN ('poly','rect','circle','star')),
+  rings_json         TEXT CHECK (rings_json IS NULL OR json_valid(rings_json)),  -- 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填）
+  fill_color         TEXT,  -- 填充色
+  fill_opacity       REAL CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1),  -- 填充透明度（0–1）
+  stroke_color       TEXT,  -- 描边色
+  stroke_width       REAL,  -- 描边宽度（px）
+  shape_kind         TEXT CHECK (shape_kind IS NULL OR shape_kind IN ('poly','rect','circle','star')),  -- 多边形种类：poly 多边形 / rect 矩形 / circle 圆 / star 五角星
   -- rect：两个对角点（原 rect_meta_json 平铺）
-  rect_c1_lng        REAL,
-  rect_c1_lat        REAL,
-  rect_c2_lng        REAL,
-  rect_c2_lat        REAL,
-  poly_curve         INTEGER CHECK (poly_curve IS NULL OR poly_curve IN (0,1)),
+  rect_c1_lng        REAL,  -- 矩形对角点1经度
+  rect_c1_lat        REAL,  -- 矩形对角点1纬度
+  rect_c2_lng        REAL,  -- 矩形对角点2经度
+  rect_c2_lat        REAL,  -- 矩形对角点2纬度
+  poly_curve         INTEGER CHECK (poly_curve IS NULL OR poly_curve IN (0,1)),  -- 各边曲线化（闭合贝塞尔拟合，0/1）
   -- 防御圈锯齿（原 defense_style_json 平铺）
-  defense_tooth_length REAL,
-  defense_tooth_gap    REAL,
-  defense_tooth_angle  REAL,
-  defense_side         INTEGER CHECK (defense_side IS NULL OR defense_side IN (-1,1)),
+  defense_tooth_length REAL,  -- 防御圈锯齿长度（px）
+  defense_tooth_gap    REAL,  -- 防御圈锯齿间距（px）
+  defense_tooth_angle  REAL,  -- 防御圈锯齿偏角（度）
+  defense_side         INTEGER CHECK (defense_side IS NULL OR defense_side IN (-1,1)),  -- 防御圈锯齿朝向侧：1 右 / -1 左
   -- 填充渐变（原 fill_gradient_json 平铺）
-  gradient_enabled   INTEGER CHECK (gradient_enabled IS NULL OR gradient_enabled IN (0,1)),
-  gradient_from      TEXT,
-  gradient_to        TEXT,
+  gradient_enabled   INTEGER CHECK (gradient_enabled IS NULL OR gradient_enabled IN (0,1)),  -- 填充渐变是否开启（0/1）
+  gradient_from      TEXT,  -- 渐变起始色
+  gradient_to        TEXT,  -- 渐变结束色
 
   -- arrow 专属
-  from_lng       REAL,
-  from_lat       REAL,
-  to_lng         REAL,
-  to_lat         REAL,
-  path_json      TEXT CHECK (path_json IS NULL OR json_valid(path_json)),
-  arrow_type     TEXT CHECK (arrow_type IS NULL OR arrow_type IN (
+  from_lng       REAL,  -- 箭头起点经度（type=arrow 时必填）
+  from_lat       REAL,  -- 箭头起点纬度
+  to_lng         REAL,  -- 箭头终点经度
+  to_lat         REAL,  -- 箭头终点纬度
+  path_json      TEXT CHECK (path_json IS NULL OR json_valid(path_json)),  -- 弯曲燕尾箭头的控制点（≥2 个时按贝塞尔渲染）
+  arrow_type     TEXT CHECK (arrow_type IS NULL OR arrow_type IN (  -- 箭头类型（type=arrow 时必填）：swallowtail 燕尾 / simple / block / pincer 钳形 / curved / curved-simple / attack / straight
                    'swallowtail','simple','block','pincer','curved','curved-simple','attack','straight')),
-  width          REAL,
-  color          TEXT,
+  width          REAL,  -- 箭头宽度（px）
+  color          TEXT,  -- 颜色（箭头 / 集结地 / 钳形共用）
 
   -- double_arrow 专属（钳形攻势）
-  points_json    TEXT CHECK (points_json IS NULL OR json_valid(points_json)),
+  points_json    TEXT CHECK (points_json IS NULL OR json_valid(points_json)),  -- 4 个控制点（type=double_arrow 钳形攻势时必填）
 
   -- gathering / encirclement 专属（circle / star 也复用 center_lng / center_lat / radius）
-  center_lng     REAL,
-  center_lat     REAL,
-  radius         REAL,
-  pulse_animation INTEGER CHECK (pulse_animation IS NULL OR pulse_animation IN (0,1)),
-  rotation       REAL,
+  center_lng     REAL,  -- 中心经度（gathering / encirclement 必填）
+  center_lat     REAL,  -- 中心纬度
+  radius         REAL,  -- 半径（米，gathering / encirclement 必填）
+  pulse_animation INTEGER CHECK (pulse_animation IS NULL OR pulse_animation IN (0,1)),  -- 是否脉冲动画（集结地，0/1）
+  rotation       REAL,  -- 绕中心旋转角（度）
 
   CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
@@ -471,41 +471,41 @@ CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(project_id, type);
 --     plots_json:     [{ plotId, name, rings, ownerId, ord }]        rings = GeoJSON 环数组
 --     events_json:    [{ eventId, sec, toCountryId, preset, duration_sec, highlight, plotIds[], ord }]
 CREATE TABLE IF NOT EXISTS element_territory (
-  element_id     TEXT PRIMARY KEY,
-  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
 
-  name           TEXT NOT NULL DEFAULT '',
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec      REAL NOT NULL,
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),
+  name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
+  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
+  start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
+  end_sec      REAL NOT NULL,  -- 消失时间（秒）
+  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
   -- 标签（原 label_json 平铺）
-  label_text        TEXT,
-  label_font_size   REAL,
-  label_color       TEXT,
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),
-  label_offset_x    REAL,
-  label_offset_y    REAL,
-  label_bg_color    TEXT,
-  label_bg_padding  REAL,
-  label_bg_radius   REAL,
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 原 element_keyframe 内联
-  ord            INTEGER NOT NULL DEFAULT 0,
+  label_text        TEXT,  -- 标签文字（与元素名同步）
+  label_font_size   REAL,  -- 标签字号
+  label_color       TEXT,  -- 标签文字颜色
+  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
+  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
+  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
+  label_bg_color    TEXT,  -- 标签背景色（默认透明）
+  label_bg_padding  REAL,  -- 标签背景内边距
+  label_bg_radius   REAL,  -- 标签背景圆角
+  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
+  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
 
   -- 显示配置（原 display_json 平铺）：边界 / 线宽 / 透明度 / 标签
-  display_country_borders INTEGER NOT NULL DEFAULT 1 CHECK (display_country_borders IN (0,1)),
-  display_plot_borders    INTEGER NOT NULL DEFAULT 1 CHECK (display_plot_borders IN (0,1)),
-  display_border_width    REAL NOT NULL DEFAULT 3 CHECK (display_border_width >= 0),
-  display_fill_opacity    REAL NOT NULL DEFAULT 0.45 CHECK (display_fill_opacity BETWEEN 0 AND 1),
-  display_country_names   INTEGER NOT NULL DEFAULT 1 CHECK (display_country_names IN (0,1)),
-  display_plot_names      INTEGER NOT NULL DEFAULT 0 CHECK (display_plot_names IN (0,1)),
-  display_label_align     TEXT NOT NULL DEFAULT 'map' CHECK (display_label_align IN ('map','viewport')),
-  display_label_scale     REAL NOT NULL DEFAULT 1 CHECK (display_label_scale > 0),
-  countries_json TEXT CHECK (countries_json IS NULL OR json_valid(countries_json)),
-  plots_json     TEXT CHECK (plots_json     IS NULL OR json_valid(plots_json)),
-  events_json    TEXT CHECK (events_json    IS NULL OR json_valid(events_json)),
+  display_country_borders INTEGER NOT NULL DEFAULT 1 CHECK (display_country_borders IN (0,1)),  -- 是否显示势力边界（0/1）
+  display_plot_borders    INTEGER NOT NULL DEFAULT 1 CHECK (display_plot_borders IN (0,1)),  -- 是否显示地块边界（0/1）
+  display_border_width    REAL NOT NULL DEFAULT 3 CHECK (display_border_width >= 0),  -- 势力边界线宽（px）
+  display_fill_opacity    REAL NOT NULL DEFAULT 0.45 CHECK (display_fill_opacity BETWEEN 0 AND 1),  -- 填充透明度（0–1）
+  display_country_names   INTEGER NOT NULL DEFAULT 1 CHECK (display_country_names IN (0,1)),  -- 是否显示势力名标签（0/1）
+  display_plot_names      INTEGER NOT NULL DEFAULT 0 CHECK (display_plot_names IN (0,1)),  -- 是否显示地块名标签（0/1）
+  display_label_align     TEXT NOT NULL DEFAULT 'map' CHECK (display_label_align IN ('map','viewport')),  -- 标签朝向：map 随图 / viewport 面向镜头
+  display_label_scale     REAL NOT NULL DEFAULT 1 CHECK (display_label_scale > 0),  -- 标签缩放倍数
+  countries_json TEXT CHECK (countries_json IS NULL OR json_valid(countries_json)),  -- 势力数组：[{countryId,name,color,ord}]
+  plots_json     TEXT CHECK (plots_json     IS NULL OR json_valid(plots_json)),  -- 地块数组：[{plotId,name,rings,ownerId,ord}]；ownerId 须能在 countries_json 中命中（由 v_check_territory_ref 校验）
+  events_json    TEXT CHECK (events_json    IS NULL OR json_valid(events_json)),  -- 兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上
 
   CHECK (end_sec >= start_sec)
 );
@@ -517,22 +517,22 @@ CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(project_id,
 --     本表只存配准参数：控制点网格（cols×rows，2×2=四角投影，更大=网格变形）。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS element_image (
-  element_id     TEXT PRIMARY KEY,
-  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  type           TEXT NOT NULL DEFAULT 'geo_image' CHECK (type = 'geo_image'),
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，类别表共享同一 id 空间）
+  project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  type           TEXT NOT NULL DEFAULT 'geo_image' CHECK (type = 'geo_image'),  -- 子类型判别列（固定 geo_image）
 
-  name           TEXT NOT NULL DEFAULT '',
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),
-  start_sec      REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec        REAL NOT NULL,
+  name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
+  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
+  start_sec      REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
+  end_sec        REAL NOT NULL,  -- 消失时间（秒）
 
-  asset_id       TEXT,                                          -- 全局素材库图片 id（弱引用，无 FK）
-  aspect         REAL CHECK (aspect IS NULL OR aspect > 0),      -- 图片宽高比（宽/高）
-  cols           INTEGER NOT NULL DEFAULT 1 CHECK (cols >= 1),  -- 网格列数
-  rows           INTEGER NOT NULL DEFAULT 1 CHECK (rows >= 1),  -- 网格行数
-  grid_json      TEXT CHECK (grid_json IS NULL OR json_valid(grid_json)),  -- (rows+1)×(cols+1) 控制点 [[lng,lat],…]
-  opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1),
-  ord            INTEGER NOT NULL DEFAULT 0,
+  asset_id       TEXT,  -- 图片素材 id（全局素材库，弱引用、无外键）
+  aspect         REAL CHECK (aspect IS NULL OR aspect > 0),  -- 图片宽高比（宽/高），切片渲染用
+  cols           INTEGER NOT NULL DEFAULT 1 CHECK (cols >= 1),  -- 配准网格列数（1=四角投影，≥2=网格变形）
+  rows           INTEGER NOT NULL DEFAULT 1 CHECK (rows >= 1),  -- 配准网格行数
+  grid_json      TEXT CHECK (grid_json IS NULL OR json_valid(grid_json)),  -- 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]）
+  opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1),  -- 不透明度（0–1）
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章内排序
 
   CHECK (end_sec >= start_sec)
 );
@@ -549,37 +549,37 @@ CREATE INDEX IF NOT EXISTS ix_element_image ON element_image(project_id, ord);
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS overlay (
-  overlay_id   TEXT PRIMARY KEY,
-  project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  type         TEXT NOT NULL CHECK (type IN (
+  overlay_id   TEXT PRIMARY KEY,  -- 弹窗 id
+  project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  type         TEXT NOT NULL CHECK (type IN (  -- 弹窗类型：custom / chart / person / report / timeline / quote / compare / counter / dialogue / place
                  'custom','chart','person','report','timeline','quote','compare',
                  'stat','seal','iconRow',
                  'counter','dialogue','place')),
-  name         TEXT NOT NULL DEFAULT '',
-  position     TEXT NOT NULL CHECK (position IN (
+  name         TEXT NOT NULL DEFAULT '',  -- 显示名（时间线轨道上展示）
+  position     TEXT NOT NULL CHECK (position IN (  -- 九宫格位置：top / topLeft / center / bottomRight 等 9 种
                  'top','bottom','left','right','center',
                  'topLeft','topRight','bottomLeft','bottomRight')),
-  start_sec  REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec    REAL NOT NULL,
-  animation      TEXT,
-  exit_animation TEXT,
-  scale        REAL,
-  offset_x     REAL NOT NULL DEFAULT 0,
-  offset_y     REAL NOT NULL DEFAULT 0,
-  z_index      INTEGER NOT NULL DEFAULT 0,
+  start_sec  REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
+  end_sec    REAL NOT NULL,  -- 消失时间（秒）
+  animation      TEXT,  -- 入场动画预设
+  exit_animation TEXT,  -- 退场动画预设（结束前 20 帧播放）
+  scale        REAL,  -- 整体缩放
+  offset_x     REAL NOT NULL DEFAULT 0,  -- 横向微调（%，-40..40）
+  offset_y     REAL NOT NULL DEFAULT 0,  -- 纵向微调（%，-40..40）
+  z_index      INTEGER NOT NULL DEFAULT 0,  -- 层级
   -- 卡片背景（原 bg_json 平铺）
-  bg_color     TEXT,
-  bg_opacity   REAL CHECK (bg_opacity IS NULL OR bg_opacity BETWEEN 0 AND 1),
-  bg_blur      REAL,
-  bg_radius    REAL,
-  bg_border    TEXT,
+  bg_color     TEXT,  -- 卡片背景色
+  bg_opacity   REAL CHECK (bg_opacity IS NULL OR bg_opacity BETWEEN 0 AND 1),  -- 卡片背景不透明度（0–1）
+  bg_blur      REAL,  -- 卡片背景模糊半径
+  bg_radius    REAL,  -- 卡片圆角半径
+  bg_border    TEXT,  -- 卡片边框颜色
   -- P3：类型专属载荷整体存取：custom 的内容块 / person 的人物块 + report/quote/compare/chart 等
-  payload_json TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),
+  payload_json TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),  -- 类型专属载荷整体存取：custom 内容块 / person 人物块 / report/quote/compare/chart 等
   -- person 布局 + 整卡语音
-  person_layout_json TEXT CHECK (person_layout_json IS NULL OR json_valid(person_layout_json)),
-  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
-  parent_overlay_id TEXT REFERENCES overlay(overlay_id) ON DELETE CASCADE,  -- 兼容旧 group 嵌套
-  ord          INTEGER NOT NULL DEFAULT 0,
+  person_layout_json TEXT CHECK (person_layout_json IS NULL OR json_valid(person_layout_json)),  -- 人物卡版式：图片方位/对齐/间距/卡片宽/名言样式/叠图
+  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 背景语音（卡片可见时播放；导出混流待支持）
+  parent_overlay_id TEXT REFERENCES overlay(overlay_id) ON DELETE CASCADE,  -- 父弹窗（group 嵌套结构）
+  ord          INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
   CHECK (end_sec >= start_sec)
 );
 CREATE INDEX IF NOT EXISTS ix_overlay_chapter ON overlay(project_id, start_sec);
@@ -596,20 +596,20 @@ CREATE INDEX IF NOT EXISTS ix_overlay_parent  ON overlay(parent_overlay_id);
 
 -- 特效窗口：天气 / 画面特效（屏幕空间），两分支字段并存
 CREATE TABLE IF NOT EXISTS screen_fx (
-  fx_id      TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL CHECK (kind IN ('weather','screen')),
-  name       TEXT NOT NULL DEFAULT '',
-  start_sec REAL NOT NULL CHECK (start_sec >= 0),
-  end_sec   REAL NOT NULL,
-  weather_type TEXT CHECK (weather_type IS NULL OR weather_type IN ('rain','snow','lightning','fog')),
-  intensity  REAL CHECK (intensity IS NULL OR intensity BETWEEN 0 AND 1),
-  wind       REAL CHECK (wind IS NULL OR wind BETWEEN -1 AND 1),
-  effect_type TEXT CHECK (effect_type IS NULL OR effect_type IN (
+  fx_id      TEXT PRIMARY KEY,  -- 特效窗口 id
+  project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  kind       TEXT NOT NULL CHECK (kind IN ('weather','screen')),  -- 类别：weather 天气 / screen 画面特效
+  name       TEXT NOT NULL DEFAULT '',  -- 显示名（时间线轨道上展示）
+  start_sec REAL NOT NULL CHECK (start_sec >= 0),  -- 起始时间（秒，项目绝对时间轴）
+  end_sec   REAL NOT NULL,  -- 结束时间（秒，项目绝对时间轴）
+  weather_type TEXT CHECK (weather_type IS NULL OR weather_type IN ('rain','snow','lightning','fog')),  -- 天气类型：rain 雨 / snow 雪 / lightning 闪电 / fog 雾
+  intensity  REAL CHECK (intensity IS NULL OR intensity BETWEEN 0 AND 1),  -- 强度（0–1）
+  wind       REAL CHECK (wind IS NULL OR wind BETWEEN -1 AND 1),  -- 风向风力（-1..1，向右为正）
+  effect_type TEXT CHECK (effect_type IS NULL OR effect_type IN (  -- 画面特效：shake 震动 / flash 闪光 / vignette 暗角 / cloudReveal 云散 / fadeBlack / fadeWhite
                 'shake','flash','vignette','cloudReveal','fadeBlack','fadeWhite')),
-  effect_color TEXT,
-  enabled    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-  ord        INTEGER NOT NULL DEFAULT 0,
+  effect_color TEXT,  -- 特效颜色（flash、fade 类使用）
+  enabled    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),  -- 是否启用
+  ord        INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
   CHECK (end_sec >= start_sec),
   CHECK ((kind = 'weather' AND weather_type IS NOT NULL)
       OR (kind = 'screen'  AND effect_type  IS NOT NULL))
@@ -618,49 +618,49 @@ CREATE INDEX IF NOT EXISTS ix_screen_fx ON screen_fx(project_id, start_sec);
 
 -- 字幕档：1:1 持有样式（原 style_json 平铺为列）；字幕条 1:N
 CREATE TABLE IF NOT EXISTS narration (
-  project_id   TEXT PRIMARY KEY REFERENCES project(project_id) ON DELETE CASCADE,
-  font_size    REAL NOT NULL CHECK (font_size > 0),
-  font_family  TEXT,                                     -- 字体族（空=楷体默认）
-  color        TEXT NOT NULL,
-  stroke_color TEXT NOT NULL,
-  stroke_width REAL NOT NULL CHECK (stroke_width >= 0),
-  bg           TEXT NOT NULL CHECK (bg IN ('none','bar')),
-  bg_color     TEXT NOT NULL,
-  pos_y        REAL NOT NULL CHECK (pos_y BETWEEN 0 AND 40),   -- 距底百分比
-  max_pct      REAL NOT NULL CHECK (max_pct > 0 AND max_pct <= 100)  -- 最大宽度百分比
+  project_id   TEXT PRIMARY KEY REFERENCES project(project_id) ON DELETE CASCADE,  -- 项目 id（每项目一份配音档，1:1）
+  font_size    REAL NOT NULL CHECK (font_size > 0),  -- 字幕字号
+  font_family  TEXT,  -- 字体族（空=楷体默认）
+  color        TEXT NOT NULL,  -- 字幕文字颜色
+  stroke_color TEXT NOT NULL,  -- 字幕描边颜色
+  stroke_width REAL NOT NULL CHECK (stroke_width >= 0),  -- 字幕描边宽度
+  bg           TEXT NOT NULL CHECK (bg IN ('none','bar')),  -- 字幕背景：none 无 / bar 底部条带
+  bg_color     TEXT NOT NULL,  -- 字幕背景色
+  pos_y        REAL NOT NULL CHECK (pos_y BETWEEN 0 AND 40),  -- 字幕距底百分比（0–40）
+  max_pct      REAL NOT NULL CHECK (max_pct > 0 AND max_pct <= 100)  -- 字幕最大宽度百分比
 );
 
 CREATE TABLE IF NOT EXISTS narration_entry (
-  entry_id      TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  text          TEXT NOT NULL DEFAULT '',
-  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
+  entry_id      TEXT PRIMARY KEY,  -- 字幕条 id
+  project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  text          TEXT NOT NULL DEFAULT '',  -- 字幕文本（同时也是配音朗读文本）
+  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 配音音频（TTS 生成或导入）
   -- 音频地址（asset 不可用时的内联 dataURL / 站内路径；与 audio_asset_id 二选一）
-  url           TEXT,
+  url           TEXT,  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径）
   -- 显示时长（秒）：NULL = 自动（有配音随音频、无配音按字数估算）；非空 = 手动覆盖值
-  duration_sec REAL CHECK (duration_sec IS NULL OR duration_sec >= 1),
-  start_sec     REAL NOT NULL CHECK (start_sec >= 0),
-  locked        INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
-  ord           INTEGER NOT NULL DEFAULT 0
+  duration_sec REAL CHECK (duration_sec IS NULL OR duration_sec >= 1),  -- 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖
+  start_sec     REAL NOT NULL CHECK (start_sec >= 0),  -- 章内起始时间（秒，默认自动顺排）
+  locked        INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),  -- 手动定位后锁定，不再参与自动顺排
+  ord           INTEGER NOT NULL DEFAULT 0  -- 同章节内排序
 );
 CREATE INDEX IF NOT EXISTS ix_narration_entry ON narration_entry(project_id, start_sec);
 
 -- 项目级背景音乐：单轨多段（段用项目绝对时间），同一轨道不同时间段放不同音乐
 CREATE TABLE IF NOT EXISTS music_track (
-  track_id      TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  name          TEXT NOT NULL DEFAULT '',
-  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,
+  track_id      TEXT PRIMARY KEY,  -- 音乐段 id
+  project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目（项目级单轨多段）
+  name          TEXT NOT NULL DEFAULT '',  -- 曲目名
+  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 音频素材
   -- 音频地址（asset 不可用时的内联 dataURL / 站内路径；与 audio_asset_id 二选一）
-  url           TEXT,
-  start_sec   REAL NOT NULL CHECK (start_sec >= 0),
+  url           TEXT,  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径）
+  start_sec   REAL NOT NULL CHECK (start_sec >= 0),  -- 起效起始时间（秒，项目绝对时间轴）
   -- 结束时间：NULL = 随音频长度（循环则随项目）；非空 = 手动覆盖值
-  end_sec     REAL,
-  volume        REAL NOT NULL DEFAULT 1 CHECK (volume BETWEEN 0 AND 1),
-  loop          INTEGER NOT NULL DEFAULT 0 CHECK (loop IN (0,1)),
-  fade_in       REAL NOT NULL DEFAULT 0 CHECK (fade_in  >= 0),
-  fade_out      REAL NOT NULL DEFAULT 0 CHECK (fade_out >= 0),
-  ord           INTEGER NOT NULL DEFAULT 0,
+  end_sec     REAL,  -- 结束时间（秒）：空=随音频长度；非空=手动覆盖
+  volume        REAL NOT NULL DEFAULT 1 CHECK (volume BETWEEN 0 AND 1),  -- 音量（0–1）
+  loop          INTEGER NOT NULL DEFAULT 0 CHECK (loop IN (0,1)),  -- 是否循环播放
+  fade_in       REAL NOT NULL DEFAULT 0 CHECK (fade_in  >= 0),  -- 淡入时长（秒）
+  fade_out      REAL NOT NULL DEFAULT 0 CHECK (fade_out >= 0),  -- 淡出时长（秒）
+  ord           INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序
   CHECK (end_sec IS NULL OR end_sec >= start_sec)
 );
 CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
@@ -670,19 +670,19 @@ CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS provider (
-  provider_id TEXT PRIMARY KEY,
-  kind       TEXT NOT NULL CHECK (kind IN ('llm','tts','image')),   -- llm=文案生成 / tts=语音(含克隆) / image=图片生成
-  label      TEXT NOT NULL DEFAULT '',
-  base_url   TEXT NOT NULL DEFAULT '',
-  api_key    TEXT NOT NULL DEFAULT '',
-  model      TEXT NOT NULL DEFAULT '',
-  protocol   TEXT CHECK (protocol IS NULL OR protocol IN (
+  provider_id TEXT PRIMARY KEY,  -- 服务商配置 id
+  kind       TEXT NOT NULL CHECK (kind IN ('llm','tts','image')),  -- 类别：llm 文案生成 / tts 语音合成（含克隆）/ image 图片生成
+  label      TEXT NOT NULL DEFAULT '',  -- 显示名
+  base_url   TEXT NOT NULL DEFAULT '',  -- 接口基础地址
+  api_key    TEXT NOT NULL DEFAULT '',  -- 密钥（只存本机，不入项目文件）
+  model      TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型
+  protocol   TEXT CHECK (protocol IS NULL OR protocol IN (  -- TTS 协议：openai-speech / minimax-t2a / volc-tts / qwen-tts / custom
                'openai-speech','minimax-t2a','volc-tts','qwen-tts','custom')),
-  voice      TEXT,
-  speed      REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),
-  extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),
-  active     INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),
-  ord        INTEGER NOT NULL DEFAULT 0
+  voice      TEXT,  -- 音色 / 说话人 ID
+  speed      REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
+  extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),  -- 附加请求参数（JSON，合并进请求体）
+  active     INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),  -- 是否生效（每个 kind 至多一条为 1）
+  ord        INTEGER NOT NULL DEFAULT 0  -- 同类内排序
 );
 -- 每个 kind 至多一条生效（部分唯一索引，替代旧的「先清后置」两步写法）
 CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_active

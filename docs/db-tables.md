@@ -244,7 +244,7 @@
 
 **表级约束**
 
-- `CHECK ((storage = 'file' AND rel_path IS NOT NULL) OR (storage = 'blob' AND blob IS NOT NULL))`
+- `CHECK ((storage = 'file' AND rel_path IS NOT NULL) OR (storage = 'blob' AND blob IS NOT NULL))`（入库时间（毫秒时间戳））
 
 ### 组 3 · 时间轴
 
@@ -297,7 +297,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`
+- `CHECK (end_sec >= start_sec)`（同章节内排序）
 - `CHECK ((kind = 'weather' AND weather_type IS NOT NULL) OR (kind = 'screen' AND effect_type IS NOT NULL))`
 
 #### narration
@@ -360,7 +360,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec IS NULL OR end_sec >= start_sec)`
+- `CHECK (end_sec IS NULL OR end_sec >= start_sec)`（同项目内排序）
 
 ### 组 4 · 标记类元素（Pin 工具）
 
@@ -432,7 +432,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`
+- `CHECK (end_sec >= start_sec)`（军标旁附加文字）
 - `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)`
 - `CHECK (type <> 'point' OR shape IS NULL OR shape IN ('circle','text','pin','bubble','emoji') OR asset_id IS NOT NULL OR builtin_id IS NOT NULL)`（媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin）
@@ -529,7 +529,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`
+- `CHECK (end_sec >= start_sec)`（连接线是否显示末端箭头（0/1））
 - `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (type <> 'line' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)`
@@ -629,7 +629,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`
+- `CHECK (end_sec >= start_sec)`（绕中心旋转角（度））
 - `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (radius IS NULL OR radius > 0)`
 - `CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly' OR rings_json IS NOT NULL)`
@@ -686,7 +686,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`
+- `CHECK (end_sec >= start_sec)`（兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上）
 
 ### 组 8 · 贴图类元素（Image 工具）
 
@@ -715,7 +715,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`
+- `CHECK (end_sec >= start_sec)`（同章内排序）
 
 ### 组 9 · 叠加层（弹窗）
 
@@ -753,7 +753,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`
+- `CHECK (end_sec >= start_sec)`（同章节内排序）
 
 ### 组 10 · 应用配置
 

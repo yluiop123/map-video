@@ -31,7 +31,9 @@ export interface MapVideoProject {
   startFrame: number;
   /** 全片总长（帧）；内容超出时由 projectContentDuration 扩展 */
   endFrame: number;
-  /** 全片元素（绝对帧） */
+  /** 全片图层（元素归属图层；图层可含多种元素类型） */
+  layers: Layer[];
+  /** 派生镜像：所有图层元素的扁平数组（由 store 从 layers 自动重算，勿直接写） */
   elements: MapElement[];
   /** 一条相机关键帧轴（绝对帧） */
   camera: CameraKeyframe[];
@@ -109,6 +111,13 @@ export interface MapElementBase {
   locked: boolean;
   startFrame: number;
   endFrame: number;
+  /**
+   * 是否自定义显示时间（相对所在图层）。关闭（默认）时元素在**图层显示期间全程可见**；
+   * 开启时用 startFrame/endFrame（与图层区间取交集）。派生镜像里 startFrame/endFrame 已是解析后的绝对帧。
+   */
+  customTime?: boolean;
+  /** 所属图层 id（派生镜像里由 deriveElements 回填；源数据中元素嵌套在 layer.elements，无需存） */
+  layerId?: string;
   style: ElementStyle;
   zIndex?: number;
   /** 来源分类：区分形状工具绘制（multi=多点/two=两点/special=特殊）与路线工具绘制（route）。
@@ -468,6 +477,19 @@ export type MapElement =
   | FlagElement
   | TerritoryElement
   | GeoImageElement;
+
+/** 图层：元素的分组，带自己的显隐与显示区间（可含多种元素类型） */
+export interface Layer {
+  id: string;
+  name: string;
+  visible: boolean;
+  /** 图层显示起点（项目绝对帧） */
+  startFrame: number;
+  /** 图层显示终点（项目绝对帧） */
+  endFrame: number;
+  /** 图层内的元素（相对图层的显示时间由元素的 customTime/start/end 决定） */
+  elements: MapElement[];
+}
 
 // ========== 样式类型 ==========
 

@@ -34,6 +34,11 @@ export function ensureV2Schema(db) {
     console.warn('[db-v2] 未找到 docs/db-schema-v2.sql，跳过 V2 建表');
     return false;
   }
+  // 旧版遗留表（已被 V2 取代，直接清掉）：collections → collection，projects → project。
+  // 注意：旧库可能同时存在单数 collection 与复数 collections 两张同构表，复数这张是死表。
+  for (const t of ['collections', 'projects']) {
+    try { db.exec(`DROP TABLE IF EXISTS ${t}`); } catch { /* 忽略 */ }
+  }
   // 旧版为「章节级」结构（存在 chapter 表）——项目已改为单条连续时间线，结构整体变化。
   // 按「不做向后兼容」约定：直接丢弃时间轴 / 元素相关表并重建（collection / asset 保留）。
   try {

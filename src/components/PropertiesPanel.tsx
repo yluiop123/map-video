@@ -6,7 +6,6 @@ import { useInteractionStore } from '../stores/interactionStore';
 import { generateId } from '../types';
 import { FrameTimeField } from './FrameTimeField';
 import { frameToSeconds, secondsToFrame, round2 } from '../lib/time';
-import { fullDisplayEnd } from '../lib/project-duration';
 import { loadImageAspect, withGridDensity } from '../lib/geo-image';
 import { TERRITORY_PALETTE } from '../lib/territory';
 import { Section, Field, StyleGrid, Toggle, ColorPicker, OptionBlocks, PanelHeader, useT, NumberInput } from './ui/primitives';
@@ -850,11 +849,8 @@ function DisplayTimeToggle({ element, patch, project }: {
 }) {
   const t = useT();
   const fps = project.globalConfig.defaultFPS;
-  // 全程显示基准：取「项目容器长度」与「内容实际结束」的较大者，
-  // 否则项目 endFrame 偏小/为 0 时，取消自定义时间会把元素收成 0 长度。
-  const fullEnd = fullDisplayEnd(project);
-  // 与全程范围一致 → 关闭（全程显示）
-  const on = element.startFrame !== 0 || element.endFrame !== fullEnd;
+  // 自定义显示时间：显式开关（customTime）。关闭时元素在**图层显示期间全程可见**（由 deriveElements 解析）。
+  const on = element.customTime === true;
 
   return (
     <>
@@ -863,15 +859,11 @@ function DisplayTimeToggle({ element, patch, project }: {
         label={t('自定义显示时间', 'Custom display time')}
         onChange={(v) => {
           if (v) {
-            // 开启：默认 0–60s；若与「全程」范围相同则取全程一半，
-            // 再兜底 +1（全程仅 1 帧等极端情况），确保能进入「自定义」态
-            const want = Math.max(1, Math.round(60 * fps));
-            let end = want < fullEnd ? want : Math.max(1, Math.round(fullEnd / 2));
-            if (end >= fullEnd) end = fullEnd + 1;
-            patch({ startFrame: 0, endFrame: end });
+            // 开启：以当前解析出的显示区间（= 图层区间）为初始值，用户再微调
+            patch({ customTime: true, startFrame: element.startFrame, endFrame: element.endFrame });
           } else {
-            // 关闭：起止时间 = 整个时间轴（内容实际结束）
-            patch({ startFrame: 0, endFrame: fullEnd });
+            // 关闭：随图层显示期间（清除自定义时间）
+            patch({ customTime: false });
           }
         }}
       />

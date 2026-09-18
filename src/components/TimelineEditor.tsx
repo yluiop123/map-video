@@ -9,7 +9,7 @@ import { useProjectStore, setHistoryMuted } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { formatClock } from '../lib/time';
 import { EXPORT_PRESETS } from '../lib/export-video';
-import { projectContentEndFrame, fullDisplayEnd } from '../lib/project-duration';
+import { projectContentEndFrame } from '../lib/project-duration';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { WEATHERS, SCREEN_FXS, POPUP_TYPES } from './FxPanelBody';
 import type { CameraKeyframe, ScreenFxItem, OverlayItem } from '../types';
@@ -121,8 +121,6 @@ export function TimelineEditor() {
   const contentEnd = useMemo(() => projectContentEndFrame(project), [project]);
   const timelineEnd = Math.max(minFrames, contentEnd || project.endFrame);
   const timelineDur = Math.max(1, timelineEnd - timelineStart);
-  // 「自定义显示时间」的全程结束基准（与属性面板一致）：元素处于全程显示时不可拖动改时间
-  const elFullEnd = fullDisplayEnd(project);
 
   // 播放头超出总范围时（如内容被缩短）回到起点
   useEffect(() => {
@@ -291,7 +289,6 @@ export function TimelineEditor() {
     // 冻结当前分道（用拖动开始前的布局），拖动中不再重排（视角轨道不分道）
     if (spec.kind === 'fx') setLaneFreeze({ kind: 'fx', lanes: fxLanes, idx: new Map(fxNorm.map((n, i) => [n.fx.id, fxLaneIdx[i]])) });
     else if (spec.kind === 'popup') setLaneFreeze({ kind: 'popup', lanes: popLanes, idx: new Map(popNorm.map((n, i) => [n.ov.id, popLaneIdx[i]])) });
-    else if (spec.kind === 'element') setLaneFreeze({ kind: 'element', lanes: elLanes, idx: new Map(elNorm.map((n, i) => [n.el.id, elLaneIdx[i]])) });
   };
 
   useEffect(() => {
@@ -443,20 +440,20 @@ export function TimelineEditor() {
   const popLanes = popView.lanes;
 
   // 元素分道
-  const els = project.elements;
-  const elNorm = els.map((el) => ({ el, start: clampF(el.startFrame), end: Math.max(clampF(el.startFrame) + 1, clampF(el.endFrame)) }));
-  const elRaw = packLanes(elNorm);
-  const elRawLanes = elNorm.length ? Math.max(...elRaw) + 1 : 1;
-  const elView = applyFreeze('element', elNorm.map((n) => n.el.id), elRaw, elRawLanes);
-  const elLaneIdx = elView.idx;
-  const elLanes = elView.lanes;
+    const layers = project.layers || [];
+    const layerNorm = layers.map((L) => ({ L, start: clampF(L.startFrame), end: Math.max(clampF(L.startFrame) + 1, clampF(L.endFrame)) }));
+    const layerRaw = packLanes(layerNorm);
+    const layerRawLanes = layerNorm.length ? Math.max(...layerRaw) + 1 : 1;
+    const layerView = applyFreeze('element', layerNorm.map((n) => n.L.id), layerRaw, layerRawLanes);
+    const layerLaneIdx = layerView.idx;
+    const layerLanes = layerView.lanes;
 
   // 行高：刻度 24 + 镜头流 28 + 特效/弹窗道 20/道 + 元素道 18/道 + 配音/音乐行 22×2
   // 另计入每行 mt-1（4px）行距与底部余量，避免内容被裁切出现滚动条
   const LANE_H = 20;
   const EL_LANE_H = 18;
   const rowCount = 6; // 镜头流 + 特效 + 弹窗 + 元素 + 配音 + 音乐
-  const contentH = 24 + 28 + (fxLanes + popLanes) * LANE_H + elLanes * EL_LANE_H + 22 * 2 + (rowCount - 1) * 4 + 6;
+  const contentH = 24 + 28 + (fxLanes + popLanes) * LANE_H + layerLanes * EL_LANE_H + 22 * 2 + (rowCount - 1) * 4 + 6;
   const trackVisibleH = Math.min(contentH, 250);
 
   return (
@@ -747,32 +744,35 @@ export function TimelineEditor() {
             </div>
           </TrackRow>
 
-          {/* 元素轨道：按时间不重叠自动分道，重叠元素不再互相覆盖 */}
-          <TrackRow label="📦 元素" height={elLanes * EL_LANE_H}>
+          {/* 图层轨道：每块 = 一个图层的显示区间（播放预览里呈现的是图层而非具体元素） */}
+          <TrackRow label="📦 图层" height={layerLanes * EL_LANE_H}>
             <div className="absolute inset-0 flex flex-col gap-px py-px">
-              {Array.from({ length: elLanes }, (_, lane) => (
+              {Array.from({ length: layerLanes }, (_, lane) => (
                 <div key={lane} className="relative flex-1">
-                  {elNorm.map(({ el, start, end }, i) => {
-                    if (elLaneIdx[i] !== lane) return null;
-                    const selected = selectedElementId === el.id;
+                  {layerNorm.map(({ L, start, end }, i) => {
+                    if (layerLaneIdx[i] !== lane) return null;
+                    const hasSel = !!selectedElementId && (L.elements || []).some((el) => el.id === selectedElementId);
                     const wPct = ((clampF(end) - clampF(start)) / timelineDur) * 100;
-                    // 全程显示（自定义显示时间关闭）时不可拖动改时间，避免误触发开关状态
-                    const customOn = el.startFrame !== 0 || el.endFrame !== elFullEnd;
                     return (
                       <button
-                        key={el.id}
-                        onPointerDown={customOn ? (e) => beginBlockDrag(e, { kind: 'element', id: el.id, mode: 'move', start, end }) : undefined}
-                        onClick={() => { if (suppressClickRef.current) return; selectElement(el.id); }}
+                        key={L.id}
+                        onClick={() => {
+                          if (suppressClickRef.current) return;
+                          setElementsOpen(true);
+                          setCurrentFrame(start);
+                          if (L.elements[0]) selectElement(L.elements[0].id);
+                        }}
                         className={`absolute top-0.5 bottom-0.5 rounded-sm border flex items-center overflow-hidden z-10 transition-colors ${
-                          selected
+                          hasSel
                             ? 'bg-emerald-300/90 border-emerald-100 ring-1 ring-brand text-emerald-950'
-                            : 'bg-emerald-500/60 border-emerald-400/50 text-emerald-50 hover:bg-emerald-500/80'
+                            : L.visible === false
+                              ? 'bg-emerald-500/20 border-emerald-400/30 text-emerald-50/60'
+                              : 'bg-emerald-500/60 border-emerald-400/50 text-emerald-50 hover:bg-emerald-500/80'
                         }`}
                         style={{ left: leftPct(start), width: widthPct(start, end) }}
-                        title={`${el.name} · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s${customOn ? '（拖动可调整时间）' : '（全程显示）'}`}
+                        title={`${L.name} · ${L.elements.length} 个元素 · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s`}
                       >
-                        {customOn && <DragHandles onDrag={(e, mode) => beginBlockDrag(e, { kind: 'element', id: el.id, mode, start, end })} />}
-                        <span className={`px-1 text-[9px] leading-none truncate ${wPct > 1.5 ? '' : 'sr-only'}`}>{el.name}</span>
+                        <span className={`px-1 text-[9px] leading-none truncate ${wPct > 1.5 ? '' : 'sr-only'}`}>📦 {L.name}</span>
                       </button>
                     );
                   })}

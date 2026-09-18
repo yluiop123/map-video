@@ -154,6 +154,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   2. `tools/db-field-notes.mjs` 补/改字段中文说明 —— **漏补会直接报错**（生成器强制每列都有说明）
   3. 若新增表：还要改 `tools/gen-db-field-dict.mjs` 的 `GROUPS`（否则该表不会输出）与 `TOOL_ENTRY`（元素表）
   4. `node --experimental-sqlite tools/gen-db-field-dict.mjs` 重跑，把字段字典注入 `docs/db-tables.md`
+  4.5 `node tools/comment-ddl.mjs`：把字段中文说明写成 DDL 行尾 `-- 中文`（SQLite 不存储注释，靠 DDL 自文档；幂等，改完字段说明后重跑）
   5. 手工同步文档中**标记外**的部分：表数 / 列数（`db-tables.md`、`db-redesign.md`、`AGENTS.md` 本节的规模行）、`db-tables.md` 第二节字段归属表与第三节逐表速查、`db-redesign.md` 2.2 实体清单与资源层说明、`docs/db-er-diagram.mmd` E-R 图
   6. 验证：`node --experimental-sqlite tools/gen-db-field-dict.mjs --check`（校验结构一致 + 说明全覆盖）
 
