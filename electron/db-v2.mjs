@@ -34,9 +34,9 @@ export function ensureV2Schema(db) {
     console.warn('[db-v2] 未找到 docs/db-schema-v2.sql，跳过 V2 建表');
     return false;
   }
-  // 旧版遗留表（已被 V2 取代，直接清掉）：collections → collection，projects → project。
-  // 注意：旧库可能同时存在单数 collection 与复数 collections 两张同构表，复数这张是死表。
-  for (const t of ['collections', 'projects']) {
+  // 旧版遗留表（已被 V2 取代 / 功能已删除，直接清掉）：
+  //   collections → collection；projects → project；transition_event（转场功能已删除）
+  for (const t of ['collections', 'projects', 'transition_event']) {
     try { db.exec(`DROP TABLE IF EXISTS ${t}`); } catch { /* 忽略 */ }
   }
   // 旧版为「章节级」结构（存在 chapter 表）——项目已改为单条连续时间线，结构整体变化。
