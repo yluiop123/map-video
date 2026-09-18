@@ -35,7 +35,7 @@ PRAGMA journal_mode = WAL;
 -- 合集：项目之上的一层分组。
 --   · 默认合集 id 恒为 'default'（不可改名、不可删除），新建项目 / 导入未指定归属时落在这里
 --   · 删合集只把其下项目移回默认合集（应用层先迁移再删，故用 RESTRICT 防误删）
-CREATE TABLE IF NOT EXISTS collection (
+CREATE TABLE IF NOT EXISTS collection (  -- 合集：项目之上的一层分组（合集 ▸ 项目 ▸ 元素）；默认合集恒为 default，不可改名/删除
   collection_id TEXT PRIMARY KEY,  -- 合集 id（默认合集恒为 default，不可删除）
   name          TEXT    NOT NULL,  -- 合集名（默认合集名为「默认合集」，不可改名）
   ord           INTEGER NOT NULL DEFAULT 0,  -- 合集排序（默认合集固定 -1，恒排最前）
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS collection (
   updated_at    INTEGER NOT NULL  -- 最后修改时间（毫秒时间戳）
 );
 
-CREATE TABLE IF NOT EXISTS project (
+CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程 / GlobalConfig 配置列
   project_id            TEXT PRIMARY KEY,  -- 项目 id
   name                  TEXT    NOT NULL,  -- 项目名
   description           TEXT,  -- 项目描述
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS project (
 -- 由 kind 区分：icon 即原图标库条目，image 即原图片库条目。
 -- ★ 只存输入原值：字节数 / 尺寸 / 时长 / 帧数 / 模型包围盒等都是**从文件解析出来的派生值**，
 --   不入库（需要时按 mime 现场解析——图片取 naturalWidth、音频用 duration、GIF 用 gifuct、模型用 glTF 头）。
-CREATE TABLE IF NOT EXISTS asset (
+CREATE TABLE IF NOT EXISTS asset (  -- 素材仓库：图片 / GIF / 模型 / 音频 / 视频 / 图标 / 字体统一存此表，业务表只留 asset_id
   asset_id      TEXT PRIMARY KEY,  -- 素材 id（随机生成，与文件名/内容解耦，改名不影响引用）
   kind          TEXT NOT NULL CHECK (kind IN ('image','gif','model','audio','video','font','icon')),  -- 素材种类：image 图片 / gif 动图 / model 3D 模型 / audio 音频 / video 视频 / font 字体 / icon 用户图标库条目（合并了原 custom_symbol / custom_image）
   name          TEXT NOT NULL DEFAULT '',  -- 原文件名 / 展示名
@@ -117,7 +117,7 @@ CREATE INDEX IF NOT EXISTS ix_asset_name ON asset(name);
 -- -----------------------------------------------------------------------------
 
 -- 相机视角关键帧：sec = 「到达时间」（绝对秒），move_duration_sec = 起飞提前量（秒）
-CREATE TABLE IF NOT EXISTS camera_keyframe (
+CREATE TABLE IF NOT EXISTS camera_keyframe (  -- 视角关键帧：停留 → 飞行 → 落位；含 follow 跟随 / orbit 环绕视角
   kf_id            TEXT PRIMARY KEY,  -- 视角关键帧 id
   project_id       TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   sec            REAL NOT NULL CHECK (sec >= 0),  -- 到达时间（秒，项目绝对时间轴）—— 语义为「停留 → 飞行 → 落位」的落位时刻
@@ -154,7 +154,7 @@ CREATE INDEX IF NOT EXISTS ix_camera_kf_follow  ON camera_keyframe(follow_route_
 -- -----------------------------------------------------------------------------
 
 -- 5.1 标记类元素（Pin 工具）：point（点/文字/图标）· flag（旗标）· military_symbol（APP-6 军标）
-CREATE TABLE IF NOT EXISTS element_marker (
+CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）：point / flag / military_symbol 一张宽表，type 判别
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
@@ -248,7 +248,7 @@ CREATE INDEX IF NOT EXISTS ix_marker_asset   ON element_marker(asset_id);
 
 -- 5.2 路线类元素（Route 工具）：line（线/贝塞尔/大圆弧）· moving_point（移动点）·
 --     connector（连接线，引用其它元素 → 弱引用 from/to）
-CREATE TABLE IF NOT EXISTS element_route (
+CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）：line / moving_point / connector 一张宽表，type 判别
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),  -- 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）
@@ -351,7 +351,7 @@ CREATE INDEX IF NOT EXISTS ix_route_to      ON element_route(project_id, to_elem
 
 -- 5.3 形状类元素（Shape 工具，含「区域」行政区高亮）：polygon · arrow · double_arrow ·
 --     gathering（集结地）· encirclement（包围圈）
-CREATE TABLE IF NOT EXISTS element_shape (
+CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）：polygon / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
@@ -470,7 +470,7 @@ CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(project_id, type);
 --     countries_json: [{ countryId, name, color, ord }]
 --     plots_json:     [{ plotId, name, rings, ownerId, ord }]        rings = GeoJSON 环数组
 --     events_json:    [{ eventId, sec, toCountryId, preset, duration_sec, highlight, plotIds[], ord }]
-CREATE TABLE IF NOT EXISTS element_territory (
+CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件 JSON 内联，自包含
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
@@ -516,7 +516,7 @@ CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(project_id,
 --     图片本体存**全局素材库**（asset_id 弱引用，不入本表 / 也不做 FK）；
 --     本表只存配准参数：控制点网格（cols×rows，2×2=四角投影，更大=网格变形）。
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS element_image (
+CREATE TABLE IF NOT EXISTS element_image (  -- 贴图类元素（Image 工具）：地理配准图片的控制点网格；图片本体走全局素材库，本表只存配准参数
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   type           TEXT NOT NULL DEFAULT 'geo_image' CHECK (type = 'geo_image'),  -- 子类型判别列（固定 geo_image）
@@ -548,7 +548,7 @@ CREATE INDEX IF NOT EXISTS ix_element_image ON element_image(project_id, ord);
 -- 6. 叠加层（弹出元素）
 -- -----------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS overlay (
+CREATE TABLE IF NOT EXISTS overlay (  -- 叠加层（弹窗）：本体一张，custom / person 内容块内联在 payload_json
   overlay_id   TEXT PRIMARY KEY,  -- 弹窗 id
   project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   type         TEXT NOT NULL CHECK (type IN (  -- 弹窗类型：custom / chart / person / report / timeline / quote / compare / counter / dialogue / place
@@ -595,7 +595,7 @@ CREATE INDEX IF NOT EXISTS ix_overlay_parent  ON overlay(parent_overlay_id);
 --     属设计遗留；将来要做类似效果时按实际需求重新设计。
 
 -- 特效窗口：天气 / 画面特效（屏幕空间），两分支字段并存
-CREATE TABLE IF NOT EXISTS screen_fx (
+CREATE TABLE IF NOT EXISTS screen_fx (  -- 屏幕空间特效窗口：天气 / 画面叠加（非地图元素），两分支字段并存
   fx_id      TEXT PRIMARY KEY,  -- 特效窗口 id
   project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   kind       TEXT NOT NULL CHECK (kind IN ('weather','screen')),  -- 类别：weather 天气 / screen 画面特效
@@ -617,7 +617,7 @@ CREATE TABLE IF NOT EXISTS screen_fx (
 CREATE INDEX IF NOT EXISTS ix_screen_fx ON screen_fx(project_id, start_sec);
 
 -- 字幕档：1:1 持有样式（原 style_json 平铺为列）；字幕条 1:N
-CREATE TABLE IF NOT EXISTS narration (
+CREATE TABLE IF NOT EXISTS narration (  -- 字幕 / 配音档：样式部分，与项目 1:1
   project_id   TEXT PRIMARY KEY REFERENCES project(project_id) ON DELETE CASCADE,  -- 项目 id（每项目一份配音档，1:1）
   font_size    REAL NOT NULL CHECK (font_size > 0),  -- 字幕字号
   font_family  TEXT,  -- 字体族（空=楷体默认）
@@ -630,7 +630,7 @@ CREATE TABLE IF NOT EXISTS narration (
   max_pct      REAL NOT NULL CHECK (max_pct > 0 AND max_pct <= 100)  -- 字幕最大宽度百分比
 );
 
-CREATE TABLE IF NOT EXISTS narration_entry (
+CREATE TABLE IF NOT EXISTS narration_entry (  -- 字幕条：文本 + 配音音频 + 显示时长
   entry_id      TEXT PRIMARY KEY,  -- 字幕条 id
   project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   text          TEXT NOT NULL DEFAULT '',  -- 字幕文本（同时也是配音朗读文本）
@@ -646,7 +646,7 @@ CREATE TABLE IF NOT EXISTS narration_entry (
 CREATE INDEX IF NOT EXISTS ix_narration_entry ON narration_entry(project_id, start_sec);
 
 -- 项目级背景音乐：单轨多段（段用项目绝对时间），同一轨道不同时间段放不同音乐
-CREATE TABLE IF NOT EXISTS music_track (
+CREATE TABLE IF NOT EXISTS music_track (  -- 项目级背景音乐：单轨多段（项目绝对时间、段内循环、淡入淡出）
   track_id      TEXT PRIMARY KEY,  -- 音乐段 id
   project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目（项目级单轨多段）
   name          TEXT NOT NULL DEFAULT '',  -- 曲目名
@@ -669,7 +669,7 @@ CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
 -- 8. 应用配置聚合（与项目内容解耦，Key 只存本机）
 -- -----------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS provider (
+CREATE TABLE IF NOT EXISTS provider (  -- 应用配置：AI 文案 / 配音 / 图片服务商（密钥只存本机，与项目内容解耦）
   provider_id TEXT PRIMARY KEY,  -- 服务商配置 id
   kind       TEXT NOT NULL CHECK (kind IN ('llm','tts','image')),  -- 类别：llm 文案生成 / tts 语音合成（含克隆）/ image 图片生成
   label      TEXT NOT NULL DEFAULT '',  -- 显示名

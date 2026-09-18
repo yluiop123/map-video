@@ -12,6 +12,25 @@
  * （element_marker / element_route / element_shape / element_territory），
  * 图片类下线、疆域内部实体 JSON 内联、label 内联、keyframe 改弱引用。
  */
+/** 每张表的中文描述（用于 DDL 表头行尾注释；key 必须与 DDL 表名一致） */
+export const TABLE_DESC = {
+  collection: '合集：项目之上的一层分组（合集 ▸ 项目 ▸ 元素）；默认合集恒为 default，不可改名/删除',
+  project: '项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程 / GlobalConfig 配置列',
+  asset: '素材仓库：图片 / GIF / 模型 / 音频 / 视频 / 图标 / 字体统一存此表，业务表只留 asset_id',
+  camera_keyframe: '视角关键帧：停留 → 飞行 → 落位；含 follow 跟随 / orbit 环绕视角',
+  screen_fx: '屏幕空间特效窗口：天气 / 画面叠加（非地图元素），两分支字段并存',
+  narration: '字幕 / 配音档：样式部分，与项目 1:1',
+  narration_entry: '字幕条：文本 + 配音音频 + 显示时长',
+  music_track: '项目级背景音乐：单轨多段（项目绝对时间、段内循环、淡入淡出）',
+  element_marker: '标记类元素（Pin 工具）：point / flag / military_symbol 一张宽表，type 判别',
+  element_route: '路线类元素（Route 工具）：line / moving_point / connector 一张宽表，type 判别',
+  element_shape: '形状类元素（Shape 工具）：polygon / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表',
+  element_territory: '疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件 JSON 内联，自包含',
+  element_image: '贴图类元素（Image 工具）：地理配准图片的控制点网格；图片本体走全局素材库，本表只存配准参数',
+  overlay: '叠加层（弹窗）：本体一张，custom / person 内容块内联在 payload_json',
+  provider: '应用配置：AI 文案 / 配音 / 图片服务商（密钥只存本机，与项目内容解耦）',
+};
+
 export default {
   "collection": {
     "collection_id": "合集 id（默认合集恒为 default，不可删除）",

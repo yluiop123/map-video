@@ -184,7 +184,7 @@
 
 ### 组 1 · 合集与项目（含配置）
 
-#### collection
+#### collection — 合集：项目之上的一层分组（合集 ▸ 项目 ▸ 元素）；默认合集恒为 default，不可改名/删除
 
 **职责**：合集：项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）　**前端**：项目列表页左栏合集列表（ProjectManager.tsx）
 
@@ -198,7 +198,7 @@
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后修改时间（毫秒时间戳） |
 
-#### project
+#### project — 项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程 / GlobalConfig 配置列
 
 **职责**：项目本体：身份 / 归属 / 审计 / 投影与生效底图的**默认值**引用　**前端**：项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project
 
@@ -225,7 +225,7 @@
 
 ### 组 2 · 资源与素材
 
-#### asset
+#### asset — 素材仓库：图片 / GIF / 模型 / 音频 / 视频 / 图标 / 字体统一存此表，业务表只留 asset_id
 
 **职责**：素材仓库（**唯一**素材存储，合并原 custom_symbol / custom_image）：按项目 / 类型 / 时间戳落盘　**前端**：属性面板上传行（PropertiesPanel ResourceUploadRow）、标记面板自定义图片网格（CustomImageGrid）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）
 
@@ -248,7 +248,7 @@
 
 ### 组 3 · 时间轴
 
-#### camera_keyframe
+#### camera_keyframe — 视角关键帧：停留 → 飞行 → 落位；含 follow 跟随 / orbit 环绕视角
 
 **职责**：视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）　**前端**：「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）
 
@@ -273,7 +273,7 @@
 | `orbit_duration_sec` | REAL | — | 环绕时长（秒） |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 
-#### screen_fx
+#### screen_fx — 屏幕空间特效窗口：天气 / 画面叠加（非地图元素），两分支字段并存
 
 **职责**：屏幕空间特效窗口（天气 / 画面叠加，非地图元素）　**前端**：右侧「特效」面板（FxPanelBody.tsx）+ 时间轴特效轨道
 
@@ -300,7 +300,7 @@
 - `CHECK (end_sec >= start_sec)`（同章节内排序）
 - `CHECK ((kind = 'weather' AND weather_type IS NOT NULL) OR (kind = 'screen' AND effect_type IS NOT NULL))`
 
-#### narration
+#### narration — 字幕 / 配音档：样式部分，与项目 1:1
 
 **职责**：字幕 / 配音档（样式部分，1:1）　**前端**：右侧「字幕」面板（FxPanelBody.tsx）
 
@@ -319,7 +319,7 @@
 | `pos_y` | REAL | `NOT NULL` | 字幕距底百分比（0–40） · `CHECK (pos_y BETWEEN 0 AND 40)` |
 | `max_pct` | REAL | `NOT NULL` | 字幕最大宽度百分比 · `CHECK (max_pct > 0 AND max_pct <= 100)` |
 
-#### narration_entry
+#### narration_entry — 字幕条：文本 + 配音音频 + 显示时长
 
 **职责**：字幕条：文本 + 配音音频 + 显示时长　**前端**：时间轴「🎙 配音」轨道（TimelineEditor.tsx）+ 字幕面板逐条编辑 / TTS / 导入 SRT
 
@@ -337,7 +337,7 @@
 | `locked` | INTEGER | `NOT NULL` | 手动定位后锁定，不再参与自动顺排 · 默认 `0` · `CHECK (locked IN (0,1))` |
 | `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
 
-#### music_track
+#### music_track — 项目级背景音乐：单轨多段（项目绝对时间、段内循环、淡入淡出）
 
 **职责**：项目级背景音乐：单轨多段（绝对时间、循环、淡入淡出）　**前端**：时间轴「音乐」轨道（TimelineEditor.tsx）+ 音乐面板（内置/导入）
 
@@ -364,7 +364,7 @@
 
 ### 组 4 · 标记类元素（Pin 工具）
 
-#### element_marker
+#### element_marker — 标记类元素（Pin 工具）：point / flag / military_symbol 一张宽表，type 判别
 
 **职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，9 种视觉形态）
 
@@ -445,7 +445,7 @@
 
 ### 组 5 · 路线类元素（Route 工具）
 
-#### element_route
+#### element_route — 路线类元素（Route 工具）：line / moving_point / connector 一张宽表，type 判别
 
 **职责**：路线类元素：line / moving_point / connector　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
@@ -538,7 +538,7 @@
 
 ### 组 6 · 形状类元素（Shape 工具）
 
-#### element_shape
+#### element_shape — 形状类元素（Shape 工具）：polygon / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表
 
 **职责**：形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
@@ -644,7 +644,7 @@
 
 ### 组 7 · 疆域类元素（Terr 工具）
 
-#### element_territory
+#### element_territory — 疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件 JSON 内联，自包含
 
 **职责**：疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含　**前端**：工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）
 
@@ -690,7 +690,7 @@
 
 ### 组 8 · 贴图类元素（Image 工具）
 
-#### element_image
+#### element_image — 贴图类元素（Image 工具）：地理配准图片的控制点网格；图片本体走全局素材库，本表只存配准参数
 
 **职责**：贴图元素：地理配准图片（控制点网格），图片存全局素材库、本表只存配准参数　**前端**：工具条「图片」（导入/素材库插入）+ 贴图属性面板（PropertiesPanel GeoImageSettings）
 
@@ -719,7 +719,7 @@
 
 ### 组 9 · 叠加层（弹窗）
 
-#### overlay
+#### overlay — 叠加层（弹窗）：本体一张，custom / person 内容块内联在 payload_json
 
 **职责**：弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）　**前端**：右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView
 
@@ -757,7 +757,7 @@
 
 ### 组 10 · 应用配置
 
-#### provider
+#### provider — 应用配置：AI 文案 / 配音 / 图片服务商（密钥只存本机，与项目内容解耦）
 
 **职责**：AI 服务商配置：文案生成 / 语音（含克隆）/ 图片生成（Key 只存本机，与项目内容解耦）　**前端**：顶栏「设置 · AI」弹窗（SettingsDialog.tsx，左侧切换三类能力）
 

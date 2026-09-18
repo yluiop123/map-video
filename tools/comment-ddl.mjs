@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * comment-ddl.mjs — 把字段中文说明注入 DDL（docs/db-schema-v2.sql）行尾注释
+ * comment-ddl.mjs — 把表/字段中文描述注入 DDL（docs/db-schema-v2.sql）行尾注释
  *
- * SQLite 不存储表/字段注释，故把 tools/db-field-notes.mjs 的中文说明写成 DDL 行尾 `-- 中文`，
- * 让 schema 自带中文注释（用 DB 工具看 DDL / 编辑器即可读）。
+ * SQLite 不存储表/字段注释，故把 tools/db-field-notes.mjs 的中文描述（TABLE_DESC 表描述 + 字段说明）
+ * 写成 DDL 行尾 `-- 中文`：表描述在 CREATE TABLE 行尾，字段描述在列定义行尾。
  *
  * 幂等：先去掉该行已有行尾注释再追加，可反复运行。
  * 用法：node tools/comment-ddl.mjs [--check]
  */
 import fs from 'node:fs';
-import FIELD_NOTES from './db-field-notes.mjs';
+import FIELD_NOTES, { TABLE_DESC } from './db-field-notes.mjs';
 
 const CHECK = process.argv.includes('--check');
 const DDL = 'docs/db-schema-v2.sql';
@@ -21,7 +21,18 @@ const out = [];
 let table = null;
 for (const line of lines) {
   const createM = line.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s*\(/i);
-  if (createM) { table = createM[1]; out.push(line); continue; }
+  if (createM) {
+    table = createM[1];
+    // 表头行尾注释 = 表描述（生成器把它当 tableComment）
+    const desc = TABLE_DESC[table];
+    if (desc) {
+      const head = line.replace(/\s*--.*$/, '').replace(/\s+$/, '');
+      out.push(`${head}  -- ${desc}`);
+    } else {
+      out.push(line);
+    }
+    continue;
+  }
   if (table && /^\);\s*$/.test(line.trim())) { table = null; out.push(line); continue; }
 
   if (table) {
