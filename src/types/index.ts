@@ -478,9 +478,13 @@ export type MapElement =
   | TerritoryElement
   | GeoImageElement;
 
-/** 图层：元素的分组，带自己的显隐与显示区间（可含多种元素类型） */
+/** 图层类型（单类型图层）：标记 / 路线 / 形状 / 疆域 / 图片 */
+export type LayerType = 'marker' | 'route' | 'shape' | 'territory' | 'image';
+
+/** 图层：元素的分组，带自己的显隐与显示区间（**单类型**，只能放对应类别的元素） */
 export interface Layer {
   id: string;
+  type: LayerType;
   name: string;
   visible: boolean;
   /** 图层显示起点（项目绝对帧） */

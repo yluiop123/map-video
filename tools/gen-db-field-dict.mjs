@@ -33,7 +33,7 @@ const MARKER = 'FIELD-DICT';
 // 分组：与 db-tables.md §3 保持一致（顺序即输出顺序）
 // 元素部分按「工具条按钮」分类（见 docs/db-tables.md 第五节），而非按技术结构分类
 const GROUPS = [
-  ['组 1 · 合集与项目（含配置）', ['collection', 'project']],
+  ['组 1 · 合集 / 项目 / 图层（含配置）', ['collection', 'project', 'layer']],
   ['组 2 · 资源与素材', ['asset']],
   ['组 3 · 时间轴', ['camera_keyframe', 'screen_fx', 'narration', 'narration_entry', 'music_track']],
   ['组 4 · 标记类元素（Pin 工具）', ['element_marker']],
@@ -65,6 +65,7 @@ const TOOL_ENTRY = {
 const TABLE_FRONTEND = {
   collection: { role: '合集：项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）', fe: '项目列表页左栏合集列表（ProjectManager.tsx）' },
   project: { role: '项目本体：身份 / 归属 / 审计 / 投影与生效底图的**默认值**引用', fe: '项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project' },
+  layer: { role: '图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层，带显隐与显示区间', fe: '左侧「图层」浮层（ElementsPanel.tsx）+ 时间线图层轨道' },
   project_config: { role: '项目级配置（GlobalConfig）：默认时长 / 帧率 / 分辨率 / 缓动 + 地形夸张覆盖值', fe: '导出对话框（ExportDialog.tsx，分辨率/帧率导出时选）；地形夸张在底图芯片面板（MapStyleChip.tsx 滑动条）；GlobalConfig 暂无独立设置 UI' },
   asset: { role: '素材仓库（**唯一**素材存储，合并原 custom_symbol / custom_image）：按项目 / 类型 / 时间戳落盘', fe: '属性面板上传行（PropertiesPanel ResourceUploadRow）、标记面板自定义图片网格（CustomImageGrid）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）' },
   camera_keyframe: { role: '视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）', fe: '「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）' },

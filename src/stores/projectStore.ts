@@ -5,11 +5,11 @@ import type {
   ElevationMapConfig, OverlayItem, CameraKeyframe,
   ProjectExport, ScreenFxItem, ExportedAsset,
   NarrationEntry, NarrationStyle, MusicTrack, ConnectorElement,
-  GeneratedChapterPlan, Layer,
+  GeneratedChapterPlan, Layer, LayerType,
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
-import { deriveElements, layerForAppend } from '../lib/layers';
+import { deriveElements, layerTypeOf, LAYER_TYPE_LABEL } from '../lib/layers';
 import { planChapterCamera } from '../lib/camera-plan';
 import { releaseAssetUrls, getAssetBytes, uploadAsset, type AssetKind } from '../lib/assets';
 import { clearGifCache } from '../lib/gif-decoder';
@@ -26,10 +26,11 @@ function normalizeElement(raw: MapElement): MapElement {
   return (e.type === 'territory' ? { ...el, display: normalizeTerritoryDisplay((el as any).display) } : el) as MapElement;
 }
 
-/** 新建默认图层（用于无图层时承接新元素） */
-function makeDefaultLayer(p: MapVideoProject): Layer {
+/** 新建默认图层（用于无图层时承接新元素；单类型图层，按类型命名） */
+function makeDefaultLayer(p: MapVideoProject, type: LayerType): Layer {
+  const n = (p.layers?.filter((L) => L.type === type).length || 0) + 1;
   return {
-    id: generateId(), name: `图层 ${(p.layers?.length || 0) + 1}`, visible: true,
+    id: generateId(), type, name: `${LAYER_TYPE_LABEL[type]} ${n}`, visible: true,
     startFrame: 0, endFrame: Math.max(1, p.endFrame || 1), elements: [],
   };
 }
@@ -77,8 +78,8 @@ export function projectContentEnd(project: MapVideoProject): number {
 function normalizeProject(project: MapVideoProject): MapVideoProject {
   // 图层：新格式用 layers；旧数据（只有扁平 elements）包进一个默认图层
   const rawLayers: Layer[] = project.layers?.length
-    ? project.layers.map((L) => ({ ...L, elements: (L.elements || []).map(normalizeElement) }))
-    : [{ id: generateId(), name: '图层 1', visible: true, startFrame: 0, endFrame: Math.max(1, project.endFrame || 1), elements: (project.elements || []).map(normalizeElement) }];
+    ? project.layers.map((L) => ({ ...L, type: L.type || 'marker', elements: (L.elements || []).map(normalizeElement) }))
+    : [{ id: generateId(), type: 'marker', name: '标记 1', visible: true, startFrame: 0, endFrame: Math.max(1, project.endFrame || 1), elements: (project.elements || []).map(normalizeElement) }];
   const elements = deriveElements(rawLayers);
   const endFrame = project.endFrame && project.endFrame > 0 ? project.endFrame : Math.max(1, projectContentEnd({ ...project, elements }));
   return {
@@ -234,8 +235,8 @@ interface ProjectState {
   applyGeneratedProject: (segments: GeneratedChapterPlan[], secondsPerSegment: number) => void;
   setProjectEndFrame: (endFrame: number) => void;
 
-  // 图层操作
-  addLayer: (name?: string) => Layer;
+  // 图层操作（单类型图层）
+  addLayer: (type: LayerType, name?: string) => Layer;
   addLayerFull: (layer: Layer) => void;
   updateLayer: (layerId: string, changes: Partial<Pick<Layer, 'name' | 'visible' | 'startFrame' | 'endFrame'>>) => void;
   deleteLayer: (layerId: string) => void;
@@ -356,7 +357,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         globalConfig: { ...DEFAULT_GLOBAL_CONFIG },
         startFrame: 0,
         endFrame: DEFAULT_GLOBAL_CONFIG.defaultDuration,
-        layers: [{ id: generateId(), name: '图层 1', visible: true, startFrame: 0, endFrame: DEFAULT_GLOBAL_CONFIG.defaultDuration, elements: [] }],
+        layers: [{ id: generateId(), type: 'marker', name: '标记 1', visible: true, startFrame: 0, endFrame: DEFAULT_GLOBAL_CONFIG.defaultDuration, elements: [] }],
         elements: [],
         camera: [{ frame: 0, center: [104.0, 35.0], zoom: 4 }],
         overlays: [],
@@ -461,11 +462,21 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
           cursor = end;
           void i;
         });
-        const genLayer: Layer = { id: generateId(), name: '生成图层', visible: true, startFrame: 0, endFrame: Math.max(1, cursor), elements };
+        // 单类型图层：生成元素按类型分组，各建一个图层
+        const byType = new Map<LayerType, MapElement[]>();
+        for (const el of elements) {
+          const lt = layerTypeOf(el);
+          const arr = byType.get(lt);
+          if (arr) arr.push(el); else byType.set(lt, [el]);
+        }
+        const genLayers: Layer[] = [...byType.entries()].map(([type, els]) => ({
+          id: generateId(), type, name: `${LAYER_TYPE_LABEL[type]} · 生成`, visible: true,
+          startFrame: 0, endFrame: Math.max(1, cursor), elements: els,
+        }));
         return {
           project: {
             ...p,
-            layers: [...p.layers, genLayer],
+            layers: [...p.layers, ...genLayers],
             elements: [],
             overlays: [...p.overlays, ...overlays],
             fx: [...p.fx, ...fx],
@@ -480,13 +491,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     setProjectEndFrame: (endFrame: number) => patch((p) => ({ ...p, endFrame: Math.max(1, Math.round(endFrame)) })),
 
     // ----- 图层 -----
-    addLayer: (name?: string) => {
-      const id = generateId();
+    addLayer: (type: LayerType, name?: string) => {
       const p0 = useProjectStore.getState().project;
-      const layer: Layer = {
-        id, name: name || `图层 ${(p0?.layers.length || 0) + 1}`, visible: true,
-        startFrame: 0, endFrame: Math.max(1, p0?.endFrame || DEFAULT_GLOBAL_CONFIG.defaultDuration), elements: [],
-      };
+      const base: Layer = p0
+        ? makeDefaultLayer(p0, type)
+        : { id: generateId(), type, name: LAYER_TYPE_LABEL[type], visible: true, startFrame: 0, endFrame: 1, elements: [] };
+      const layer: Layer = name ? { ...base, name } : base;
       patch((p) => ({ ...p, layers: [...p.layers, layer] }));
       return layer;
     },
@@ -520,17 +530,30 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         return { ...p, layers: layers.map((L) => (L.id === layerId ? { ...L, elements: [...L.elements, ...moving] } : L)) };
       }),
 
-    // ----- 元素（归属图层；elements 为派生镜像，由 patch 自动重算） -----
+    // ----- 元素（归属单类型图层；elements 为派生镜像，由 patch 自动重算） -----
     addElement: (element, layerId) =>
       patch((p) => {
-        const { layers, targetId } = layerForAppend(p.layers, layerId, () => makeDefaultLayer(p));
-        return { ...p, layers: layers.map((L) => (L.id === targetId ? { ...L, elements: [...L.elements, element] } : L)) };
+        const ltype = layerTypeOf(element);
+        let layers = p.layers;
+        let target = layerId ? layers.find((L) => L.id === layerId) : layers.find((L) => L.type === ltype);
+        if (!target) { target = makeDefaultLayer(p, ltype); layers = [...layers, target]; }
+        return { ...p, layers: layers.map((L) => (L.id === target!.id ? { ...L, elements: [...L.elements, element] } : L)) };
       }),
     addElements: (elements, layerId) =>
       patch((p) => {
         if (!elements.length) return p;
-        const { layers, targetId } = layerForAppend(p.layers, layerId, () => makeDefaultLayer(p));
-        return { ...p, layers: layers.map((L) => (L.id === targetId ? { ...L, elements: [...L.elements, ...elements] } : L)) };
+        // 指定图层：整批并入；否则按元素类型分组，各入同类型图层（无则新建）
+        if (layerId && p.layers.some((L) => L.id === layerId)) {
+          return { ...p, layers: p.layers.map((L) => (L.id === layerId ? { ...L, elements: [...L.elements, ...elements] } : L)) };
+        }
+        let layers = [...p.layers];
+        for (const el of elements) {
+          const ltype = layerTypeOf(el);
+          let idx = layers.findIndex((L) => L.type === ltype);
+          if (idx < 0) { layers.push(makeDefaultLayer({ ...p, layers }, ltype)); idx = layers.length - 1; }
+          layers[idx] = { ...layers[idx], elements: [...layers[idx].elements, el] };
+        }
+        return { ...p, layers };
       }),
     updateElement: (elementId, changes) =>
       patch((p) => ({

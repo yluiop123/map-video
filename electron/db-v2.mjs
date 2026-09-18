@@ -58,8 +58,12 @@ export function ensureV2Schema(db) {
   } catch { /* 忽略 */ }
   try {
     const ddl = fs.readFileSync(ddlPath, 'utf8');
-    db.exec(ddl);
+    // 先给旧表补缺失列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）；
+    // 必须早于 db.exec(ddl)：视图引用了新列（layer_id），旧表缺列会让整段 DDL 失败。
     ensureAllColumns(db, ddl);
+    // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
+    db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref;');
+    db.exec(ddl);
     return true;
   } catch (e) {
     console.error('[db-v2] V2 DDL 执行失败:', e?.message || e);
@@ -318,8 +322,18 @@ export function saveProjectV2(db, project) {
       track_id, project_id, name, audio_asset_id, url, start_sec, end_sec, volume, loop, fade_in, fade_out, ord
     ) VALUES (@track_id,@project_id,@name,@audio_asset_id,@url,@start_sec,@end_sec,@volume,@loop,@fade_in,@fade_out,@ord)`);
 
+    // 图层（项目 ▸ 图层 ▸ 元素）
+    const insLayer = db.prepare(`INSERT INTO layer (
+      layer_id, project_id, type, name, visible, start_sec, end_sec, ord
+    ) VALUES (@layer_id,@project_id,@type,@name,@visible,@start_sec,@end_sec,@ord)`);
+    const layers = project.layers || [];
+    layers.forEach((L, i) => insLayer.run({
+      layer_id: L.id, project_id: project.id, type: L.type || 'marker', name: L.name || '',
+      visible: b(L.visible !== false), start_sec: f2s(L.startFrame), end_sec: f2s(L.endFrame), ord: i,
+    }));
+
     // 元素（先于相机：跟随视角外键引用路线元素）
-    for (const el of project.elements || []) saveElementV2(db, project.id, el, f2s);
+    for (const L of layers) for (const el of L.elements || []) saveElementV2(db, project.id, L.id, el, f2s);
     // 相机
     (project.camera || []).forEach((kf, i) => insKf.run({
       kf_id: `${project.id}:kf:${i}`, project_id: project.id, sec: f2s(kf.frame),
@@ -373,17 +387,17 @@ export function saveProjectV2(db, project) {
   return { id: project.id };
 }
 
-function saveElementV2(db, chapterId, el, f2s) {
+function saveElementV2(db, chapterId, layerId, el, f2s) {
   const cat = ELEMENT_CATEGORY[el.type] || 'marker';
   const common = {
-    element_id: el.id, project_id: chapterId, type: el.type, name: el.name || '',
+    element_id: el.id, project_id: chapterId, layer_id: n(layerId), type: el.type, name: el.name || '',
     visible: b(el.visible !== false), start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
     anim_effect: n(el.animEffect), keyframes_json: kfsToJson(el, f2s), ord: 0,
     ...labelCols(el.label),
   };
   if (cat === 'marker') {
     db.prepare(`INSERT INTO element_marker (
-      element_id, project_id, type, name, visible, start_sec, end_sec, anim_effect,
+      element_id, project_id, layer_id, type, name, visible, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
       label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
       keyframes_json, ord, lng, lat, rotation, shape, emoji, scale, orientation, color,
@@ -391,7 +405,7 @@ function saveElementV2(db, chapterId, el, f2s) {
       visual_fit,visual_tintable,visual_fps,visual_loop,visual_altitude,visual_auto_rotate,visual_spin,visual_pitch_align,visual_animation,visual_stroke_width,
       flag_text, flag_color, flag_text_color, flag_font_size, flag_width, sidc, symbol_size, echelon, symbol_label
     ) VALUES (
-      @element_id,@project_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
+      @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
       @keyframes_json,@ord,@lng,@lat,@rotation,@shape,@emoji,@scale,@orientation,@color,
@@ -416,7 +430,7 @@ function saveElementV2(db, chapterId, el, f2s) {
   }
   if (cat === 'route') {
     db.prepare(`INSERT INTO element_route (
-      element_id, project_id, type, name, visible, start_sec, end_sec, anim_effect,
+      element_id, project_id, layer_id, type, name, visible, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
       label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
       keyframes_json, ord, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_type, line_arrow,
@@ -425,7 +439,7 @@ function saveElementV2(db, chapterId, el, f2s) {
       trail_color, trail_width, trail_length, from_element_id, to_element_id, animated, arrowhead,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
-      @element_id,@project_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
+      @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
       @keyframes_json,@ord,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_type,@line_arrow,
@@ -459,7 +473,7 @@ function saveElementV2(db, chapterId, el, f2s) {
   if (cat === 'shape') {
     const cMeta = el.circleMeta || el.starMeta;
     db.prepare(`INSERT INTO element_shape (
-      element_id, project_id, type, name, visible, start_sec, end_sec, anim_effect,
+      element_id, project_id, layer_id, type, name, visible, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
       label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
       keyframes_json, ord, rings_json, fill_color, fill_opacity, stroke_color, stroke_width, shape_kind,
@@ -470,7 +484,7 @@ function saveElementV2(db, chapterId, el, f2s) {
       points_json, center_lng, center_lat, radius, pulse_animation, rotation,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
-      @element_id,@project_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
+      @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
       @keyframes_json,@ord,@rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,@shape_kind,
@@ -509,11 +523,11 @@ function saveElementV2(db, chapterId, el, f2s) {
   if (cat === 'image') {
     const grid = Array.isArray(el.grid) ? el.grid : [];
     db.prepare(`INSERT INTO element_image (
-      element_id, project_id, type, name, visible, start_sec, end_sec,
+      element_id, project_id, layer_id, type, name, visible, start_sec, end_sec,
       asset_id, aspect, cols, rows, grid_json, opacity, ord
-    ) VALUES (@element_id,@project_id,@type,@name,@visible,@start_sec,@end_sec,
+    ) VALUES (@element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,
       @asset_id,@aspect,@cols,@rows,@grid_json,@opacity,@ord)`).run({
-      element_id: el.id, project_id: chapterId, type: el.type, name: el.name || '',
+      element_id: el.id, project_id: chapterId, layer_id: n(layerId), type: el.type, name: el.name || '',
       visible: b(el.visible !== false), start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
       asset_id: n(el.assetId), aspect: n(el.aspect),
       cols: Math.max(1, Math.round(el.cols || 1)), rows: Math.max(1, Math.round(el.rows || 1)),
@@ -525,14 +539,14 @@ function saveElementV2(db, chapterId, el, f2s) {
   // territory
   const d = el.display || {};
   db.prepare(`INSERT INTO element_territory (
-    element_id, project_id, type, name, visible, start_sec, end_sec, anim_effect,
+    element_id, project_id, layer_id, type, name, visible, start_sec, end_sec, anim_effect,
     label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
     keyframes_json, ord,
     display_country_borders, display_plot_borders, display_border_width, display_fill_opacity,
     display_country_names, display_plot_names, display_label_align, display_label_scale,
     countries_json, plots_json, events_json
   ) VALUES (
-    @element_id,@project_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
+    @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
     @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
     @keyframes_json,@ord,
     @display_country_borders,@display_plot_borders,@display_border_width,@display_fill_opacity,
@@ -590,6 +604,20 @@ export function getProjectV2(db, id) {
     id: e.entry_id, text: e.text, audioUrl: e.url ?? undefined, durationFrames: s2f(e.duration_sec ?? 0), startFrame: s2f(e.start_sec), locked: e.locked === 1,
   }));
   const elements = readElementsV2(db, pid, s2f);
+  // 图层（项目 ▸ 图层 ▸ 元素）：按 layer_id 归组；无图层表时兜底一个默认图层
+  const layerRows = db.prepare('SELECT * FROM layer WHERE project_id = ? ORDER BY ord').all(pid);
+  const byLayer = new Map();
+  for (const el of elements) {
+    const lid = el.layerId || '';
+    const arr = byLayer.get(lid);
+    if (arr) arr.push(el); else byLayer.set(lid, [el]);
+  }
+  const layers = layerRows.length
+    ? layerRows.map((L) => ({
+        id: L.layer_id, type: L.type || 'marker', name: L.name, visible: L.visible !== 0,
+        startFrame: s2f(L.start_sec), endFrame: s2f(L.end_sec), elements: byLayer.get(L.layer_id) || [],
+      }))
+    : [{ id: `${pid}:layer`, type: 'marker', name: '标记 1', visible: true, startFrame: 0, endFrame: s2f(p.end_sec), elements }];
   return {
     id: pid, name: p.name, description: p.description ?? undefined,
     collectionId: p.collection_id, createdAt: new Date(p.created_at), updatedAt: new Date(p.updated_at),
@@ -600,7 +628,7 @@ export function getProjectV2(db, id) {
     },
     startFrame: 0,
     endFrame: s2f(p.end_sec),
-    elements, camera, fx, overlays,
+    layers, elements, camera, fx, overlays,
     narration: { entries, style: st ? { fontSize: st.font_size, fontFamily: st.font_family ?? undefined, color: st.color, strokeColor: st.stroke_color, strokeWidth: st.stroke_width, bg: st.bg, bgColor: st.bg_color, posY: st.pos_y, maxPct: st.max_pct } : undefined },
     music: db.prepare('SELECT * FROM music_track WHERE project_id = ? ORDER BY ord').all(pid).map((m) => ({
       id: m.track_id, name: m.name, url: m.url ?? undefined, startFrame: s2f(m.start_sec), endFrame: m.end_sec == null ? s2f(m.start_sec) : s2f(m.end_sec),
@@ -617,6 +645,7 @@ function readElementsV2(db, chapterId, s2f) {
     const k = kfOf(r);
     return {
       id: r.element_id, type: r.type, name: r.name, visible: r.visible !== 0,
+      layerId: r.layer_id ?? undefined,
       startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec),
       style: k.style, label: colsToLabel(r),
       ...(r.anim_effect ? { animEffect: r.anim_effect } : {}),
@@ -701,6 +730,7 @@ function readElementsV2(db, chapterId, s2f) {
   for (const r of db.prepare('SELECT * FROM element_image WHERE project_id = ?').all(chapterId)) {
     out.push({
       id: r.element_id, type: 'geo_image', name: r.name, visible: r.visible !== 0,
+      layerId: r.layer_id ?? undefined,
       startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec), style: {},
       assetId: r.asset_id ?? undefined, aspect: r.aspect ?? 1,
       cols: r.cols ?? 1, rows: r.rows ?? 1, grid: J(r.grid_json, []),

@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 15 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 16 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：15 张表 · 5 张元素类别宽表 · 3 个视图 · 0 个触发器 · 379 列（外键全部有索引）
+- **规模**：16 张表 · 5 张元素类别宽表 · 3 个视图 · 0 个触发器 · 392 列（外键全部有索引）
 
 **目录**
 
-- 一、15 张表的构成与分流规则
+- 一、16 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、15 张表逐表速查（按 10 组）
+- 三、16 张表逐表速查（按 10 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图，以及为什么没有触发器
 
-## 一、15 张表的构成与分流规则
+## 一、16 张表的构成与分流规则
 
-**15 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**16 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,7 +28,7 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 15 张表的构成
+#### 一句话理解 16 张表的构成
 
 - **4 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
 - **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
@@ -49,6 +49,7 @@
 | `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | **不入库**：配置是代码内置常量，项目只存选中的 id 字符串 |
 | `elevationMaps[].exaggeration`（面板滑动条可调） | `project.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–50，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
 | `customSymbols[]` / `customImages[]`（图标库 / 图片库登记） | `asset`（`kind='icon'` / `kind='image'`） | **三表已合并**：两者都只是项目收录的一个素材行，二进制走 P4 外置 |
+| `layers[]`（`Layer`：type/name/visible/startFrame/endFrame/elements[]） | `layer` + 各元素表的 `layer_id` | P2：**项目 ▸ 图层 ▸ 元素**；单类型图层（marker / route / shape / territory / image）；删图层连带删元素（CASCADE） |
 | `chapters[]` | `chapter` | P1 |
 | `chapters[].elements[]` | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`（5 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表） |
 | `elements[].style` / `drawProgress` / `morphKeyframes`（关键帧数组） | 类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
@@ -66,16 +67,17 @@
 > 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目与章节只保存所选配置的 id 字符串（`project.active_base_map_id` / `chapter.base_map_id`）。
 > **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、15 张表逐表速查（按 10 组）
+## 三、16 张表逐表速查（按 10 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
-### 组 1 · 合集与项目（含配置） 2 张
+### 组 1 · 合集 / 项目 / 图层（含配置） 3 张
 
 | 表 | 职责 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
-| `collection` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素） | `collection_id` | 默认合集恒为 `default`：**不可改名、不可删除**；删其它合集时其下项目回落默认合集（**不删项目**） | 项目列表页左栏合集列表（`ProjectManager.tsx`） |
+| `collection` | 项目之上的一层分组（合集 ▸ 项目 ▸ 元素） | `collection_id` | 默认合集恒为 `default`：**不可改名、不可删除**；删其它合集时其下项目回落默认合集（**不删项目**） | 项目列表页左栏合集列表（`ProjectManager.tsx`） |
 | `project` | 项目本体：身份 + 归属 + 审计字段 + 地图投影 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） | 项目卡片（`ProjectManager.tsx`）；运行时即 `projectStore.project` |
+| `layer` | 图层：元素的分组，**单类型**（marker / route / shape / territory / image），带显隐与显示区间 | `layer_id` | 随项目 **CASCADE**；元素通过 `layer_id` 归属（删图层连带删元素）；`ord` 定序 | 左侧「图层」浮层（`ElementsPanel.tsx`）+ 时间线图层轨道 |
 
 ### 组 2 · 资源与素材 1 张
 
@@ -163,7 +165,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **15 张表 / 379 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，379 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **16 张表 / 392 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，392 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -171,7 +173,7 @@
 
 #### 快速跳转
 
-- **组 1 · 合集与项目（含配置）**：`collection` · `project`
+- **组 1 · 合集 / 项目 / 图层（含配置）**：`collection` · `project` · `layer`
 - **组 2 · 资源与素材**：`asset`
 - **组 3 · 时间轴**：`camera_keyframe` · `screen_fx` · `narration` · `narration_entry` · `music_track`
 - **组 4 · 标记类元素（Pin 工具）**：`element_marker`
@@ -182,7 +184,7 @@
 - **组 9 · 叠加层（弹窗）**：`overlay`
 - **组 10 · 应用配置**：`provider`
 
-### 组 1 · 合集与项目（含配置）
+### 组 1 · 合集 / 项目 / 图层（含配置）
 
 #### collection — 合集：项目之上的一层分组（合集 ▸ 项目 ▸ 元素）；默认合集恒为 default，不可改名/删除
 
@@ -222,6 +224,27 @@
 | `default_easing` | TEXT | `NOT NULL` | 默认缓动类型 · 默认 `'easeInOut'` |
 | `elevation_exaggeration` | REAL | — | 地形夸张系数（覆盖内置默认 1.5；0=平坦、1=真实比例；空=用内置默认） · `CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)` |
 | `end_sec` | REAL | `NOT NULL` | 全片总长（秒） · 默认 `0` · `CHECK (end_sec >= 0)` |
+
+#### layer — 图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层（标记/路线/形状/疆域/图片），带自己的显隐与显示区间
+
+**职责**：图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层，带显隐与显示区间　**前端**：左侧「图层」浮层（ElementsPanel.tsx）+ 时间线图层轨道
+
+8 列 · 主键 `layer_id`
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `layer_id` | TEXT | `PK` | 图层 id |
+| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目（删项目连带删图层） |
+| `type` | TEXT | `NOT NULL` | 图层类型（单类型图层）：marker 标记 / route 路线 / shape 形状 / territory 疆域 / image 图片 · `CHECK (type IN ('marker','route','shape','territory','image'))` |
+| `name` | TEXT | `NOT NULL` | 图层名 · 默认 `''` |
+| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
+| `start_sec` | REAL | `NOT NULL` | 图层显示起点（秒，项目绝对时间） · `CHECK (start_sec >= 0)` |
+| `end_sec` | REAL | `NOT NULL` | 图层显示终点（秒，项目绝对时间） |
+| `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
+
+**表级约束**
+
+- `CHECK (end_sec >= start_sec)`（同项目内排序）
 
 ### 组 2 · 资源与素材
 
@@ -368,12 +391,13 @@
 
 **职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，9 种视觉形态）
 
-57 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
+58 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具） · `CHECK (type IN ('point','flag','military_symbol'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
@@ -449,12 +473,13 @@
 
 **职责**：路线类元素：line / moving_point / connector　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-73 列 · 主键 `element_id` · 工具入口：Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表；连接线无工具入口
+74 列 · 主键 `element_id` · 工具入口：Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表；连接线无工具入口
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具） · `CHECK (type IN ('line','moving_point','connector'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
@@ -542,12 +567,13 @@
 
 **职责**：形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-80 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+81 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
@@ -648,12 +674,13 @@
 
 **职责**：疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含　**前端**：工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）
 
-31 列 · 主键 `element_id` · 工具入口：Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）
+32 列 · 主键 `element_id` · 工具入口：Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 territory） · 默认 `'territory'` · `CHECK (type = 'territory')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
@@ -694,12 +721,13 @@
 
 **职责**：贴图元素：地理配准图片（控制点网格），图片存全局素材库、本表只存配准参数　**前端**：工具条「图片」（导入/素材库插入）+ 贴图属性面板（PropertiesPanel GeoImageSettings）
 
-14 列 · 主键 `element_id` · 工具入口：Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库
+15 列 · 主键 `element_id` · 工具入口：Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 geo_image） · 默认 `'geo_image'` · `CHECK (type = 'geo_image')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |

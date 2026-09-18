@@ -4,9 +4,9 @@ import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { useInteractionStore } from '../stores/interactionStore';
 import { uploadGeoJSON, elementsToGeoJSON } from '../lib/geojson';
-import { listPublicLayers, savePublicLayer, removePublicLayer, type PublicLayer } from '../lib/layers';
+import { listPublicLayers, savePublicLayer, removePublicLayer, layerTypeOf, LAYER_TYPE_LABEL, LAYER_TYPES, type PublicLayer } from '../lib/layers';
 import { useT } from './ui/primitives';
-import type { Layer, MapElement } from '../types';
+import type { Layer, LayerType, MapElement } from '../types';
 import { generateId } from '../types';
 
 /** 把公共图层的元素平移到以自身最早时间为 0（导入到其它项目时对齐） */
@@ -36,6 +36,7 @@ export function ElementsPanel() {
   const openFx = useEditorStore((s) => s.openFx);
   const [filter, setFilter] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [newLayerOpen, setNewLayerOpen] = useState(false);
   const [pubOpen, setPubOpen] = useState(false);
   const [pubList, setPubList] = useState<PublicLayer[]>([]);
   const geoRef = useRef<HTMLInputElement>(null);
@@ -58,8 +59,15 @@ export function ElementsPanel() {
       if (!els.length) return;
       // 导入的元素默认「随图层显示」（customTime 关）
       const fixed = els.map((el) => ({ ...el, customTime: false } as MapElement));
-      if (layerId) addElements(fixed, layerId);
-      else { const L = addLayer(file.name.replace(/\.(geo)?json$/i, '') || '导入图层'); addElements(fixed, L.id); }
+      if (layerId) {
+        // 单类型图层：只保留与该图层类型匹配的要素
+        const L = layers.find((x) => x.id === layerId);
+        const fit = L ? fixed.filter((el) => layerTypeOf(el) === L.type) : fixed;
+        if (fit.length) addElements(fit, layerId);
+      } else {
+        // 未指定图层：按元素类型自动拆成多个同类型图层
+        addElements(fixed);
+      }
     } catch {
       alert(t('GeoJSON 导入失败', 'GeoJSON import failed'));
     }
@@ -77,7 +85,9 @@ export function ElementsPanel() {
   };
 
   const importPublic = (pl: PublicLayer) => {
-    addLayerFull({ id: generateId(), name: pl.name, visible: true, startFrame: 0, endFrame: Math.max(1, project.endFrame), elements: rezeroElements(pl.elements) as MapElement[] });
+    const els = rezeroElements(pl.elements) as MapElement[];
+    const type = els.length ? layerTypeOf(els[0]) : 'marker';
+    addLayerFull({ id: generateId(), type, name: pl.name, visible: true, startFrame: 0, endFrame: Math.max(1, project.endFrame), elements: els });
     setPubOpen(false);
   };
 
@@ -105,13 +115,22 @@ export function ElementsPanel() {
           />
         </div>
         <div className="flex items-center gap-1.5">
-          <button onClick={() => addLayer()} className="flex-1 h-7 rounded-md border border-white/10 bg-white/[0.045] text-xs hover:border-white/25 transition-colors flex items-center justify-center gap-1">
+          <button onClick={() => setNewLayerOpen((v) => !v)} className={`flex-1 h-7 rounded-md border text-xs transition-colors flex items-center justify-center gap-1 ${newLayerOpen ? 'border-brand bg-brand/20' : 'border-white/10 bg-white/[0.045] hover:border-white/25'}`}>
             <Plus size={12} /> {t('新建图层', 'New layer')}
           </button>
           <button onClick={() => setPubOpen((v) => !v)} className={`h-7 px-2 rounded-md border text-xs transition-colors flex items-center gap-1 ${pubOpen ? 'border-brand bg-brand/20' : 'border-white/10 bg-white/[0.045] hover:border-white/25'}`} title={t('导入公共图层', 'Import public layer')}>
             <Star size={12} /> {t('公共', 'Public')}
           </button>
         </div>
+        {newLayerOpen && (
+          <div className="flex flex-wrap gap-1.5">
+            {LAYER_TYPES.map((lt) => (
+              <button key={lt} onClick={() => { addLayer(lt); setNewLayerOpen(false); }} className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-[11px] hover:border-brand hover:bg-brand/15 transition-colors">
+                {layerIcon(lt)} {t(LAYER_TYPE_LABEL[lt], lt)}
+              </button>
+            ))}
+          </div>
+        )}
         {pubOpen && (
           <div className="rounded-md border border-white/10 bg-white/[0.03] p-1.5 max-h-40 overflow-y-auto">
             {pubList.length === 0 ? (
@@ -153,7 +172,7 @@ export function ElementsPanel() {
                   {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                 </button>
                 <span className={`flex-1 truncate text-xs font-medium ${L.visible === false ? 'text-muted-foreground line-through' : ''}`} title={L.name}>
-                  📦 {L.name} <span className="text-muted-foreground">({L.elements.length})</span>
+                  {layerIcon(L.type)} {L.name} <span className="text-muted-foreground">({L.elements.length})</span>
                 </span>
                 <button onClick={() => { importingLayerRef.current = L.id; geoRef.current?.click(); }} className="p-1 rounded shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-white/10 transition-opacity" title={t('导入 GeoJSON 到此图层', 'Import GeoJSON into layer')}>
                   <Upload size={13} />
@@ -218,4 +237,8 @@ function getElementIcon(type: MapElement['type']): string {
     connector: '🔗', flag: '🚩', territory: '🗺️', geo_image: '🖼️',
   };
   return icons[type] || '❓';
+}
+
+function layerIcon(type: LayerType): string {
+  return ({ marker: '📍', route: '📏', shape: '⬛', territory: '🗺️', image: '🖼️' } as Record<string, string>)[type] || '📦';
 }

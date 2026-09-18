@@ -16,6 +16,7 @@
 export const TABLE_DESC = {
   collection: '合集：项目之上的一层分组（合集 ▸ 项目 ▸ 元素）；默认合集恒为 default，不可改名/删除',
   project: '项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程 / GlobalConfig 配置列',
+  layer: '图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层（标记/路线/形状/疆域/图片），带自己的显隐与显示区间',
   asset: '素材仓库：图片 / GIF / 模型 / 音频 / 视频 / 图标 / 字体统一存此表，业务表只留 asset_id',
   camera_keyframe: '视角关键帧：停留 → 飞行 → 落位；含 follow 跟随 / orbit 环绕视角',
   screen_fx: '屏幕空间特效窗口：天气 / 画面叠加（非地图元素），两分支字段并存',
@@ -66,6 +67,16 @@ export default {
     "rel_path": "外置方式下的相对路径（相对 userData/projects/）",
     "blob": "内联方式下的小文件二进制",
     "created_at": "入库时间（毫秒时间戳）"
+  },
+  "layer": {
+    "layer_id": "图层 id",
+    "project_id": "所属项目（删项目连带删图层）",
+    "type": "图层类型（单类型图层）：marker 标记 / route 路线 / shape 形状 / territory 疆域 / image 图片",
+    "name": "图层名",
+    "visible": "是否显示（0/1）",
+    "start_sec": "图层显示起点（秒，项目绝对时间）",
+    "end_sec": "图层显示终点（秒，项目绝对时间）",
+    "ord": "同项目内排序"
   },
   "camera_keyframe": {
     "kf_id": "视角关键帧 id",
@@ -140,6 +151,7 @@ export default {
   "element_marker": {
     "element_id": "元素 id（全库唯一，4 张类别表共享同一 id 空间）",
     "project_id": "所属项目",
+    "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
     "visible": "是否显示（0/1）",
@@ -199,6 +211,7 @@ export default {
   "element_route": {
     "element_id": "元素 id（全库唯一，4 张类别表共享同一 id 空间）",
     "project_id": "所属项目",
+    "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
     "visible": "是否显示（0/1）",
@@ -274,6 +287,7 @@ export default {
   "element_shape": {
     "element_id": "元素 id（全库唯一，4 张类别表共享同一 id 空间）",
     "project_id": "所属项目",
+    "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
     "visible": "是否显示（0/1）",
@@ -356,6 +370,7 @@ export default {
   "element_territory": {
     "element_id": "元素 id（全库唯一，4 张类别表共享同一 id 空间）",
     "project_id": "所属项目",
+    "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列（固定 territory）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
     "visible": "是否显示（0/1）",
@@ -389,6 +404,7 @@ export default {
   "element_image": {
     "element_id": "元素 id（全库唯一，类别表共享同一 id 空间）",
     "project_id": "所属项目",
+    "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列（固定 geo_image）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
     "visible": "是否显示（0/1）",

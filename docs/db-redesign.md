@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：15 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：16 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -117,11 +117,12 @@
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（15 张表，按结构分 10 组）
+### 2.2 实体清单（16 张表，按结构分 10 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
 | **1. 合集与项目** | `collection`、`project` | 合集是项目之上的分组；`project` 承载身份 / 归属 / 审计 / 生效底图 + GlobalConfig 配置列（原 1:1 `project_config` 已合并） |
+| **1.5 图层** | `layer` | 元素的分组（**项目 ▸ 图层 ▸ 元素**），**单类型图层**（marker / route / shape / territory / image），带显隐与显示区间；元素表以 `layer_id` 外键归属（删图层连带删元素） |
 | **2. 资源与素材** | `asset` | 唯一素材存储，承担 P4 外置存储；按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重）；底图 / 高程图不入库（代码内置常量，项目只存 id，但**地形夸张覆盖值**存 `project`）；尺寸 / 时长 / 帧数等派生值不入库 |
 | **3. 时间轴** | `camera_keyframe`、`screen_fx`、`narration`、`narration_entry`、`music_track` | 镜头 / 特效 / 字幕 / 音乐（项目=单条连续时间线） |
 | **4. 标记类元素** | `element_marker` | type ∈ point / flag / military_symbol |

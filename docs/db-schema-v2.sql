@@ -145,18 +145,35 @@ CREATE INDEX IF NOT EXISTS ix_camera_kf_chapter ON camera_keyframe(project_id, s
 CREATE INDEX IF NOT EXISTS ix_camera_kf_follow  ON camera_keyframe(follow_route_element_id);
 
 -- -----------------------------------------------------------------------------
--- 4. 元素表（4 张类别宽表）
---    公共列（每张表都有）：element_id / project_id / type / name / visible /
+-- 3b. 图层（元素的分组）：项目 ▸ 图层 ▸ 元素
+--     图层带自己的显隐与显示区间；元素通过 layer_id 归属图层（删图层连带删元素）。
+--     元素的时间（start_sec/end_sec）为项目绝对秒，渲染时与图层区间取交集；
+--     元素是否「随图层全程可见」由元素表的时间语义 + 应用层决定。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS layer (  -- 图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层（标记/路线/形状/疆域/图片），带自己的显隐与显示区间
+  layer_id   TEXT PRIMARY KEY,  -- 图层 id
+  project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目（删项目连带删图层）
+  type       TEXT NOT NULL CHECK (type IN ('marker','route','shape','territory','image')),  -- 图层类型（单类型图层）：marker 标记 / route 路线 / shape 形状 / territory 疆域 / image 图片
+  name       TEXT NOT NULL DEFAULT '',  -- 图层名
+  visible    INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
+  start_sec  REAL NOT NULL CHECK (start_sec >= 0),  -- 图层显示起点（秒，项目绝对时间）
+  end_sec    REAL NOT NULL,  -- 图层显示终点（秒，项目绝对时间）
+  ord        INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序
+  CHECK (end_sec >= start_sec)
+);
+CREATE INDEX IF NOT EXISTS ix_layer_project ON layer(project_id, ord);
+
+-- -----------------------------------------------------------------------------
+-- 4. 元素表（5 张类别宽表）
+--    公共列（每张表都有）：element_id / project_id / layer_id / type / name / visible /
 --    start_sec / end_sec / anim_effect / keyframes_json / ord，以及平铺后的标签列 label_*。
---    route / shape 两表另有移动标记列 move_icon_* 与动画列（都是逐项平铺，非 JSON）。
---    仅「坐标集合」保留 JSON：coords_json / rings_json / path_json / points_json / point_times_json。
---    类别内子类型用 type 判别列 + CHECK 表达「该子类型必填项」。
 -- -----------------------------------------------------------------------------
 
 -- 5.1 标记类元素（Pin 工具）：point（点/文字/图标）· flag（旗标）· military_symbol（APP-6 军标）
 CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）：point / flag / military_symbol 一张宽表，type 判别
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
@@ -245,12 +262,14 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
 CREATE INDEX IF NOT EXISTS ix_marker_chapter ON element_marker(project_id, ord);
 CREATE INDEX IF NOT EXISTS ix_marker_type    ON element_marker(project_id, type);
 CREATE INDEX IF NOT EXISTS ix_marker_asset   ON element_marker(asset_id);
+CREATE INDEX IF NOT EXISTS ix_marker_layer   ON element_marker(layer_id);
 
 -- 5.2 路线类元素（Route 工具）：line（线/贝塞尔/大圆弧）· moving_point（移动点）·
 --     connector（连接线，引用其它元素 → 弱引用 from/to）
 CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）：line / moving_point / connector 一张宽表，type 判别
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),  -- 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
@@ -348,12 +367,14 @@ CREATE INDEX IF NOT EXISTS ix_route_type    ON element_route(project_id, type);
 -- 连接线端点：应用层按 from/to 反查清理，必须建索引（否则删元素时全表扫描）
 CREATE INDEX IF NOT EXISTS ix_route_from    ON element_route(project_id, from_element_id);
 CREATE INDEX IF NOT EXISTS ix_route_to      ON element_route(project_id, to_element_id);
+CREATE INDEX IF NOT EXISTS ix_route_layer   ON element_route(layer_id);
 
 -- 5.3 形状类元素（Shape 工具，含「区域」行政区高亮）：polygon · arrow · double_arrow ·
 --     gathering（集结地）· encirclement（包围圈）
 CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）：polygon / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
@@ -465,6 +486,7 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
 );
 CREATE INDEX IF NOT EXISTS ix_shape_chapter ON element_shape(project_id, ord);
 CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(project_id, type);
+CREATE INDEX IF NOT EXISTS ix_shape_layer   ON element_shape(layer_id);
 
 -- 5.4 疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件全部 JSON 内联
 --     countries_json: [{ countryId, name, color, ord }]
@@ -473,6 +495,7 @@ CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(project_id, type);
 CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件 JSON 内联，自包含
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
@@ -510,6 +533,7 @@ CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具
   CHECK (end_sec >= start_sec)
 );
 CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(project_id, ord);
+CREATE INDEX IF NOT EXISTS ix_territory_layer   ON element_territory(layer_id);
 
 -- -----------------------------------------------------------------------------
 -- 4b. 贴图（地理配准图片）：工具栏「图片」产出
@@ -519,6 +543,7 @@ CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(project_id,
 CREATE TABLE IF NOT EXISTS element_image (  -- 贴图类元素（Image 工具）：地理配准图片的控制点网格；图片本体走全局素材库，本表只存配准参数
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL DEFAULT 'geo_image' CHECK (type = 'geo_image'),  -- 子类型判别列（固定 geo_image）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
@@ -537,6 +562,7 @@ CREATE TABLE IF NOT EXISTS element_image (  -- 贴图类元素（Image 工具）
   CHECK (end_sec >= start_sec)
 );
 CREATE INDEX IF NOT EXISTS ix_element_image ON element_image(project_id, ord);
+CREATE INDEX IF NOT EXISTS ix_image_layer   ON element_image(layer_id);
 
 -- -----------------------------------------------------------------------------
 -- 5. 元素动画关键帧：**已内联**进 4 张类别表的 keyframes_json（P3）
@@ -741,23 +767,23 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 
 -- 12.1 跨类别元素索引：取消基表后，轨道 / 列表 / 计数查这里，不必手写 4 表 UNION
 CREATE VIEW IF NOT EXISTS v_element_index AS
-SELECT 'marker' AS category, element_id, project_id, type, name, visible,
+SELECT 'marker' AS category, element_id, project_id, layer_id, type, name, visible,
        start_sec, end_sec, ord
   FROM element_marker
 UNION ALL
-SELECT 'route', element_id, project_id, type, name, visible,
+SELECT 'route', element_id, project_id, layer_id, type, name, visible,
        start_sec, end_sec, ord
   FROM element_route
 UNION ALL
-SELECT 'shape', element_id, project_id, type, name, visible,
+SELECT 'shape', element_id, project_id, layer_id, type, name, visible,
        start_sec, end_sec, ord
   FROM element_shape
 UNION ALL
-SELECT 'territory', element_id, project_id, type, name, visible,
+SELECT 'territory', element_id, project_id, layer_id, type, name, visible,
        start_sec, end_sec, ord
   FROM element_territory
 UNION ALL
-SELECT 'image', element_id, project_id, type, name, visible,
+SELECT 'image', element_id, project_id, layer_id, type, name, visible,
        start_sec, end_sec, ord
   FROM element_image;
 

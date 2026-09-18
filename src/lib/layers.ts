@@ -4,7 +4,25 @@
  * 数据模型：项目 = Layer[]，每个图层含自己的显隐 / 显示区间 / 元素列表。
  * `project.elements` 是**派生镜像**（store 的 patch 自动重算），供渲染 / 面板 / 相机等沿用扁平读取。
  */
-import type { Layer, MapElement } from '../types';
+import type { Layer, LayerType, MapElement } from '../types';
+
+/** 元素类型 → 图层类型 */
+export function layerTypeOf(el: MapElement): LayerType {
+  switch (el.type) {
+    case 'point': case 'flag': return 'marker';
+    case 'line': case 'moving_point': case 'connector': return 'route';
+    case 'polygon': case 'arrow': case 'double_arrow': case 'gathering': case 'encirclement': return 'shape';
+    case 'territory': return 'territory';
+    case 'geo_image': return 'image';
+    default: return 'marker';
+  }
+}
+
+export const LAYER_TYPE_LABEL: Record<LayerType, string> = {
+  marker: '标记', route: '路线', shape: '形状', territory: '疆域', image: '图片',
+};
+
+export const LAYER_TYPES: LayerType[] = ['marker', 'route', 'shape', 'territory', 'image'];
 
 /**
  * 从图层派生扁平元素数组（供渲染/面板读取）：
@@ -41,17 +59,6 @@ export function findElementInLayers(layers: Layer[], elementId: string): { layer
     if (index >= 0) return { layer, element: layer.elements[index], index };
   }
   return null;
-}
-
-/** 把一批元素并入指定图层（layerId 缺省用第一个图层；没有图层则新建一个） */
-export function layerForAppend(layers: Layer[], layerId: string | undefined, makeDefault: () => Layer): { layers: Layer[]; targetId: string } {
-  if (layerId) {
-    const hit = layers.find((l) => l.id === layerId);
-    if (hit) return { layers, targetId: hit.id };
-  }
-  if (layers.length > 0) return { layers, targetId: layers[0].id };
-  const created = makeDefault();
-  return { layers: [created], targetId: created.id };
 }
 
 // ========== 公共图层库（全局，跨项目） ==========
