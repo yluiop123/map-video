@@ -672,12 +672,16 @@ function MoveResourcePicker({ mi, patch }: {
   mi: NonNullable<LineElement['moveIcon']>;
   patch: (c: Partial<MapElement>) => void;
 }) {
-  const shape = mi.shape as 'image' | 'gif' | 'model' | 'icon' | 'military_symbol';
+  const t = useT();
+  // 形态归一与标记侧 pinStyleOf 完全一致：圆点 / 水滴针属于「图片」这一类（内置图形），
+  // 不是跳出图片类的独立形态 —— 否则点了网格开头那两格，整个资源区就消失了
+  const shape = moveIconStyleOf(mi);
   const set = (c: Record<string, unknown>) =>
     patch({ moveIcon: { ...mi, ...c } } as Partial<MapElement>);
+  const isDotMi = !mi.shape || mi.shape === 'dot';
 
   // 军标：与标记共用同一选择网格（写入 moveIcon.shape + builtinId）
-  if (shape === 'military_symbol') {
+  if (shape === 'milsym') {
     const sidc = mi.builtinId?.startsWith('milsym:') ? mi.builtinId.slice('milsym:'.length) : undefined;
     return (
       <MilSymGrid
@@ -687,11 +691,30 @@ function MoveResourcePicker({ mi, patch }: {
     );
   }
 
+  if (shape !== 'image' && shape !== 'gif' && shape !== 'model' && shape !== 'icon') return null;
   return (
     <VisualResourcePicker
       value={mi}
       style={shape}
       onPatch={set}
+      extraCells={shape === 'image' ? (
+        <>
+          <button
+            title={t('圆点', 'Dot')}
+            onClick={() => set({ builtinId: undefined, assetId: undefined, iconLib: undefined, iconName: undefined, shape: 'dot', color: mi.color || '#FF6600' })}
+            className={`${CELL_BASE} h-12 ${isDotMi ? CELL_ON : CELL_OFF}`}
+          >
+            <span className="block w-4 h-4 rounded-full bg-white" />
+          </button>
+          <button
+            title={t('水滴针', 'Pin')}
+            onClick={() => set({ builtinId: undefined, assetId: undefined, iconLib: undefined, iconName: undefined, shape: 'pin', color: mi.color || '#FF6600' })}
+            className={`${CELL_BASE} h-12 ${mi.shape === 'pin' ? CELL_ON : CELL_OFF}`}
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5 fill-white"><path d="M12 2c4.2 6.2 6 8.8 6 12.2A6 6 0 1 1 6 14.2C6 10.8 7.8 8.2 12 2z" /></svg>
+          </button>
+        </>
+      ) : undefined}
     />
   );
 }
@@ -1044,6 +1067,20 @@ function pinStyleOf(pe: PointElement): PinStyle {
   return 'image';
 }
 
+/** 路线「显示标记」的形态归一：与 pinStyleOf 同一约定与同一返回域（dot/pin 归入 image） */
+function moveIconStyleOf(mi: { shape?: string }): PinStyle {
+  if (mi.shape === 'gif') return 'gif';
+  if (mi.shape === 'model') return 'model';
+  if (mi.shape === 'icon') return 'icon';
+  if (mi.shape === 'military_symbol') return 'milsym';
+  if (mi.shape === 'text') return 'text';
+  if (mi.shape === 'bubble') return 'bubble';
+  if (mi.shape === 'emoji') return 'emoji';
+  if (mi.shape === 'flag') return 'flag';
+  // dot / pin / image / 未设：都属「图片」类别
+  return 'image';
+}
+
 function ShowLabelToggle({ element, patch }: { element: PointElement; patch: (c: Partial<MapElement>) => void }) {
   const t = useT();
   const shown = !!element.label?.text;
@@ -1301,26 +1338,16 @@ function RouteSettings({ element, patch }: {
           <div className="space-y-3">
             {/* 图标样式（等宽网格，参照标记设置） */}
             <Field label={t('图标样式', 'Icon Style')}>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-4 gap-1.5">
                 {([
-                  { value: 'dot', label: t('⚪ 圆点', '⚪ DOT') },
-                  { value: 'pin', label: t('📍 水滴针', '📍 PIN') },
                   { value: 'bubble', label: '💬 BUBBLE' },
                   { value: 'flag', label: t('🚩 旗帜', '🚩 MARKER') },
                   { value: 'text', label: 'Aa TEXT' },
                   { value: 'emoji', label: '😀 EMOJI' },
-                ] as { value: 'dot' | 'pin' | 'bubble' | 'flag' | 'text' | 'emoji'; label: string }[]).map((o) => (
+                ] as { value: 'bubble' | 'flag' | 'text' | 'emoji'; label: string }[]).map((o) => (
                   <button
                     key={o.value}
-                    onClick={() => patch({
-                      moveIcon: {
-                        ...(element as LineElement).moveIcon, shape: o.value,
-                        // 圆点 / 水滴针是现画图形，换过去要清掉资源引用（否则切回图片还挂着旧素材）
-                        ...((o.value === 'dot' || o.value === 'pin')
-                          ? { builtinId: undefined, assetId: undefined, iconUrl: undefined, iconLib: undefined, iconName: undefined, color: (element as LineElement).moveIcon?.color || '#FF6600' }
-                          : {}),
-                      },
-                    } as Partial<MapElement>)}
+                    onClick={() => patch({ moveIcon: { ...(element as LineElement).moveIcon, shape: o.value } } as Partial<MapElement>)}
                     className={`flex items-center justify-center gap-1 px-1 py-1.5 text-[11px] font-medium rounded-md border truncate transition-colors ${((element as LineElement).moveIcon?.shape || 'dot') === o.value ? 'bg-brand/20 border-brand text-foreground font-semibold' : 'bg-white/[0.03] border-white/10 text-foreground/80 hover:bg-accent hover:border-white/20'}`}
                   >
                     {o.label}
@@ -1347,12 +1374,10 @@ function RouteSettings({ element, patch }: {
               </div>
             </Field>
 
-            {['image', 'gif', 'model', 'icon', 'military_symbol'].includes((element as LineElement).moveIcon?.shape || '') && (
-              <MoveResourcePicker
-                mi={(element as LineElement).moveIcon || { shape: 'image' }}
-                patch={patch}
-              />
-            )}
+            <MoveResourcePicker
+              mi={(element as LineElement).moveIcon || { shape: 'image' }}
+              patch={patch}
+            />
 
             {((element as LineElement).moveIcon?.shape || 'dot') !== 'emoji' && (
               <Field label={t('图标颜色', 'Icon Color')}>

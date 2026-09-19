@@ -123,7 +123,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - 右侧浮层显示条件：element 模式需有选中元素；keyframe 模式始终显示（editorStore.panelMode 三态）。
 - 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（预设色板+自定义弹窗），不要再写裸 `input[type=color]`；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
 - 时间显示用秒（`lib/time.ts` / FrameTimeField），内部仍存帧。
-- **移动图标（moveIcon）的形态全部显式列在「图标样式」按钮行**：基础形态 圆点/水滴针/气泡/旗帜/文字/表情 + 资源形态 图片/动图/模型/图标/军标。资源网格（`VisualResourcePicker`）里**只放资源**，不再塞圆点/水滴针快捷格子 —— 此前那两格混在图片缩略图开头且没有文字标签，点了会把 `shape` 改成 dot/pin、连带整个资源网格消失。
+- **路线「显示标记」与标记设置走同一套形态约定**：`moveIconStyleOf`（PropertiesPanel）与 `pinStyleOf` 逐条对应 —— **圆点 / 水滴针 归入「图片」类**（是内置图形，不是跳出图片类的独立形态），所以资源网格开头那两格点下去后资源区**不会消失**，只是选中态从圆点换到图片/水滴针；非资源形态（气泡/旗帜/文字/表情）不渲染资源区（`MoveResourcePicker` 自己 return null，调用处不再写 include 列表）。「图标样式」按钮行只列 气泡/旗帜/文字/表情 + 5 个资源形态，**不要**把圆点/水滴针单独提成按钮。
 - **路线顶点编辑**：EditableMap 对 line/moving_point/arrow/double_arrow 显示路径点标记（vertex-dot 图层，选中的更大更蓝），mousedown 优先命中顶点（12px）→ 拖拽只更新该点坐标（routePathOf/hitRouteVertex 辅助函数）；路径点坐标也可在属性面板「路径点」中输入/删除。燕尾箭头归入形状类别（categoryOf 特判 arrowType）。
 - **属性面板双语**：editorStore.lang（中/EN，顶栏最右切换），标签用 `useT()` 钩子：`t('中文', 'English')`；新增属性标签必须双语。hints 暂仅中文。
 - **保存脏标记**：projectStore 用模块级 savedProjectJSON 快照（createProject/loadProject/saveProject/importProjectConfig 时 markProjectSaved），TopBar 经 isProjectDirty(project) 比对，无修改时保存按钮禁用。新增会写 project 的动作无需额外处理。
