@@ -79,13 +79,8 @@ export default function App() {
       const ed = useEditorStore.getState();
       const elId = ed.selectedElementId;
 
-      // Delete / Backspace：删除选中元素（无需 Ctrl）
-      if ((e.key === 'Delete' || e.key === 'Backspace') && elId) {
-        e.preventDefault();
-        useProjectStore.getState().deleteElement(elId);
-        ed.selectElement(null);
-        return;
-      }
+      // Delete/Backspace 的删除逻辑统一在 EditableMap 的 keydown 里处理（元素/特效/图层，带确认），
+      // 这里不再重复删除，否则会绕过确认框且与 EditableMap 形成双重删除。
 
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) return;

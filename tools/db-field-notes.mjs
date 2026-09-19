@@ -30,9 +30,15 @@ export const TABLE_DESC = {
   element_image: '贴图类元素（Image 工具）：地理配准图片的控制点网格；图片本体走全局素材库，本表只存配准参数',
   overlay: '叠加层（弹窗）：本体一张，custom / person 内容块内联在 payload_json',
   provider: '应用配置：AI 文案 / 配音 / 图片服务商（密钥只存本机，与项目内容解耦）',
+  public_layer: '公共图层：跨项目图库（把项目图层连元素整体复制过来，导入到任意项目）',
+  public_element_marker: '公共标记元素：public_layer 内的标记副本（与 element_marker 同构）',
+  public_element_route: '公共路线元素：public_layer 内的路线副本（与 element_route 同构）',
+  public_element_shape: '公共形状元素：public_layer 内的形状副本（与 element_shape 同构）',
+  public_element_territory: '公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构）',
+  public_element_image: '公共贴图元素：public_layer 内的贴图副本（与 element_image 同构）',
 };
 
-export default {
+const NOTES = {
   "collection": {
     "collection_id": "合集 id（默认合集恒为 default，不可删除）",
     "name": "合集名（默认合集名为「默认合集」，不可改名）",
@@ -458,3 +464,29 @@ export default {
     "ord": "同类内排序"
   }
 };
+
+// ---- 公共图层表：与对应项目元素表同构（去 project_id/layer_id，改 public_layer_id） ----
+for (const [pub, src] of [
+  ['public_element_marker', 'element_marker'],
+  ['public_element_route', 'element_route'],
+  ['public_element_shape', 'element_shape'],
+  ['public_element_territory', 'element_territory'],
+  ['public_element_image', 'element_image'],
+]) {
+  const m = { ...NOTES[src] };
+  delete m.project_id; delete m.layer_id;
+  NOTES[pub] = { public_layer_id: '所属公共图层（删公共图层连带删元素）', ...m };
+}
+NOTES.public_layer = {
+  public_layer_id: '公共图层 id',
+  type: '图层类型（单类型）：marker 标记 / route 路线 / shape 形状 / territory 疆域 / image 图片',
+  name: '图层名',
+  visible: '是否显示（0/1）',
+  start_sec: '显示起点（秒，导入时通常对齐为 0）',
+  end_sec: '显示终点（秒）',
+  ord: '排序',
+  created_at: '创建时间（毫秒时间戳）',
+  updated_at: '更新时间（毫秒时间戳）',
+};
+
+export default NOTES;

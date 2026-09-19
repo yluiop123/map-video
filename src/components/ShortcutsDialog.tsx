@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import {
-  Move, RotateCw, ZoomIn, Play, Trash2, Undo2, Redo2, Check, X, CornerDownLeft,
+  Move, RotateCw, ZoomIn, Play, Trash2, Undo2, Redo2, Check, X, CornerDownLeft, Layers,
 } from 'lucide-react';
 
 /** 键位帽 */
@@ -67,6 +67,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
         <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground mb-2">键盘快捷键</p>
         <div className="space-y-1.5">
           <Row icon={<Play size={13} />} name="播放 / 暂停" keys={<Key>Space</Key>} />
+          <Row icon={<Layers size={13} />} name="删除选中图层（含其元素）" keys={<><Key>Del</Key><span className="text-muted-foreground">/</span><Key>Backspace</Key></>} />
           <Row icon={<Trash2 size={13} />} name="删除选中元素" keys={<><Key>Del</Key><span className="text-muted-foreground">/</span><Key>Backspace</Key></>} />
           <Row icon={<Trash2 size={13} />} name="删除选中特效 / 弹窗" keys={<><Key>Del</Key><span className="text-muted-foreground">/</span><Key>Backspace</Key></>} />
           <Row icon={<Undo2 size={13} />} name="撤销" keys={<Key>Ctrl/Cmd + Z</Key>} />

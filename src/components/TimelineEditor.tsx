@@ -81,6 +81,8 @@ export function TimelineEditor() {
   const selectKeyframe = useEditorStore((s) => s.selectKeyframe);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
   const selectElement = useEditorStore((s) => s.selectElement);
+  const selectedLayerId = useEditorStore((s) => s.selectedLayerId);
+  const selectLayer = useEditorStore((s) => s.selectLayer);
   const elementsOpen = useEditorStore((s) => s.elementsOpen);
   const setElementsOpen = useEditorStore((s) => s.setElementsOpen);
   const openFx = useEditorStore((s) => s.openFx);
@@ -248,7 +250,7 @@ export function TimelineEditor() {
   // ===== 拖动轨道块：整体平移 / 拖两端改起止时间（特效 · 弹窗 · 元素 · 视角） =====
   const suppressClickRef = useRef(false);
   const blockDragRef = useRef<null | {
-    kind: 'fx' | 'popup' | 'element' | 'camera';
+    kind: 'fx' | 'popup' | 'element' | 'camera' | 'layer';
     id?: string;
     kf?: CameraKeyframe;
     frameNow?: number;
@@ -277,7 +279,7 @@ export function TimelineEditor() {
 
   const beginBlockDrag = (
     e: React.PointerEvent,
-    spec: { kind: 'fx' | 'popup' | 'element' | 'camera'; mode: 'move' | 'left' | 'right'; start: number; end: number; id?: string; kf?: CameraKeyframe; minFrame?: number; maxFrame?: number },
+    spec: { kind: 'fx' | 'popup' | 'element' | 'camera' | 'layer'; mode: 'move' | 'left' | 'right'; start: number; end: number; id?: string; kf?: CameraKeyframe; minFrame?: number; maxFrame?: number },
   ) => {
     e.stopPropagation();
     setIsPlaying(false);
@@ -352,6 +354,25 @@ export function TimelineEditor() {
         const cam = st.project?.camera || [];
         st.setProjectCamera(cam.map((k) => (k.frame === d.frameNow ? updated : k)));
         d.frameNow = updated.frame;
+        d.moved = true;
+        return;
+      }
+
+      // 图层块：平移整段（同步平移其元素）/ 拖两端改显示区间
+      if (d.kind === 'layer' && d.id) {
+        const minLen = Math.max(1, Math.round(fps * 0.1));
+        let s = d.origStart;
+        let en = d.origEnd;
+        if (d.mode === 'move') {
+          s = Math.max(timelineStart, d.origStart + delta);
+          en = Math.min(timelineEnd, d.origEnd + delta);
+        } else if (d.mode === 'left') {
+          s = Math.max(timelineStart, Math.min(d.origStart + delta, d.origEnd - minLen));
+        } else {
+          en = Math.min(timelineEnd, Math.max(d.origEnd + delta, d.origStart + minLen));
+        }
+        setHistoryMuted(d.moved);
+        useProjectStore.getState().updateLayerRange(d.id, Math.round(s), Math.round(en), d.mode === 'move');
         d.moved = true;
         return;
       }
@@ -751,16 +772,18 @@ export function TimelineEditor() {
                 <div key={lane} className="relative flex-1">
                   {layerNorm.map(({ L, start, end }, i) => {
                     if (layerLaneIdx[i] !== lane) return null;
-                    const hasSel = !!selectedElementId && (L.elements || []).some((el) => el.id === selectedElementId);
+                    const hasSel = selectedLayerId === L.id || (!!selectedElementId && (L.elements || []).some((el) => el.id === selectedElementId));
                     const wPct = ((clampF(end) - clampF(start)) / timelineDur) * 100;
                     return (
                       <button
                         key={L.id}
+                        onPointerDown={(e) => beginBlockDrag(e, { kind: 'layer', id: L.id, mode: 'move', start, end })}
                         onClick={() => {
                           if (suppressClickRef.current) return;
                           setElementsOpen(true);
                           setCurrentFrame(start);
                           if (L.elements[0]) selectElement(L.elements[0].id);
+                          selectLayer(L.id);
                         }}
                         className={`absolute top-0.5 bottom-0.5 rounded-sm border flex items-center overflow-hidden z-10 transition-colors ${
                           hasSel
@@ -770,8 +793,9 @@ export function TimelineEditor() {
                               : 'bg-emerald-500/60 border-emerald-400/50 text-emerald-50 hover:bg-emerald-500/80'
                         }`}
                         style={{ left: leftPct(start), width: widthPct(start, end) }}
-                        title={`${L.name} · ${L.elements.length} 个元素 · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s`}
+                        title={`${L.name} · ${L.elements.length} 个元素 · ${((start - timelineStart) / fps).toFixed(1)}s → ${((end - timelineStart) / fps).toFixed(1)}s（拖动可调整）`}
                       >
+                        <DragHandles onDrag={(e, mode) => beginBlockDrag(e, { kind: 'layer', id: L.id, mode, start, end })} />
                         <span className={`px-1 text-[9px] leading-none truncate ${wPct > 1.5 ? '' : 'sr-only'}`}>📦 {L.name}</span>
                       </button>
                     );

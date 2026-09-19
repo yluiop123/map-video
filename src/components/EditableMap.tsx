@@ -1404,8 +1404,24 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
           updatePreview();
           return;
         }
+        // 选中图层：优先删除整个图层（含其元素）
+        const layerId = useEditorStore.getState().selectedLayerId;
         const id = useEditorStore.getState().selectedElementId;
-        if (id) {
+        if (layerId) {
+          e.preventDefault();
+          const L = useProjectStore.getState().project?.layers.find((x) => x.id === layerId);
+          if (!L) return;
+          void confirm({
+            message: `删除图层「${L.name}」及其 ${L.elements.length} 个元素？`,
+            danger: true,
+            confirmText: '删除',
+          }).then((ok) => {
+            if (!ok) return;
+            useProjectStore.getState().deleteLayer(layerId);
+            useEditorStore.getState().selectLayer(null);
+            selectElement(null);
+          });
+        } else if (id) {
           e.preventDefault();
           const el = project.elements.find((x) => x.id === id);
           void confirm({

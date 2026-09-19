@@ -5,6 +5,7 @@
  * `project.elements` 是**派生镜像**（store 的 patch 自动重算），供渲染 / 面板 / 相机等沿用扁平读取。
  */
 import type { Layer, LayerType, MapElement } from '../types';
+import { IS_DESKTOP } from './backend';
 
 /** 元素类型 → 图层类型 */
 export function layerTypeOf(el: MapElement): LayerType {
@@ -62,8 +63,17 @@ export function findElementInLayers(layers: Layer[], elementId: string): { layer
 }
 
 // ========== 公共图层库（全局，跨项目） ==========
-// 存「图层（含其全部元素）」的 JSON；用 localStorage（双端可用，体量仅为几何数据）。
+// 桌面端：入库（public_layer + 5 张 public_element_* 表，见 electron/db-v2.mjs）；
+// 网页端：Lite 无 SQLite，退回 localStorage（仅几何 JSON）。
 
+export interface PublicLayerInfo {
+  id: string;
+  type: LayerType;
+  name: string;
+  count: number;
+}
+
+/** 网页端 localStorage 形态 */
 export interface PublicLayer {
   id: string;
   name: string;
@@ -73,7 +83,7 @@ export interface PublicLayer {
 
 const LIB_KEY = 'mapvideo.publicLayers';
 
-export function listPublicLayers(): PublicLayer[] {
+function listLocal(): PublicLayer[] {
   try {
     const raw = localStorage.getItem(LIB_KEY);
     const arr = raw ? JSON.parse(raw) : [];
@@ -83,21 +93,44 @@ export function listPublicLayers(): PublicLayer[] {
   }
 }
 
-function writeLibrary(list: PublicLayer[]): void {
+function writeLocal(list: PublicLayer[]): void {
   try { localStorage.setItem(LIB_KEY, JSON.stringify(list)); } catch { /* 容量不足等 */ }
 }
 
-/** 保存一个公共图层（同名覆盖），返回新库列表 */
-export function savePublicLayer(name: string, elements: MapElement[]): PublicLayer[] {
-  const list = listPublicLayers();
-  const item: PublicLayer = { id: `pl_${Date.now().toString(36)}`, name: name || '未命名图层', elements, savedAt: Date.now() };
-  const next = [item, ...list.filter((x) => x.name !== name)];
-  writeLibrary(next);
-  return next;
+/** 公共图层列表（桌面端走 DB；网页端 localStorage） */
+export async function listPublicLayers(): Promise<PublicLayerInfo[]> {
+  if (IS_DESKTOP && window.mapvideo?.publicLayers) {
+    const rows = await window.mapvideo.publicLayers.list();
+    return rows.map((r) => ({ id: r.id, type: (r.type as LayerType) || 'marker', name: r.name, count: r.count }));
+  }
+  return listLocal().map((x) => ({
+    id: x.id, type: x.elements[0] ? layerTypeOf(x.elements[0]) : 'marker', name: x.name, count: x.elements.length,
+  }));
 }
 
-export function removePublicLayer(id: string): PublicLayer[] {
-  const next = listPublicLayers().filter((x) => x.id !== id);
-  writeLibrary(next);
-  return next;
+/** 保存当前项目图层为公共图层（桌面端：DB 内整层复制；网页端：localStorage） */
+export async function saveLayerToPublic(layerId: string, name: string, elements: MapElement[]): Promise<void> {
+  if (IS_DESKTOP && window.mapvideo?.publicLayers) {
+    await window.mapvideo.publicLayers.save({ layerId });
+    return;
+  }
+  const item: PublicLayer = { id: `pl_${Date.now().toString(36)}`, name: name || '未命名图层', elements, savedAt: Date.now() };
+  writeLocal([item, ...listLocal().filter((x) => x.name !== name)]);
+}
+
+/** 导入公共图层：桌面端 DB 内复制回项目（返回新图层 id，需 reload）；网页端返回 localStorage 内容由调用方追加 */
+export async function importPublicLayer(publicId: string, projectId: string): Promise<{ layerId?: string | null; local?: PublicLayer }> {
+  if (IS_DESKTOP && window.mapvideo?.publicLayers) {
+    const r = await window.mapvideo.publicLayers.import({ publicLayerId: publicId, projectId });
+    return { layerId: r.layerId };
+  }
+  return { local: listLocal().find((x) => x.id === publicId) };
+}
+
+export async function removePublicLayer(id: string): Promise<void> {
+  if (IS_DESKTOP && window.mapvideo?.publicLayers) {
+    await window.mapvideo.publicLayers.remove(id);
+    return;
+  }
+  writeLocal(listLocal().filter((x) => x.id !== id));
 }

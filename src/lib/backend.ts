@@ -24,6 +24,13 @@ declare global {
       };
       /** 清空项目数据：项目 + 合集 + 素材（保留 providers），与网页端 clearAll 同义 */
       clearAll: () => Promise<{ ok: boolean }>;
+      /** 公共图层库（跨项目）：把项目图层连元素复制过去 / 导入回项目 */
+      publicLayers: {
+        list: () => Promise<{ id: string; type: string; name: string; count: number; updatedAt?: number }[]>;
+        save: (p: { layerId: string }) => Promise<{ id: string | null }>;
+        import: (p: { publicLayerId: string; projectId: string }) => Promise<{ layerId: string | null }>;
+        remove: (id: string) => Promise<{ ok: boolean }>;
+      };
       providers: {
         list: () => Promise<import('../types').ProviderConfig[]>;
         upsert: (cfg: import('../types').ProviderConfig) => Promise<{ ok: boolean }>;

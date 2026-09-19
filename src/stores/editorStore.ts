@@ -6,6 +6,8 @@ interface EditorState {
   currentFrame: number;
   isPlaying: boolean;
   selectedElementId: string | null;
+  /** 选中的图层 id（时间线图层块 / 图层面板行点击选中）；Del 优先删图层 */
+  selectedLayerId: string | null;
 
   // 右侧面板模式：元素属性 / 镜头关键帧属性 / 特效 / 无面板
   panelMode: 'element' | 'keyframe' | 'fx' | 'none';
@@ -48,6 +50,7 @@ interface EditorState {
   setCurrentFrame: (frame: number) => void;
   setIsPlaying: (playing: boolean) => void;
   selectElement: (id: string | null) => void;
+  selectLayer: (id: string | null) => void;
   setPanelMode: (mode: 'element' | 'keyframe' | 'fx' | 'none') => void;
   /** 选中镜头关键帧（进入右侧视角属性面板） */
   selectKeyframe: (idx: number | null) => void;
@@ -59,6 +62,7 @@ export const useEditorStore = create<EditorState>()((set) => ({
   currentFrame: 0,
   isPlaying: false,
   selectedElementId: null,
+  selectedLayerId: null,
   panelMode: 'element',
   selectedKeyframeIdx: null,
   currentCamera: { center: [104.0, 35.0], zoom: 4, pitch: 0, bearing: 0 },
@@ -66,7 +70,8 @@ export const useEditorStore = create<EditorState>()((set) => ({
 
   setCurrentFrame: (frame) => set({ currentFrame: frame }),
   setIsPlaying: (playing) => set({ isPlaying: playing }),
-  selectElement: (id) => set({ selectedElementId: id, panelMode: 'element' }),
+  selectElement: (id) => set({ selectedElementId: id, selectedLayerId: null, panelMode: 'element' }),
+  selectLayer: (id) => set({ selectedLayerId: id }),
   setPanelMode: (mode) => set({ panelMode: mode }),
   selectKeyframe: (idx) => set({ selectedKeyframeIdx: idx, panelMode: idx !== null ? 'keyframe' : 'none' }),
   setCurrentCamera: (cam) => set({ currentCamera: cam }),

@@ -43,6 +43,7 @@ const GROUPS = [
   ['组 8 · 贴图类元素（Image 工具）', ['element_image']],
   ['组 9 · 叠加层（弹窗）', ['overlay']],
   ['组 10 · 应用配置', ['provider']],
+  ['组 11 · 公共图层与公共元素（跨项目图库）', ['public_layer', 'public_element_marker', 'public_element_route', 'public_element_shape', 'public_element_territory', 'public_element_image']],
 ];
 
 // 元素表的「工具入口」标注（事实源：src/components/Toolbar.tsx 的 TOOLS / SHAPE_GROUPS / TERR_ITEMS
@@ -82,6 +83,12 @@ const TABLE_FRONTEND = {
   overlay_block: { role: 'custom 类弹窗的内容块序列（逐块排序）', fe: '弹窗面板「自定义」类型的块编辑（FxPanelBody.tsx）' },
   person_block: { role: '人物卡片内容块（头像 / 姓名 / 简介 / 引言 / 对白 5 种）', fe: '弹窗面板「人物」类型的块编辑（FxPanelBody.tsx）' },
   provider: { role: 'AI 服务商配置：文案生成 / 语音（含克隆）/ 图片生成（Key 只存本机，与项目内容解耦）', fe: '顶栏「设置 · AI」弹窗（SettingsDialog.tsx，左侧切换三类能力）' },
+  public_layer: { role: '公共图层：跨项目图库的图层（把项目图层连元素整体复制过来）', fe: '左侧「图层」浮层「加入公共图层 / 导入公共图层」' },
+  public_element_marker: { role: '公共标记元素（public_layer 内副本，与 element_marker 同构）', fe: '同上' },
+  public_element_route: { role: '公共路线元素（public_layer 内副本，与 element_route 同构）', fe: '同上' },
+  public_element_shape: { role: '公共形状元素（public_layer 内副本，与 element_shape 同构）', fe: '同上' },
+  public_element_territory: { role: '公共疆域元素（public_layer 内副本，与 element_territory 同构）', fe: '同上' },
+  public_element_image: { role: '公共贴图元素（public_layer 内副本，与 element_image 同构）', fe: '同上' },
 };
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

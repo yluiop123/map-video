@@ -239,7 +239,11 @@ interface ProjectState {
   addLayer: (type: LayerType, name?: string) => Layer;
   addLayerFull: (layer: Layer) => void;
   updateLayer: (layerId: string, changes: Partial<Pick<Layer, 'name' | 'visible' | 'startFrame' | 'endFrame'>>) => void;
+  /** 拖动图层块：改显示区间；shiftElements=true（整体平移）时同步平移其元素 */
+  updateLayerRange: (layerId: string, startFrame: number, endFrame: number, shiftElements: boolean) => void;
   deleteLayer: (layerId: string) => void;
+  /** 拖动图层调整顺序：把 fromId 移到 toId 的位置 */
+  moveLayer: (fromId: string, toId: string) => void;
   moveElementsToLayer: (elementIds: string[], layerId: string) => void;
 
   // 元素操作（项目级；归属图层，缺省并入首个图层）
@@ -516,6 +520,31 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         }),
       })),
     deleteLayer: (layerId) => patch((p) => ({ ...p, layers: p.layers.filter((L) => L.id !== layerId) })),
+    moveLayer: (fromId, toId) =>
+      patch((p) => {
+        const from = p.layers.findIndex((L) => L.id === fromId);
+        const to = p.layers.findIndex((L) => L.id === toId);
+        if (from < 0 || to < 0 || from === to) return p;
+        const arr = [...p.layers];
+        const [item] = arr.splice(from, 1);
+        arr.splice(to, 0, item);
+        return { ...p, layers: arr };
+      }),
+    updateLayerRange: (layerId, startFrame, endFrame, shiftElements) =>
+      patch((p) => ({
+        ...p,
+        layers: p.layers.map((L) => {
+          if (L.id !== layerId) return L;
+          const s = Math.max(0, Math.round(startFrame));
+          const e = Math.max(s + 1, Math.round(endFrame));
+          const next: Layer = { ...L, startFrame: s, endFrame: e };
+          if (shiftElements) {
+            const d = s - L.startFrame;
+            if (d) next.elements = L.elements.map((el) => shiftElementTime(el, d));
+          }
+          return next;
+        }),
+      })),
     moveElementsToLayer: (elementIds, layerId) =>
       patch((p) => {
         const ids = new Set(elementIds);

@@ -1,7 +1,7 @@
 /**
  * MapVideo 桌面端主进程：
  * - app:// 自定义协议托管 dist（规避 file:// 的 worker/模块限制）
- * - node:sqlite 内嵌数据库（projects + providers，库文件在 userData）
+ * - node:sqlite 内嵌数据库（projects + provider，库文件在 userData）
  * - AI/TTS 管道：渲染进程无 CORS，主进程持配置转发厂商（协议实现与 web 服务端同源）
  */
 import { app, BrowserWindow, ipcMain, protocol, shell } from 'electron';
@@ -9,7 +9,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2 } from './db-v2.mjs';
+import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2 } from './db-v2.mjs';
 
 const DIST = path.join(app.getAppPath(), 'dist');
 
@@ -19,31 +19,32 @@ function initDb() {
   const dir = app.getPath('userData');
   fs.mkdirSync(dir, { recursive: true });
   db = new DatabaseSync(path.join(dir, 'mapvideo.db'));
-  // 应用配置（providers / 本地 Key）。项目、合集、素材走 V2 关系表（见 db-v2.mjs）。
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS providers (
-      id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL,
-      label TEXT DEFAULT '',
-      base_url TEXT DEFAULT '',
-      api_key TEXT DEFAULT '',
-      model TEXT DEFAULT '',
-      protocol TEXT DEFAULT '',
-      voice TEXT DEFAULT '',
-      speed REAL DEFAULT 1,
-      extra TEXT DEFAULT '',
-      active INTEGER DEFAULT 0,
-      sort INTEGER DEFAULT 0
-    );
-  `);
+  // 应用配置：统一用 V2 `provider` 表（旧 `providers` 表数据迁移后删除）。
   const now = Date.now();
 
-  // V2 关系型表（15 表 / 3 视图）+ 旧 JSON 项目一次性迁移
+  // V2 关系型表 + 旧 JSON 项目一次性迁移
   if (ensureV2Schema(db)) {
     try {
       db.prepare("INSERT OR IGNORE INTO collection (collection_id, name, ord, created_at, updated_at) VALUES ('default','默认合集',-1,?,?)").run(now, now);
     } catch { /* 忽略 */ }
     migrateLegacyProjects(db);
+    migrateLegacyProviders(db);
+  }
+}
+
+/** 旧 `providers` 表 → V2 `provider` 表（字段一一对应：id→provider_id / sort→ord），迁移后删除旧表。 */
+function migrateLegacyProviders(db) {
+  try {
+    const legacy = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='providers'").get();
+    if (!legacy) return;
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(`INSERT OR IGNORE INTO provider (provider_id, kind, label, base_url, api_key, model, protocol, voice, speed, extra, active, ord)
+             SELECT id, kind, label, base_url, api_key, model, NULLIF(protocol,''), NULLIF(voice,''), speed, NULLIF(extra,''), active, sort FROM providers`);
+    db.exec('DROP TABLE IF EXISTS providers');
+    db.exec('PRAGMA foreign_keys = ON');
+    console.log('[db] 旧 providers 表已迁移到 provider 并删除');
+  } catch (e) {
+    console.warn('[db] providers 迁移失败:', e?.message || e);
   }
 }
 
@@ -224,7 +225,13 @@ function registerIpc() {
     return { ok: true };
   });
 
-  // 清空项目数据：项目 + 合集 + 素材文件（**保留**应用配置 providers）
+  // 公共图层库（跨项目）：把项目图层连元素复制过去 / 导入回项目
+  ipcMain.handle('db:publicLayers:list', () => listPublicLayersV2(db));
+  ipcMain.handle('db:publicLayers:save', (_e, { layerId }) => ({ id: saveLayerToPublicV2(db, layerId) }));
+  ipcMain.handle('db:publicLayers:import', (_e, { publicLayerId, projectId }) => ({ layerId: importPublicLayerV2(db, publicLayerId, projectId) }));
+  ipcMain.handle('db:publicLayers:remove', (_e, id) => { removePublicLayerV2(db, id); return { ok: true }; });
+
+  // 清空项目数据：项目 + 合集 + 素材文件（**保留**应用配置 provider）
   ipcMain.handle('db:clearAll', () => {
     try { db.exec('DELETE FROM project; DELETE FROM collection;'); } catch { /* V2 可能未建表 */ }
     try {
@@ -250,29 +257,29 @@ function registerIpc() {
     speed: r.speed ?? 1, extra: r.extra || undefined, active: r.active === 1,
   });
   ipcMain.handle('db:providers:list', () => {
-    return db.prepare('SELECT * FROM providers ORDER BY sort, kind, label').all().map(rowToCfg);
+    return db.prepare('SELECT provider_id AS id, kind, label, base_url, api_key, model, protocol, voice, speed, extra, active, ord AS sort FROM provider ORDER BY ord, kind, label').all().map(rowToCfg);
   });
   ipcMain.handle('db:providers:upsert', (_e, cfg) => {
     db.prepare(`
-      INSERT INTO providers (id, kind, label, base_url, api_key, model, protocol, voice, speed, extra, sort)
+      INSERT INTO provider (provider_id, kind, label, base_url, api_key, model, protocol, voice, speed, extra, ord)
       VALUES (@id, @kind, @label, @baseUrl, @apiKey, @model, @protocol, @voice, @speed, @extra,
-              COALESCE((SELECT sort FROM providers WHERE id = @id), (SELECT COALESCE(MAX(sort), 0) + 1 FROM providers)))
-      ON CONFLICT(id) DO UPDATE SET kind=@kind, label=@label, base_url=@baseUrl, api_key=@apiKey, model=@model,
+              COALESCE((SELECT ord FROM provider WHERE provider_id = @id), (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider)))
+      ON CONFLICT(provider_id) DO UPDATE SET kind=@kind, label=@label, base_url=@baseUrl, api_key=@apiKey, model=@model,
         protocol=@protocol, voice=@voice, speed=@speed, extra=@extra
     `).run({
       id: String(cfg.id), kind: cfg.kind, label: cfg.label || '', baseUrl: cfg.baseUrl || '',
-      apiKey: cfg.apiKey || '', model: cfg.model || '', protocol: cfg.protocol || '',
-      voice: cfg.voice || '', speed: cfg.speed ?? 1, extra: cfg.extra || '',
+      apiKey: cfg.apiKey || '', model: cfg.model || '', protocol: cfg.protocol || null,
+      voice: cfg.voice || '', speed: cfg.speed ?? 1, extra: cfg.extra || null,
     });
     return { ok: true };
   });
   ipcMain.handle('db:providers:remove', (_e, id) => {
-    db.prepare('DELETE FROM providers WHERE id = ?').run(id);
+    db.prepare('DELETE FROM provider WHERE provider_id = ?').run(id);
     return { ok: true };
   });
   ipcMain.handle('db:providers:setActive', (_e, { kind, id }) => {
-    db.prepare('UPDATE providers SET active = 0 WHERE kind = ?').run(kind);
-    if (id) db.prepare('UPDATE providers SET active = 1 WHERE id = ? AND kind = ?').run(id, kind);
+    db.prepare('UPDATE provider SET active = 0 WHERE kind = ?').run(kind);
+    if (id) db.prepare('UPDATE provider SET active = 1 WHERE provider_id = ? AND kind = ?').run(id, kind);
     return { ok: true };
   });
 

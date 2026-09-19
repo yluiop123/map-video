@@ -14,6 +14,13 @@ contextBridge.exposeInMainWorld('mapvideo', {
     save: (c) => ipcRenderer.invoke('db:collections:save', c),
     remove: (id) => ipcRenderer.invoke('db:collections:remove', id),
   },
+  /** 公共图层库（跨项目）：把项目图层连元素复制过去 / 导入回项目 */
+  publicLayers: {
+    list: () => ipcRenderer.invoke('db:publicLayers:list'),
+    save: (p) => ipcRenderer.invoke('db:publicLayers:save', p),          // p: { layerId }
+    import: (p) => ipcRenderer.invoke('db:publicLayers:import', p),      // p: { publicLayerId, projectId }
+    remove: (id) => ipcRenderer.invoke('db:publicLayers:remove', id),
+  },
   /** 清空项目数据（项目 + 合集 + 素材），保留应用配置 providers */
   clearAll: () => ipcRenderer.invoke('db:clearAll'),
   providers: {

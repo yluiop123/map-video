@@ -754,3 +754,102 @@ export function listProjectsV2(db) {
 export function removeProjectV2(db, id) {
   db.prepare('DELETE FROM project WHERE project_id = ?').run(id);
 }
+
+// ========== 公共图层库（跨项目）：把项目图层连元素整体复制 / 导入 ==========
+
+const ELEMENT_TABLE_PAIRS = [
+  ['element_marker', 'public_element_marker'],
+  ['element_route', 'public_element_route'],
+  ['element_shape', 'public_element_shape'],
+  ['element_territory', 'public_element_territory'],
+  ['element_image', 'public_element_image'],
+];
+
+function columnsOf(db, table) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+}
+
+/** 本图层内全部元素 id（某表，按 scope 列过滤） */
+function idListSql(tables, scopeCol) {
+  return tables.map((t) => `SELECT element_id FROM ${t} WHERE ${scopeCol} = @pid`).join(' UNION ALL ');
+}
+
+function remapConnectors(db, tables, scopeCol, pid, suf) {
+  const ids = idListSql(tables, scopeCol);
+  const route = tables[1]; // element_route / public_element_route
+  db.prepare(`UPDATE ${route} SET from_element_id = from_element_id || @suf WHERE ${scopeCol} = @pid AND from_element_id || @suf IN (${ids})`).run({ pid, suf });
+  db.prepare(`UPDATE ${route} SET to_element_id = to_element_id || @suf WHERE ${scopeCol} = @pid AND to_element_id || @suf IN (${ids})`).run({ pid, suf });
+}
+
+/** 项目图层 → 公共图层（复制图层行 + 全部元素；元素 id 加后缀，避免跨公共图层冲突） */
+export function saveLayerToPublicV2(db, layerId, now = Date.now()) {
+  const layer = db.prepare('SELECT * FROM layer WHERE layer_id = ?').get(layerId);
+  if (!layer) return null;
+  const pid = `pl_${Math.random().toString(36).slice(2, 10)}${now.toString(36)}`;
+  const suf = `:pb${pid}`;
+  db.exec('BEGIN');
+  try {
+    db.prepare(`INSERT INTO public_layer (public_layer_id, type, name, visible, start_sec, end_sec, ord, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(pid, layer.type, layer.name, layer.visible, layer.start_sec, layer.end_sec, layer.ord || 0, now, now);
+    for (const [proj, pub] of ELEMENT_TABLE_PAIRS) {
+      const cols = columnsOf(db, proj).filter((c) => c !== 'project_id' && c !== 'layer_id');
+      const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');
+      db.prepare(`INSERT INTO ${pub} (public_layer_id, ${cols.join(',')}) SELECT ?, ${sel} FROM ${proj} WHERE layer_id = ?`).run(pid, suf, layerId);
+    }
+    remapConnectors(db, ELEMENT_TABLE_PAIRS.map((p) => p[1]), 'public_layer_id', pid, suf);
+    db.exec('COMMIT');
+    return pid;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+/** 公共图层 → 项目（复制回一张新图层 + 全部元素；元素 id 加后缀避免碰撞；补齐 asset 占位） */
+export function importPublicLayerV2(db, publicLayerId, projectId, now = Date.now()) {
+  const pl = db.prepare('SELECT * FROM public_layer WHERE public_layer_id = ?').get(publicLayerId);
+  if (!pl) return null;
+  const newLayerId = `${projectId}:L${Math.random().toString(36).slice(2, 8)}${now.toString(36)}`;
+  const suf = `:im${newLayerId}`;
+  db.exec('BEGIN');
+  try {
+    const layerOrd = (db.prepare('SELECT COUNT(*) AS c FROM layer WHERE project_id = ?').get(projectId) || {}).c || 0;
+    db.prepare(`INSERT INTO layer (layer_id, project_id, type, name, visible, start_sec, end_sec, ord)
+      VALUES (?,?,?,?,?,?,?,?)`).run(newLayerId, projectId, pl.type, pl.name, pl.visible, pl.start_sec, pl.end_sec, layerOrd);
+    const assetIds = new Set();
+    for (const [proj, pub] of ELEMENT_TABLE_PAIRS) {
+      const cols = columnsOf(db, pub).filter((c) => c !== 'public_layer_id');
+      const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');
+      db.prepare(`INSERT INTO ${proj} (project_id, layer_id, ${cols.join(',')}) SELECT ?, ?, ${sel} FROM ${pub} WHERE public_layer_id = ?`).run(projectId, newLayerId, suf, publicLayerId);
+      const pcols = columnsOf(db, proj);
+      if (pcols.includes('asset_id') || pcols.includes('move_icon_asset_id')) {
+        const sel2 = `${pcols.includes('asset_id') ? 'asset_id' : 'NULL AS asset_id'}, ${pcols.includes('move_icon_asset_id') ? 'move_icon_asset_id' : 'NULL AS m'}`;
+        for (const r of db.prepare(`SELECT ${sel2} FROM ${proj} WHERE layer_id = ?`).all(newLayerId)) {
+          if (r.asset_id) assetIds.add(r.asset_id);
+          if (r.m) assetIds.add(r.m);
+        }
+      }
+    }
+    remapConnectors(db, ELEMENT_TABLE_PAIRS.map((p) => p[0]), 'layer_id', newLayerId, suf);
+    const insAsset = db.prepare('INSERT OR IGNORE INTO asset (asset_id,kind,name,mime,storage,rel_path,created_at) VALUES (?,?,?,?,?,?,?)');
+    for (const a of assetIds) insAsset.run(a, 'image', '', 'application/octet-stream', 'file', '', now);
+    db.exec('COMMIT');
+    return newLayerId;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+/** 公共图层列表（含元素数） */
+export function listPublicLayersV2(db) {
+  const rows = db.prepare('SELECT public_layer_id AS id, type, name, ord, created_at AS createdAt, updated_at AS updatedAt FROM public_layer ORDER BY updated_at DESC').all();
+  return rows.map((r) => ({
+    ...r,
+    count: ELEMENT_TABLE_PAIRS.reduce((n, [, pub]) => n + (db.prepare(`SELECT COUNT(*) AS c FROM ${pub} WHERE public_layer_id = ?`).get(r.id).c || 0), 0),
+  }));
+}
+
+export function removePublicLayerV2(db, id) {
+  db.prepare('DELETE FROM public_layer WHERE public_layer_id = ?').run(id);
+}
