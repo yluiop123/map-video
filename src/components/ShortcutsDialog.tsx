@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import {
   Move, RotateCw, ZoomIn, Play, Trash2, Undo2, Redo2, Check, X, CornerDownLeft, Layers,
+  MonitorPlay, ChevronLeft,
 } from 'lucide-react';
 
 /** 键位帽 */
@@ -35,7 +36,8 @@ function Row({ icon, iconClass, name, desc, keys }: {
 
 /**
  * 快捷键速查弹窗（对齐 Mapimator Shortcuts）。
- * 内容与实际绑定保持同步：EditableMap（Enter/Esc/Del）、TimelineEditor（Space）、App（Ctrl+Z/Y）。
+ * 内容与实际绑定保持同步：EditableMap（Enter/Esc/Del）、TimelineEditor（Space）、App（F5、Ctrl+Z/Y）、
+ * PresentationMode（F5/Esc 退出、Space、←/→、Home/End）。
  */
 export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
   useEffect(() => {
@@ -67,6 +69,8 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
         <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground mb-2">键盘快捷键</p>
         <div className="space-y-1.5">
           <Row icon={<Play size={13} />} name="播放 / 暂停" keys={<Key>Space</Key>} />
+          <Row icon={<MonitorPlay size={13} />} name="进入 / 退出演示（全屏）" desc="演示中 Esc 也可退出" keys={<Key>F5</Key>} />
+          <Row icon={<ChevronLeft size={13} />} name="演示中后退 / 前进 1 秒" keys={<><Key>←</Key><span className="text-muted-foreground">/</span><Key>→</Key></>} />
           <Row icon={<Layers size={13} />} name="删除选中图层（含其元素）" keys={<><Key>Del</Key><span className="text-muted-foreground">/</span><Key>Backspace</Key></>} />
           <Row icon={<Trash2 size={13} />} name="删除选中元素" keys={<><Key>Del</Key><span className="text-muted-foreground">/</span><Key>Backspace</Key></>} />
           <Row icon={<Trash2 size={13} />} name="删除选中特效 / 弹窗" keys={<><Key>Del</Key><span className="text-muted-foreground">/</span><Key>Backspace</Key></>} />

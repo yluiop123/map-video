@@ -1,18 +1,19 @@
 /**
- * 一键生成：需求 → LLM 文案（整片一条连续脚本：字幕 + 弹窗 + 特效 + 元素）→ 人工确认 → 可选配音 → 生成时间线。
- * 不分段落；第一步只出文案，确认后才生成配音；生成后可继续编辑。
+ * 字幕生成：需求 → LLM 文案（整片一条连续脚本：字幕 + 弹窗 + 特效 + 元素）→ 逐行确认与配音 → 生成时间线。
+ * 这里同时是**字幕条目与字幕样式的唯一编辑处**（特效弹窗已无字幕页签）：
+ * 项目已有字幕时可直接「编辑现有字幕」，该模式只改 narration，不动元素 / 弹窗 / 相机。
  */
 import { useState } from 'react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore, activeProvider } from '../stores/providerStore';
-import { useT } from './ui/primitives';
-import { callLLM, callTTS } from '../lib/providers';
+import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
+import { callLLM, callTTS, parseSrt, srtTime } from '../lib/providers';
 import { extractPlaces, extractCandidateNames, type Place } from '../lib/gazetteer';
 import { geocodePlace } from '../lib/geocode';
 import { buildGeneratedElement, buildGeneratedTerritory, type GenElementSpec } from '../lib/generate-elements';
 import {
-  estimateTextDurationFrames, generateId, defaultPersonContent,
+  estimateTextDurationFrames, generateId, defaultPersonContent, defaultNarrationStyle,
   type NarrationEntry, type GeneratedChapterPlan, type GeneratedOverlaySpec,
   type OverlayType, type OverlayPosition, type OverlayContent, type ChartType,
   type ScreenFxType, type MapElement,
@@ -43,6 +44,35 @@ interface GenChapter {
 }
 
 const FXS = new Set(['vignette', 'fadeBlack', 'fadeWhite', 'flash']);
+
+/** 一行 = 一条字幕 + 它自己的配音（可单独生成 / 覆盖） */
+interface SubRow {
+  id: string;
+  ci: number;
+  text: string;
+  audioUrl?: string;
+  durationFrames: number;
+  startFrame: number;
+  status?: 'none' | 'pending' | 'ready' | 'error';
+  /** 在时间线上手动拖过 → 保住起点，不参与顺排 */
+  locked?: boolean;
+}
+
+/** 顺排：未锁定的行首尾相接；锁定行保住自己的起点，并把游标推到它之后 */
+function resequenceRows(rows: SubRow[]): SubRow[] {
+  let cursor = 0;
+  return rows.map((r) => {
+    const dur = Math.max(1, r.durationFrames);
+    if (r.locked) {
+      const s0 = Math.max(cursor, r.startFrame);
+      cursor = s0 + dur;
+      return { ...r, startFrame: s0 };
+    }
+    const s0 = cursor;
+    cursor = s0 + dur;
+    return { ...r, startFrame: s0 };
+  });
+}
 
 /** 解析为**整片一条连续脚本**（不分段）。兼容旧的整片 JSON：合并所有段为一条。 */
 function parsePlan(raw: string): GenChapter[] {
@@ -162,8 +192,13 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const [reference, setReference] = useState('');
   // 整片一条连续脚本；此值仅作「无内容时」的时长兜底
   const secondsPerChapter = 20;
-  const [withTts, setWithTts] = useState(false);
   const [plan, setPlan] = useState<GenChapter[] | null>(null);
+  /** 逐行字幕（含各自的配音）——步骤②的编辑对象，也是「编辑现有字幕」模式的工作集 */
+  const [rows, setRows] = useState<SubRow[]>([]);
+  /** 只改字幕/配音，不动元素 / 弹窗 / 特效 / 相机 */
+  const [editOnly, setEditOnly] = useState(false);
+  const [genIdx, setGenIdx] = useState<number | null>(null);
+  const [auditingId, setAuditingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -177,7 +212,113 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
 
   const llm = activeProvider('llm');
   const tts = activeProvider('tts');
-  const hasContent = !!plan?.some((c) => c.subtitles.some((s) => s.trim()));
+  const hasContent = rows.some((r) => r.text.trim());
+  const style = project?.narration?.style || defaultNarrationStyle();
+  const setStyle = useProjectStore((s) => s.setNarrationStyle);
+
+  const mkRow = (text: string, ci: number, over?: Partial<SubRow>): SubRow => ({
+    id: generateId(), ci, text,
+    durationFrames: estimateTextDurationFrames(text, fps),
+    startFrame: 0, status: 'none', ...over,
+  });
+
+  /** 改文本：已有配音则保住音频时长，否则按字数重估 */
+  const editText = (id: string, text: string) => setRows((rs) => resequenceRows(rs.map((r) => (
+    r.id === id
+      ? { ...r, text, durationFrames: r.audioUrl ? r.durationFrames : estimateTextDurationFrames(text, fps) }
+      : r
+  ))));
+  const addRow = () => setRows((rs) => [...rs, mkRow('', rs.length ? rs[rs.length - 1].ci : 0)]);
+  const delRow = (id: string) => setRows((rs) => resequenceRows(rs.filter((r) => r.id !== id)));
+
+  /** 单行生成配音（已有音频即覆盖） */
+  const genRow = async (idx: number) => {
+    const r = rows[idx];
+    if (!r || !r.text.trim()) { setError(t('请先填写字幕文本', 'Fill in this line first')); return; }
+    if (!tts?.baseUrl) { setError(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS provider configured')); return; }
+    setGenIdx(idx); setError(null);
+    setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'pending' } : x)));
+    try {
+      const { dataUrl, durationSec } = await callTTS(tts, r.text);
+      setRows((rs) => resequenceRows(rs.map((x, i) => (
+        i === idx
+          ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const }
+          : x
+      ))));
+    } catch (err) {
+      setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'error' as const } : x)));
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenIdx(null);
+    }
+  };
+
+  /** 全部生成：串行避免限流；只补没有配音的行（已有的行保持不动） */
+  const genAllMissing = async () => {
+    for (let i = 0; i < rows.length; i++) {
+      if (!rows[i].text.trim() || rows[i].audioUrl) continue;
+      await genRow(i);
+    }
+  };
+
+  const audit = (r: SubRow) => {
+    if (!r.audioUrl) return;
+    const el = new Audio(r.audioUrl);
+    setAuditingId(r.id);
+    el.onended = () => setAuditingId(null);
+    el.play().catch(() => setAuditingId(null));
+  };
+
+  const importSrt = async (file: File) => {
+    try {
+      const texts = parseSrt(await file.text());
+      if (!texts.length) { setError(t('SRT 里没有可用文本', 'No usable cues in this SRT')); return; }
+      setRows(resequenceRows(texts.map((txt) => mkRow(txt, 0))));
+      setPlan((prev) => prev || [{ title: '', subtitles: texts }]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const exportSrt = () => {
+    const srt = resequenceRows(rows)
+      .filter((r) => r.text.trim())
+      .map((r, i) => {
+        const s0 = r.startFrame / fps;
+        const s1 = s0 + r.durationFrames / fps;
+        return `${i + 1}\n${srtTime(s0)} --> ${srtTime(s1)}\n${r.text}\n`;
+      })
+      .join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([srt], { type: 'text/plain;charset=utf-8' }));
+    a.download = `${project?.name || 'narration'}.srt`;
+    a.click();
+  };
+
+  /** 直接编辑项目现有字幕（不跑 AI、不动其它内容） */
+  const loadExisting = () => {
+    const es = project?.narration?.entries || [];
+    setRows(es.map((e) => ({
+      id: e.id, ci: 0, text: e.text, audioUrl: e.audioUrl, durationFrames: Math.max(1, e.durationFrames),
+      startFrame: e.startFrame, status: e.status, locked: e.locked,
+    })));
+    setPlan([{ title: '', subtitles: es.map((e) => e.text) }]);
+    setEditOnly(true);
+  };
+
+  /** 把 rows 落成 NarrationEntry（顺排后的绝对帧） */
+  const rowsToEntries = (rs: SubRow[]): NarrationEntry[] => resequenceRows(rs)
+    .filter((r) => r.text.trim())
+    .map((r) => ({
+      id: r.id, text: r.text, audioUrl: r.audioUrl, durationFrames: Math.max(1, r.durationFrames),
+      startFrame: r.startFrame, locked: r.locked, status: r.status,
+    }));
+
+  const applyNarrationOnly = () => {
+    if (!project) return;
+    useProjectStore.getState().setNarrationEntries(rowsToEntries(rows));
+    onClose();
+  };
 
   const genText = async () => {
     if (!project) return;
@@ -212,6 +353,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       const parsed = parsePlan(raw);
       if (!parsed[0]?.subtitles.length) throw new Error(t('模型未返回可用内容', 'Model returned no usable content'));
       setPlan(parsed);
+      setRows(resequenceRows(parsed.flatMap((c, ci) => c.subtitles.map((txt) => mkRow(txt, ci)))));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -256,30 +398,20 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   /** ② 建章：TTS / 弹窗 / 特效 / 相机 / 落点 */
   const finish = async (per: Place[][], extra: { ci: number; name: string; center: [number, number] }[]) => {
     if (!project || !plan) return;
-    const doTts = withTts && tts && tts.baseUrl;
     setBusy(true); setError(null);
     try {
-      const total = plan.reduce((a, c) => a + c.subtitles.length, 0);
       let done = 0;
       let terrMiss = 0;
       const items: GeneratedChapterPlan[] = [];
       for (let i = 0; i < plan.length; i++) {
         const ch = plan[i];
-        const entries: NarrationEntry[] = [];
-        for (const txt of ch.subtitles) {
-          let durationFrames = estimateTextDurationFrames(txt, fps);
-          let audioUrl: string | undefined;
-          if (doTts) {
-            setProgress(t(`正在生成配音 ${done + 1}/${total}…`, `Generating voiceover ${done + 1}/${total}…`));
-            try {
-              const r = await callTTS(tts!, txt);
-              audioUrl = r.dataUrl;
-              durationFrames = Math.max(1, Math.round(r.durationSec * fps));
-            } catch { /* 单条失败退回估算时长 */ }
-          }
-          entries.push({ id: generateId(), text: txt, durationFrames, startFrame: 0, audioUrl, status: audioUrl ? 'ready' : 'none' });
-          done++;
-        }
+        // 逐行字幕来自 rows（步骤②里可逐条生成 / 覆盖配音）；未生成的行按字数估算时长
+        const chRows = rows.filter((r) => r.ci === i && r.text.trim());
+        const entries: NarrationEntry[] = chRows.map((r) => ({
+          id: r.id, text: r.text, audioUrl: r.audioUrl,
+          durationFrames: Math.max(1, r.durationFrames), startFrame: 0, status: r.status || (r.audioUrl ? 'ready' : 'none'),
+        }));
+        done += chRows.length;
         // 每条字幕的相对起始帧：用于按「首次提及」给元素/弹窗定时
         const entryStarts: number[] = [];
         let acc = 0;
@@ -288,8 +420,8 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
         const mentionAt = (names: string[]): number => {
           const keys = names.filter((x) => x && x.length >= 2);
           if (!keys.length) return 0;
-          for (let si = 0; si < ch.subtitles.length; si++) {
-            const txt = ch.subtitles[si];
+          for (let si = 0; si < chRows.length; si++) {
+            const txt = chRows[si].text;
             if (keys.some((k) => txt.includes(k))) return entryStarts[si] ?? 0;
           }
           return 0;
@@ -363,7 +495,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
       <div className="bg-card border border-white/10 rounded-xl shadow-2xl p-4 w-[34rem] max-h-[88vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold mb-2">✨ {t('一键生成', 'One-click generate')}</h3>
+        <h3 className="text-sm font-semibold mb-2">✨ {t('字幕生成', 'Subtitle studio')}</h3>
 
         <textarea value={topic} onChange={(e) => setTopic(e.target.value)} rows={4} className="input text-xs resize-none mb-2" placeholder={t('描述你的需求（主题 / 大纲 / 风格 / 口吻 / 受众 / 时长 / 侧重点…任何要求）', 'Describe your requirements (topic / outline / style / tone / audience / length … anything)')} />
 
@@ -398,13 +530,23 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
         {!plan && (
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setPlan([{ title: '', subtitles: [''] }])}
+              onClick={() => { const ch = [{ title: '', subtitles: [''] }]; setPlan(ch); setRows([mkRow('', 0)]); }}
               disabled={busy}
               className="h-8 px-3 rounded-md border border-white/15 text-xs hover:bg-white/10 disabled:opacity-40"
               title={t('不用 AI，手工写文案', 'No AI: write the script manually')}
             >
               ＋ {t('手动填写文案', 'Write script manually')}
             </button>
+            {(project?.narration?.entries?.length || 0) > 0 && (
+              <button
+                onClick={loadExisting}
+                disabled={busy}
+                className="h-8 px-3 rounded-md border border-white/15 text-xs hover:bg-white/10 disabled:opacity-40"
+                title={t('只改字幕文本 / 配音 / 时长，不动元素与相机', 'Edit subtitles & voiceover only; keeps elements and camera')}
+              >
+                ✎ {t(`编辑现有字幕（${project!.narration.entries.length} 条）`, `Edit existing (${project!.narration.entries.length})`)}
+              </button>
+            )}
             <div className="flex-1" />
             <button onClick={onClose} disabled={busy} className="h-8 px-3 rounded-md border border-white/15 text-xs hover:bg-white/10 disabled:opacity-40">{t('取消', 'Cancel')}</button>
             <button onClick={genText} disabled={busy || !topic.trim() || !llm?.baseUrl} className="h-8 px-3.5 rounded-md bg-white text-black text-xs font-medium hover:bg-white/90 disabled:opacity-40">
@@ -416,39 +558,76 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
         {plan && (
           <>
             <div className="border-t border-white/10 pt-2 mb-2">
-              <p className="text-[11px] text-muted-foreground mb-1">{t('确认/编辑文案（每行一条字幕）', 'Confirm/edit script (one subtitle per line)')}</p>
-              <div className="space-y-2 max-h-[38vh] overflow-y-auto pr-1">
-                {(() => {
-                  const ch = plan[0];
-                  return (
-                    <div className="rounded-md border border-white/10 bg-white/[0.03] p-2 space-y-1">
-                      <textarea
-                        value={ch.subtitles.join('\n')}
-                        onChange={(e) => setPlan([{ ...ch, subtitles: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) }])}
-                        rows={Math.min(14, Math.max(4, ch.subtitles.length))}
-                        className="input text-xs resize-none w-full"
-                        placeholder={t('每行一条字幕', 'One subtitle per line')}
-                      />
-                      <div className="text-[10px] text-muted-foreground">
-                        {ch.fx?.length ? `特效: ${ch.fx.join(',')}` : ''}
-                        {ch.overlays?.length ? ` · 弹窗: ${ch.overlays.map((o) => o.kind).join(',')}` : ''}
-                        {ch.elements?.length ? ` · 元素: ${ch.elements.map((e) => e.kind).join(',')}` : ''}
-                        {(() => {
-                          const p = extractPlaces([ch.title, ...ch.subtitles].join(' '), 4).map((x) => x.name);
-                          return p.length ? ` · 地名: ${p.join(',')}` : '';
-                        })()}
-                      </div>
-                    </div>
-                  );
-                })()}
+              <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                <p className="text-[11px] text-muted-foreground flex-1 min-w-[140px]">
+                  {editOnly
+                    ? t('编辑现有字幕（只改字幕与配音）', 'Editing existing subtitles')
+                    : t('确认/编辑文案（每行一条字幕）', 'Confirm/edit script (one subtitle per line)')}
+                </p>
+                <button onClick={addRow} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10" title={t('在末尾加一行字幕', 'Append a line')}>＋ {t('加一行', 'Add')}</button>
+                <label className="h-7 px-2 inline-flex items-center rounded-md border border-white/15 text-[11px] hover:bg-white/10 cursor-pointer" title={t('导入 SRT 覆盖当前行', 'Import SRT (replaces lines)')}>
+                  📥 SRT
+                  <input type="file" accept=".srt,text/plain" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void importSrt(f); e.target.value = ''; }} />
+                </label>
+                <button onClick={exportSrt} disabled={!rows.length} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40" title={t('导出为 SRT', 'Export SRT')}>📤 SRT</button>
+                <button
+                  onClick={genAllMissing}
+                  disabled={busy || genIdx !== null || !tts?.baseUrl}
+                  className="h-7 px-2 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
+                  title={t('给所有还没有配音的行生成语音（已有配音的行不动）', 'Generate voice for every line without audio')}
+                >
+                  ▶▶ {t('全部生成配音', 'Generate all voice')}
+                </button>
               </div>
-            </div>
-
-            <div className="flex items-center gap-3 mb-2 flex-wrap">
-              <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
-                <input type="checkbox" checked={withTts} disabled={!tts?.baseUrl} onChange={(e) => setWithTts(e.target.checked)} />
-                {t('② 生成配音（耗时）', '② Generate voiceover (slow)')}
-              </label>
+              <div className="space-y-1.5 max-h-[38vh] overflow-y-auto pr-1">
+                {rows.map((r, idx) => (
+                  <div key={r.id} className="flex items-start gap-1.5 rounded-md border border-white/10 bg-white/[0.03] p-1.5">
+                    <span className="shrink-0 w-5 pt-1.5 text-right text-[10px] text-muted-foreground tabular-nums">{idx + 1}</span>
+                    <textarea
+                      value={r.text}
+                      onChange={(e) => editText(r.id, e.target.value)}
+                      rows={2}
+                      className="input text-xs resize-none flex-1 min-w-0"
+                      placeholder={t('一行字幕', 'Subtitle line')}
+                    />
+                    <div className="shrink-0 flex items-center gap-1 pt-0.5">
+                      <button
+                        onClick={() => genRow(idx)}
+                        disabled={genIdx !== null || !r.text.trim()}
+                        className="w-7 h-7 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
+                        title={r.audioUrl ? t('重新生成并覆盖原配音', 'Regenerate (overwrites audio)') : t('生成本句配音', 'Generate voice for this line')}
+                      >
+                        {genIdx === idx ? '⏳' : r.status === 'error' ? '⚠' : r.audioUrl ? '🔁' : '🔊'}
+                      </button>
+                      {r.audioUrl && (
+                        <button
+                          onClick={() => audit(r)}
+                          className="w-7 h-7 rounded-md border border-white/15 text-[11px] hover:bg-white/10"
+                          title={t('试听本句配音', 'Preview this clip')}
+                        >
+                          {auditingId === r.id ? '⏸' : '▶'}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => delRow(r.id)}
+                        className="w-7 h-7 rounded-md text-[11px] text-muted-foreground hover:text-red-400 hover:bg-white/10"
+                        title={t('删除本行', 'Delete line')}
+                      >✕</button>
+                    </div>
+                  </div>
+                ))}
+                {!rows.length && <p className="text-[11px] text-muted-foreground text-center py-4">{t('还没有字幕，点「加一行」或导入 SRT', 'No lines yet — add one or import an SRT')}</p>}
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground/80">
+                {t('每行 = 一条字幕 + 一段配音；🔁 覆盖该行原配音；有配音时显示时长跟随音频', 'One line = one subtitle + one clip; 🔁 overwrites its audio; audio drives duration')}
+              </p>
+              {!editOnly && plan[0] && (
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  {plan[0].fx?.length ? `特效: ${plan[0].fx.join(',')}` : ''}
+                  {plan[0].overlays?.length ? ` · 弹窗: ${plan[0].overlays.map((o) => o.kind).join(',')}` : ''}
+                  {plan[0].elements?.length ? ` · 元素: ${plan[0].elements.map((e) => e.kind).join(',')}` : ''}
+                </div>
+              )}
             </div>
 
             {unresolved && (
@@ -478,20 +657,66 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
 
             <div className="flex justify-end gap-2">
               <button
-                onClick={() => { setPlan(null); setUnresolved(null); setPendingPlaces(null); setPlaceInputs({}); }}
+                onClick={() => { setPlan(null); setRows([]); setEditOnly(false); setUnresolved(null); setPendingPlaces(null); setPlaceInputs({}); }}
                 disabled={busy}
                 className="h-8 px-3 rounded-md border border-white/15 text-xs hover:bg-white/10 disabled:opacity-40"
               >{t('返回重写', 'Back')}</button>
               <button
-                onClick={unresolved ? resume : confirm}
+                onClick={editOnly ? applyNarrationOnly : (unresolved ? resume : confirm)}
                 disabled={busy || !hasContent}
                 className="h-8 px-3.5 rounded-md bg-white text-black text-xs font-medium hover:bg-white/90 disabled:opacity-40"
               >
-                {busy ? t('生成中…', 'Working…') : unresolved ? t('继续生成', 'Continue') : t('② 确认并生成', '② Confirm & build')}
+                {busy
+                  ? t('生成中…', 'Working…')
+                  : editOnly
+                    ? t('应用字幕', 'Apply subtitles')
+                    : unresolved ? t('继续生成', 'Continue') : t('② 确认并生成', '② Confirm & build')}
               </button>
             </div>
           </>
         )}
+
+        <Section title={t('字幕样式', 'Subtitle style')} className="mt-3">
+          <Field label={t('字体', 'Font')}>
+            <OptionBlocks<string>
+              value={style.fontFamily || "'KaiTi', 'STKaiti', 'SimSun', serif"}
+              options={[
+                { value: "'KaiTi', 'STKaiti', 'SimSun', serif", label: t('楷体', 'KaiTi') },
+                { value: "'SimSun', 'Songti SC', serif", label: t('宋体', 'SimSun') },
+                { value: "'SimHei', 'Microsoft YaHei', sans-serif", label: t('黑体', 'SimHei') },
+                { value: 'system-ui, sans-serif', label: t('系统', 'System') },
+              ]}
+              onChange={(v) => setStyle({ fontFamily: v })}
+            />
+          </Field>
+          <div className="flex items-center gap-2">
+            <span className="w-14 shrink-0 text-[11px] text-muted-foreground">{t('字号', 'Size')}</span>
+            <NumberInput className="input h-7 w-16 text-xs" value={style.fontSize} step={2} min={12} onCommit={(v) => setStyle({ fontSize: Math.max(12, v) })} />
+            <ColorPicker value={style.color} onChange={(c) => setStyle({ color: c })} />
+            <span className="w-14 shrink-0 text-[11px] text-muted-foreground">{t('描边', 'Stroke')}</span>
+            <NumberInput className="input h-7 w-16 text-xs" value={style.strokeWidth} step={1} min={0} onCommit={(v) => setStyle({ strokeWidth: Math.max(0, v) })} />
+            <ColorPicker value={style.strokeColor} onChange={(c) => setStyle({ strokeColor: c })} />
+          </div>
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="w-14 shrink-0 text-[11px] text-muted-foreground">{t('底部', 'Bottom')}</span>
+            <input type="range" min={0} max={40} step={1} value={style.posY} onChange={(e) => setStyle({ posY: parseInt(e.target.value, 10) })} className="flex-1 h-1 accent-[var(--brand)]" />
+            <span className="w-8 shrink-0 text-right text-[11px] text-muted-foreground tabular-nums">{style.posY}%</span>
+          </div>
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="w-14 shrink-0 text-[11px] text-muted-foreground">{t('文字色', 'Text')}</span>
+            <ColorPicker value={style.color} onChange={(c) => setStyle({ color: c })} />
+            <span className="text-[11px] text-muted-foreground">{t('背景', 'BG')}</span>
+            <OptionBlocks<'none' | 'bar'>
+              value={style.bg}
+              options={[{ value: 'none', label: t('无', 'None') }, { value: 'bar', label: t('长条', 'Bar') }]}
+              onChange={(v) => setStyle({ bg: v })}
+            />
+            {style.bg === 'bar' && <ColorPicker value={style.bgColor} onChange={(c) => setStyle({ bgColor: c })} />}
+          </div>
+          <p className="mt-1 text-[10px] text-muted-foreground/80">
+            {t('样式对整片字幕生效，随时可改（编辑器预览与导出同源）', 'Applies to all subtitles; preview and export share it')}
+          </p>
+        </Section>
       </div>
     </div>
   );

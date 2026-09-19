@@ -100,7 +100,7 @@ const NOTES = {
     "follow_direction": "跟随视角是否按路线切线自动定向",
     "orbit_speed": "环绕速度（度/秒）",
     "orbit_duration_sec": "环绕时长（秒）",
-    "ord": "同章节内排序"
+    "ord": "同项目内排序"
   },
   "screen_fx": {
     "fx_id": "特效窗口 id",
@@ -115,7 +115,7 @@ const NOTES = {
     "effect_type": "画面特效：shake 震动 / flash 闪光 / vignette 暗角 / cloudReveal 云散 / fadeBlack / fadeWhite",
     "effect_color": "特效颜色（flash、fade 类使用）",
     "enabled": "是否启用",
-    "ord": "同章节内排序"
+    "ord": "同项目内排序"
   },
   "narration": {
     "project_id": "项目 id（每项目一份配音档，1:1）",
@@ -138,7 +138,7 @@ const NOTES = {
     "duration_sec": "显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖",
     "start_sec": "章内起始时间（秒，默认自动顺排）",
     "locked": "手动定位后锁定，不再参与自动顺排",
-    "ord": "同章节内排序"
+    "ord": "同项目内排序"
   },
   "music_track": {
     "track_id": "音乐段 id",
@@ -155,7 +155,7 @@ const NOTES = {
     "ord": "同项目内排序"
   },
   "element_marker": {
-    "element_id": "元素 id（全库唯一，4 张类别表共享同一 id 空间）",
+    "element_id": "元素 id（全库唯一，5 张类别表共享同一 id 空间）",
     "project_id": "所属项目",
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）",
@@ -171,7 +171,7 @@ const NOTES = {
     "uniform_move": "是否全程匀速（0 则按各路径点自定义到达时间）",
     "point_times_json": "各路径点到达时间数组（秒，非匀速时使用）",
     "keyframes_json": "动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复",
-    "ord": "同章节内排序",
+    "ord": "同图层内排序",
     "lng": "经度（三类标记都落在单点）",
     "lat": "纬度",
     "rotation": "贴地旋转角（0–360 度）",
@@ -215,7 +215,7 @@ const NOTES = {
     "visual_stroke_width": "icon 描边粗细"
   },
   "element_route": {
-    "element_id": "元素 id（全库唯一，4 张类别表共享同一 id 空间）",
+    "element_id": "元素 id（全库唯一，5 张类别表共享同一 id 空间）",
     "project_id": "所属项目",
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）",
@@ -231,7 +231,7 @@ const NOTES = {
     "uniform_move": "是否全程匀速（0 则按各路径点自定义到达时间）",
     "point_times_json": "各路径点到达时间数组（秒）",
     "keyframes_json": "动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复",
-    "ord": "同章节内排序",
+    "ord": "同图层内排序",
     "coords_json": "路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填）",
     "line_width": "线宽（px）",
     "line_color": "线条颜色（moving_point 时为主色）",
@@ -291,7 +291,7 @@ const NOTES = {
     "front_side": "梳齿朝向侧：1 右 / -1 左"
   },
   "element_shape": {
-    "element_id": "元素 id（全库唯一，4 张类别表共享同一 id 空间）",
+    "element_id": "元素 id（全库唯一，5 张类别表共享同一 id 空间）",
     "project_id": "所属项目",
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）",
@@ -307,7 +307,7 @@ const NOTES = {
     "uniform_move": "是否全程匀速（0 则按各路径点自定义到达时间）",
     "point_times_json": "各路径点到达时间数组（秒）",
     "keyframes_json": "动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复",
-    "ord": "同章节内排序",
+    "ord": "同图层内排序",
     "rings_json": "多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填）",
     "fill_color": "填充色",
     "fill_opacity": "填充透明度（0–1）",
@@ -374,7 +374,7 @@ const NOTES = {
     "gradient_to": "渐变结束色"
   },
   "element_territory": {
-    "element_id": "元素 id（全库唯一，4 张类别表共享同一 id 空间）",
+    "element_id": "元素 id（全库唯一，5 张类别表共享同一 id 空间）",
     "project_id": "所属项目",
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列（固定 territory）",
@@ -383,7 +383,7 @@ const NOTES = {
     "start_sec": "出现时间（秒）",
     "end_sec": "消失时间（秒）",
     "anim_effect": "动画效果：grow / move / fill / march / marchplain",
-    "ord": "同章节内排序",
+    "ord": "同图层内排序",
     "countries_json": "势力数组：[{countryId,name,color,ord}]",
     "plots_json": "地块数组：[{plotId,name,rings,ownerId,ord}]；ownerId 须能在 countries_json 中命中（由 v_check_territory_ref 校验）",
     "events_json": "兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上",
@@ -422,7 +422,7 @@ const NOTES = {
     "rows": "配准网格行数",
     "grid_json": "控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]）",
     "opacity": "不透明度（0–1）",
-    "ord": "同章内排序"
+    "ord": "同图层内排序"
   },
   "overlay": {
     "overlay_id": "弹窗 id",
@@ -442,7 +442,7 @@ const NOTES = {
     "person_layout_json": "人物卡版式：图片方位/对齐/间距/卡片宽/名言样式/叠图",
     "audio_asset_id": "背景语音（卡片可见时播放；导出混流待支持）",
     "parent_overlay_id": "父弹窗（group 嵌套结构）",
-    "ord": "同章节内排序",
+    "ord": "同项目内排序",
     "bg_color": "卡片背景色",
     "bg_opacity": "卡片背景不透明度（0–1）",
     "bg_blur": "卡片背景模糊半径",
@@ -482,7 +482,7 @@ NOTES.public_layer = {
   type: '图层类型（单类型）：marker 标记 / route 路线 / shape 形状 / territory 疆域 / image 图片',
   name: '图层名',
   visible: '是否显示（0/1）',
-  start_sec: '显示起点（秒，导入时通常对齐为 0）',
+  start_sec: '显示起点（秒，沿用源图层区间、导入时不自动归零）',
   end_sec: '显示终点（秒）',
   ord: '排序',
   created_at: '创建时间（毫秒时间戳）',

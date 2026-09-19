@@ -1,12 +1,18 @@
 import { create } from 'zustand';
+import type { LayerType } from '../types';
+import type { TargetLayers } from '../lib/layers';
 
-export type FxTab = 'weather' | 'screen' | 'popup' | 'subtitle' | 'music';
+export type FxTab = 'weather' | 'screen' | 'popup' | 'music';
 
 interface EditorState {
   currentFrame: number;
   isPlaying: boolean;
   selectedElementId: string | null;
-  /** 选中的图层 id（时间线图层块 / 图层面板行点击选中）；Del 优先删图层 */
+  /**
+   * 选中的图层 = 地图上的「可编辑层」：只有它的元素在地图上有激活态编辑效果
+   * （可点选 / 可拖 / 顶点 / 高亮）。为 null 时全部图层可编辑。
+   * 同时 Del 键优先删选中元素、无选中元素时删整层。
+   */
   selectedLayerId: string | null;
 
   // 右侧面板模式：元素属性 / 镜头关键帧属性 / 特效 / 无面板
@@ -23,6 +29,27 @@ interface EditorState {
   // 左侧浮动元素面板开合（对齐 Mapimator Layers，默认收起）
   elementsOpen: boolean;
   setElementsOpen: (open: boolean) => void;
+
+  /** 演示模式：隐藏全部编辑界面 + 全屏播放（PPT 式），F5 进出 / Esc 退出 */
+  presenting: boolean;
+  setPresenting: (on: boolean) => void;
+
+  /**
+   * 「字幕生成」弹窗开关：顶栏按钮与时间线「🎙 配音」块共用同一个入口
+   * （字幕条目与样式的唯一编辑处，特效弹窗里已无字幕页签）。
+   */
+  subtitleOpen: boolean;
+  setSubtitleOpen: (on: boolean) => void;
+
+  /**
+   * 每类图层的「写入目标」：新建 / 改类型的元素进哪个图层（见 resolveTargetLayerId）。
+   * 点选图层行即设为该层类型的目标；未设置的类型走「该类第一个图层」。
+   */
+  targetLayers: TargetLayers;
+  setTargetLayer: (type: LayerType, layerId: string | null) => void;
+  /** 芯片当前展示哪一类的目标（随激活的工具与点选的图层切换） */
+  activeLayerType: LayerType;
+  setActiveLayerType: (type: LayerType) => void;
 
   // 特效（天气/画面/弹窗/标题）：在右侧面板编辑；单次只编辑一个特效项（fxSelId）
   fxTab: FxTab;
@@ -49,8 +76,14 @@ interface EditorState {
 
   setCurrentFrame: (frame: number) => void;
   setIsPlaying: (playing: boolean) => void;
+  /** 预览播放倍速（1–5）：只影响编辑器/演示的播放头推进，不影响导出（导出逐帧渲染） */
+  playRate: number;
+  setPlayRate: (rate: number) => void;
   selectElement: (id: string | null) => void;
-  selectLayer: (id: string | null) => void;
+  /** 选中图层 = 该图层成为地图上的「可编辑层」；选元素不会取消它（见 selectedLayerId 注释） */
+  selectLayer: (id: string | null, type?: LayerType) => void;
+  /** 只把某层设为「可编辑层」，不动「写入目标」（点中元素时随宿主层收口用） */
+  focusLayer: (id: string | null) => void;
   setPanelMode: (mode: 'element' | 'keyframe' | 'fx' | 'none') => void;
   /** 选中镜头关键帧（进入右侧视角属性面板） */
   selectKeyframe: (idx: number | null) => void;
@@ -61,6 +94,8 @@ interface EditorState {
 export const useEditorStore = create<EditorState>()((set) => ({
   currentFrame: 0,
   isPlaying: false,
+  playRate: 1,
+  setPlayRate: (rate) => set({ playRate: Math.min(5, Math.max(1, rate)) }),
   selectedElementId: null,
   selectedLayerId: null,
   panelMode: 'element',
@@ -70,14 +105,36 @@ export const useEditorStore = create<EditorState>()((set) => ({
 
   setCurrentFrame: (frame) => set({ currentFrame: frame }),
   setIsPlaying: (playing) => set({ isPlaying: playing }),
-  selectElement: (id) => set({ selectedElementId: id, selectedLayerId: null, panelMode: 'element' }),
-  selectLayer: (id) => set({ selectedLayerId: id }),
+  // 选元素**不再**清掉 selectedLayerId：图层选中态就是地图的「可编辑层」门禁，
+  // 点中该层里的元素不该让它自己失效（否则「点一下元素这层就不可编辑了」）。
+  selectElement: (id) => set({ selectedElementId: id, panelMode: 'element' }),
+  // 点选图层 = 同时把它设为该类型的「写入目标」（选中即写入，与 Figma 选容器一致）
+  selectLayer: (id, type) => set((s) => {
+    if (!id || !type) return { selectedLayerId: id };
+    return { selectedLayerId: id, activeLayerType: type, targetLayers: { ...s.targetLayers, [type]: id } };
+  }),
+  focusLayer: (id) => set({ selectedLayerId: id }),
   setPanelMode: (mode) => set({ panelMode: mode }),
   selectKeyframe: (idx) => set({ selectedKeyframeIdx: idx, panelMode: idx !== null ? 'keyframe' : 'none' }),
   setCurrentCamera: (cam) => set({ currentCamera: cam }),
   seekCamera: (cam, easing, duration) => set({ cameraSeek: { cam, easing, duration, ts: Date.now() } }),
   elementsOpen: false,
   setElementsOpen: (open) => set({ elementsOpen: open }),
+
+  presenting: false,
+  setPresenting: (on) => set({ presenting: on }),
+
+  subtitleOpen: false,
+  setSubtitleOpen: (on) => set({ subtitleOpen: on }),
+
+  targetLayers: {},
+  setTargetLayer: (type, layerId) => set((s) => {
+    const next: TargetLayers = { ...s.targetLayers };
+    if (layerId) next[type] = layerId; else delete next[type];
+    return { targetLayers: next };
+  }),
+  activeLayerType: 'marker',
+  setActiveLayerType: (type) => set({ activeLayerType: type }),
 
   fxTab: 'popup',
   fxSelId: null,

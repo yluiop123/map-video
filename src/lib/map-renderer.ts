@@ -133,6 +133,35 @@ export function showElementLayers(map: maplibregl.Map, elementId: string): void 
 
 
 /**
+ * 按「图层列表顺序」重排地图叠放：传入的元素 id 按列表**从上到下**排，
+ * 列表靠前的显示在地图上层（标记在最上、图片在最底），与图层面板 / 时间线一致。
+ *
+ * MapLibre 的叠放只由 addLayer 的先后决定，重渲染不会移动已有图层，
+ * 所以这里显式 moveLayer。顺序没变化时直接返回 —— 每帧都重排会明显拖慢播放。
+ * 同一元素的图层保持它们当前的相对顺序，因此「路线的移动标记在线之上」
+ * 「疆域标签在面之上」这类组内关系不会被打破。
+ */
+export function restackByLayerOrder(map: maplibregl.Map, elementIdsTopToBottom: string[]): void {
+  const style = map.getStyle();
+  if (!style?.layers) return;
+  const styleIds = style.layers.map((l) => l.id);
+  const wanted: string[] = [];
+  // 自底向上 = 列表倒序
+  for (let i = elementIdsTopToBottom.length - 1; i >= 0; i--) {
+    const elId = elementIdsTopToBottom[i];
+    for (const id of styleIds) if (id.includes(elId)) wanted.push(id);
+  }
+  const inWanted = new Set(wanted);
+  const current = styleIds.filter((id) => inWanted.has(id));
+  if (current.length === wanted.length && current.every((id, k) => id === wanted[k])) return;
+  // 自顶向下逐个「插到已就位的下一层之下」，锚点层位置不变，最终得到 wanted 的相对序
+  for (let k = wanted.length - 2; k >= 0; k--) {
+    try { map.moveLayer(wanted[k], wanted[k + 1]); } catch { /* 图层刚被移除 */ }
+  }
+}
+
+
+/**
  * @param interactive 是否**编辑端**。编辑辅助图形（如移动点全程虚线引导）仅在此为
  *   true 时绘制，避免泄漏进导出画面。默认 false —— 新调用点默认面向导出更安全。
  */
@@ -3148,8 +3177,6 @@ function getLineMidpoint(coords: [number, number][]): [number, number] {
 
 // ========== 渲染：旗帜（canvas 动态生成） ==========
 
-const flagIconCache = new Map<string, boolean>();
-
 interface FlagStyle {
   text: string;
   flagColor: string;
@@ -3264,14 +3291,15 @@ function renderFlag(map: maplibregl.Map, element: FlagElement) {
     }
   }
 
-  if (!map.hasImage(imageId) && !flagIconCache.has(imageId)) {
-    flagIconCache.set(imageId, true);
+  // 只按「这张地图有没有这张图」判断：切项目会重建地图实例（图片随之清空），
+  // 用模块级缓存记「生成过」会让新地图永远等不到 addImage —— 表现为旗帜整类不显示。
+  if (!map.hasImage(imageId)) {
     const data = makeFlagImageData(style);
     if (data) {
       try {
         map.addImage(imageId, data, { pixelRatio: 2 });
         map.triggerRepaint();
-      } catch { /* */ }
+      } catch { /* style 未就绪：下一次 renderElements 重试 */ }
     }
   }
 }

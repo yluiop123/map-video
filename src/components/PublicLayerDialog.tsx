@@ -6,9 +6,9 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Search, Star, Upload, Trash2 } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
-import { listPublicLayers, importPublicLayer, removePublicLayer, layerTypeOf, LAYER_TYPE_LABEL, type PublicLayerInfo } from '../lib/layers';
+import { listPublicLayers, importPublicLayer, removePublicLayer, LAYER_TYPE_LABEL, type PublicLayerInfo } from '../lib/layers';
 import { useT, OptionBlocks } from './ui/primitives';
-import { generateId, type LayerType, type MapElement } from '../types';
+import type { LayerType } from '../types';
 
 export function PublicLayerDialog({ onClose }: { onClose: () => void }) {
   const t = useT();
@@ -25,20 +25,20 @@ export function PublicLayerDialog({ onClose }: { onClose: () => void }) {
   const kw = q.trim().toLowerCase();
   const shown = list.filter((x) => (type === 'all' || x.type === type) && (!kw || x.name.toLowerCase().includes(kw) || LAYER_TYPE_LABEL[x.type].includes(kw)));
 
+  /** 导入即并入一张新图层（时间沿用源图层）；不 reload 项目，避免冲掉未保存修改与撤销栈 */
   const doImport = async (pl: PublicLayerInfo) => {
     if (!project) return;
     setBusy(true);
     try {
-      const r = await importPublicLayer(pl.id, project.id);
-      if (r.layerId) {
-        await useProjectStore.getState().loadProject(project.id);
-      } else if (r.local) {
-        const min = Math.min(...r.local.elements.map((el) => el.startFrame ?? 0), 0);
-        const els = r.local.elements.map((el) => ({ ...el, startFrame: el.startFrame - min, endFrame: el.endFrame - min })) as MapElement[];
-        const lt = els.length ? layerTypeOf(els[0]) : 'marker';
-        addLayerFull({ id: generateId(), type: lt, name: r.local.name, visible: true, startFrame: 0, endFrame: Math.max(1, project.endFrame), elements: els });
-      }
+      const { layer, dropped } = await importPublicLayer(pl.id, project.id);
+      if (layer) addLayerFull(layer);
       onClose();
+      if (dropped?.length) {
+        alert(t(
+          `已跳过 ${dropped.length} 条连接线（端点指向该图层外的元素）：${dropped.join('、')}`,
+          `Skipped ${dropped.length} connector(s) whose endpoints are outside that layer: ${dropped.join(', ')}`,
+        ));
+      }
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
     } finally {

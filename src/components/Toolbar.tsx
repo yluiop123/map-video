@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import {
   MapPin, Route as RouteIcon,
   Shapes, Undo2, Redo2, FolderOpen, Settings2, Download, Languages, Landmark, UserRound, Sparkles,
-  Image as ImageIcon,
+  Image as ImageIcon, ChevronDown, Check, Plus,
 } from 'lucide-react';
 import { useProjectStore, isProjectDirty } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
@@ -10,8 +10,10 @@ import { useInteractionStore, type InteractionMode, type PinPlaceStyle, type Rou
 import { sharedMap } from '../lib/shared-map';
 import { stopPreviewAudio } from '../lib/preview-audio';
 import { IS_DESKTOP } from '../lib/backend';
-import { uploadAsset, listMedia, type MediaItem } from '../lib/assets';
+import { uploadAsset } from '../lib/assets';
 import { loadImageAspect, createGeoImageElement } from '../lib/geo-image';
+import { LAYER_TYPE_LABEL } from '../lib/layers';
+import type { LayerType } from '../types';
 import { MapSearchBox } from './MapSearchBox';
 import { TerritoryImportDialog } from './TerritoryImportDialog';
 import { GenerateDialog } from './GenerateDialog';
@@ -40,6 +42,11 @@ const TOOLS: ModeItem[] = [
 ];
 
 const ROUTE_MODES: InteractionMode[] = ['add_line', 'add_bezier', 'add_line_arc', 'add_arrow', 'add_curved', 'add_pincer'];
+
+/** 工具按钮 → 图层类型（决定「写入图层」芯片当前展示哪一类） */
+const TOOL_LAYER_TYPE: Record<string, LayerType> = {
+  Pin: 'marker', Route: 'route', Shape: 'shape', Terr: 'territory', Image: 'image',
+};
 
 /** 疆域工具的模式（«疆域»按钮高亮判定） */
 const TERR_MODES: InteractionMode[] = ['add_terr_plot', 'terr_annex'];
@@ -161,7 +168,8 @@ export function TopBar({ onOpenExport, onOpenSettings }: ToolbarProps) {
   const futureLen = useProjectStore((s) => s.future.length);
   const lang = useEditorStore((s) => s.lang);
   const setLang = useEditorStore((s) => s.setLang);
-  const [genOpen, setGenOpen] = useState(false);
+  const genOpen = useEditorStore((s) => s.subtitleOpen);
+  const setGenOpen = useEditorStore((s) => s.setSubtitleOpen);
 
   // 有未保存修改时保存按钮才可用
   const dirty = useMemo(() => isProjectDirty(project), [project]);
@@ -224,14 +232,14 @@ export function TopBar({ onOpenExport, onOpenSettings }: ToolbarProps) {
         <Settings2 size={15} />
       </button>
 
-      {/* 一键生成：主题 → 整片 + 字幕 + 配音 */}
+      {/* 字幕生成：主题 → 整片 + 字幕 + 配音（顶栏与时间线「🎙 配音」块同一入口） */}
       <button
         onClick={() => setGenOpen(true)}
         className="h-9 px-3 flex items-center gap-1.5 rounded-md border border-white/15 bg-white/[0.05] text-xs font-medium hover:bg-white/10 transition-colors shrink-0"
-        title="AI 一键生成整片脚本"
+        title="字幕 / 配音 / 字幕样式"
       >
         <Sparkles size={14} />
-        一键生成
+        字幕生成
       </button>
 
       {/* 导出（弹出左侧设置按钮的导出窗口） */}
@@ -274,7 +282,78 @@ export function TopBar({ onOpenExport, onOpenSettings }: ToolbarProps) {
   );
 }
 
-/** 地图上方浮动工具条：选择 + 扁平工具（标记/路线/形状/疆域点击展开分类菜单） */
+/**
+ * 工具弹窗里的「加入图层」行：只列该类型的图层，选中即成为当前图层（图层面板与时间线同步激活）。
+ * 该类型一个图层都没有时只给「新建」——新元素必须有图层可进，不做「自动」这种隐式选项。
+ */
+function LayerPickRow({ type, lang }: { type: LayerType; lang: 'zh' | 'en' }) {
+  const layers = useProjectStore((s) => s.project?.layers) ?? [];
+  const addLayer = useProjectStore((s) => s.addLayer);
+  const selectedLayerId = useEditorStore((s) => s.selectedLayerId);
+  const selectLayer = useEditorStore((s) => s.selectLayer);
+  const [open, setOpen] = useState(false);
+
+  const sameType = layers.filter((L) => L.type === type);
+  const cur = sameType.find((L) => L.id === selectedLayerId) || sameType[0];
+  const label = LAYER_TYPE_LABEL[type];
+  const pick = (id: string) => { selectLayer(id, type); setOpen(false); };
+  const create = () => { const L = addLayer(type); if (L) selectLayer(L.id, type); setOpen(false); };
+
+  if (!cur) {
+    return (
+      <button
+        onClick={create}
+        className="w-full flex items-center justify-center gap-1.5 h-8 rounded-lg border border-dashed border-white/20 text-xs text-muted-foreground hover:text-foreground hover:border-white/40 hover:bg-white/5 transition-colors"
+      >
+        <Plus size={12} /> {lang === 'en' ? `New ${label} layer` : `新建${label}图层`}
+      </button>
+    );
+  }
+  const row = 'w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition-colors';
+  return (
+    <div className="relative flex items-center gap-2">
+      <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">
+        {lang === 'en' ? 'Layer' : '图层'}
+      </span>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title={lang === 'en' ? `New ${label} elements go to this layer` : `新建的${label}元素进入这个图层`}
+        className="flex-1 min-w-0 h-8 px-2 flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] text-xs text-foreground/90 hover:bg-white/10 transition-colors"
+      >
+        <span className="truncate">{cur.name}</span>
+        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">{cur.elements.length}</span>
+        <ChevronDown size={12} className="shrink-0 text-muted-foreground" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full mt-1.5 left-0 z-50 w-full min-w-[190px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-1.5">
+            <div className="max-h-52 overflow-y-auto">
+              {sameType.map((L) => (
+                <button
+                  key={L.id}
+                  onClick={() => pick(L.id)}
+                  className={`${row} ${L.id === cur.id ? 'text-foreground bg-white/[0.07]' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'}`}
+                >
+                  <Check size={12} className={L.id === cur.id ? '' : 'opacity-0'} />
+                  <span className="flex-1 text-left truncate">{L.name}</span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground/70">{L.elements.length}</span>
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={create}
+              className={`${row} mt-0.5 pt-2 border-t border-white/[0.08] text-muted-foreground hover:text-foreground hover:bg-white/5`}
+            >
+              <Plus size={12} /> {lang === 'en' ? `New ${label} layer` : `新建${label}图层`}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function FloatingTools() {
   const mode = useInteractionStore((s) => s.mode);
   const setMode = useInteractionStore((s) => s.setMode);
@@ -286,14 +365,7 @@ export function FloatingTools() {
   const [terrOpen, setTerrOpen] = useState(false);
   const [terrImportOpen, setTerrImportOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
-  const [imageItems, setImageItems] = useState<MediaItem[]>([]);
   const [imageBusy, setImageBusy] = useState(false);
-
-  // 打开「图片」菜单时加载全局素材库（跨项目）
-  useEffect(() => {
-    if (!imageOpen || !IS_DESKTOP) return;
-    void listMedia('image').then(setImageItems).catch(() => setImageItems([]));
-  }, [imageOpen]);
 
   const item = 'h-8 px-2.5 flex items-center gap-1.5 rounded-full text-xs font-medium transition-colors shrink-0';
 
@@ -337,7 +409,6 @@ export function FloatingTools() {
     try {
       const ref = await uploadAsset(file, 'image');
       await insertGeoImage(ref.assetId);
-      void listMedia('image').then(setImageItems).catch(() => { /* */ });
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
     } finally {
@@ -353,6 +424,8 @@ export function FloatingTools() {
             key={tool.label}
             title={lang === 'en' ? tool.label : tool.zh}
             onClick={() => {
+              const t = TOOL_LAYER_TYPE[tool.label];
+              if (t) useEditorStore.getState().setActiveLayerType(t);
               if (tool.action === 'place-pin') toggleMenu('Pin', setPinOpen);
               else if (tool.action === 'image') toggleMenu('Image', setImageOpen);
               else if (tool.mode === 'add_line') toggleMenu('Route', setRouteOpen);
@@ -402,6 +475,7 @@ export function FloatingTools() {
               </button>
             ))}
           </div>
+          <LayerPickRow type="marker" lang={lang} />
           <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
             {lang === 'en' ? 'Pick a style to place the marker at map center; drag to fine-tune.' : '选择样式即在地图中心放置标记，可拖拽微调；具体属性在右侧面板设置。'}
           </p>
@@ -436,6 +510,7 @@ export function FloatingTools() {
               </button>
             ))}
           </div>
+          <LayerPickRow type="route" lang={lang} />
           <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
             {lang === 'en' ? 'Click map to draw; dblclick to finish; right-click/Esc cancel. Colors, animation and move marker in panel.' : '点击地图绘制，双击完成，右键/Esc 取消；颜色、动画、移动标记在右侧面板设置。'}
           </p>
@@ -483,6 +558,7 @@ export function FloatingTools() {
               </div>
             </div>
           ))}
+          <LayerPickRow type="shape" lang={lang} />
           <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
             {lang === 'en' ? 'Click map to draw; multi-point dblclick to finish; right-click/Esc cancel. Shapes: drag vertices, rotate in panel.' : '点击地图绘制；多点图形双击完成，右键/Esc 取消。形状可拖拽顶点编辑，矩形/集结点/五角星可旋转。'}
           </p>
@@ -516,6 +592,7 @@ export function FloatingTools() {
               </button>
             ))}
           </div>
+          <LayerPickRow type="territory" lang={lang} />
           <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
             {lang === 'en'
               ? 'Annex events recolor plots: instant / fade / border draw / spread from invader / nibble by an advancing ragged front, plus glow.'
@@ -543,23 +620,7 @@ export function FloatingTools() {
               onChange={(e) => { const f = e.target.files?.[0]; if (f) void importImageFile(f); e.target.value = ''; }}
             />
           </label>
-          {imageItems.length > 0 && (
-            <div>
-              <div className="text-[10px] text-muted-foreground mb-1">{lang === 'en' ? 'Library' : '素材库'}</div>
-              <div className="grid grid-cols-3 gap-1.5 max-h-40 overflow-y-auto">
-                {imageItems.map((m) => (
-                  <button
-                    key={m.assetId}
-                    onClick={() => void insertGeoImage(m.assetId)}
-                    className="h-8 px-1.5 rounded-md border border-white/10 bg-white/[0.04] text-[10px] truncate hover:bg-white/10 hover:border-white/25 transition-colors"
-                    title={m.name}
-                  >
-                    🖼 {m.name || m.assetId.slice(0, 6)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          <LayerPickRow type="image" lang={lang} />
           <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
             {lang === 'en'
               ? 'Inserted at map center; drag the 4 corner points to georeference; grid density & opacity in the right panel.'

@@ -1,40 +1,41 @@
 # MapVideo V2 表清单速查
 
-> 16 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表，从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 22 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表（另有 5 张同构的公共元素副本表），从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：16 张表 · 5 张元素类别宽表 · 3 个视图 · 0 个触发器 · 392 列（外键全部有索引）
+- **规模**：22 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 3 个视图 · 0 个触发器 · 656 列（外键全部有索引）
 
 **目录**
 
-- 一、16 张表的构成与分流规则
+- 一、22 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、16 张表逐表速查（按 10 组）
+- 三、22 张表逐表速查（按 11 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图，以及为什么没有触发器
 
-## 一、16 张表的构成与分流规则
+## 一、22 张表的构成与分流规则
 
-**16 张表不是 23 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**22 张表不是 22 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
-| **P1** 必列化 | 身份、时间、引用关系 —— 需要检索、排序、约束 | 提升为独立列 | `element_marker` / `element_route` / `element_shape` / `element_territory` 的公共列、`chapter` 的公共列 |
-| **P2** 独立成表 | 自身有 id 或顺序语义，需被单独寻址或约束 | 1:N 子表 | `narration_entry` |
+| **P1** 必列化 | 身份、时间、引用关系 —— 需要检索、排序、约束 | 提升为独立列 | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image` 的公共列，及其 5 张公共副本表 |
+| **P2** 独立成表 | 自身有 id 或顺序语义，需被单独寻址或约束 | 1:N 子表 | `narration_entry`、`public_element_*` |
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 16 张表的构成
+#### 一句话理解 22 张表的构成
 
-- **4 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
-- **7 张**是「章节的子集合」：章节里能放的东西，除去元素之外都在这里（镜头关键帧、弹窗、特效、字幕、配乐…）；
+- **5 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域 · 图片**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
+- **6 张**是「公共图层库」：`public_layer` + 5 张与项目元素表**同构**的公共副本表（把某个图层连元素整体复制一份，供其它项目导入）；
+- **5 张**是「时间轴上的子集合」：镜头关键帧、屏幕特效、字幕档、字幕条目、配乐段落；
+- **1 张**是「弹窗」：`overlay` 本体（custom / person 内容块内联 `payload_json`，原 3 张内容块表已删除）；
 - **1 张**是「素材库」：`asset`（自定义图标 / 图片 / GIF / 模型 / 音频等二进制，`kind` 区分，按「项目 / 类型 / 时间戳」落盘）；
-- **3 张**是「弹窗内容块」；
-- **4 张**是合集、项目本体、项目配置与应用配置。
+- **4 张**是合集、项目本体、图层与应用配置。
 
 ## 二、字段归属：TS 类型 → 数据库表
 
@@ -42,7 +43,7 @@
 
 | TS 类型（src/types/index.ts） | 落到表 | 处理方式与理由 |
 |---|---|---|
-| （合集层级） | `collection` + `project.collection_id` | 项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）；未指定归属时落默认合集 `default` |
+| （合集层级） | `collection` + `project.collection_id` | 项目之上的一层分组（合集 ▸ 项目 ▸ 图层 ▸ 元素）；未指定归属时落默认合集 `default` |
 | `MapVideoProject.id / name / description / createdAt / updatedAt` | `project` | P1 列化 |
 | `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing） | `project` 的配置列（`default_duration_sec` / `default_fps` / `resolution_w` / `resolution_h` / `default_easing`） | P1 列化：配置并入项目本体（原 1:1 `project_config` 表已取消） |
 | `globalConfig.projection` | `project` 的 `projection` 列 | P1 列化：地图投影是项目自身的属性（渲染方式），随项目走，不属于「默认值类」配置 |
@@ -50,24 +51,24 @@
 | `elevationMaps[].exaggeration`（面板滑动条可调） | `project.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–50，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
 | `customSymbols[]` / `customImages[]`（图标库 / 图片库登记） | `asset`（`kind='icon'` / `kind='image'`） | **三表已合并**：两者都只是项目收录的一个素材行，二进制走 P4 外置 |
 | `layers[]`（`Layer`：type/name/visible/startFrame/endFrame/elements[]） | `layer` + 各元素表的 `layer_id` | P2：**项目 ▸ 图层 ▸ 元素**；单类型图层（marker / route / shape / territory / image）；删图层连带删元素（CASCADE） |
-| `chapters[]` | `chapter` | P1 |
-| `chapters[].elements[]` | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`（5 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表） |
+| （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— 端点无法在本层内解析的连接线在复制/导入时整条剔除（应用层裁剪 + `v_check_dangling` 兜底） |
+| `project.elements[]`（`layers[].elements` 的派生镜像） | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`（5 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表）；镜像不入库，只存图层归属 |
 | `elements[].style` / `drawProgress` / `morphKeyframes`（关键帧数组） | 类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
 | `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：1:1 且可选，跟随元素整体读写 |
-| `chapters[].camera[]` | `camera_keyframe` | P2；`followRoute.routeElementId` 变成外键（删路线 → 退化为固定视角） |
-| `chapters[].overlays[]` | `overlay` | P2：本体一张；custom / person 的内容块内联在 `payload_json`（原两张中间表已删除） |
-| `chapters[].fx[]`（`ScreenFxItem`） | `screen_fx` | P2：屏幕空间特效窗口，与地图元素区分 |
-| `chapters[].narration`（`NarrationTrack`） | `narration` + `narration_entry` | P2：档（样式/1:1）+ 条目（1:N） |
+| `camera[]`（项目级） | `camera_keyframe` | P2；`followRoute.routeElementId` 变成外键（删路线 → 退化为固定视角） |
+| `overlays[]`（项目级） | `overlay` | P2：本体一张；custom / person 的内容块内联在 `payload_json`（原两张中间表已删除） |
+| `fx[]`（`ScreenFxItem`） | `screen_fx` | P2：屏幕空间特效窗口，与地图元素区分 |
+| `narration`（`NarrationTrack`） | `narration` + `narration_entry` | P2：档（样式/1:1）+ 条目（1:N） |
 | `music[]`（项目级） | `music_track` | P2；音频本体走 `asset` |
 | `territory` 元素内的 `countries / plots / events` | `element_territory` 的 `countries_json` / `plots_json` / `events_json` | P3 内联：疆域自包含、整体读写；代价是失去复合外键，由 `v_check_territory_ref` 视图兜底 |
 | `geo_image` 元素（地理配准贴图） | `element_image` 的 `grid_json` | P3 内联：控制点网格 `(rows+1)×(cols+1)`（2×2=四角投影，更大=网格变形）；图片本体走**全局素材库**（`asset_id` 弱引用、无外键） |
 | （二进制素材） | `asset` | P4 外置存储：图片 / 音频 / 视频 / 字体统一入表，业务表只留 `asset_id` |
 | `providers` | `provider` | 独立聚合；「每 kind 至多一条 active」由部分唯一索引保证 |
 
-> 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目与章节只保存所选配置的 id 字符串（`project.active_base_map_id` / `chapter.base_map_id`）。
+> 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目只保存所选配置的 id 字符串（`project.active_base_map_id` / `active_elevation_map_id`）。
 > **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、16 张表逐表速查（按 10 组）
+## 三、22 张表逐表速查（按 11 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
@@ -85,22 +86,21 @@
 |---|---|---|---|---|
 | `asset` | 唯一素材存储（图片 / GIF / 模型 / 音频 / 字体 / 用户图标，`kind` 区分），按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重） | `asset_id` | 随项目 **CASCADE**；孤儿回收是待办项（需定期清理或引用计数） | 属性面板上传行（`ResourceUploadRow`）、标记面板自定义图片网格（`CustomImageGrid`）、字幕/配乐音频上传（`lib/assets.ts`） |
 
-### 组 3 · 章节与时间轴 6 张
+### 组 3 · 时间轴 5 张
 
-一个 `Chapter` 对象里的 6 类子集合，逐类一张表。
+项目这条连续时间线上，除元素之外的 5 类子集合，逐类一张表（原 `chapter` 表已随「章节」概念一并取消）。
 
 | 表 | 内容 | 主键 | 关键字段 / 行为 | 前端对应 |
 |---|---|---|---|---|
-| `chapter` | `Chapter` 本体 | `chapter_id` | 起止时间（`start_sec` / `end_sec`，秒） | 顶部章节页签 + 时间轴章节条（`TimelineEditor.tsx`）；底图/高程/3D 在底图芯片（`MapStyleChip.tsx`） |
 | `camera_keyframe` | `camera[]` | `kf_id` | `frame` 是**到达时间**，`move_duration` 是起飞提前量；`follow_route_element_id` 删路线后 `SET NULL`（退化为固定视角） | 「视角」面板（`KeyframePanel.tsx` / `CameraEditor.tsx`） |
 | `screen_fx` | `fx[]` | `fx_id` | 屏幕空间特效窗口（天气/画面），与地图元素分离 | 「特效」面板（`FxPanelBody.tsx`）+ 时间轴特效轨道 |
-| `narration` | `narration` 的样式部分 | `chapter_id` | 1:1，主键即外键 | 「字幕」面板（`FxPanelBody.tsx`） |
+| `narration` | `narration` 的样式部分 | `project_id` | 1:1，主键即外键 | 「字幕」面板（`FxPanelBody.tsx`） |
 | `narration_entry` | `narration.entries[]` | `entry_id` | 一条字幕 = 一行；音频走 `asset` | 时间轴「🎙 配音」轨道 + 字幕面板（TTS / 导入 SRT） |
 | `music_track` | `music[]`（项目级） | `track_id` | 项目单轨多段（项目绝对时间）；音频走 `asset` | 时间轴「音乐」轨道 + 音乐面板（内置/导入） |
 
 ### 组 4 · 标记类元素 1 张 Pin 工具
 
-工具条「标记」按钮的产出：一键在当前地图中心放置。三种标记形态（点 / 旗标 / 军标）**合并进同一张宽表**，用 `type` 判别列区分；公共字段（章节、时间轴、层级、可见性、标签、移动图标）每行都有。
+工具条「标记」按钮的产出：一键在当前地图中心放置。三种标记形态（点 / 旗标 / 军标）**合并进同一张宽表**，用 `type` 判别列区分；公共字段（图层归属、时间轴、层级、可见性、标签、移动图标）每行都有。
 属性面板：`PropertiesPanel.tsx` 标记设置区（9 种视觉形态 + 资源选择 + 标签）。
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
@@ -161,6 +161,22 @@
 | 表 | 职责 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
 | `provider` | AI 服务商配置：文案生成 / 语音（含克隆）/ 图片生成 | `provider_id` | 与项目内容解耦（Key 只存本机）；`ux_provider_active` 保证每个 kind 至多一条生效 | 顶栏「设置 · AI」弹窗（`SettingsDialog.tsx`）；字幕面板内也可打开（`FxPanelBody.tsx`） |
+
+### 组 11 · 公共图层与公共元素（跨项目图库） 6 张
+
+「把当前图层共享到公共库」/「从公共库导入图层」的落地表（`ElementsPanel.tsx` 的 ★ 按钮 + `PublicLayerDialog.tsx`）。**与项目侧同构**，差别只有两处：外键换成 `public_layer_id`，且 `asset_id` / 连接线端点**全部降级为弱引用**（公共库不属于任何项目，无法对项目的 `asset` 行建外键）。
+
+| 表 | 内容 | 主键 | 关键点 | 前端对应 |
+|---|---|---|---|---|
+| `public_layer` | 公共图层本体（类型 / 名称 / 显隐 / 显示区间 / 排序 + 审计时间） | `public_layer_id` | 无 `project_id`：库是全局的，导入时才生成项目侧 `layer` 行；`type` 与项目图层同一 CHECK | 「公共图层库」弹窗（`PublicLayerDialog.tsx`） |
+| `public_element_marker` | 标记类副本 | `element_id` | 与 `element_marker` 同构 | 同上 |
+| `public_element_route` | 路线类副本 | `element_id` | 与 `element_route` 同构；`from/to_element_id` 是弱引用 | 同上 |
+| `public_element_shape` | 形状类副本 | `element_id` | 与 `element_shape` 同构 | 同上 |
+| `public_element_territory` | 疆域类副本 | `element_id` | 与 `element_territory` 同构（三个 JSON 列整体复制） | 同上 |
+| `public_element_image` | 贴图类副本 | `element_id` | 与 `element_image` 同构；`asset_id` 弱引用，导入时在项目 `asset` 补占位行 | 同上 |
+
+**副本必须自洽**（本轮确立的不变量）：连接线端点若指向**本图层之外**的元素，整层复制后必然悬空（删掉源项目也不会清理），因此**保存与导入两条路径都在应用层整条剔除**这类连接线，并把被剔除的元素名回报给 UI（`electron/db-v2.mjs` 的 `pruneUnresolvedConnectors` / `src/lib/layers.ts` 的 `pruneForeignConnectors`）。数据库侧仍留 `v_check_dangling` 的 `public_connector.from` / `.to` 两条分支做体检 —— 兜底，不拦截写入。
+
 
 ## 四、每张表的字段（字段字典）
 
@@ -295,7 +311,7 @@
 | `follow_direction` | INTEGER | — | 跟随视角是否按路线切线自动定向 · `CHECK (follow_direction IS NULL OR follow_direction IN (0,1))` |
 | `orbit_speed` | REAL | — | 环绕速度（度/秒） |
 | `orbit_duration_sec` | REAL | — | 环绕时长（秒） |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
 #### screen_fx — 屏幕空间特效窗口：天气 / 画面叠加（非地图元素），两分支字段并存
 
@@ -317,11 +333,11 @@
 | `effect_type` | TEXT | — | 画面特效：shake 震动 / flash 闪光 / vignette 暗角 / cloudReveal 云散 / fadeBlack / fadeWhite · `CHECK (effect_type IS NULL OR effect_type IN ( 'shake','flash','vignette','cloudReveal','fadeBlack','fadeWhite'))` |
 | `effect_color` | TEXT | — | 特效颜色（flash、fade 类使用） |
 | `enabled` | INTEGER | `NOT NULL` | 是否启用 · 默认 `1` · `CHECK (enabled IN (0,1))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（同章节内排序）
+- `CHECK (end_sec >= start_sec)`（同项目内排序）
 - `CHECK ((kind = 'weather' AND weather_type IS NOT NULL) OR (kind = 'screen' AND effect_type IS NOT NULL))`
 
 #### narration — 字幕 / 配音档：样式部分，与项目 1:1
@@ -359,7 +375,7 @@
 | `duration_sec` | REAL | — | 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖 · `CHECK (duration_sec IS NULL OR duration_sec >= 1)` |
 | `start_sec` | REAL | `NOT NULL` | 章内起始时间（秒，默认自动顺排） · `CHECK (start_sec >= 0)` |
 | `locked` | INTEGER | `NOT NULL` | 手动定位后锁定，不再参与自动顺排 · 默认 `0` · `CHECK (locked IN (0,1))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
 #### music_track — 项目级背景音乐：单轨多段（项目绝对时间、段内循环、淡入淡出）
 
@@ -396,7 +412,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具） · `CHECK (type IN ('point','flag','military_symbol'))` |
@@ -422,7 +438,7 @@
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `label_font_weight` | TEXT | — | 标签字重：normal / bold · `CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold'))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `lng` | REAL | `NOT NULL` | 经度（三类标记都落在单点） |
 | `lat` | REAL | `NOT NULL` | 纬度 |
 | `rotation` | REAL | — | 贴地旋转角（0–360 度） |
@@ -478,7 +494,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具） · `CHECK (type IN ('line','moving_point','connector'))` |
@@ -526,7 +542,7 @@
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `label_font_weight` | TEXT | — | 标签字重：normal / bold · `CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold'))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_width` | REAL | — | 线宽（px） |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
@@ -572,7 +588,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement'))` |
@@ -620,7 +636,7 @@
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `label_font_weight` | TEXT | — | 标签字重：normal / bold · `CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold'))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
 | `fill_color` | TEXT | — | 填充色 |
 | `fill_opacity` | REAL | — | 填充透明度（0–1） · `CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1)` |
@@ -679,7 +695,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 territory） · 默认 `'territory'` · `CHECK (type = 'territory')` |
@@ -699,7 +715,7 @@
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `label_font_weight` | TEXT | — | 标签字重：normal / bold · `CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold'))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `display_country_borders` | INTEGER | `NOT NULL` | 是否显示势力边界（0/1） · 默认 `1` · `CHECK (display_country_borders IN (0,1))` |
 | `display_plot_borders` | INTEGER | `NOT NULL` | 是否显示地块边界（0/1） · 默认 `1` · `CHECK (display_plot_borders IN (0,1))` |
 | `display_border_width` | REAL | `NOT NULL` | 势力边界线宽（px） · 默认 `3` · `CHECK (display_border_width >= 0)` |
@@ -740,11 +756,11 @@
 | `rows` | INTEGER | `NOT NULL` | 配准网格行数 · 默认 `1` · `CHECK (rows >= 1)` |
 | `grid_json` | TEXT | — | 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]） · `CHECK (grid_json IS NULL OR json_valid(grid_json))` |
 | `opacity` | REAL | — | 不透明度（0–1） · `CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1)` |
-| `ord` | INTEGER | `NOT NULL` | 同章内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（同章内排序）
+- `CHECK (end_sec >= start_sec)`（同图层内排序）
 
 ### 组 9 · 叠加层（弹窗）
 
@@ -778,11 +794,11 @@
 | `person_layout_json` | TEXT | — | 人物卡版式：图片方位/对齐/间距/卡片宽/名言样式/叠图 · `CHECK (person_layout_json IS NULL OR json_valid(person_layout_json))` |
 | `audio_asset_id` | TEXT | `FK → asset SET NULL` | 背景语音（卡片可见时播放；导出混流待支持） |
 | `parent_overlay_id` | TEXT | `FK → overlay CASCADE` | 父弹窗（group 嵌套结构） |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（同章节内排序）
+- `CHECK (end_sec >= start_sec)`（同项目内排序）
 
 ### 组 10 · 应用配置
 
@@ -821,7 +837,7 @@
 | `type` | TEXT | `NOT NULL` | 图层类型（单类型）：marker 标记 / route 路线 / shape 形状 / territory 疆域 / image 图片 · `CHECK (type IN ('marker','route','shape','territory','image'))` |
 | `name` | TEXT | `NOT NULL` | 图层名 · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
-| `start_sec` | REAL | `NOT NULL` | 显示起点（秒，导入时通常对齐为 0） · `CHECK (start_sec >= 0)` |
+| `start_sec` | REAL | `NOT NULL` | 显示起点（秒，沿用源图层区间、导入时不自动归零） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 显示终点（秒） |
 | `ord` | INTEGER | `NOT NULL` | 排序 · 默认 `0` |
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
@@ -839,7 +855,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具） · `CHECK (type IN ('point','flag','military_symbol'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
@@ -864,7 +880,7 @@
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `label_font_weight` | TEXT | — | 标签字重：normal / bold · `CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold'))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `lng` | REAL | `NOT NULL` | 经度（三类标记都落在单点） |
 | `lat` | REAL | `NOT NULL` | 纬度 |
 | `rotation` | REAL | — | 贴地旋转角（0–360 度） |
@@ -918,7 +934,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具） · `CHECK (type IN ('line','moving_point','connector'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
@@ -965,7 +981,7 @@
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `label_font_weight` | TEXT | — | 标签字重：normal / bold · `CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold'))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_width` | REAL | — | 线宽（px） |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
@@ -1009,7 +1025,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
@@ -1056,7 +1072,7 @@
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `label_font_weight` | TEXT | — | 标签字重：normal / bold · `CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold'))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
 | `fill_color` | TEXT | — | 填充色 |
 | `fill_opacity` | REAL | — | 填充透明度（0–1） · `CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1)` |
@@ -1113,7 +1129,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `element_id` | TEXT | `PK` | 元素 id（全库唯一，4 张类别表共享同一 id 空间） |
+| `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 territory） · 默认 `'territory'` · `CHECK (type = 'territory')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
@@ -1132,7 +1148,7 @@
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `label_font_weight` | TEXT | — | 标签字重：normal / bold · `CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold'))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同章节内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `display_country_borders` | INTEGER | `NOT NULL` | 是否显示势力边界（0/1） · 默认 `1` · `CHECK (display_country_borders IN (0,1))` |
 | `display_plot_borders` | INTEGER | `NOT NULL` | 是否显示地块边界（0/1） · 默认 `1` · `CHECK (display_plot_borders IN (0,1))` |
 | `display_border_width` | REAL | `NOT NULL` | 势力边界线宽（px） · 默认 `3` · `CHECK (display_border_width >= 0)` |
@@ -1170,26 +1186,26 @@
 | `rows` | INTEGER | `NOT NULL` | 配准网格行数 · 默认 `1` · `CHECK (rows >= 1)` |
 | `grid_json` | TEXT | — | 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]） · `CHECK (grid_json IS NULL OR json_valid(grid_json))` |
 | `opacity` | REAL | — | 不透明度（0–1） · `CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1)` |
-| `ord` | INTEGER | `NOT NULL` | 同章内排序 · 默认 `0` |
+| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（同章内排序）
+- `CHECK (end_sec >= start_sec)`（同图层内排序）
 
 <!-- FIELD-DICT:END -->
 
-## 五、工具栏与元素类型：6 个按钮 → 4 张表 / 12 种元素
+## 五、工具栏与元素类型：5 个按钮 → 5 张表 / 13 种元素
 
-更正：本文早前写作「13 张元素子表 = 工具条上的 13 个按钮」，不准确；按新设计也不再是「一个类型一张表」。工具栏实际只有 **6 个按钮**（标记 / 路线 / 图片 / 形状 / 区域 / 疆域），其中「形状」「疆域」带下拉子菜单、共 19 + 4 个绘制项；**元素按工具栏聚合为 4 张类别宽表**，表内用 `type` 判别列区分子类型。图片类（Image 工具）已下线。
+元素**按工具栏聚合为 5 张类别宽表**，表内用 `type` 判别列区分子类型。工具条当前是 **5 个按钮**（标记 / 路线 / 形状 / 疆域 / 图片，见 `Toolbar.tsx` 的 `TOOLS`），其中「形状」「疆域」带下拉子菜单；「区域」（行政区高亮）的产物就是 `polygon`，与形状共用一张表，不单列按钮。
 
 | 工具条按钮 | 交互方式 | 落到哪张表的哪个 type |
 |---|---|---|
 | **标记** Pin | 一键放到地图中心，之后在面板里改样式/换形态 | `element_marker`：`point`（圆点/水滴针/气泡/Emoji/文字） 切到 Marker → `flag`；军标导入/旧数据 → `military_symbol` |
 | **路线** Route | 进入绘制模式，采点成线 | `element_route`：`line`（线型与路线特效在右侧 Settings 切换） |
-| **图片** Image | 已下线 | **已移除**：`custom_icon` 元素类型与 Image 工具不再存在 |
 | **形状** Shape | 下拉菜单三组共 19 项：多点绘制 / 两点绘制 / 特殊图形 | `element_shape`：`polygon`（多边形/曲线多边/防御圈/圆/矩形/五角星）、`arrow`（带箭头/行军/燕尾/自定义）、`double_arrow`（钳形）、`gathering`（集结点） 其中带箭头/战线的直线属**路线表** `line` |
-| **区域** Region | 打开行政区选择器，点国家/地区 | `element_shape` 的 `polygon`（按边界自动生成可编辑高亮面，跨海国家拆多个面）——**与形状共用一张表** |
+| **区域** Region（形状下拉内） | 打开行政区选择器，点国家/地区 | `element_shape` 的 `polygon`（按边界自动生成可编辑高亮面，跨海国家拆多个面）——**与形状共用一张表** |
 | **疆域** Terr | 下拉菜单 4 项：新建疆域 / 导入 / 绘制地块 / 兼并 | `element_territory`（势力 / 地块 / 兼并事件 JSON 全部内联在本表） |
+| **图片** Image | 导入图片 / 从全局素材库插入，拖控制点做地理配准 | `element_image`：`geo_image`（控制点网格 `grid_json` 内联，图片本体走全局素材库） |
 
 #### 当前没有工具栏入口的元素类型
 
@@ -1237,10 +1253,11 @@
 
 | 容易混的地方 | 区别 |
 |---|---|
-| `element_marker` / `element_route` / `element_shape` / `element_territory` vs 表内 `type` | 四张表按**工具栏**分（标记 / 路线 / 形状 / 疆域）；表内的 `type` 才是具体元素类型（point / line / polygon…）。找元素先看它在哪个工具下，再用 `type` 区分 |
+| `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image` vs 表内 `type` | 五张表按**工具栏**分（标记 / 路线 / 形状 / 疆域 / 图片）；表内的 `type` 才是具体元素类型（point / line / polygon…）。找元素先看它在哪个工具下，再用 `type` 区分 |
 | `label_json` vs `keyframes_json`（都是元素表内的一列） | 前者是**文字气泡内容**，后者是**动画曲线**（8 种属性的关键帧数组）—— 都作为一列 JSON 跟随元素一起读写，不再独立成表 |
-| `narration` vs `narration_entry` | 前者是「这一章的配音档」（样式、总开关，1:1）；后者是「档里的一条条字幕」（1:N） |
+| `narration` vs `narration_entry` | 前者是「全片的配音档」（样式、总开关，与项目 1:1）；后者是「档里的一条条字幕」（1:N） |
 | `overlay` 的内容块 | custom 的内容块 / person 的人物块内联在 `overlay.payload_json`，不再单独建表 |
+| `layer` vs `public_layer`（字段几乎一样） | `layer` 属于某个项目（`project_id` 外键，删项目 CASCADE）；`public_layer` 是**跨项目图库里的独立副本**，没有项目归属，`element_id` 与源项目**无关**（整层复制时重新加后缀）。导入 = 从副本再复制一份进项目，之后两者互不影响 |
 
 ## 七、一次「打开」与一次「保存」
 
@@ -1248,29 +1265,31 @@
 
       - 读 `project`（身份 / 归属 / 生效底图 + 全局配置列）一行
 
-      - 读 `chapter`（按 `order_index`）→ 章节列表与时间轴
+      - 读 `layer`（按 `ord`）→ 图层列表；图层是元素的唯一归属，**项目 ▸ 图层 ▸ 元素**
 
-      - 查视图 `v_element_index`（四张类别表的公共列 UNION）→ 时间线轨道与元素列表（**不做 JOIN**）
+      - 查视图 `v_element_index`（5 张类别表的公共列 UNION）→ 时间线轨道与元素列表（**不做 JOIN**）
 
-      - 按需取类别表：只有真正要渲染的元素才查它所属的类别表（marker / route / shape / territory），连带取出专属列
+      - 按需取类别表：只有真正要渲染的元素才查它所属的类别表（marker / route / shape / territory / image），连带取出专属列
 
-      - 组装回 `MapVideoProject` 对象交给 store（上层无感）
+      - `*_sec` 按 `default_fps` 换算成帧，组装回 `MapVideoProject`（含 `layers[]` 与其 `elements[]`，`project.elements` 由图层派生）交给 store（上层无感）
 
 #### 保存项目（写）
 
       - 整个保存过程放在**一个事务**里（实测：逐条提交 vs 单事务差 63 倍）
 
-      - 先写父表（`project` → `chapter` → `元素类别表`）；连接线端点是**弱引用**，须先建被引用元素
+      - 先写父表（`project` → `layer` → `元素类别表`）；连接线端点是**弱引用**，须先建被引用元素
 
-      - 二进制素材先入 `asset`，业务表只写 `asset_id`
+      - 二进制素材先入 `asset`，业务表只写 `asset_id`（**顺序不能反**：项目侧 `asset_id` 有外键，缺行会回滚整笔事务）
 
-      - 同类别内切换子类型只需 `UPDATE type` + 补齐该子类型的必填字段（CHECK 会校验）；**跨类别**切换则是「删旧表行 → 插新表行」
+      - 帧 → 秒在写入端换算（只存用户输入的原值，fps 变了时长不失真）
+
+      - 同类别内切换子类型只需 `UPDATE type` + 补齐该子类型的必填字段（CHECK 会校验）；**跨类别**切换则是「删旧表行 → 插新表行」（图层类型也要跟着换）
 
       - 保存后跑一遍一致性自检视图（`v_check_dangling` / `v_check_territory_ref`），应全部返回 0 行
 
-#### 注意：本文是设计稿
+#### 实现状态
 
-本文描述的是**目标结构**；`electron/main.mjs` 与 `src/stores/db.ts` 目前是「项目 JSON + 合集 + 素材」的简化实现，尚未按本设计的多表结构落地。落地需要一个承载「多表 ↔ `MapVideoProject`」双向映射的模块。未决问题见 `docs/db-redesign.md` 末节。
+桌面端（`electron/db-v2.mjs` + `electron/main.mjs` 的 `db:*` IPC）已按本设计的多表结构落地：`ensureV2Schema` 建表、`saveProjectV2` / `getProjectV2` 做多表 ↔ `MapVideoProject` 双向映射、`*PublicLayerV2` 管公共图层库，并带引用完整性（外键默认开启）。网页端仍是 Dexie / localStorage 的简化实现（ IndexedDB 无外键、无触发器，规则由 `src/lib` 应用层保证）。未决问题见 `docs/db-redesign.md` 末节。
 
 ## 附：3 个视图，以及为什么没有触发器
 
@@ -1280,8 +1299,8 @@
 
 | 视图 | 类别 | 作用 |
 |---|---|---|
-| `v_element_index` | 读取便利 | 把 4 张类别表的公共列 UNION 成一张「元素总表」：取消基表后，轨道 / 列表 / 计数查这里，不用手写 4 表 UNION |
-| `v_check_dangling` | 一致性自检 | 查悬空引用：连接线指向已删除的元素、关键帧挂在已删除的元素上、跟随机位指向已删除的路线。迁移后与老库体检用，正常应返回 0 行 |
+| `v_element_index` | 读取便利 | 把 5 张类别表的公共列 UNION 成一张「元素总表」：取消基表后，轨道 / 列表 / 计数查这里，不用手写 5 表 UNION |
+| `v_check_dangling` | 一致性自检 | 查悬空引用：连接线指向已删除的元素（项目侧）、公共库副本里端点未在同一公共图层内解析的连接线（`public_connector.from` / `.to`）、跟随机位指向已删除的路线。迁移后与老库体检用，正常应返回 0 行 |
 | `v_check_territory_ref` | 一致性自检 | 疆域 JSON 内部一致性：`plots_json` 的 `ownerId`、`events_json` 的 `toCountryId` 必须能在 `countries_json` 中命中（复合外键被 JSON 化后的补偿） |
 
 ### 为什么没有触发器（原 6 条已全部移除）
@@ -1297,7 +1316,8 @@
 | 原触发器承担的规则 | 现在由谁保证 |
 |---|---|
 | 删元素 → 连带删除以它为端点的 connector、以及挂在它名下的关键帧 | 应用层删除元素时一并清理 |
-| 跟随机位只能引用同一章节内的路线元素 | 写入端校验（选择跟随机位时只列本章路线） |
+| 公共图层副本只引用本图层内的元素 | 应用层在「保存到公共库」/「导入到项目」两条路径上剔除端点跨图层的连接线（`pruneUnresolvedConnectors` / `pruneForeignConnectors`） |
+| 跟随机位只能引用同一项目内的路线元素 | 写入端校验（选择跟随机位时只列本项目路线）+ 外键 `SET NULL` 兜底 |
 
 数据库侧只保留 `v_check_dangling` / `v_check_territory_ref` 两个**自检视图**：它们不拦截写入，只把「数据已损坏」从隐性变成可检测。
 

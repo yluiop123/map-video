@@ -9,7 +9,8 @@ import type {
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
-import { deriveElements, layerTypeOf, LAYER_TYPE_LABEL } from '../lib/layers';
+import { deriveElements, layerTypeOf, insertLayerSorted, LAYER_TYPE_LABEL, resolveTargetLayerId } from '../lib/layers';
+import { useEditorStore } from './editorStore';
 import { planChapterCamera } from '../lib/camera-plan';
 import { releaseAssetUrls, getAssetBytes, uploadAsset, type AssetKind } from '../lib/assets';
 import { clearGifCache } from '../lib/gif-decoder';
@@ -339,7 +340,15 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     set((state) => {
       if (!state.project) return state;
       const p = fn(state.project);
-      return { project: { ...p, elements: deriveElements(p.layers) } };
+      const next: MapVideoProject = { ...p, elements: deriveElements(p.layers) };
+      // 选中元素的宿主层就是地图上的「可编辑层」：新建、改类型迁移、面板/时间线点选
+      // 都从这一处收口，否则「刚画完的东西自己点不动」。只改门禁，不动写入目标。
+      const selId = useEditorStore.getState().selectedElementId;
+      if (selId && next.elements.some((el) => el.id === selId)) {
+        const host = next.layers.find((L) => L.elements.some((el) => el.id === selId));
+        if (host && useEditorStore.getState().selectedLayerId !== host.id) useEditorStore.getState().focusLayer(host.id);
+      }
+      return { project: next };
     });
   };
 
@@ -485,7 +494,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
             overlays: [...p.overlays, ...overlays],
             fx: [...p.fx, ...fx],
             camera,
-            narration: { entries, style: defaultNarrationStyle() },
+            narration: { ...p.narration, entries },
             endFrame: cursor,
           },
         };
@@ -501,10 +510,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         ? makeDefaultLayer(p0, type)
         : { id: generateId(), type, name: LAYER_TYPE_LABEL[type], visible: true, startFrame: 0, endFrame: 1, elements: [] };
       const layer: Layer = name ? { ...base, name } : base;
-      patch((p) => ({ ...p, layers: [...p.layers, layer] }));
+      patch((p) => ({ ...p, layers: insertLayerSorted(p.layers, layer) }));
       return layer;
     },
-    addLayerFull: (layer: Layer) => patch((p) => ({ ...p, layers: [...p.layers, layer] })),
+    addLayerFull: (layer: Layer) => patch((p) => ({ ...p, layers: insertLayerSorted(p.layers, layer) })),
     updateLayer: (layerId, changes) =>
       patch((p) => ({
         ...p,
@@ -560,12 +569,15 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       }),
 
     // ----- 元素（归属单类型图层；elements 为派生镜像，由 patch 自动重算） -----
+    // 归属解析顺序：显式指定 → 该类型的「写入目标」→ 该类第一个图层 → 新建
     addElement: (element, layerId) =>
       patch((p) => {
         const ltype = layerTypeOf(element);
+        const targets = useEditorStore.getState().targetLayers;
         let layers = p.layers;
-        let target = layerId ? layers.find((L) => L.id === layerId) : layers.find((L) => L.type === ltype);
-        if (!target) { target = makeDefaultLayer(p, ltype); layers = [...layers, target]; }
+        const id = resolveTargetLayerId(layers, ltype, targets, layerId);
+        let target = layers.find((L) => L.id === id) || null;
+        if (!target) { target = makeDefaultLayer(p, ltype); layers = insertLayerSorted(layers, target); }
         return { ...p, layers: layers.map((L) => (L.id === target!.id ? { ...L, elements: [...L.elements, element] } : L)) };
       }),
     addElements: (elements, layerId) =>
@@ -575,24 +587,46 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         if (layerId && p.layers.some((L) => L.id === layerId)) {
           return { ...p, layers: p.layers.map((L) => (L.id === layerId ? { ...L, elements: [...L.elements, ...elements] } : L)) };
         }
+        const targets = useEditorStore.getState().targetLayers;
         let layers = [...p.layers];
         for (const el of elements) {
           const ltype = layerTypeOf(el);
-          let idx = layers.findIndex((L) => L.type === ltype);
-          if (idx < 0) { layers.push(makeDefaultLayer({ ...p, layers }, ltype)); idx = layers.length - 1; }
+          let idx = layers.findIndex((L) => L.id === resolveTargetLayerId(layers, ltype, targets));
+          if (idx < 0) {
+            layers = insertLayerSorted(layers, makeDefaultLayer({ ...p, layers }, ltype));
+            idx = layers.findIndex((L) => L.type === ltype);
+          }
           layers[idx] = { ...layers[idx], elements: [...layers[idx].elements, el] };
         }
         return { ...p, layers };
       }),
     updateElement: (elementId, changes) =>
-      patch((p) => ({
-        ...p,
-        layers: p.layers.map((L) => (
-          L.elements.some((el) => el.id === elementId)
-            ? { ...L, elements: L.elements.map((el) => (el.id === elementId ? ({ ...el, ...changes } as MapElement) : el)) }
-            : L
-        )),
-      })),
+      patch((p) => {
+        const host = p.layers.find((L) => L.elements.some((el) => el.id === elementId));
+        if (!host) return p;
+        const merged = (host.elements.find((el) => el.id === elementId) as MapElement);
+        const next = { ...merged, ...changes } as MapElement;
+        // 改类型可能跨类别（polygon ↔ line）：图层是单类型的，必须迁走，否则不变量被破坏、落库进错表
+        const want = layerTypeOf(next);
+        if (want !== host.type) {
+          const targets = useEditorStore.getState().targetLayers;
+          const without = p.layers.map((L) => (L.id === host.id ? { ...L, elements: L.elements.filter((el) => el.id !== elementId) } : L));
+          let layers = without;
+          const id = resolveTargetLayerId(without, want, targets);
+          let dst = layers.find((L) => L.id === id) || null;
+          if (!dst) { dst = makeDefaultLayer({ ...p, layers }, want); layers = insertLayerSorted(layers, dst); }
+          const dstId = dst.id;
+          return { ...p, layers: layers.map((L) => (L.id === dstId ? { ...L, elements: [...L.elements, next] } : L)) };
+        }
+        return {
+          ...p,
+          layers: p.layers.map((L) => (
+            L.id === host.id
+              ? { ...L, elements: L.elements.map((el) => (el.id === elementId ? next : el)) }
+              : L
+          )),
+        };
+      }),
 
     /**
      * 删除元素 —— 一并清理弱引用：

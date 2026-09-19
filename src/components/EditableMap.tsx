@@ -5,7 +5,7 @@ import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import * as turf from '@turf/turf';
 import {
-  renderElements, setRenderFps, setVisualReadyHandler,
+  renderElements, restackByLayerOrder, setRenderFps, setVisualReadyHandler,
   buildArrowGeometry, buildSelectionFeature, pixelsToDegrees, rotatePt, resolveFollowCam, resolveOrbitCam,
 } from '../lib/map-renderer';
 import { buildDoubleArrow, buildGatheringPlace } from '../lib/military-plots';
@@ -128,10 +128,13 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
         map.jumpTo({ center: cam.center, zoom: cam.zoom, pitch: cam.pitch || 0, bearing: cam.bearing || 0 });
       }
       // 3D 球体投影（读全局配置最新值，避免闭包过期）
-      const st = useProjectStore.getState();      applyProjection(map, ((st.project?.globalConfig.projection) ?? 'mercator') === 'globe');
+      const st = useProjectStore.getState();
+      applyProjection(map, ((st.project?.globalConfig.projection) ?? 'mercator') === 'globe');
       // 元素刷新
       // 编辑端：传 interactive=true（绘制编辑辅助图形；导出端 MapScene 不传）
       renderElements(map, project.elements, currentFrame, project.globalConfig.defaultFPS, true);
+      // 列表顺序 = 地图叠放顺序（靠前的在上层）
+      restackByLayerOrder(map, project.elements.map((el) => el.id));
 
       // ===== 地图事件注册（一次性；回调经 handlersRef 取最新） =====
       const H = () => handlersRef.current;
@@ -244,6 +247,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     if (el) {
       addElement(el);
       selectElement(el.id);
+      focusHostOf(el.id);
     }
     useInteractionStore.getState().clearPendingPlace();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -270,6 +274,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     return () => setVisualReadyHandler(null);
   }, []);
   const isPlaying = useEditorStore((s) => s.isPlaying);
+  const presenting = useEditorStore((s) => s.presenting);
   const confirm = useConfirm();
   const routeEditMode = useEditorStore((s) => s.routeEdit);
   // ===== 元素刷新 =====
@@ -281,6 +286,8 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     try {
       // 编辑端：传 interactive=true（绘制编辑辅助图形；导出端 MapScene 不传）
       renderElements(map, project.elements, currentFrame, project.globalConfig.defaultFPS, true);
+      // 列表顺序 = 地图叠放顺序（靠前的在上层）
+      restackByLayerOrder(map, project.elements.map((el) => el.id));
     } catch { /* style 未就绪，下一帧重试 */ }
   }, [project, currentFrame, project.globalConfig.defaultFPS, styleTick]);
 
@@ -596,6 +603,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
           if (els.length) {
             addElements(els);
             selectElement(els[0].id);
+            focusHostOf(els[0].id);
             setMode('select');
           }
         } catch {
@@ -821,13 +829,20 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
 
     // —— 选择模式：命中检测 ——
     if (mode === 'select') {
-      selectElement(pickElement(map, e.point, project.elements));
+      selectElement(pickElement(map, e.point, project.elements, editableIdSet(project, useEditorStore.getState().selectedLayerId)));
     }
   }, [mode, project, project, addElement, addElements, selectElement, setMode, updatePreview, resetDraw, confirm]);
+
+  /** 把某元素的宿主层设为地图上的「可编辑层」：刚画完 / 刚导入的东西应当能立刻拖 */
+  const focusHostOf = (elementId: string) => {
+    const host = useProjectStore.getState().project?.layers.find((L) => L.elements.some((el) => el.id === elementId));
+    if (host) useEditorStore.getState().focusLayer(host.id);
+  };
 
   const createElementAndSelect = useCallback((element: MapElement) => {
     addElement(element);
     selectElement(element.id);
+    focusHostOf(element.id);
     setMode('select');
   }, [project.id, addElement, selectElement, setMode]);
 
@@ -1132,7 +1147,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     if (useInteractionStore.getState().mode !== 'select') return; // 其他模式由 getCursor 处理
     if (dragRef.current.active) { m.getCanvas().style.cursor = 'move'; return; }
     if (useEditorStore.getState().routeEdit === 'add') { m.getCanvas().style.cursor = 'crosshair'; return; }
-    const hit = pickElement(m, e.point, project.elements);
+    const hit = pickElement(m, e.point, project.elements, editableIdSet(project, useEditorStore.getState().selectedLayerId));
     m.getCanvas().style.cursor = hit ? 'move' : '';
   }, [project.elements]);
 
@@ -1168,6 +1183,8 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     const st = useProjectStore.getState();
     const selId = useEditorStore.getState().selectedElementId;
     const ch = st.project || project;
+    // 只有「当前选中图层」里的元素在地图上可编辑；未选中图层时全部可编辑
+    const ed = editableIdSet(ch, useEditorStore.getState().selectedLayerId);
     const rEdit = useEditorStore.getState().routeEdit;
     const selEl = rEdit !== 'none' && selId ? ch.elements.find((x) => x.id === selId) : undefined;
     const editPath = selEl ? routePathOf(selEl) : null;
@@ -1176,7 +1193,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     // 命中空白地图 → 在带路径的选中路线末尾追加（可连续追加，仅路线类）。
     const APPENDABLE = new Set(['line', 'moving_point', 'arrow', 'double_arrow']);
     if (rEdit === 'add') {
-      const vAdd = hitRouteVertex(map, e.point, ch.elements, selId);
+      const vAdd = hitRouteVertex(map, e.point, ch.elements, selId, ed);
       if (vAdd) {
         useEditorStore.getState().setRouteEdit('none');
       } else if (editPath && APPENDABLE.has((selEl as MapElement).type)) {
@@ -1194,7 +1211,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     // 无选中路线或编辑模式已失效：清掉残留模式，透传正常选择/拖拽
     if (rEdit !== 'none') useEditorStore.getState().setRouteEdit('none');
     // 优先命中路线顶点（可见标记点）：命中即选中该路线并进入顶点拖拽
-    const v = hitRouteVertex(map, e.point, ch.elements, selId);
+    const v = hitRouteVertex(map, e.point, ch.elements, selId, ed);
     if (v) {
       // 疆域：Alt+点击顶点 → 删除（共享顶点同步删除；保底 3 点，少了删地块）
       const vEl = ch.elements.find((x) => x.id === v.eid);
@@ -1224,7 +1241,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
       map.dragPan.disable();
       return;
     }
-    const hit = pickElement(map, e.point, ch.elements);
+    const hit = pickElement(map, e.point, ch.elements, ed);
     if (hit) {
       // 拖拽开始前快照一次（绕过 700ms 节流）
       setHistoryMuted(true);
@@ -1404,10 +1421,22 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
           updatePreview();
           return;
         }
-        // 选中图层：优先删除整个图层（含其元素）
+        // 有选中元素先删元素；没有元素而选中了图层才删整层（图层选中态现在常驻，不再与元素互斥）
         const layerId = useEditorStore.getState().selectedLayerId;
         const id = useEditorStore.getState().selectedElementId;
-        if (layerId) {
+        if (id) {
+          e.preventDefault();
+          const el = project.elements.find((x) => x.id === id);
+          void confirm({
+            message: `删除「${el?.name || '元素'}」？`,
+            danger: true,
+            confirmText: '删除',
+          }).then((ok) => {
+            if (!ok) return;
+            useProjectStore.getState().deleteElement(id);
+            selectElement(null);
+          });
+        } else if (layerId) {
           e.preventDefault();
           const L = useProjectStore.getState().project?.layers.find((x) => x.id === layerId);
           if (!L) return;
@@ -1419,18 +1448,6 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
             if (!ok) return;
             useProjectStore.getState().deleteLayer(layerId);
             useEditorStore.getState().selectLayer(null);
-            selectElement(null);
-          });
-        } else if (id) {
-          e.preventDefault();
-          const el = project.elements.find((x) => x.id === id);
-          void confirm({
-            message: `删除「${el?.name || '元素'}」？`,
-            danger: true,
-            confirmText: '删除',
-          }).then((ok) => {
-            if (!ok) return;
-            useProjectStore.getState().deleteElement(id);
             selectElement(null);
           });
         } else if (useEditorStore.getState().fxSelId) {
@@ -1532,7 +1549,8 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     }
     if (routeEditMode === 'none') return;
     const el = selectedElementId ? project.elements.find((x) => x.id === selectedElementId) : null;
-    if (!el || !routePathOf(el)) useEditorStore.getState().setRouteEdit('none');
+    const ed = editableIdSet(project, useEditorStore.getState().selectedLayerId);
+    if (!el || !routePathOf(el) || (ed && !ed.has(el.id))) useEditorStore.getState().setRouteEdit('none');
   }, [selectedElementId, project, routeEditMode]);
 
   // ===== 路线顶点标识：所有路线元素显示路径点，选中的更大更亮 =====
@@ -1541,7 +1559,10 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     if (!map) return;
     const srcId = 'vertex-markers';
     const feats: any[] = [];
+    // 只画可编辑层的顶点：非激活层的顶点画出来却拖不动会误导（命中判定同样已过滤）
+    const ed = editableIdSet(project, useEditorStore.getState().selectedLayerId);
     for (const el of project.elements) {
+      if (ed && !ed.has(el.id)) continue;
       const path = routePathOf(el);
       if (!path) continue;
       const sel = el.id === selectedElementId;
@@ -1567,17 +1588,17 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
     } catch { /* style 未就绪：styleTick 后重试 */ }
   }, [project, selectedElementId, styleTick, terrPlotId]);
 
-  // ===== 播放时隐藏编辑辅助（顶点标识 / 选中高亮） =====
+  // ===== 播放 / 演示时隐藏编辑辅助（顶点标识 / 选中高亮） =====
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const vis = isPlaying ? 'none' : 'visible';
+    const vis = isPlaying || presenting ? 'none' : 'visible';
     // 注意：不包含 'terr-snap'（吸附指示圈）——它只由绘制悬停逻辑按需显示/隐藏，
     // 否则选中元素/项目变化时会把上次残留的蓝圈重新设为 visible。
     ['vertex-dot', 'selection-line', 'selection-fill', 'selection-point', 'selection-move'].forEach((id) => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
     });
-  }, [isPlaying, project, selectedElementId, styleTick]);
+  }, [isPlaying, presenting, project, selectedElementId, styleTick]);
 
   // ===== 左侧列表定位请求 =====
   const focusReq = useInteractionStore((s) => s.focusReq);
@@ -1793,7 +1814,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
       {/* TILT 倾斜滑块已移除（俯仰在右侧视角属性中设置） */}
 
       {/* 视角工具条（Mapimator 风格胶囊）：更新视角 / 预览飞回 / 收起；播放预览时隐藏 */}
-      {mode === 'select' && !viewBarHidden && !isPlaying && (
+      {mode === 'select' && !viewBarHidden && !isPlaying && !presenting && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[30] flex items-center gap-1 h-10 px-1.5 rounded-full bg-[#1c1917]/95 backdrop-blur border border-white/10 shadow-lg">
           <button
             onClick={handleUpdateView}
@@ -1839,7 +1860,7 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
           )}
         </div>
       )}
-      {mode === 'select' && viewBarHidden && !isPlaying && (
+      {mode === 'select' && viewBarHidden && !isPlaying && !presenting && (
         <button
           onClick={() => setViewBarHidden(false)}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[30] w-9 h-9 flex items-center justify-center rounded-full bg-[#1c1917]/95 backdrop-blur border border-white/10 shadow-lg text-muted-foreground hover:text-foreground transition-colors"
@@ -2090,8 +2111,9 @@ function shapeRectRing(c1: [number, number], c2: [number, number]): [number, num
 }
 
 /** 命中检测：屏幕 25px 内最近的路线顶点 */
-function hitRouteVertex(map: maplibregl.Map, point: maplibregl.PointLike, elements: MapElement[], preferId?: string | null): { eid: string; idx: number } | null {
+function hitRouteVertex(map: maplibregl.Map, point: maplibregl.PointLike, elements: MapElement[], preferId?: string | null, editable?: Set<string> | null): { eid: string; idx: number } | null {
   const pt = point as maplibregl.Point;
+  if (editable) elements = elements.filter((el) => editable.has(el.id));
   const hitIn = (els: MapElement[]): { eid: string; idx: number } | null => {
     let best: { eid: string; idx: number } | null = null;
     let bestD = 25;
@@ -2205,7 +2227,18 @@ function nearestRingVertexIndex(ring: [number, number][], pt: [number, number]):
   } catch { /* style 未就绪 */ }
 }
 
-function pickElement(map: maplibregl.Map, point: maplibregl.PointLike, elements: MapElement[]): string | null {
+/**
+ * 当前「可编辑元素集合」：没选中图层 = 全部（否则一进编辑器就什么都点不动）；
+ * 选中某图层 = 只有该图层的元素在地图上有激活态编辑效果（可点选 / 可拖 / 顶点）。
+ */
+function editableIdSet(project: MapVideoProject, activeLayerId: string | null): Set<string> | null {
+  if (!activeLayerId) return null;
+  const L = project.layers?.find((x) => x.id === activeLayerId);
+  return new Set((L?.elements || []).map((e) => e.id));
+}
+
+function pickElement(map: maplibregl.Map, point: maplibregl.PointLike, elements: MapElement[], editable?: Set<string> | null): string | null {
+  const ok = (eid: string | null) => !!eid && (!editable || editable.has(eid));
   const layers = getAllElementLayers(map);
   if (layers.length > 0) {
     const feats = map.queryRenderedFeatures(point, { layers });
@@ -2213,14 +2246,16 @@ function pickElement(map: maplibregl.Map, point: maplibregl.PointLike, elements:
       const id = f.layer?.id;
       if (id) {
         const eid = elementIdFromLayerId(id, elements);
-        if (eid) return eid;
+        // 不可编辑层的元素压在上方时不能把点击吃掉：跳过它继续往下找
+        if (ok(eid)) return eid;
       }
     }
   }
   // 飞行拱形（custom layer 不参与 queryRenderedFeatures）：点击点到抬升折线的屏幕距离判定
   const pickPx = Array.isArray(point) ? point[0] : point.x;
   const pickPy = Array.isArray(point) ? point[1] : point.y;
-  return pickFlyRibbon(map, pickPx, pickPy, elements);
+  const ribbon = pickFlyRibbon(map, pickPx, pickPy, elements);
+  return ok(ribbon) ? ribbon : null;
 }
 
 function getAllElementLayers(map: maplibregl.Map): string[] {

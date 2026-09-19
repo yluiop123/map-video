@@ -25,3 +25,17 @@ export function formatClock(seconds: number): string {
 export function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
+
+/**
+ * 时间窗整体平移：撞边界时**保长**（贴边后不再压缩区间，只是停住）。
+ * 两端各自钳制会让拖到片头/片尾时的时长被静默改变。
+ */
+export function clampWindowMove(
+  origStart: number, origEnd: number, delta: number, lo: number, hi: number,
+): [number, number] {
+  let s = origStart + delta;
+  let e = origEnd + delta;
+  if (s < lo) { e += lo - s; s = lo; }
+  if (e > hi) { s -= e - hi; e = hi; }
+  return [Math.max(lo, s), Math.min(hi, e)];
+}

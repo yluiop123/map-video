@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS camera_keyframe (  -- 视角关键帧：停留 → �
   -- orbit 视角
   orbit_speed    REAL,  -- 环绕速度（度/秒）
   orbit_duration_sec REAL,  -- 环绕时长（秒）
-  ord            INTEGER NOT NULL DEFAULT 0  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0  -- 同项目内排序
 );
 CREATE INDEX IF NOT EXISTS ix_camera_kf_chapter ON camera_keyframe(project_id, sec);
 CREATE INDEX IF NOT EXISTS ix_camera_kf_follow  ON camera_keyframe(follow_route_element_id);
@@ -171,7 +171,7 @@ CREATE INDEX IF NOT EXISTS ix_layer_project ON layer(project_id, ord);
 
 -- 5.1 标记类元素（Pin 工具）：point（点/文字/图标）· flag（旗标）· military_symbol（APP-6 军标）
 CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）：point / flag / military_symbol 一张宽表，type 判别
-  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   label_bg_radius   REAL,  -- 标签背景圆角
   label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- 位置（三类标记都落在单点）
   lng            REAL NOT NULL,  -- 经度（三类标记都落在单点）
@@ -267,7 +267,7 @@ CREATE INDEX IF NOT EXISTS ix_marker_layer   ON element_marker(layer_id);
 -- 5.2 路线类元素（Route 工具）：line（线/贝塞尔/大圆弧）· moving_point（移动点）·
 --     connector（连接线，引用其它元素 → 弱引用 from/to）
 CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）：line / moving_point / connector 一张宽表，type 判别
-  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),  -- 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）
@@ -318,7 +318,7 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   label_bg_radius   REAL,  -- 标签背景圆角
   label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- line / moving_point 路径（line_type=bezier 时为控制点，arc 时为大圆弧端点）
   coords_json       TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填）
@@ -372,7 +372,7 @@ CREATE INDEX IF NOT EXISTS ix_route_layer   ON element_route(layer_id);
 -- 5.3 形状类元素（Shape 工具，含「区域」行政区高亮）：polygon · arrow · double_arrow ·
 --     gathering（集结地）· encirclement（包围圈）
 CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）：polygon / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表
-  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
@@ -423,7 +423,7 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   label_bg_radius   REAL,  -- 标签背景圆角
   label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- polygon 专属
   --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
@@ -493,7 +493,7 @@ CREATE INDEX IF NOT EXISTS ix_shape_layer   ON element_shape(layer_id);
 --     plots_json:     [{ plotId, name, rings, ownerId, ord }]        rings = GeoJSON 环数组
 --     events_json:    [{ eventId, sec, toCountryId, preset, duration_sec, highlight, plotIds[], ord }]
 CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件 JSON 内联，自包含
-  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
@@ -515,7 +515,7 @@ CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具
   label_bg_radius   REAL,  -- 标签背景圆角
   label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- 显示配置（原 display_json 平铺）：边界 / 线宽 / 透明度 / 标签
   display_country_borders INTEGER NOT NULL DEFAULT 1 CHECK (display_country_borders IN (0,1)),  -- 是否显示势力边界（0/1）
@@ -557,7 +557,7 @@ CREATE TABLE IF NOT EXISTS element_image (  -- 贴图类元素（Image 工具）
   rows           INTEGER NOT NULL DEFAULT 1 CHECK (rows >= 1),  -- 配准网格行数
   grid_json      TEXT CHECK (grid_json IS NULL OR json_valid(grid_json)),  -- 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]）
   opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1),  -- 不透明度（0–1）
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   CHECK (end_sec >= start_sec)
 );
@@ -573,7 +573,7 @@ CREATE TABLE IF NOT EXISTS public_layer (  -- 公共图层：跨项目图库（�
   type       TEXT NOT NULL CHECK (type IN ('marker','route','shape','territory','image')),  -- 图层类型（单类型）：marker 标记 / route 路线 / shape 形状 / territory 疆域 / image 图片
   name       TEXT NOT NULL DEFAULT '',  -- 图层名
   visible    INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
-  start_sec  REAL NOT NULL CHECK (start_sec >= 0),  -- 显示起点（秒，导入时通常对齐为 0）
+  start_sec  REAL NOT NULL CHECK (start_sec >= 0),  -- 显示起点（秒，沿用源图层区间、导入时不自动归零）
   end_sec    REAL NOT NULL,  -- 显示终点（秒）
   ord        INTEGER NOT NULL DEFAULT 0,  -- 排序
   created_at INTEGER NOT NULL,  -- 创建时间（毫秒时间戳）
@@ -584,7 +584,7 @@ CREATE INDEX IF NOT EXISTS ix_public_layer ON public_layer(ord, name);
 
 CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：public_layer 内的标记副本（与 element_marker 同构）
 
-  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
 
@@ -611,7 +611,7 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   label_bg_radius   REAL,  -- 标签背景圆角
   label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- 位置（三类标记都落在单点）
   lng            REAL NOT NULL,  -- 经度（三类标记都落在单点）
@@ -675,7 +675,7 @@ CREATE INDEX IF NOT EXISTS ix_public_element_marker_layer ON public_element_mark
 
 CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：public_layer 内的路线副本（与 element_route 同构）
 
-  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),  -- 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）
 
@@ -725,7 +725,7 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   label_bg_radius   REAL,  -- 标签背景圆角
   label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- line / moving_point 路径（line_type=bezier 时为控制点，arc 时为大圆弧端点）
   coords_json       TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填）
@@ -773,7 +773,7 @@ CREATE INDEX IF NOT EXISTS ix_public_element_route_layer ON public_element_route
 
 CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：public_layer 内的形状副本（与 element_shape 同构）
 
-  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
 
@@ -823,7 +823,7 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   label_bg_radius   REAL,  -- 标签背景圆角
   label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- polygon 专属
   --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
@@ -888,7 +888,7 @@ CREATE INDEX IF NOT EXISTS ix_public_element_shape_layer ON public_element_shape
 
 CREATE TABLE IF NOT EXISTS public_element_territory (  -- 公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构）
 
-  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，4 张类别表共享同一 id 空间）
+  element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
 
@@ -909,7 +909,7 @@ CREATE TABLE IF NOT EXISTS public_element_territory (  -- 公共疆域元素：p
   label_bg_radius   REAL,  -- 标签背景圆角
   label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- 显示配置（原 display_json 平铺）：边界 / 线宽 / 透明度 / 标签
   display_country_borders INTEGER NOT NULL DEFAULT 1 CHECK (display_country_borders IN (0,1)),  -- 是否显示势力边界（0/1）
@@ -945,7 +945,7 @@ CREATE TABLE IF NOT EXISTS public_element_image (  -- 公共贴图元素：publi
   rows           INTEGER NOT NULL DEFAULT 1 CHECK (rows >= 1),  -- 配准网格行数
   grid_json      TEXT CHECK (grid_json IS NULL OR json_valid(grid_json)),  -- 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]）
   opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1),  -- 不透明度（0–1）
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同章内排序
+  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   CHECK (end_sec >= start_sec)
 );
@@ -992,7 +992,7 @@ CREATE TABLE IF NOT EXISTS overlay (  -- 叠加层（弹窗）：本体一张，
   person_layout_json TEXT CHECK (person_layout_json IS NULL OR json_valid(person_layout_json)),  -- 人物卡版式：图片方位/对齐/间距/卡片宽/名言样式/叠图
   audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 背景语音（卡片可见时播放；导出混流待支持）
   parent_overlay_id TEXT REFERENCES overlay(overlay_id) ON DELETE CASCADE,  -- 父弹窗（group 嵌套结构）
-  ord          INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord          INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序
   CHECK (end_sec >= start_sec)
 );
 CREATE INDEX IF NOT EXISTS ix_overlay_chapter ON overlay(project_id, start_sec);
@@ -1022,7 +1022,7 @@ CREATE TABLE IF NOT EXISTS screen_fx (  -- 屏幕空间特效窗口：天气 / �
                 'shake','flash','vignette','cloudReveal','fadeBlack','fadeWhite')),
   effect_color TEXT,  -- 特效颜色（flash、fade 类使用）
   enabled    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),  -- 是否启用
-  ord        INTEGER NOT NULL DEFAULT 0,  -- 同章节内排序
+  ord        INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序
   CHECK (end_sec >= start_sec),
   CHECK ((kind = 'weather' AND weather_type IS NOT NULL)
       OR (kind = 'screen'  AND effect_type  IS NOT NULL))
@@ -1054,7 +1054,7 @@ CREATE TABLE IF NOT EXISTS narration_entry (  -- 字幕条：文本 + 配音音�
   duration_sec REAL CHECK (duration_sec IS NULL OR duration_sec >= 1),  -- 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖
   start_sec     REAL NOT NULL CHECK (start_sec >= 0),  -- 章内起始时间（秒，默认自动顺排）
   locked        INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),  -- 手动定位后锁定，不再参与自动顺排
-  ord           INTEGER NOT NULL DEFAULT 0  -- 同章节内排序
+  ord           INTEGER NOT NULL DEFAULT 0  -- 同项目内排序
 );
 CREATE INDEX IF NOT EXISTS ix_narration_entry ON narration_entry(project_id, start_sec);
 
@@ -1197,7 +1197,28 @@ UNION ALL
 SELECT 'camera.follow_route', k.kf_id, k.follow_route_element_id
   FROM camera_keyframe k
   WHERE k.follow_route_element_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM element_route WHERE element_id = k.follow_route_element_id);
+    AND NOT EXISTS (SELECT 1 FROM element_route WHERE element_id = k.follow_route_element_id)
+UNION ALL
+-- 公共库副本必须自洽：端点要在**同一公共图层**内解析（跨图层的端点在复制时应已剔除）
+SELECT 'public_connector.from', r.element_id, r.from_element_id
+  FROM public_element_route r
+  WHERE r.type = 'connector' AND r.from_element_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM public_element_marker    p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id
+      UNION ALL SELECT 1 FROM public_element_route     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id
+      UNION ALL SELECT 1 FROM public_element_shape     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id
+      UNION ALL SELECT 1 FROM public_element_territory p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id
+      UNION ALL SELECT 1 FROM public_element_image     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id)
+UNION ALL
+SELECT 'public_connector.to', r.element_id, r.to_element_id
+  FROM public_element_route r
+  WHERE r.type = 'connector' AND r.to_element_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM public_element_marker    p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id
+      UNION ALL SELECT 1 FROM public_element_route     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id
+      UNION ALL SELECT 1 FROM public_element_shape     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id
+      UNION ALL SELECT 1 FROM public_element_territory p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id
+      UNION ALL SELECT 1 FROM public_element_image     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id);
 
 -- 12.3 疆域 JSON 内部一致性（复合外键被 JSON 化后，用 json_each 恢复部分校验）
 CREATE VIEW IF NOT EXISTS v_check_territory_ref AS

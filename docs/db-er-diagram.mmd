@@ -3,6 +3,8 @@
 %% 2026-09-10 改版：元素表由「element 基表 + 13 子表」改为 4 张类别宽表；图片类下线；疆域内部实体 JSON 内联。
 %% 2026-09-13 精简：15 表 / 3 视图；project_config 并入 project；overlay_block / person_block 删除（内容块内联）；
 %%              元素动画关键帧早已内联 keyframes_json（无 element_keyframe 表）；派生字段不入库。
+%% 2026-09-19 公共图层库：+ public_layer 与 5 张同构副本表 = 22 表。副本脱离项目独立存在，
+%%              故 asset_id 与连接线端点全部降级为弱引用；端点跨图层的连接线在复制/导入时由应用层剔除。
 erDiagram
   COLLECTION {
     text collection_id PK
@@ -118,6 +120,48 @@ erDiagram
     text kind
     int active
   }
+  PUBLIC_LAYER {
+    text public_layer_id PK
+    text type "marker|route|shape|territory|image"
+    text name
+    int visible
+    real start_sec "沿用源图层区间，不归零"
+    real end_sec
+    int ord
+  }
+  PUBLIC_ELEMENT_MARKER {
+    text element_id PK
+    text public_layer_id FK
+    text type "point|flag|military_symbol"
+    text asset_id "弱引用：公共库不属任何项目"
+  }
+  PUBLIC_ELEMENT_ROUTE {
+    text element_id PK
+    text public_layer_id FK
+    text type "line|moving_point|connector"
+    text from_element_id "弱引用，须在本层内解析否则整条剔除"
+    text to_element_id "弱引用，同上"
+  }
+  PUBLIC_ELEMENT_SHAPE {
+    text element_id PK
+    text public_layer_id FK
+    text type "polygon|arrow|double_arrow|gathering|encirclement"
+  }
+  PUBLIC_ELEMENT_TERRITORY {
+    text element_id PK
+    text public_layer_id FK
+    text type "territory"
+    text countries_json
+    text plots_json
+    text events_json
+  }
+  PUBLIC_ELEMENT_IMAGE {
+    text element_id PK
+    text public_layer_id FK
+    text type "geo_image"
+    text asset_id "弱引用"
+    text grid_json
+  }
   COLLECTION ||--o{ PROJECT : "1:N 项目"
   PROJECT ||--o{ ASSET : "1:N 素材（含 icon/image 库条目）"
   PROJECT ||--o{ LAYER : "1:N 图层"
@@ -137,3 +181,10 @@ erDiagram
   ELEMENT_SHAPE }o--o| ASSET : "移动标记 asset_id"
   CAMERA_KEYFRAME }o--o| ELEMENT_ROUTE : "跟随机位 SET NULL"
   ELEMENT_ROUTE }o--o{ ELEMENT_MARKER : "connector 端点 弱引用 无外键"
+  PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_MARKER : "1:N 标记副本"
+  PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_ROUTE : "1:N 路线副本"
+  PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_SHAPE : "1:N 形状副本"
+  PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_TERRITORY : "1:N 疆域副本"
+  PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_IMAGE : "1:N 贴图副本"
+  PUBLIC_ELEMENT_ROUTE }o--o{ PUBLIC_ELEMENT_MARKER : "connector 端点 仅本层内解析"
+  LAYER ||--o{ PUBLIC_LAYER : "整层复制（应用层 INSERT..SELECT，非外键）"

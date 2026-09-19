@@ -4,15 +4,18 @@
  * 特效/弹窗块点击跳转并打开特效面板对应标签；元素按时间不重叠自动分道。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Play, Pause, SkipBack, SkipForward, ChevronsLeft, ChevronsRight, Layers, Keyboard, Sparkles, RectangleHorizontal } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, ChevronsLeft, ChevronsRight, Layers, Keyboard, Sparkles, RectangleHorizontal, MonitorPlay, Gauge, Check } from 'lucide-react';
 import { useProjectStore, setHistoryMuted } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
-import { formatClock } from '../lib/time';
+import { formatClock, clampWindowMove } from '../lib/time';
 import { EXPORT_PRESETS } from '../lib/export-video';
 import { projectContentEndFrame } from '../lib/project-duration';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { WEATHERS, SCREEN_FXS, POPUP_TYPES } from './FxPanelBody';
 import type { CameraKeyframe, ScreenFxItem, OverlayItem } from '../types';
+
+/** 预览倍速（1–5x）：只推进播放头，导出不受影响 */
+const PLAY_RATES = [1, 2, 3, 4, 5];
 
 /** 特效类型 → 轨道块配色（浅色文字保证可读） */
 const FX_BLOCK_COLORS: Record<string, string> = {
@@ -85,10 +88,15 @@ export function TimelineEditor() {
   const selectLayer = useEditorStore((s) => s.selectLayer);
   const elementsOpen = useEditorStore((s) => s.elementsOpen);
   const setElementsOpen = useEditorStore((s) => s.setElementsOpen);
+  const setPresenting = useEditorStore((s) => s.setPresenting);
+  const setSubtitleOpen = useEditorStore((s) => s.setSubtitleOpen);
   const openFx = useEditorStore((s) => s.openFx);
   const updateGlobalConfig = useProjectStore((s) => s.updateGlobalConfig);
+  const playRate = useEditorStore((s) => s.playRate);
+  const setPlayRate = useEditorStore((s) => s.setPlayRate);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
+  const [rateOpen, setRateOpen] = useState(false);
 
   useEffect(() => {
     if (!project) return;
@@ -132,7 +140,7 @@ export function TimelineEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id, timelineEnd]);
 
-  // 播放（仅当前时间线内循环）
+  // 播放（仅当前时间线内循环；倍速只推进播放头，不改导出）
   useEffect(() => {
     if (!isPlaying) return;
     let raf = 0;
@@ -141,7 +149,8 @@ export function TimelineEditor() {
       // rAF 回调的 now 是垂直同步帧起始时间，可能早于 effect 初始化的 last：负 dt 会把播放头推成负帧
       const dt = Math.max(0, Math.min(0.25, (now - last) / 1000));
       last = now;
-      const next = useEditorStore.getState().currentFrame + dt * fps;
+      const st = useEditorStore.getState();
+      const next = st.currentFrame + dt * fps * st.playRate;
       if (next >= timelineEnd) {
         useEditorStore.getState().setCurrentFrame(timelineStart);
         useEditorStore.getState().setIsPlaying(false);
@@ -250,7 +259,7 @@ export function TimelineEditor() {
   // ===== 拖动轨道块：整体平移 / 拖两端改起止时间（特效 · 弹窗 · 元素 · 视角） =====
   const suppressClickRef = useRef(false);
   const blockDragRef = useRef<null | {
-    kind: 'fx' | 'popup' | 'element' | 'camera' | 'layer';
+    kind: 'fx' | 'popup' | 'element' | 'camera' | 'layer' | 'narration';
     id?: string;
     kf?: CameraKeyframe;
     frameNow?: number;
@@ -279,7 +288,7 @@ export function TimelineEditor() {
 
   const beginBlockDrag = (
     e: React.PointerEvent,
-    spec: { kind: 'fx' | 'popup' | 'element' | 'camera' | 'layer'; mode: 'move' | 'left' | 'right'; start: number; end: number; id?: string; kf?: CameraKeyframe; minFrame?: number; maxFrame?: number },
+    spec: { kind: 'fx' | 'popup' | 'element' | 'camera' | 'layer' | 'narration'; mode: 'move' | 'left' | 'right'; start: number; end: number; id?: string; kf?: CameraKeyframe; minFrame?: number; maxFrame?: number },
   ) => {
     e.stopPropagation();
     setIsPlaying(false);
@@ -364,8 +373,7 @@ export function TimelineEditor() {
         let s = d.origStart;
         let en = d.origEnd;
         if (d.mode === 'move') {
-          s = Math.max(timelineStart, d.origStart + delta);
-          en = Math.min(timelineEnd, d.origEnd + delta);
+          [s, en] = clampWindowMove(d.origStart, d.origEnd, delta, timelineStart, timelineEnd);
         } else if (d.mode === 'left') {
           s = Math.max(timelineStart, Math.min(d.origStart + delta, d.origEnd - minLen));
         } else {
@@ -377,16 +385,24 @@ export function TimelineEditor() {
         return;
       }
 
+      // 配音块：**只能整段平移**（时长由音频/估算决定，不给两端拉伸）；拖动后置 locked，不再被顺排拉回
+      if (d.kind === 'narration' && d.id) {
+        const dur = Math.max(1, d.origEnd - d.origStart);
+        const s = Math.round(Math.max(timelineStart, Math.min(d.origStart + delta, timelineEnd - dur)));
+        setHistoryMuted(d.moved);
+        const list = useProjectStore.getState().project?.narration?.entries || [];
+        useProjectStore.getState().setNarrationEntries(
+          list.map((x) => (x.id === d.id ? { ...x, startFrame: s, locked: true } : x)),
+        );
+        d.moved = true;
+        return;
+      }
+
       const minLen = Math.max(1, Math.round(fps * 0.1));
       let s = d.origStart;
       let en = d.origEnd;
       if (d.mode === 'move') {
-        s = d.origStart + delta;
-        en = d.origEnd + delta;
-        if (s < timelineStart) { en += timelineStart - s; s = timelineStart; }
-        if (en > timelineEnd) { s -= en - timelineEnd; en = timelineEnd; }
-        s = Math.max(timelineStart, s);
-        en = Math.min(timelineEnd, en);
+        [s, en] = clampWindowMove(d.origStart, d.origEnd, delta, timelineStart, timelineEnd);
       } else if (d.mode === 'left') {
         s = Math.max(timelineStart, Math.min(d.origStart + delta, d.origEnd - minLen));
       } else {
@@ -490,6 +506,13 @@ export function TimelineEditor() {
           播放预览
         </button>
         <button
+          onClick={() => setPresenting(true)}
+          className="h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+          title="全屏演示（隐藏编辑界面，从头播放）"
+        >
+          <MonitorPlay size={13} /> 演示
+        </button>
+        <button
           onClick={() => { setCurrentFrame(timelineStart); setIsPlaying(false); }}
           className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
           title="回本段开头"
@@ -520,6 +543,39 @@ export function TimelineEditor() {
 
         <div className="ml-2 text-sm text-muted-foreground tabular-nums">
           {formatClock(localSeconds)} / {formatClock(chapterSeconds)}
+        </div>
+
+        {/* 播放倍速（只影响预览播放头；导出仍按原速逐帧渲染） */}
+        <div className="relative ml-1">
+          <button
+            onClick={() => setRateOpen((v) => !v)}
+            className={`h-8 px-2.5 flex items-center gap-1 rounded-md text-xs font-medium tabular-nums transition-colors ${
+              rateOpen ? 'bg-white/10 text-foreground' : playRate !== 1 ? 'bg-brand/15 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+            }`}
+            title="预览播放倍速"
+          >
+            <Gauge size={13} /> {playRate}x
+          </button>
+          {rateOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setRateOpen(false)} />
+              <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-50 w-28 bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] rounded-xl shadow-2xl p-1.5">
+                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">倍速</p>
+                {PLAY_RATES.map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => { setPlayRate(r); setRateOpen(false); }}
+                    className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs transition-colors ${
+                      r === playRate ? 'text-foreground bg-white/[0.07]' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
+                    }`}
+                  >
+                    <span className="tabular-nums">{r}x</span>
+                    {r === playRate && <Check size={12} />}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         {/* 画幅切换（导出分辨率；位于「元素」按钮之前） */}
@@ -559,15 +615,15 @@ export function TimelineEditor() {
             </>
           )}
         </div>
-        {/* 元素面板开关 + 特效 + 快捷键速查（紧跟时钟，靠左） */}
+        {/* 图层面板开关 + 特效 + 快捷键速查（紧跟时钟，靠左） */}
         <button
           onClick={() => setElementsOpen(!elementsOpen)}
           className={`ml-2 h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-medium transition-colors ${
             elementsOpen ? 'bg-white/10 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'
           }`}
-          title="元素列表"
+          title="图层列表"
         >
-          <Layers size={13} /> 元素
+          <Layers size={13} /> 图层
         </button>
         <button
           onClick={() => openFx()}
@@ -783,7 +839,7 @@ export function TimelineEditor() {
                           setElementsOpen(true);
                           setCurrentFrame(start);
                           if (L.elements[0]) selectElement(L.elements[0].id);
-                          selectLayer(L.id);
+                          selectLayer(L.id, L.type);
                         }}
                         className={`absolute top-0.5 bottom-0.5 rounded-sm border flex items-center overflow-hidden z-10 transition-colors ${
                           hasSel
@@ -805,7 +861,7 @@ export function TimelineEditor() {
             </div>
           </TrackRow>
 
-          {/* 配音/字幕轨道：每条字幕一块（宽=显示时长），点击打开字幕页签 */}
+          {/* 配音/字幕轨道：每条字幕一块（宽=显示时长）；可整体拖动调时间，点击打开「字幕生成」 */}
           <TrackRow label="🎙 配音" height={22}>
             {(project.narration?.entries || []).map((e) => {
               const start = e.startFrame;
@@ -814,7 +870,8 @@ export function TimelineEditor() {
               return (
                 <button
                   key={e.id}
-                  onClick={() => { setCurrentFrame(start); openFx('subtitle'); }}
+                  onPointerDown={(ev) => beginBlockDrag(ev, { kind: 'narration', mode: 'move', start, end, id: e.id })}
+                  onClick={() => { if (suppressClickRef.current) return; setCurrentFrame(start); setSubtitleOpen(true); }}
                   className={`absolute top-0.5 bottom-0.5 rounded border flex items-center overflow-hidden z-10 hover:brightness-110 transition-[filter] ${
                     st === 'ready' ? 'bg-sky-500/60 border-sky-400/50' : st === 'error' ? 'bg-red-500/50 border-red-400/50' : st === 'pending' ? 'bg-amber-500/60 border-amber-400/50' : 'bg-sky-500/30 border-sky-400/40'
                   }`}

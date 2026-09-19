@@ -4,7 +4,8 @@
  * 数据模型：项目 = Layer[]，每个图层含自己的显隐 / 显示区间 / 元素列表。
  * `project.elements` 是**派生镜像**（store 的 patch 自动重算），供渲染 / 面板 / 相机等沿用扁平读取。
  */
-import type { Layer, LayerType, MapElement } from '../types';
+import type { ConnectorElement, Layer, LayerType, MapElement } from '../types';
+import { generateId } from '../types';
 import { IS_DESKTOP } from './backend';
 
 /** 元素类型 → 图层类型 */
@@ -24,6 +25,49 @@ export const LAYER_TYPE_LABEL: Record<LayerType, string> = {
 };
 
 export const LAYER_TYPES: LayerType[] = ['marker', 'route', 'shape', 'territory', 'image'];
+
+/**
+ * 图层默认序（也是地图叠放序）：标记 → 路线 → 形状 → 疆域 → 图片。
+ * 列表里**靠前的显示在地图上层**，所以图片在最底、标记在最上。
+ */
+export const LAYER_RANK: Record<LayerType, number> = {
+  marker: 0, route: 1, shape: 2, territory: 3, image: 4,
+};
+
+/**
+ * 新图层插入到「按类型序」该在的位置：排在第一个类型序更靠后的图层之前。
+ * 只定位新层，不重排既有层（用户拖动出来的自定义顺序要保留）。
+ */
+export function insertLayerSorted(layers: Layer[], layer: Layer): Layer[] {
+  const r = LAYER_RANK[layer.type];
+  const at = layers.findIndex((L) => LAYER_RANK[L.type] > r);
+  if (at < 0) return [...layers, layer];
+  return [...layers.slice(0, at), layer, ...layers.slice(at)];
+}
+
+/** 每类图层的「写入目标」（元素 id）；未设置 = 自动（该类第一个图层） */
+export type TargetLayers = Partial<Record<LayerType, string>>;
+
+/**
+ * 新建 / 改类型时决定元素落到哪个图层：
+ * 显式指定 → 用户记住的目标图层（须同类型）→ 该类第一个图层 → null（调用方新建）。
+ */
+export function resolveTargetLayerId(
+  layers: Layer[] | undefined,
+  type: LayerType,
+  targets?: TargetLayers | null,
+  explicitId?: string | null,
+): string | null {
+  const byId = (id?: string | null) => (id ? (layers || []).find((L) => L.id === id && L.type === type) : undefined);
+  return (byId(explicitId) || byId(targets?.[type]) || (layers || []).find((L) => L.type === type))?.id ?? null;
+}
+
+/** 可移动到该元素的其它同类型图层（排除当前所在层） */
+export function movableLayersFor(layers: Layer[] | undefined, el: MapElement): Layer[] {
+  const type = layerTypeOf(el);
+  const cur = (layers || []).find((L) => (L.elements || []).some((x) => x.id === el.id))?.id;
+  return (layers || []).filter((L) => L.type === type && L.id !== cur);
+}
 
 /**
  * 从图层派生扁平元素数组（供渲染/面板读取）：
@@ -73,12 +117,33 @@ export interface PublicLayerInfo {
   count: number;
 }
 
-/** 网页端 localStorage 形态 */
+/** 网页端 localStorage 形态：整层（显示区间 + 元素，时间沿用源项目的绝对帧） */
 export interface PublicLayer {
   id: string;
+  type: LayerType;
   name: string;
+  startFrame: number;
+  endFrame: number;
   elements: MapElement[];
   savedAt: number;
+}
+
+/**
+ * 复制体必须自洽：端点不在本图层内的连接线整条剔除。
+ * 图层是单类型的，而连接线的端点常是另一图层的标记——带着解析不到的端点导入到别的项目，
+ * 连接线会变成悬空引用（宁缺不悬空，与桌面端 SQL 侧 prune 同一规则）。
+ */
+export function pruneForeignConnectors(elements: MapElement[]): { kept: MapElement[]; dropped: string[] } {
+  const ids = new Set(elements.map((el) => el.id));
+  const dropped: string[] = [];
+  const kept = elements.filter((el) => {
+    if (el.type !== 'connector') return true;
+    const c = el as ConnectorElement;
+    const ok = (!c.fromElementId || ids.has(c.fromElementId)) && (!c.toElementId || ids.has(c.toElementId));
+    if (!ok) dropped.push(c.name || c.id);
+    return ok;
+  });
+  return { kept, dropped };
 }
 
 const LIB_KEY = 'mapvideo.publicLayers';
@@ -103,28 +168,38 @@ export async function listPublicLayers(): Promise<PublicLayerInfo[]> {
     const rows = await window.mapvideo.publicLayers.list();
     return rows.map((r) => ({ id: r.id, type: (r.type as LayerType) || 'marker', name: r.name, count: r.count }));
   }
-  return listLocal().map((x) => ({
-    id: x.id, type: x.elements[0] ? layerTypeOf(x.elements[0]) : 'marker', name: x.name, count: x.elements.length,
-  }));
+  return listLocal().map((x) => ({ id: x.id, type: x.type || 'marker', name: x.name, count: x.elements.length }));
 }
 
-/** 保存当前项目图层为公共图层（桌面端：DB 内整层复制；网页端：localStorage） */
-export async function saveLayerToPublic(layerId: string, name: string, elements: MapElement[]): Promise<void> {
+/** 把项目图层存为公共图层；返回因跨图层引用被剔除的元素名（同名覆盖） */
+export async function saveLayerToPublic(layer: Layer): Promise<string[]> {
   if (IS_DESKTOP && window.mapvideo?.publicLayers) {
-    await window.mapvideo.publicLayers.save({ layerId });
-    return;
+    const r = await window.mapvideo.publicLayers.save({ layerId: layer.id });
+    return r.dropped || [];
   }
-  const item: PublicLayer = { id: `pl_${Date.now().toString(36)}`, name: name || '未命名图层', elements, savedAt: Date.now() };
-  writeLocal([item, ...listLocal().filter((x) => x.name !== name)]);
+  const { kept, dropped } = pruneForeignConnectors(layer.elements);
+  const item: PublicLayer = {
+    id: `pl_${Date.now().toString(36)}`, type: layer.type, name: layer.name || '未命名图层',
+    startFrame: layer.startFrame, endFrame: layer.endFrame, elements: kept, savedAt: Date.now(),
+  };
+  writeLocal([item, ...listLocal().filter((x) => x.name !== layer.name)]);
+  return dropped;
 }
 
-/** 导入公共图层：桌面端 DB 内复制回项目（返回新图层 id，需 reload）；网页端返回 localStorage 内容由调用方追加 */
-export async function importPublicLayer(publicId: string, projectId: string): Promise<{ layerId?: string | null; local?: PublicLayer }> {
+/** 导入公共图层到项目：返回可直接并入项目的新图层（时间沿用源图层，不做自动归零） */
+export async function importPublicLayer(publicId: string, projectId: string): Promise<{ layer?: Layer; dropped?: string[] }> {
   if (IS_DESKTOP && window.mapvideo?.publicLayers) {
     const r = await window.mapvideo.publicLayers.import({ publicLayerId: publicId, projectId });
-    return { layerId: r.layerId };
+    return { layer: r.layer || undefined, dropped: r.dropped };
   }
-  return { local: listLocal().find((x) => x.id === publicId) };
+  const local = listLocal().find((x) => x.id === publicId);
+  if (!local) return {};
+  return {
+    layer: {
+      id: generateId(), type: local.type || 'marker', name: local.name, visible: true,
+      startFrame: local.startFrame, endFrame: local.endFrame, elements: local.elements,
+    },
+  };
 }
 
 export async function removePublicLayer(id: string): Promise<void> {

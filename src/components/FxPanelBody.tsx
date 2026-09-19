@@ -5,21 +5,20 @@
 import { useState, useEffect, useRef } from 'react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore, type FxTab } from '../stores/editorStore';
-import { useProviderStore, activeProvider } from '../stores/providerStore';
-import { IS_DESKTOP, aiAvailable } from '../lib/backend';
+import { useProviderStore } from '../stores/providerStore';
+import { IS_DESKTOP } from '../lib/backend';
 import { useT, Section, Field, OptionBlocks, Toggle, ColorPicker, NumberInput } from './ui/primitives';
 import { FrameTimeField } from './FrameTimeField';
 import {
   generateId, POS_BASE,
   defaultPersonContent, normalizePersonContent, PERSON_PRESETS, PERSON_STYLE_DEFAULTS,
-  estimateTextDurationFrames, defaultNarrationStyle,
   type MapVideoProject, type ScreenFxItem, type WeatherType, type ScreenFxType,
   type OverlayItem, type OverlayType, type OverlayBlock, type ChartType,
   type OverlayPosition, type AnimationPreset,
   type PersonContent, type PersonStyle,
-  type NarrationEntry, type MusicTrack, type TtsProtocol,
+  type MusicTrack, type TtsProtocol,
 } from '../types';
-import { callLLM, callTTS, callImage, cloneVoice, readAudioFile, srtTime, parseSrt, LLM_PRESETS, TTS_PRESETS, IMAGE_PRESETS } from '../lib/providers';
+import { callLLM, callTTS, callImage, cloneVoice, readAudioFile, LLM_PRESETS, TTS_PRESETS, IMAGE_PRESETS } from '../lib/providers';
 import { projectContentEndFrame } from '../lib/project-duration';
 
 const FPS_FALLBACK = 30;
@@ -778,365 +777,6 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
 
 // ========== 弹窗微调辅助 ==========
 
-// ========== 字幕 / 配音 ==========
-
-/** 顺排：未锁定条目依次衔接（起点=章首），锁定条目占据其后 */
-function resequenceEntries(entries: NarrationEntry[], chapterStart: number): NarrationEntry[] {
-  let cursor = chapterStart;
-  return entries.map((e) => {
-    const startFrame = e.locked ? e.startFrame : cursor;
-    cursor = Math.max(startFrame + e.durationFrames, e.locked ? cursor : cursor);
-    return { ...e, startFrame };
-  });
-}
-
-function SubtitleTab({ project }: { project: MapVideoProject }) {
-  const t = useT();
-  const fps = useChapterFps(project);
-  const setNarrationStyleOp = useProjectStore((s) => s.setNarrationStyle);
-  const setNarrationEntries = useProjectStore((s) => s.setNarrationEntries);
-  const updateNarrationEntry = useProjectStore((s) => s.updateNarrationEntry);
-  const [showAi, setShowAi] = useState(false);
-  const [showProviders, setShowProviders] = useState(false);
-  const [genIdx, setGenIdx] = useState<number | null>(null); // 正在生成配音的条目下标
-  const [auditingId, setAuditingId] = useState<string | null>(null);
-  const narration = project.narration || { entries: [], style: defaultNarrationStyle() };
-  const entries = narration.entries;
-  const ttsCfg = activeProvider('tts');
-  const canAi = aiAvailable();
-
-  const setStyle = (patch: Partial<typeof narration.style>) => setNarrationStyleOp(patch);
-
-  /** 更新文本：有配音保持配音时长（时长由音频决定），否则按字数估算；统一顺排 */
-  const updateText = (id: string, text: string) => {
-    const next = entries.map((e) =>
-      e.id === id
-        ? { ...e, text, durationFrames: e.audioUrl ? e.durationFrames : estimateTextDurationFrames(text, fps) }
-        : e
-    );
-    setNarrationEntries(resequenceEntries(next, 0));
-  };
-
-  const addEntry = () => {
-    const last = entries[entries.length - 1];
-    const e: NarrationEntry = {
-      id: generateId(),
-      text: '',
-      durationFrames: estimateTextDurationFrames('', fps),
-      startFrame: last ? last.startFrame + last.durationFrames : 0,
-      status: 'none',
-    };
-    setNarrationEntries([...entries, e]);
-  };
-
-  const deleteEntry = (id: string) => {
-    setNarrationEntries(resequenceEntries(entries.filter((e) => e.id !== id), 0));
-  };
-
-  /** 单条生成配音（时长回填 + 顺排） */
-  const genOne = async (idx: number) => {
-    const e = entries[idx];
-    if (!e || !e.text.trim()) { alert(t('请先填写字幕文本', 'Fill in text first')); return; }
-    const cfg = ttsCfg;
-    if (!cfg || !cfg.baseUrl) { alert(t('请先在「配音服务」里配置 TTS 服务', 'Configure TTS provider first')); setShowProviders(true); return; }
-    setGenIdx(idx);
-    updateNarrationEntry(e.id, { status: 'pending', error: undefined });
-    try {
-      const { dataUrl, durationSec } = await callTTS(cfg, e.text);
-      const next = entries.map((x) =>
-        x.id === e.id
-          ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const }
-          : x
-      );
-      setNarrationEntries(resequenceEntries(next, 0));
-    } catch (err) {
-      updateNarrationEntry(e.id, { status: 'error', error: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setGenIdx(null);
-    }
-  };
-
-  /** 全部生成（顺序执行，避免并发限流） */
-  const genAll = async () => {
-    for (let i = 0; i < entries.length; i++) {
-      if (!entries[i].text.trim()) continue;
-      await genOne(i);
-    }
-  };
-
-  const audit = (e: NarrationEntry) => {
-    if (!e.audioUrl) return;
-    const el = new Audio(e.audioUrl);
-    setAuditingId(e.id);
-    el.onended = () => setAuditingId(null);
-    el.play().catch(() => setAuditingId(null));
-  };
-
-  const importSrt = async (file: File) => {
-    const text = await file.text();
-    const lines = parseSrt(text);
-    let cursor = 0;
-    const list: NarrationEntry[] = lines.map((l) => {
-      const dur = estimateTextDurationFrames(l, fps);
-      const e: NarrationEntry = { id: generateId(), text: l, durationFrames: dur, startFrame: cursor, status: 'none' };
-      cursor += dur;
-      return e;
-    });
-    setNarrationEntries(list);
-  };
-
-  const exportSrt = () => {
-    let t0 = 0;
-    const srt = entries
-      .map((e, i) => {
-        const startSec = (e.startFrame - 0) / fps;
-        const durSec = e.durationFrames / fps;
-        const entry = `${i + 1}\n${srtTime(startSec)} --> ${srtTime(startSec + durSec)}\n${e.text}\n`;
-        t0 += durSec;
-        return entry;
-      })
-      .join('\n');
-    void t0;
-    const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${project.name || 'narration'}.srt`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
-
-  return (
-    <>
-      {/* 配音服务（Lite 纯静态无 AI，隐藏） */}
-      {canAi && (
-      <Section title={t('配音服务', 'TTS Provider')}>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowProviders(true)}
-            className="flex-1 h-8 px-2.5 rounded-md border border-white/10 bg-white/[0.045] text-xs text-left truncate hover:border-white/25 transition-colors"
-            title={t('点击配置配音服务（内置千问/MiMo/MiniMax/豆包/SoVITS，可自定义扩展）', 'Configure TTS providers')}
-          >
-            🔊 {ttsCfg ? `${ttsCfg.label}${ttsCfg.model ? ` · ${ttsCfg.model}` : ''}` : t('未配置（点击设置）', 'Not configured')}
-          </button>
-        </div>
-        {ttsCfg && (
-          <div className="flex items-center gap-2 mt-1.5">
-            <span className="text-[11px] text-muted-foreground shrink-0">{t('语速', 'Speed')}</span>
-            <input type="range" min={0.5} max={2} step={0.05} value={ttsCfg.speed ?? 1}
-              onChange={(e) => useProviderStore.getState().update(ttsCfg.id, { speed: parseFloat(e.target.value) })}
-              className="flex-1 h-1 accent-[var(--brand)]" />
-            <span className="text-[11px] text-muted-foreground w-8 text-right tabular-nums">{(ttsCfg.speed ?? 1).toFixed(2)}</span>
-          </div>
-        )}
-      </Section>
-      )}
-
-      {/* 字幕列表 */}
-      <Section title={t('字幕 / 配音列表', 'Subtitles')}>
-        <div className="flex flex-wrap items-center gap-1.5 mb-2">
-          <button onClick={addEntry} className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-xs hover:border-white/25 transition-colors">＋ {t('添加', 'Add')}</button>
-          {canAi && (
-            <>
-              <button onClick={() => setShowAi(true)} className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-xs hover:border-white/25 transition-colors">✨ {t('AI 文案', 'AI script')}</button>
-              <button onClick={genAll} className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-xs hover:border-white/25 transition-colors">▶▶ {t('全部生成配音', 'Gen all TTS')}</button>
-            </>
-          )}
-          <label className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-xs hover:border-white/25 transition-colors cursor-pointer w-fit">
-            {t('导入 SRT', 'Import SRT')}
-            <input type="file" accept=".srt,.txt" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) importSrt(f); e.target.value = ''; }} />
-          </label>
-          {entries.length > 0 && (
-            <button onClick={exportSrt} className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-xs hover:border-white/25 transition-colors">{t('导出 SRT', 'Export SRT')}</button>
-          )}
-        </div>
-        {entries.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">{t('添加字幕行 → 点「全部生成配音」（时长按配音自动顺排），或导入 SRT 文本。', 'Add lines, generate TTS (timing auto-follows audio), or import SRT.')}</p>
-        )}
-        <div className="space-y-2">
-          {entries.map((e, i) => (
-            <div key={e.id} className={`rounded-md border p-1.5 ${e.status === 'error' ? 'border-red-500/40' : 'border-white/10'} bg-white/[0.03]`}>
-              <div className="flex items-start gap-1.5">
-                <span className="text-[11px] text-muted-foreground w-5 shrink-0 text-right pt-1.5 tabular-nums">{i + 1}</span>
-                <textarea
-                  value={e.text}
-                  onChange={(ev) => updateText(e.id, ev.target.value)}
-                  rows={Math.min(3, Math.max(1, Math.ceil(e.text.length / 22)))}
-                  className="flex-1 input resize-none text-xs py-1 min-h-7"
-                  placeholder={t('字幕文本（= 配音朗读内容）', 'Subtitle text (= TTS input)')}
-                />
-                <div className="flex flex-col gap-1 shrink-0">
-                  {(e.audioUrl || canAi) && (
-                    <button
-                      onClick={() => (e.audioUrl ? audit(e) : genOne(i))}
-                      className="h-7 w-7 rounded border border-white/10 bg-white/[0.05] text-[11px] hover:bg-white/10 transition-colors"
-                      title={e.audioUrl ? t('试听', 'Play') : t('生成配音', 'Generate TTS')}
-                    >
-                      {genIdx === i ? '⏳' : auditingId === e.id ? '⏸' : e.audioUrl ? '▶' : '🔊'}
-                    </button>
-                  )}
-                  <button onClick={() => deleteEntry(e.id)} className="h-7 w-7 rounded border border-white/10 bg-white/[0.05] text-[11px] text-red-400/80 hover:bg-red-500/10 transition-colors" title={t('删除', 'Delete')}>✕</button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </Section>
-
-      {/* 字幕样式 */}
-      <Section title={t('字幕样式', 'Style')}>
-        <Field label={t('字体', 'Font')}>
-          <OptionBlocks<string>
-            value={narration.style.fontFamily || "'KaiTi', 'STKaiti', 'SimSun', serif"}
-            options={[
-              { value: "'KaiTi', 'STKaiti', 'SimSun', serif", label: t('楷体', 'KaiTi') },
-              { value: "'SimSun', 'Songti SC', serif", label: t('宋体', 'SimSun') },
-              { value: "'SimHei', 'Microsoft YaHei', sans-serif", label: t('黑体', 'SimHei') },
-              { value: 'system-ui, sans-serif', label: t('系统', 'System') },
-            ]}
-            onChange={(v) => setStyle({ fontFamily: v })}
-          />
-        </Field>
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-muted-foreground shrink-0 w-14">{t('字号', 'Size')}</span>
-          <NumberInput className="input h-7 w-16 text-xs" value={narration.style.fontSize} step={2} min={12} onCommit={(v) => setStyle({ fontSize: Math.max(12, v) })} />
-          <ColorPicker value={narration.style.color} onChange={(c) => setStyle({ color: c })} />
-        </div>
-        <div className="flex items-center gap-2 mt-1.5">
-          <span className="text-[11px] text-muted-foreground shrink-0 w-14">{t('描边', 'Stroke')}</span>
-          <NumberInput className="input h-7 w-16 text-xs" value={narration.style.strokeWidth} step={1} min={0} onCommit={(v) => setStyle({ strokeWidth: Math.max(0, v) })} />
-          <ColorPicker value={narration.style.strokeColor} onChange={(c) => setStyle({ strokeColor: c })} />
-        </div>
-        <div className="flex items-center gap-2 mt-1.5">
-          <span className="text-[11px] text-muted-foreground shrink-0 w-14">{t('底部', 'Bottom')}</span>
-          <input type="range" min={0} max={40} step={1} value={narration.style.posY} onChange={(e) => setStyle({ posY: parseInt(e.target.value) })} className="flex-1 h-1 accent-[var(--brand)]" />
-          <span className="text-[11px] text-muted-foreground w-8 text-right tabular-nums">{narration.style.posY}%</span>
-        </div>
-        <Field label={t('背景', 'BG')}>
-          <OptionBlocks<'none' | 'bar'>
-            value={narration.style.bg}
-            options={[{ value: 'none', label: t('无', 'None') }, { value: 'bar', label: t('长条', 'Bar') }]}
-            onChange={(v) => setStyle({ bg: v })}
-          />
-        </Field>
-        {narration.style.bg === 'bar' && (
-          <ColorPicker value={narration.style.bgColor} onChange={(c) => setStyle({ bgColor: c })} />
-        )}
-      </Section>
-
-      {showAi && <AiScriptDialog project={project} onClose={() => setShowAi(false)} />}
-      {showProviders && <ProviderSettingsDialog kind="tts" onClose={() => setShowProviders(false)} />}
-    </>
-  );
-}
-
-// ========== AI 文案生成 ==========
-
-function AiScriptDialog({ project, onClose }: { project: MapVideoProject; onClose: () => void }) {
-  const t = useT();
-  const fps = useChapterFps(project);
-  const setNarrationEntries = useProjectStore((s) => s.setNarrationEntries);
-  const [material, setMaterial] = useState('');
-  const [requirement, setRequirement] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<string[]>([]);
-  const [showProviders, setShowProviders] = useState(false);
-
-  const gen = async () => {
-    const cfg = activeProvider('llm');
-    if (!cfg || !cfg.baseUrl) { setShowProviders(true); return; }
-    setBusy(true);
-    setError(null);
-    try {
-      const sys = '你是军事/历史题材地图讲解视频的文案写手。根据素材与要求，输出口播文案，拆分成多条字幕。只输出 JSON 数组（字符串数组），每条不超过 40 字，语言与素材一致。';
-      const user = [
-        material && `【素材】\n${material}`,
-        requirement && `【要求】\n${requirement}`,
-        '输出多条字幕（JSON 字符串数组）。',
-      ].filter(Boolean).join('\n\n');
-      const raw = await callLLM(cfg, sys, user);
-      let arr: string[] = [];
-      try {
-        const m = raw.match(/\[[\s\S]*\]/);
-        arr = JSON.parse(m ? m[0] : raw);
-      } catch {
-        arr = raw.split('\n').map((l) => l.replace(/^\s*[\d.、-]+\s*/, '').trim()).filter(Boolean);
-      }
-      setResult(arr.filter((x) => typeof x === 'string' && x.trim()));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const apply = (replace: boolean) => {
-    let cursor = 0;
-    const list: NarrationEntry[] = result.map((txt) => {
-      const dur = estimateTextDurationFrames(txt, fps);
-      const entry: NarrationEntry = { id: generateId(), text: txt, durationFrames: dur, startFrame: cursor, status: 'none' };
-      cursor += dur;   // 顺序累加，避免在 map 回调里引用尚未初始化的 list（TDZ）
-      return entry;
-    });
-    const base = replace ? [] : project.narration?.entries || [];
-    setNarrationEntries(resequenceEntries([...base, ...list], 0));
-    onClose();
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-card border border-white/10 rounded-xl shadow-2xl p-4 w-[26rem] max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold mb-2">✨ {t('AI 生成文案', 'AI script')}</h3>
-        {(() => {
-          const cfg = activeProvider('llm');
-          return (
-            <button
-              onClick={() => setShowProviders(true)}
-              className="w-full h-8 px-2.5 rounded-md border border-white/10 bg-white/[0.045] text-xs text-left truncate hover:border-white/25 transition-colors mb-2"
-            >
-              🤖 {cfg ? `${cfg.label}${cfg.model ? ` · ${cfg.model}` : ''}` : t('未配置 AI 服务（点击设置）', 'Not configured')}
-            </button>
-          );
-        })()}
-        <textarea value={requirement} onChange={(e) => setRequirement(e.target.value)} rows={3} className="input text-xs resize-none mb-2" placeholder={t('要求：主题 / 风格 / 受众 / 口吻…', 'Requirements: topic / style / tone…')} />
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-[11px] text-muted-foreground shrink-0">{t('参考文档', 'Reference')}</span>
-          <label className="inline-flex items-center gap-1.5 h-6 px-2 rounded-md border border-white/15 bg-white/[0.045] text-[11px] hover:border-white/25 cursor-pointer transition-colors">
-            ⬆ {t('上传（txt/md/json）', 'Upload (txt/md/json)')}
-            <input type="file" accept=".txt,.md,.json,.csv,text/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then((txt) => setMaterial((prev) => (prev ? `${prev}\n\n${txt}` : txt))); e.target.value = ''; }} />
-          </label>
-          {material && <button onClick={() => setMaterial('')} className="text-[11px] text-red-400/80 hover:text-red-400">{t('清空', 'Clear')}</button>}
-        </div>
-        <textarea value={material} onChange={(e) => setMaterial(e.target.value)} rows={4} className="input text-xs resize-none mb-2" placeholder={t('参考文档内容（可直接粘贴，或点上方上传）', 'Reference material (paste or upload)…')} />
-        <div className="flex items-center mb-2">
-          <button onClick={gen} disabled={busy} className="h-7 px-3 rounded-md bg-[var(--brand)] text-white text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50 ml-auto">
-            {busy ? t('生成中…', 'Generating…') : t('生成', 'Generate')}
-          </button>
-        </div>
-        {error && <p className="text-xs text-red-500 mb-2 break-all">{error}</p>}
-        {result.length > 0 && (
-          <>
-            <div className="space-y-1 mb-2 max-h-52 overflow-y-auto">
-              {result.map((r, i) => (
-                <div key={i} className="flex items-start gap-2 text-xs bg-white/[0.03] rounded p-1.5">
-                  <span className="text-muted-foreground tabular-nums">{i + 1}</span>
-                  <input value={r} onChange={(e) => setResult(result.map((x, j) => (j === i ? e.target.value : x)))} className="flex-1 bg-transparent outline-none" />
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => apply(false)} className="flex-1 h-8 rounded-md bg-[var(--brand)] text-white text-xs font-medium hover:opacity-90">{t('追加到字幕', 'Append')}</button>
-              <button onClick={() => apply(true)} className="flex-1 h-8 rounded-md border border-white/15 bg-white/[0.05] text-xs hover:bg-white/10">{t('替换全部', 'Replace all')}</button>
-            </div>
-          </>
-        )}
-        <button onClick={onClose} className="mt-3 w-full text-xs text-muted-foreground hover:text-foreground">{t('关闭', 'Close')}</button>
-      </div>
-      {showProviders && <ProviderSettingsDialog kind="llm" onClose={() => setShowProviders(false)} />}
-    </div>
-  );
-}
-
 // ========== 配音 / AI 服务设置（可扩展） ==========
 
 export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind: 'llm' | 'tts' | 'image'; onClose?: () => void; inline?: boolean }) {
@@ -1578,7 +1218,6 @@ const FX_TABS: { id: FxTab; label: string }[] = [
   { id: 'weather', label: '天气' },
   { id: 'screen', label: '画面' },
   { id: 'popup', label: '弹窗' },
-  { id: 'subtitle', label: '字幕' },
   { id: 'music', label: '音乐' },
 ];
 
@@ -1592,14 +1231,13 @@ export function FxPanelBody({ project }: { project: MapVideoProject }) {
         <OptionBlocks<FxTab>
           value={fxTab}
           onChange={setFxTab}
-          options={FX_TABS.map((x) => ({ value: x.id, label: t(x.label, { weather: 'Weather', screen: 'Screen', popup: 'Popup', subtitle: 'Subs', music: 'Music' }[x.id]) }))}
+          options={FX_TABS.map((x) => ({ value: x.id, label: t(x.label, { weather: 'Weather', screen: 'Screen', popup: 'Popup', music: 'Music' }[x.id]) }))}
         />
       </div>
       <div className="flex-1 overflow-y-auto px-3 pb-4">
         {fxTab === 'weather' && <WeatherTab project={project} />}
         {fxTab === 'screen' && <ScreenTab project={project} />}
         {fxTab === 'popup' && <PopupTab project={project} />}
-        {fxTab === 'subtitle' && <SubtitleTab project={project} />}
         {fxTab === 'music' && <MusicTab project={project} />}
       </div>
     </div>

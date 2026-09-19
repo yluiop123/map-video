@@ -774,11 +774,40 @@ function idListSql(tables, scopeCol) {
   return tables.map((t) => `SELECT element_id FROM ${t} WHERE ${scopeCol} = @pid`).join(' UNION ALL ');
 }
 
-function remapConnectors(db, tables, scopeCol, pid, suf) {
+function remapConnectors(db, tables, scopeCol, suf, id) {
   const ids = idListSql(tables, scopeCol);
   const route = tables[1]; // element_route / public_element_route
-  db.prepare(`UPDATE ${route} SET from_element_id = from_element_id || @suf WHERE ${scopeCol} = @pid AND from_element_id || @suf IN (${ids})`).run({ pid, suf });
-  db.prepare(`UPDATE ${route} SET to_element_id = to_element_id || @suf WHERE ${scopeCol} = @pid AND to_element_id || @suf IN (${ids})`).run({ pid, suf });
+  db.prepare(`UPDATE ${route} SET from_element_id = from_element_id || @suf WHERE ${scopeCol} = @pid AND from_element_id || @suf IN (${ids})`).run({ pid: id, suf });
+  db.prepare(`UPDATE ${route} SET to_element_id = to_element_id || @suf WHERE ${scopeCol} = @pid AND to_element_id || @suf IN (${ids})`).run({ pid: id, suf });
+}
+
+/**
+ * 端点解析不到本图层内元素的连接线整条剔除。
+ * 连接线端点常是另一图层的标记，而「单类型图层」是设计不变量（不能为它带外来元素），
+ * 所以复制体必须自洽：宁缺不悬空（AGENTS §10「应用层清理 + 自检视图」）。
+ */
+function pruneUnresolvedConnectors(db, tables, scopeCol, id) {
+  const route = tables[1];
+  const ids = idListSql(tables, scopeCol);
+  const dangling = db.prepare(
+    `SELECT element_id, name FROM ${route} WHERE ${scopeCol} = @pid AND type = 'connector'
+       AND (   (from_element_id IS NOT NULL AND from_element_id NOT IN (${ids}))
+            OR (to_element_id   IS NOT NULL AND to_element_id   NOT IN (${ids})) )`).all({ pid: id });
+  if (!dangling.length) return [];
+  const del = db.prepare(`DELETE FROM ${route} WHERE element_id = ?`);
+  for (const r of dangling) del.run(r.element_id);
+  return dangling.map((r) => r.name || r.element_id);
+}
+
+/** 元素引用到的素材 id（含移动图标素材） */
+function collectAssetIds(db, table, whereCol, id) {
+  const cols = columnsOf(db, table).filter((c) => c === 'asset_id' || c === 'move_icon_asset_id');
+  if (!cols.length) return [];
+  const out = new Set();
+  for (const r of db.prepare(`SELECT ${cols.join(',')} FROM ${table} WHERE ${whereCol} = ?`).all(id)) {
+    for (const c of cols) if (r[c]) out.add(r[c]);
+  }
+  return [...out];
 }
 
 /** 项目图层 → 公共图层（复制图层行 + 全部元素；元素 id 加后缀，避免跨公共图层冲突） */
@@ -796,45 +825,46 @@ export function saveLayerToPublicV2(db, layerId, now = Date.now()) {
       const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');
       db.prepare(`INSERT INTO ${pub} (public_layer_id, ${cols.join(',')}) SELECT ?, ${sel} FROM ${proj} WHERE layer_id = ?`).run(pid, suf, layerId);
     }
-    remapConnectors(db, ELEMENT_TABLE_PAIRS.map((p) => p[1]), 'public_layer_id', pid, suf);
+    const pubTables = ELEMENT_TABLE_PAIRS.map((p) => p[1]);
+    remapConnectors(db, pubTables, 'public_layer_id', suf, pid);
+    const dropped = pruneUnresolvedConnectors(db, pubTables, 'public_layer_id', pid);
     db.exec('COMMIT');
-    return pid;
+    return { id: pid, dropped };
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
 }
 
-/** 公共图层 → 项目（复制回一张新图层 + 全部元素；元素 id 加后缀避免碰撞；补齐 asset 占位） */
+/** 公共图层 → 项目（复制回一张新图层 + 全部元素；元素 id 加后缀避免碰撞） */
 export function importPublicLayerV2(db, publicLayerId, projectId, now = Date.now()) {
   const pl = db.prepare('SELECT * FROM public_layer WHERE public_layer_id = ?').get(publicLayerId);
   if (!pl) return null;
   const newLayerId = `${projectId}:L${Math.random().toString(36).slice(2, 8)}${now.toString(36)}`;
   const suf = `:im${newLayerId}`;
+  const pubTables = ELEMENT_TABLE_PAIRS.map((p) => p[1]);
   db.exec('BEGIN');
   try {
-    const layerOrd = (db.prepare('SELECT COUNT(*) AS c FROM layer WHERE project_id = ?').get(projectId) || {}).c || 0;
+    const layerOrd = (db.prepare('SELECT COALESCE(MAX(ord), -1) + 1 AS o FROM layer WHERE project_id = ?').get(projectId) || {}).o || 0;
     db.prepare(`INSERT INTO layer (layer_id, project_id, type, name, visible, start_sec, end_sec, ord)
       VALUES (?,?,?,?,?,?,?,?)`).run(newLayerId, projectId, pl.type, pl.name, pl.visible, pl.start_sec, pl.end_sec, layerOrd);
-    const assetIds = new Set();
+    // 素材占位必须**早于**元素插入：项目侧 asset_id 有外键，缺行会让整笔事务回滚（与 saveProjectV2 同一约定）。
+    const insAsset = db.prepare('INSERT OR IGNORE INTO asset (asset_id,kind,name,mime,storage,rel_path,created_at) VALUES (?,?,?,?,?,?,?)');
+    for (const pub of pubTables) {
+      for (const a of collectAssetIds(db, pub, 'public_layer_id', publicLayerId)) {
+        insAsset.run(a, 'image', '', 'application/octet-stream', 'file', '', now);
+      }
+    }
     for (const [proj, pub] of ELEMENT_TABLE_PAIRS) {
       const cols = columnsOf(db, pub).filter((c) => c !== 'public_layer_id');
       const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');
       db.prepare(`INSERT INTO ${proj} (project_id, layer_id, ${cols.join(',')}) SELECT ?, ?, ${sel} FROM ${pub} WHERE public_layer_id = ?`).run(projectId, newLayerId, suf, publicLayerId);
-      const pcols = columnsOf(db, proj);
-      if (pcols.includes('asset_id') || pcols.includes('move_icon_asset_id')) {
-        const sel2 = `${pcols.includes('asset_id') ? 'asset_id' : 'NULL AS asset_id'}, ${pcols.includes('move_icon_asset_id') ? 'move_icon_asset_id' : 'NULL AS m'}`;
-        for (const r of db.prepare(`SELECT ${sel2} FROM ${proj} WHERE layer_id = ?`).all(newLayerId)) {
-          if (r.asset_id) assetIds.add(r.asset_id);
-          if (r.m) assetIds.add(r.m);
-        }
-      }
     }
-    remapConnectors(db, ELEMENT_TABLE_PAIRS.map((p) => p[0]), 'layer_id', newLayerId, suf);
-    const insAsset = db.prepare('INSERT OR IGNORE INTO asset (asset_id,kind,name,mime,storage,rel_path,created_at) VALUES (?,?,?,?,?,?,?)');
-    for (const a of assetIds) insAsset.run(a, 'image', '', 'application/octet-stream', 'file', '', now);
+    const projTables = ELEMENT_TABLE_PAIRS.map((p) => p[0]);
+    remapConnectors(db, projTables, 'layer_id', suf, newLayerId);
+    const dropped = pruneUnresolvedConnectors(db, projTables, 'layer_id', newLayerId);
     db.exec('COMMIT');
-    return newLayerId;
+    return { id: newLayerId, dropped };
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;

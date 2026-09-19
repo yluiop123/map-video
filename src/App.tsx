@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { TopBar, FloatingTools } from './components/Toolbar';
 import { EditableMap } from './components/EditableMap';
 import { ElementsPanel } from './components/ElementsPanel';
+import { PresentationMode } from './components/PresentationMode';
 import { TimelineEditor } from './components/TimelineEditor';
 import { PropertiesPanel } from './components/PropertiesPanel';
 import { ExportDialog } from './components/ExportDialog';
@@ -44,12 +45,14 @@ export default function App() {
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
   const elementsOpen = useEditorStore((s) => s.elementsOpen);
   const isPlaying = useEditorStore((s) => s.isPlaying);
+  const presenting = useEditorStore((s) => s.presenting);
   const setPanelMode = useEditorStore((s) => s.setPanelMode);
 
   const [exportOpen, setExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 画幅：地图舞台按项目画幅等比居中（黑边 letterbox），预览即导出取景
   const stageRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
   useEffect(() => {
     const el = stageRef.current;
@@ -59,6 +62,28 @@ export default function App() {
     setStageSize({ w: el.clientWidth, h: el.clientHeight });
     return () => ro.disconnect();
   }, [project]);
+
+  // 演示模式：整棵应用树进全屏（地图实例保持挂载，不重建）。
+  // 全屏失败或被用户用系统方式退出时，布局仍是「无界面」的演示态，不会卡住。
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!presenting) {
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+      return;
+    }
+    if (el && !document.fullscreenElement) void el.requestFullscreen().catch(() => {});
+    // 顶栏/时间线卸载只改容器尺寸，MapLibre 只听 window resize；主动补一次
+    const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 120);
+    return () => clearTimeout(t);
+  }, [presenting]);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement) useEditorStore.getState().setPresenting(false);
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
 
   // 桌面端：启动时从 SQLite 加载 AI/配音配置
   useEffect(() => {
@@ -70,7 +95,7 @@ export default function App() {
     mountPreviewAudio();
   }, []);
 
-  // 编辑器快捷键：Delete 删除 / Ctrl+D 复制 / Ctrl+S 保存 / Ctrl+Z 撤销 / Ctrl+Y(Shift+Z) 重做
+  // 编辑器快捷键：F5 演示 / Delete 删除 / Ctrl+D 复制 / Ctrl+S 保存 / Ctrl+Z 撤销 / Ctrl+Y(Shift+Z) 重做
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -78,6 +103,13 @@ export default function App() {
 
       const ed = useEditorStore.getState();
       const elId = ed.selectedElementId;
+
+      // F5 进出演示模式（演示中的按键由 PresentationMode 自己处理，这里只管进入）
+      if (e.key === 'F5' && !ed.presenting) {
+        e.preventDefault();
+        ed.setPresenting(true);
+        return;
+      }
 
       // Delete/Backspace 的删除逻辑统一在 EditableMap 的 keydown 里处理（元素/特效/图层，带确认），
       // 这里不再重复删除，否则会绕过确认框且与 EditableMap 形成双重删除。
@@ -145,6 +177,7 @@ export default function App() {
   // 右侧浮层：元素模式需有选中元素；关键帧/特效模式始终显示；播放预览时隐藏
   const showRightPanel =
     !isPlaying &&
+    !presenting &&
     (panelMode === 'keyframe' ||
       panelMode === 'fx' ||
       (panelMode === 'element' && !!selectedElementId));
@@ -159,12 +192,12 @@ export default function App() {
     : { left: 0, top: 0, right: 0, bottom: 0 } as const;
 
   return (
-    <div className="relative flex flex-col h-screen bg-background text-foreground">
-      {/* 顶部栏：Logo + 项目芯片 + 底图/高程/3D + 撤销重做/保存/导出 */}
-      <TopBar onOpenExport={() => setExportOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
+    <div ref={rootRef} className={`flex flex-col bg-background text-foreground ${presenting ? 'fixed inset-0' : 'relative h-screen'}`}>
+      {/* 顶部栏：Logo + 项目芯片 + 底图/高程/3D + 撤销重做/保存/导出（演示时隐藏） */}
+      {!presenting && <TopBar onOpenExport={() => setExportOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />}
 
       {/* 地图舞台：全幅画布 + 特效预览层 + 浮动工具条/面板（震动=整体画面位移） */}
-      <div ref={stageRef} className="relative flex-1 overflow-hidden bg-[#0c0a09]">
+      <div ref={stageRef} className={`relative flex-1 overflow-hidden ${presenting ? 'bg-black' : 'bg-[#0c0a09]'}`}>
         <div
           className="absolute overflow-hidden"
           style={{ ...stageBoxStyle, transform: shake ? `translate(${shake.x.toFixed(2)}px, ${shake.y.toFixed(2)}px)` : undefined }}
@@ -178,21 +211,24 @@ export default function App() {
         </div>
 
         {/* 浮动工具条（选择 + 六大工具）；播放预览时隐藏 */}
-        {!isPlaying && <FloatingTools />}
+        {!isPlaying && !presenting && <FloatingTools />}
 
         {/* 左下角底图/高程/3D 芯片 */}
-        <MapStyleChip />
+        {!presenting && <MapStyleChip />}
 
         {/* 左侧浮动元素面板 */}
-        {elementsOpen && (
+        {elementsOpen && !presenting && (
           <div className="absolute left-3 top-16 bottom-3 w-64 z-30 bg-card/95 backdrop-blur border border-white/10 shadow-2xl rounded-xl overflow-hidden">
             <ElementsPanel />
           </div>
         )}
+
+        {/* 演示模式：全屏播控 + HUD（覆盖在舞台上） */}
+        {presenting && <PresentationMode project={project} />}
       </div>
 
       {/* 时间线（播放条 + 轨道） */}
-      <TimelineEditor />
+      {!presenting && <TimelineEditor />}
 
       {/* 右侧浮动设置面板：覆盖到屏幕底部（在时间线之上），保证属性区有足够高度 */}
       {showRightPanel && (

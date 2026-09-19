@@ -227,8 +227,15 @@ function registerIpc() {
 
   // 公共图层库（跨项目）：把项目图层连元素复制过去 / 导入回项目
   ipcMain.handle('db:publicLayers:list', () => listPublicLayersV2(db));
-  ipcMain.handle('db:publicLayers:save', (_e, { layerId }) => ({ id: saveLayerToPublicV2(db, layerId) }));
-  ipcMain.handle('db:publicLayers:import', (_e, { publicLayerId, projectId }) => ({ layerId: importPublicLayerV2(db, publicLayerId, projectId) }));
+  ipcMain.handle('db:publicLayers:save', (_e, { layerId }) => saveLayerToPublicV2(db, layerId) || { id: null });
+  ipcMain.handle('db:publicLayers:import', (_e, { publicLayerId, projectId }) => {
+    const r = importPublicLayerV2(db, publicLayerId, projectId);
+    if (!r) return { layerId: null };
+    // 把导入后的图层原样回传：渲染进程据此并入内存项目，避免整项目 reload 冲掉未保存修改与撤销栈
+    const proj = getProjectV2(db, projectId);
+    const layer = (proj?.layers || []).find((L) => L.id === r.id) || null;
+    return { layerId: r.id, layer, dropped: r.dropped };
+  });
   ipcMain.handle('db:publicLayers:remove', (_e, id) => { removePublicLayerV2(db, id); return { ok: true }; });
 
   // 清空项目数据：项目 + 合集 + 素材文件（**保留**应用配置 provider）
@@ -482,6 +489,14 @@ function createWindow() {
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+  // Windows：autoHideMenuBar 的菜单栏在全屏时仍会留一条黑边（演示模式顶部那条），
+  // 进全屏显式藏掉，退出时还原进全屏前的可见状态（不能直接设 true，那会把菜单栏钉住）。
+  let menuBarBeforeFs = true;
+  win.on('enter-full-screen', () => {
+    menuBarBeforeFs = win.isMenuBarVisible();
+    win.setMenuBarVisibility(false);
+  });
+  win.on('leave-full-screen', () => win.setMenuBarVisibility(menuBarBeforeFs));
   // 开发模式：vite 热更（scripts/dev-desktop.mjs 注入）；否则 app:// 托管 dist
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) win.loadURL(devUrl);

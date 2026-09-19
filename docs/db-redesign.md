@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：16 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：22 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -117,7 +117,7 @@
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（16 张表，按结构分 10 组）
+### 2.2 实体清单（22 张表，按结构分 11 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
@@ -132,10 +132,11 @@
 | **8. 贴图类元素** | `element_image` | type = geo_image；地理配准图片（控制点网格 JSON 内联），图片本体走全局素材库 |
 | **9. 叠加层** | `overlay` | 弹窗本体；custom / person 的内容块内联在 `payload_json`（原 overlay_block / person_block 已删除） |
 | **10. 应用配置** | `provider` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证 |
+| **11. 公共图层库** | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image` | 跨项目复用的图层图库：把某个图层连元素**整体复制**为一份独立副本，导入到任意项目。与项目侧同构，但**不属于任何项目** —— 故 `asset_id` 与连接线端点全部降级为弱引用（建不了外键），代价见 2.6「副本自洽」条 |
 
 ### 2.3 元素建模：按工具栏聚合的 5 张类别宽表
 
-元素共 13 个子类型（point / flag / military_symbol / line / moving_point / connector / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、章节、时间轴、可见性、层级、动画与移动配置），但**专有字段差异极大**（从 3 个到 47 个）。
+元素共 13 个子类型（point / flag / military_symbol / line / moving_point / connector / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、项目与图层归属、时间轴、可见性、层级、动画与移动配置），但**专有字段差异极大**（从 3 个到 47 个）。
 
 三种映射方案的取舍：
 
@@ -169,7 +170,7 @@
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | **PK** | 元素 id（与其它类别表共享同一 id 空间） |
-| `project_id` | TEXT | **FK** → chapter CASCADE | 所属章节 |
+| `project_id` | TEXT | **FK** → project CASCADE | 所属项目（另有 `layer_id` FK → layer CASCADE 表图层归属） |
 | `type` | TEXT | **CHECK** IN (point, flag, military_symbol) | 子类型判别列 |
 | `lng` / `lat` | REAL | NOT NULL | 坐标（三类标记都落在单点） |
 | `shape` | TEXT | **CHECK** IN (circle, text, pin, bubble, emoji, image, gif, model, icon) | 点的 9 种视觉形态 |
@@ -185,7 +186,7 @@
 ```sql
 CREATE TABLE element_route (
   element_id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES chapter(project_id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
   type       TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),
   coords_json TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),
   -- connector 专用：端点弱引用（元素已分表，无外键目标）
@@ -199,7 +200,7 @@ CREATE TABLE element_route (
 
 #### 动画关键帧 —— 内联进类别表的 `keyframes_json`
 
-透明度、缩放、旋转、绘制进度、路径进度、填充进度、morph 等曲线结构同构，作为 `keyframes_json` 列内联在 4 张类别宽表里（`[{property, sec, easing, value_num, value_json}]`）。运行时元素对象本就内联关键帧数组，独立成表反而需要「元素 ↔ 关键帧」的弱引用维护；「同一时刻同一属性不得重复」由应用层在写入时去重。
+透明度、缩放、旋转、绘制进度、路径进度、填充进度、morph 等曲线结构同构，作为 `keyframes_json` 列内联在 5 张类别宽表里（`[{property, sec, easing, value_num, value_json}]`）。运行时元素对象本就内联关键帧数组，独立成表反而需要「元素 ↔ 关键帧」的弱引用维护；「同一时刻同一属性不得重复」由应用层在写入时去重。
 
 ### 2.5 引用完整性策略
 
@@ -251,14 +252,16 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 | 删元素 → 连带删除以它为端点的 connector、以及它名下的关键帧 | 应用层删除元素时一并清理 |
 | 跟随机位只能引用同一章节内的路线元素 | 写入端校验（选择跟随机位时只列本章路线） |
 
+**同类规则（公共图层副本必须自洽）**：`public_element_*` 与项目侧同构，但副本**脱离源项目独立存在**，所以连接线端点只在**同一图层内**才有意义 —— 端点指向本图层外元素的连接线，在「保存到公共库」与「导入到项目」两条路径上都由应用层**整条剔除**并回报 UI（`pruneUnresolvedConnectors` / `pruneForeignConnectors`）。宁缺不悬空：留着就是在库里埋一条源项目删除后再也没人清理的死引用。
+
 ### 2.7 一致性自检
 
 提供 **3 个视图**，日常体检与数据修复后运行，均**应返回 0 行**：
 
 | 视图 | 检出 |
 |---|---|
-| `v_element_index` | **读取便利**：4 张类别表的公共列 UNION 成「元素总表」，轨道 / 列表 / 计数直接查它 |
-| `v_check_dangling` | 悬空引用：连接线端点、关键帧归属、跟随机位、自定义图标符号 |
+| `v_element_index` | **读取便利**：5 张类别表的公共列 UNION 成「元素总表」，轨道 / 列表 / 计数直接查它 |
+| `v_check_dangling` | 悬空引用：项目侧连接线端点、跟随机位，以及公共库副本内未在同一公共图层解析的连接线端点（`public_connector.from` / `.to`） |
 | `v_check_territory_ref` | 疆域 JSON 内部一致性：`plots_json.ownerId` / `events_json.toCountryId` 必须能在 `countries_json` 中命中 |
 
 ## 三、设计依据汇总

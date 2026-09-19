@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AbsoluteFill, useDelayRender, useVideoConfig, useCurrentFrame } from 'remotion';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { renderElements, setRenderFps, resolveFollowCam, resolveOrbitCam, preloadGeoImageAssets } from '../lib/map-renderer';
+import { renderElements, restackByLayerOrder, setRenderFps, resolveFollowCam, resolveOrbitCam, preloadGeoImageAssets } from '../lib/map-renderer';
 import { interpolateCamera, resolveKfIndex } from '../lib/keyframe-interpolation';
 import { getAssetUrl, getAssetBytes } from '../lib/assets';
 import { getStyleUrl } from '../lib/map-style';
@@ -136,6 +136,8 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
       }
 
       renderElements(map, chapter.elements, frame, fps);
+      // 与编辑端一致：图层列表顺序 = 地图叠放顺序（靠前的在上层）
+      restackByLayerOrder(map, chapter.elements.map((el) => el.id));
     } catch (err) {
       console.error('[MapScene] render failed:', err);
     }
