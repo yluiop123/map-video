@@ -75,7 +75,8 @@ export function PropertiesPanel() {
 
   if (!project) return <EmptyPanel />;
 
-  let element: MapElement | null = null;  for (const chapter of [project]) {
+  let element: MapElement | null = null;
+  for (const chapter of [project]) {
     const found = chapter.elements.find((el) => el.id === selectedElementId);
     if (found) { element = found; break; }
   }
