@@ -3,7 +3,7 @@
  * DDL 唯一事实源：docs/db-schema-v2.sql。
  *
  * 时间约定：表内存秒（REAL），运行时 MapVideoProject 用帧；fps = globalConfig.defaultFPS。
- * 元素按类别拆表：point/flag/military_symbol→element_marker；line/moving_point/connector→element_route；
+ * 元素按类别拆表：point/flag/military_symbol→element_marker；line/moving_point→element_route；
  * polygon/arrow/double_arrow/gathering/encirclement→element_shape；territory→element_territory。
  * 仅「坐标集合」等变长数据保留 JSON 列；标签 / 移动标记 / 表现参数已平铺为列。
  */
@@ -137,7 +137,7 @@ const J = (s, dflt) => { try { return s == null ? dflt : JSON.parse(s); } catch 
 
 const ELEMENT_CATEGORY = {
   point: 'marker', flag: 'marker', military_symbol: 'marker',
-  line: 'route', moving_point: 'route', connector: 'route',
+  line: 'route', moving_point: 'route',
   polygon: 'shape', arrow: 'shape', double_arrow: 'shape', gathering: 'shape', encirclement: 'shape',
   territory: 'territory',
   geo_image: 'image',
@@ -436,7 +436,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       keyframes_json, ord, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_type, line_arrow,
       route_dot_enabled, route_dot_count, route_dot_width, route_dot_color, route_dot_frame_step,
       flow_speed, plain_path, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
-      trail_color, trail_width, trail_length, from_element_id, to_element_id, animated, arrowhead,
+      trail_color, trail_width, trail_length,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
@@ -445,7 +445,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       @keyframes_json,@ord,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_type,@line_arrow,
       @route_dot_enabled,@route_dot_count,@route_dot_width,@route_dot_color,@route_dot_frame_step,
       @flow_speed,@plain_path,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
-      @trail_color,@trail_width,@trail_length,@from_element_id,@to_element_id,@animated,@arrowhead,
+      @trail_color,@trail_width,@trail_length,
       @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_size,@move_icon_label_padding,@move_icon_label_radius,@move_icon_label_pos,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
       ...common,
       fly_mode: el.flyMode ? 1 : 0, show_icon: el.showIcon ? 1 : 0,
@@ -464,8 +464,6 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       front_tooth_length: n(el.frontStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap),
       front_tooth_angle: n(el.frontStyle?.toothAngle), front_side: n(el.frontStyle?.side),
       trail_color: n(el.trail?.color), trail_width: n(el.trail?.width), trail_length: n(el.trail?.length),
-      from_element_id: n(el.fromElementId), to_element_id: n(el.toElementId),
-      animated: n(el.animated) == null ? null : b(el.animated), arrowhead: n(el.arrowhead) == null ? null : b(el.arrowhead),
       ...moveIconCols(el.moveIcon),
     });
     return;
@@ -687,10 +685,10 @@ function readElementsV2(db, chapterId, s2f) {
     }
   }
   for (const r of db.prepare('SELECT * FROM element_route WHERE project_id = ?').all(chapterId)) {
+    // 判别列只认这两种；老库里的 connector 行不能退化成空线落回写入端（会被 CHECK 打回整笔保存）
+    if (r.type !== 'line' && r.type !== 'moving_point') continue;
     const k = kfOf(r);
-    if (r.type === 'connector') {
-      out.push({ ...base(r), type: 'connector', fromElementId: r.from_element_id, toElementId: r.to_element_id, lineWidth: r.line_width ?? 4, lineColor: r.line_color ?? '#FF6600', lineDashArray: r.line_dash_on != null ? [r.line_dash_on, r.line_dash_off ?? 0] : undefined, animated: r.animated == null ? undefined : bit(r.animated), arrowhead: r.arrowhead == null ? undefined : bit(r.arrowhead) });
-    } else if (r.type === 'moving_point') {
+    if (r.type === 'moving_point') {
       out.push({ ...base(r), type: 'moving_point', path: J(r.coords_json, []), pathProgress: k.progress, color: r.line_color ?? undefined, trail: r.trail_color || r.trail_width != null || r.trail_length != null ? { color: r.trail_color ?? undefined, width: r.trail_width ?? undefined, length: r.trail_length ?? undefined } : undefined });
     } else {
       out.push({
@@ -782,36 +780,6 @@ function columnsOf(db, table) {
   return db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 }
 
-/** 本图层内全部元素 id（某表，按 scope 列过滤） */
-function idListSql(tables, scopeCol) {
-  return tables.map((t) => `SELECT element_id FROM ${t} WHERE ${scopeCol} = @pid`).join(' UNION ALL ');
-}
-
-function remapConnectors(db, tables, scopeCol, suf, id) {
-  const ids = idListSql(tables, scopeCol);
-  const route = tables[1]; // element_route / public_element_route
-  db.prepare(`UPDATE ${route} SET from_element_id = from_element_id || @suf WHERE ${scopeCol} = @pid AND from_element_id || @suf IN (${ids})`).run({ pid: id, suf });
-  db.prepare(`UPDATE ${route} SET to_element_id = to_element_id || @suf WHERE ${scopeCol} = @pid AND to_element_id || @suf IN (${ids})`).run({ pid: id, suf });
-}
-
-/**
- * 端点解析不到本图层内元素的连接线整条剔除。
- * 连接线端点常是另一图层的标记，而「单类型图层」是设计不变量（不能为它带外来元素），
- * 所以复制体必须自洽：宁缺不悬空（AGENTS §10「应用层清理 + 自检视图」）。
- */
-function pruneUnresolvedConnectors(db, tables, scopeCol, id) {
-  const route = tables[1];
-  const ids = idListSql(tables, scopeCol);
-  const dangling = db.prepare(
-    `SELECT element_id, name FROM ${route} WHERE ${scopeCol} = @pid AND type = 'connector'
-       AND (   (from_element_id IS NOT NULL AND from_element_id NOT IN (${ids}))
-            OR (to_element_id   IS NOT NULL AND to_element_id   NOT IN (${ids})) )`).all({ pid: id });
-  if (!dangling.length) return [];
-  const del = db.prepare(`DELETE FROM ${route} WHERE element_id = ?`);
-  for (const r of dangling) del.run(r.element_id);
-  return dangling.map((r) => r.name || r.element_id);
-}
-
 /** 元素引用到的素材 id（含移动图标素材） */
 function collectAssetIds(db, table, whereCol, id) {
   const cols = columnsOf(db, table).filter((c) => c === 'asset_id' || c === 'move_icon_asset_id');
@@ -838,11 +806,8 @@ export function saveLayerToPublicV2(db, layerId, now = Date.now()) {
       const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');
       db.prepare(`INSERT INTO ${pub} (public_layer_id, ${cols.join(',')}) SELECT ?, ${sel} FROM ${proj} WHERE layer_id = ?`).run(pid, suf, layerId);
     }
-    const pubTables = ELEMENT_TABLE_PAIRS.map((p) => p[1]);
-    remapConnectors(db, pubTables, 'public_layer_id', suf, pid);
-    const dropped = pruneUnresolvedConnectors(db, pubTables, 'public_layer_id', pid);
     db.exec('COMMIT');
-    return { id: pid, dropped };
+    return { id: pid };
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
@@ -873,11 +838,8 @@ export function importPublicLayerV2(db, publicLayerId, projectId, now = Date.now
       const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');
       db.prepare(`INSERT INTO ${proj} (project_id, layer_id, ${cols.join(',')}) SELECT ?, ?, ${sel} FROM ${pub} WHERE public_layer_id = ?`).run(projectId, newLayerId, suf, publicLayerId);
     }
-    const projTables = ELEMENT_TABLE_PAIRS.map((p) => p[0]);
-    remapConnectors(db, projTables, 'layer_id', suf, newLayerId);
-    const dropped = pruneUnresolvedConnectors(db, projTables, 'layer_id', newLayerId);
     db.exec('COMMIT');
-    return { id: newLayerId, dropped };
+    return { id: newLayerId };
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;

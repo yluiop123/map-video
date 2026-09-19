@@ -125,13 +125,7 @@ export function ElementsPanel() {
   const saveToPublic = async (L: Layer) => {
     try {
       await useProjectStore.getState().saveProject();
-      const dropped = await saveLayerToPublic(L);
-      if (dropped.length) {
-        alert(t(
-          `已跳过 ${dropped.length} 条连接线（端点指向本图层外的元素，公共图层无法自洽）：${dropped.join('、')}`,
-          `Skipped ${dropped.length} connector(s) whose endpoints live outside this layer: ${dropped.join(', ')}`,
-        ));
-      }
+      await saveLayerToPublic(L);
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
     }
@@ -342,7 +336,7 @@ function getElementIcon(type: MapElement['type']): string {
   const icons: Record<string, string> = {
     point: '📍', moving_point: '🏃', line: '📏', polygon: '⬛',
     arrow: '➡️', double_arrow: '🩹', encirclement: '⭕', gathering: '⚔️',
-    connector: '🔗', flag: '🚩', territory: '🗺️', geo_image: '🖼️',
+    flag: '🚩', territory: '🗺️', geo_image: '🖼️',
   };
   return icons[type] || '❓';
 }

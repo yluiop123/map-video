@@ -4,7 +4,7 @@ import type {
   MapVideoProject, MapElement, GlobalConfig, BaseMapConfig,
   ElevationMapConfig, OverlayItem, CameraKeyframe,
   ProjectExport, ScreenFxItem, ExportedAsset,
-  NarrationEntry, NarrationStyle, MusicTrack, ConnectorElement,
+  NarrationEntry, NarrationStyle, MusicTrack,
   GeneratedChapterPlan, Layer, LayerType,
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
@@ -628,23 +628,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         };
       }),
 
-    /**
-     * 删除元素 —— 一并清理弱引用：
-     *   1) 以该元素为端点的连接线整条移除
-     *   2) 跟随机位指向该元素的相机关键帧退化为固定镜头
-     */
+    /** 删除元素 —— 一并清理指向它的跟随机位（退化为固定镜头） */
     deleteElement: (elementId) =>
       patch((p) => {
         const layers = p.layers.map((L) => ({
           ...L,
-          elements: L.elements.filter((el) => {
-            if (el.id === elementId) return false;
-            if (el.type === 'connector') {
-              const c = el as ConnectorElement;
-              return c.fromElementId !== elementId && c.toElementId !== elementId;
-            }
-            return true;
-          }),
+          elements: L.elements.filter((el) => el.id !== elementId),
         }));
         const camera = p.camera.map((kf) =>
           kf.followRoute?.routeElementId === elementId ? { ...kf, cameraType: 'fixed' as const, followRoute: undefined } : kf,

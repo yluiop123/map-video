@@ -73,7 +73,6 @@ export function elementToFeature(element: MapElement): GeoFeature | null {
         },
       };
 
-    case 'connector':
     case 'arrow':
     case 'encirclement':
     case 'gathering':

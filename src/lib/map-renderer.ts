@@ -14,7 +14,7 @@ import type { TerritoryLabelStyle } from './territory';
 import type {
   MapElement, PointElement, MovingPointElement, LineElement,
   PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
-  GatheringElement, ConnectorElement,
+  GatheringElement,
   FlagElement, CameraKeyframe,
   TerritoryElement, GeoImageElement,
 } from '../types';
@@ -219,7 +219,6 @@ export function renderElements(
       case 'double_arrow': renderDoubleArrow(map, element, frame); break;
       case 'encirclement': renderEncirclement(map, element, frame); break;
       case 'gathering': renderGathering(map, element, frame); break;
-      case 'connector': renderConnector(map, element); break;
       case 'flag': renderFlag(map, element); break;
       case 'territory': renderTerritory(map, element as TerritoryElement, frame); break;
       case 'geo_image': renderGeoImage(map, element as GeoImageElement); break;
@@ -3085,50 +3084,6 @@ function renderGathering(map: maplibregl.Map, element: GatheringElement, frame: 
 // 符号图由 builtin-assets 的 getBuiltinAsset('milsym:<SIDC>') 调用 milsymbol
 // 按官方规范生成，走通用位图管线（renderPoint），属性（大小/朝向/颜色/标签）
 // 与图片形态完全一致。旧的独立元素渲染（renderMilitarySymbol）已移除。
-
-// ========== 渲染：连线 ==========
-
-// 依赖注入：connector 坐标解析
-let connectorCoordResolver: ((element: ConnectorElement) => [number, number][] | null) | null = null;
-export function setConnectorCoordResolver(resolver: ((element: ConnectorElement) => [number, number][] | null) | null): void {
-  connectorCoordResolver = resolver;
-}
-
-function renderConnector(map: maplibregl.Map, element: ConnectorElement) {
-  const coords = connectorCoordResolver?.(element);
-  const sourceId = `connector-${element.id}`;
-  const layerId = `connector-layer-${element.id}`;
-  if (!coords) {
-    if (map.getLayer(layerId)) map.removeLayer(layerId);
-    if (map.getSource(sourceId)) map.removeSource(sourceId);
-    return;
-  }
-
-  const geojson = turf.featureCollection([turf.lineString(coords)]);
-  if (map.getSource(sourceId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
-  } else {
-    map.addSource(sourceId, { type: 'geojson', data: geojson });
-    map.addLayer({
-      id: layerId, type: 'line', source: sourceId,
-      paint: {
-        'line-color': element.lineColor || '#FF8800',
-        'line-width': element.lineWidth || 2,
-        ...(element.animated ? { 'line-dasharray': [4, 4] } : {}),
-      },
-    });
-  }
-
-  if (element.arrowhead && !map.getLayer(`connector-arrow-layer-${element.id}`)) {
-    const arrowSrc = `connector-arrow-${element.id}`;
-    map.addSource(arrowSrc, { type: 'geojson', data: turf.featureCollection([turf.point(coords[coords.length - 1])]) });
-    map.addLayer({
-      id: `connector-arrow-layer-${element.id}`, type: 'symbol', source: arrowSrc,
-      layout: { 'text-field': '▶', 'text-size': 11, 'text-rotate': 90 },
-      paint: { 'text-color': element.lineColor || '#FF8800' },
-    });
-  }
-}
 
 // ========== 图片图标缓存（供「移动图标」image 样式复用） ==========
 

@@ -30,15 +30,9 @@ export function PublicLayerDialog({ onClose }: { onClose: () => void }) {
     if (!project) return;
     setBusy(true);
     try {
-      const { layer, dropped } = await importPublicLayer(pl.id, project.id);
+      const layer = await importPublicLayer(pl.id, project.id);
       if (layer) addLayerFull(layer);
       onClose();
-      if (dropped?.length) {
-        alert(t(
-          `已跳过 ${dropped.length} 条连接线（端点指向该图层外的元素）：${dropped.join('、')}`,
-          `Skipped ${dropped.length} connector(s) whose endpoints are outside that layer: ${dropped.join(', ')}`,
-        ));
-      }
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
     } finally {

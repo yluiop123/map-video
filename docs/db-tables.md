@@ -4,7 +4,7 @@
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：22 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 3 个视图 · 0 个触发器 · 655 列（外键全部有索引）
+- **规模**：22 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 3 个视图 · 0 个触发器 · 647 列（外键全部有索引）
 
 **目录**
 
@@ -51,7 +51,7 @@
 | `elevationMaps[].exaggeration`（面板滑动条可调） | `project.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–50，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
 | `customSymbols[]` / `customImages[]`（图标库 / 图片库登记） | `asset`（`kind='icon'` / `kind='image'`） | **三表已合并**：两者都只是项目收录的一个素材行，二进制走 P4 外置 |
 | `layers[]`（`Layer`：type/name/visible/startFrame/endFrame/elements[]） | `layer` + 各元素表的 `layer_id` | P2：**项目 ▸ 图层 ▸ 元素**；单类型图层（marker / route / shape / territory / image）；删图层连带删元素（CASCADE） |
-| （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— 端点无法在本层内解析的连接线在复制/导入时整条剔除（应用层裁剪 + `v_check_dangling` 兜底） |
+| （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— `asset_id` 是弱引用，导入时先补 `asset` 占位行；`element_id` 是全库主键，副本一律加后缀避免撞车 |
 | `project.elements[]`（`layers[].elements` 的派生镜像） | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`（5 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表）；镜像不入库，只存图层归属 |
 | `elements[].style` / `drawProgress` / `morphKeyframes`（关键帧数组） | 类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
 | `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：1:1 且可选，跟随元素整体读写 |
@@ -111,14 +111,13 @@
 
 ### 组 5 · 路线类元素 1 张 Route 工具
 
-「路线」按钮的产出：进入绘制模式采点成线。线型（直线/贝塞尔/大圆弧）与路线特效都在右侧 Settings 里切换，不新增表。移动点与连接线也并入本表。
+「路线」按钮的产出：进入绘制模式采点成线。线型（直线/贝塞尔/大圆弧）与路线特效都在右侧 Settings 里切换，不新增表。移动点也并入本表。
 属性面板：`PropertiesPanel.tsx` 路线设置区（均匀移动 / 逐点到达时间 / 动画起止 / 显示标记）。
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
 | `element_route` | `line` | `element_id` | Route 工具；Shape 下菜单里的直线/曲线/带箭头/战线/行军箭头也写这张表 | 路径数组（coords_json）、线型、线宽虚线、路线特效、流动速度、无样式路线、战线梳齿 |
 | `element_route` | `moving_point` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 路径点数组、拖尾颜色/宽度/长度 |
-| `element_route` | `connector` | `element_id` | **当前无入口** | 起止端点（**弱引用**：元素已分表故无外键，删元素时由应用层连带清理本行）、线宽/颜色/箭头 |
 
 ### 组 6 · 形状类元素 1 张 Shape 工具
 
@@ -164,24 +163,24 @@
 
 ### 组 11 · 公共图层与公共元素（跨项目图库） 6 张
 
-「把当前图层共享到公共库」/「从公共库导入图层」的落地表（`ElementsPanel.tsx` 的 ★ 按钮 + `PublicLayerDialog.tsx`）。**与项目侧同构**，差别只有两处：外键换成 `public_layer_id`，且 `asset_id` / 连接线端点**全部降级为弱引用**（公共库不属于任何项目，无法对项目的 `asset` 行建外键）。
+「把当前图层共享到公共库」/「从公共库导入图层」的落地表（`ElementsPanel.tsx` 的 ★ 按钮 + `PublicLayerDialog.tsx`）。**与项目侧同构**，差别只有两处：外键换成 `public_layer_id`，且 `asset_id` **降级为弱引用**（公共库不属于任何项目，无法对项目的 `asset` 行建外键）。
 
 | 表 | 内容 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
 | `public_layer` | 公共图层本体（类型 / 名称 / 显隐 / 显示区间 / 排序 + 审计时间） | `public_layer_id` | 无 `project_id`：库是全局的，导入时才生成项目侧 `layer` 行；`type` 与项目图层同一 CHECK | 「公共图层库」弹窗（`PublicLayerDialog.tsx`） |
 | `public_element_marker` | 标记类副本 | `element_id` | 与 `element_marker` 同构 | 同上 |
-| `public_element_route` | 路线类副本 | `element_id` | 与 `element_route` 同构；`from/to_element_id` 是弱引用 | 同上 |
+| `public_element_route` | 路线类副本 | `element_id` | 与 `element_route` 同构 | 同上 |
 | `public_element_shape` | 形状类副本 | `element_id` | 与 `element_shape` 同构 | 同上 |
 | `public_element_territory` | 疆域类副本 | `element_id` | 与 `element_territory` 同构（三个 JSON 列整体复制） | 同上 |
 | `public_element_image` | 贴图类副本 | `element_id` | 与 `element_image` 同构；`asset_id` 弱引用，导入时在项目 `asset` 补占位行 | 同上 |
 
-**副本必须自洽**（本轮确立的不变量）：连接线端点若指向**本图层之外**的元素，整层复制后必然悬空（删掉源项目也不会清理），因此**保存与导入两条路径都在应用层整条剔除**这类连接线，并把被剔除的元素名回报给 UI（`electron/db-v2.mjs` 的 `pruneUnresolvedConnectors` / `src/lib/layers.ts` 的 `pruneForeignConnectors`）。数据库侧仍留 `v_check_dangling` 的 `public_connector.from` / `.to` 两条分支做体检 —— 兜底，不拦截写入。
+**副本必须自洽**（不变量）：`asset_id` 是弱引用，导入时要在插入元素**之前**先补 `asset` 占位行（项目侧 `element_*.asset_id` 有真外键，缺行会让整笔事务回滚）；副本元素 id 一律加后缀（保存 `:pb<pubId>`、导入 `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车（`deleteElement` 按 id 过滤会一次删两条）。数据库侧留 `v_check_dangling` 做体检 —— 兜底，不拦截写入。
 
 
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **22 张表 / 655 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，655 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **22 张表 / 647 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，647 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -341,7 +340,7 @@
 
 #### narration — 字幕 / 配音档：样式部分，与项目 1:1
 
-**职责**：字幕 / 配音档（样式部分，1:1）　**前端**：右侧「字幕」面板（FxPanelBody.tsx）
+**职责**：字幕 / 配音档（样式部分，1:1）　**前端**：顶栏「字幕生成」弹窗的字幕样式区（GenerateDialog.tsx）
 
 10 列 · 主键 `project_id`
 
@@ -360,7 +359,7 @@
 
 #### narration_entry — 字幕条：文本 + 配音音频 + 显示时长
 
-**职责**：字幕条：文本 + 配音音频 + 显示时长　**前端**：时间轴「🎙 配音」轨道（TimelineEditor.tsx）+ 字幕面板逐条编辑 / TTS / 导入 SRT
+**职责**：字幕条：文本 + 配音音频 + 显示时长　**前端**：顶栏「字幕生成」弹窗逐条编辑 / TTS / 导入 SRT（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）
 
 9 列 · 主键 `entry_id`
 
@@ -405,7 +404,7 @@
 
 #### element_marker — 标记类元素（Pin 工具）：point / flag / military_symbol 一张宽表，type 判别
 
-**职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，9 种视觉形态）
+**职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，10 种视觉形态）
 
 58 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
 
@@ -483,18 +482,18 @@
 
 ### 组 5 · 路线类元素（Route 工具）
 
-#### element_route — 路线类元素（Route 工具）：line / moving_point / connector 一张宽表，type 判别
+#### element_route — 路线类元素（Route 工具）：line / moving_point 一张宽表，type 判别
 
-**职责**：路线类元素：line / moving_point / connector　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
+**职责**：路线类元素：line / moving_point　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-74 列 · 主键 `element_id` · 工具入口：Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表；连接线无工具入口
+70 列 · 主键 `element_id` · 工具入口：Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
-| `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具） · `CHECK (type IN ('line','moving_point','connector'))` |
+| `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
@@ -561,19 +560,13 @@
 | `trail_color` | TEXT | — | 拖尾颜色（type=moving_point） |
 | `trail_width` | REAL | — | 拖尾宽度（px） |
 | `trail_length` | INTEGER | — | 拖尾长度（帧） |
-| `from_element_id` | TEXT | — | 连接线起点元素（弱引用：可指向任意类别元素，元素已分表故无外键；删元素时由应用层连带删除本行） |
-| `to_element_id` | TEXT | — | 连接线终点元素（弱引用；与起点不得相同） |
-| `animated` | INTEGER | — | 连接线是否流动动画（0/1） · `CHECK (animated IS NULL OR animated IN (0,1))` |
-| `arrowhead` | INTEGER | — | 连接线是否显示末端箭头（0/1） · `CHECK (arrowhead IS NULL OR arrowhead IN (0,1))` |
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（连接线是否显示末端箭头（0/1））
+- `CHECK (end_sec >= start_sec)`（拖尾长度（帧））
 - `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (type <> 'line' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)`
-- `CHECK (type <> 'connector' OR (from_element_id IS NOT NULL AND to_element_id IS NOT NULL))`
-- `CHECK (from_element_id IS NULL OR to_element_id IS NULL OR from_element_id <> to_element_id)`
 
 ### 组 6 · 形状类元素（Shape 工具）
 
@@ -925,13 +918,13 @@
 
 **职责**：公共路线元素（public_layer 内副本，与 element_route 同构）　**前端**：同上
 
-73 列 · 主键 `element_id`
+69 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
-| `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具） · `CHECK (type IN ('line','moving_point','connector'))` |
+| `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
@@ -998,19 +991,13 @@
 | `trail_color` | TEXT | — | 拖尾颜色（type=moving_point） |
 | `trail_width` | REAL | — | 拖尾宽度（px） |
 | `trail_length` | INTEGER | — | 拖尾长度（帧） |
-| `from_element_id` | TEXT | — | 连接线起点元素（弱引用：可指向任意类别元素，元素已分表故无外键；删元素时由应用层连带删除本行） |
-| `to_element_id` | TEXT | — | 连接线终点元素（弱引用；与起点不得相同） |
-| `animated` | INTEGER | — | 连接线是否流动动画（0/1） · `CHECK (animated IS NULL OR animated IN (0,1))` |
-| `arrowhead` | INTEGER | — | 连接线是否显示末端箭头（0/1） · `CHECK (arrowhead IS NULL OR arrowhead IN (0,1))` |
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（连接线是否显示末端箭头（0/1））
+- `CHECK (end_sec >= start_sec)`（拖尾长度（帧））
 - `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (type <> 'line' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)`
-- `CHECK (type <> 'connector' OR (from_element_id IS NOT NULL AND to_element_id IS NOT NULL))`
-- `CHECK (from_element_id IS NULL OR to_element_id IS NULL OR from_element_id <> to_element_id)`
 
 #### public_element_shape — 公共形状元素：public_layer 内的形状副本（与 element_shape 同构）
 
@@ -1208,18 +1195,17 @@
 
     - `moving_point`（移动点）、`encirclement`（包围圈）：绘制模式在代码里已实现，但工具条上没有按钮触发。
 
-    - `military_symbol`（军标）、`connector`（连接线）：连绘制模式都没有，目前只能靠导入或旧数据存在（渲染端支持）。
+    - `military_symbol`（军标）：不再是独立工具，而是标记的 10 种形态之一（Pin 工具面板里选）。
 
-看元素列表、画时间线轨道时查视图 `v_element_index`（四张类别表的公共列 UNION，**不需要 4 路 JOIN**）；真正画地图时才按已知的 `type` 去取对应类别表的专属列。
+看元素列表、画时间线轨道时查视图 `v_element_index`（五张类别表的公共列 UNION，**不需要 5 路 JOIN**）；真正画地图时才按已知的 `type` 去取对应类别表的专属列。
 
 | 地图上的东西 | 表 | type 取值 | 专属字段（举例） |
 |---|---|---|---|
-| 点标记 | `element_marker` | `point` | shape（9 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_meta_json |
+| 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_meta_json |
 | 旗帜 | `element_marker` | `flag` | flag_text、flag_color、flag_width |
 | 军标（APP-6） | `element_marker` | `military_symbol` | sidc、echelon、symbol_size |
 | 路线 / 飞线 | `element_route` | `line` | coords_json、line_type、route_effect_json、flow_speed |
 | 移动点（带拖尾） | `element_route` | `moving_point` | coords_json、trail_color、trail_length |
-| 连接线（连两个元素） | `element_route` | `connector` | **from_element_id / to_element_id**（弱引用，无外键） |
 | 区域（多边形/矩形/圆/五角星） | `element_shape` | `polygon` | shape_kind、circle_meta_json、rect_meta_json、star_meta_json |
 | 箭头（多种） | `element_shape` | `arrow` | arrow_type、from/to、path_json |
 | 双箭头 / 钳形 | `element_shape` | `double_arrow` | points_json（走 `buildDoubleArrow` 几何） |
@@ -1272,7 +1258,7 @@
 
       - 整个保存过程放在**一个事务**里（实测：逐条提交 vs 单事务差 63 倍）
 
-      - 先写父表（`project` → `layer` → `元素类别表`）；连接线端点是**弱引用**，须先建被引用元素
+      - 先写父表（`project` → `layer` → `元素类别表`）；素材是**弱引用**，`asset` 行须先于引用它的元素
 
       - 二进制素材先入 `asset`，业务表只写 `asset_id`（**顺序不能反**：项目侧 `asset_id` 有外键，缺行会回滚整笔事务）
 
@@ -1295,7 +1281,7 @@
 | 视图 | 类别 | 作用 |
 |---|---|---|
 | `v_element_index` | 读取便利 | 把 5 张类别表的公共列 UNION 成一张「元素总表」：取消基表后，轨道 / 列表 / 计数查这里，不用手写 5 表 UNION |
-| `v_check_dangling` | 一致性自检 | 查悬空引用：连接线指向已删除的元素（项目侧）、公共库副本里端点未在同一公共图层内解析的连接线（`public_connector.from` / `.to`）、跟随机位指向已删除的路线。迁移后与老库体检用，正常应返回 0 行 |
+| `v_check_dangling` | 一致性自检 | 查悬空引用：跟随机位指向已删除的路线元素。迁移后与老库体检用（外键开启时写入端已被拦住，视图是给 `PRAGMA foreign_keys=OFF` 的批量迁移与老库准备的），正常应返回 0 行 |
 | `v_check_territory_ref` | 一致性自检 | 疆域 JSON 内部一致性：`plots_json` 的 `ownerId`、`events_json` 的 `toCountryId` 必须能在 `countries_json` 中命中（复合外键被 JSON 化后的补偿） |
 
 ### 为什么没有触发器（原 6 条已全部移除）
@@ -1310,8 +1296,8 @@
 
 | 原触发器承担的规则 | 现在由谁保证 |
 |---|---|
-| 删元素 → 连带删除以它为端点的 connector、以及挂在它名下的关键帧 | 应用层删除元素时一并清理 |
-| 公共图层副本只引用本图层内的元素 | 应用层在「保存到公共库」/「导入到项目」两条路径上剔除端点跨图层的连接线（`pruneUnresolvedConnectors` / `pruneForeignConnectors`） |
+| 公共图层副本的素材引用不得悬空 | 应用层在「导入到项目」时先补 `asset` 占位行，再插元素（`importPublicLayerV2`） |
+| 副本元素 id 不得与既有行撞车 | 保存 / 导入两条路径统一给 `element_id` 加后缀（`:pb<pubId>` / `:im<layerId>`） |
 | 跟随机位只能引用同一项目内的路线元素 | 写入端校验（选择跟随机位时只列本项目路线）+ 外键 `SET NULL` 兜底 |
 
 数据库侧只保留 `v_check_dangling` / `v_check_territory_ref` 两个**自检视图**：它们不拦截写入，只把「数据已损坏」从隐性变成可检测。

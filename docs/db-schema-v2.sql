@@ -8,19 +8,20 @@
 -- 规模：22 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
---   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
+--   取消 element 基表与 13 张按元素类型拆分的子表，改为 5 张「类别宽表」，
 --   每张表自带全部公共列，用 type 判别列区分类别内的子类型（类别内 STI）：
 --     element_marker    标记类（Pin 工具）  type ∈ point | flag | military_symbol
---     element_route     路线类（Route 工具）type ∈ line | moving_point | connector
+--     element_route     路线类（Route 工具）type ∈ line | moving_point
 --     element_shape     形状类（Shape 工具）type ∈ polygon | arrow | double_arrow | gathering | encirclement
 --     element_territory 疆域类（Terr 工具） type = territory
---   图片类作为「独立元素类型」已下线，但以「point 的一种形态」回归：
---   element_marker.shape 扩展为 9 种（circle/text/pin/bubble/emoji/image/gif/model/icon），
+--     element_image     贴图类（Image 工具）type = geo_image
+--   非地理配准的「图片元素」不再是独立类型，以 point 的一种形态回归：
+--   element_marker.shape 扩展为 10 种（circle/text/pin/bubble/emoji/image/gif/model/icon/military_symbol），
 --   媒体资源经 asset_id（用户上传）或 builtin_id（内置打包进应用、不入库）引用；
---   能力矩阵（模型不可着色 / 不能贴地，GIF 不可着色）由 CHECK 约束与属性面板共同保证。
+--   能力矩阵（仅 emoji 不可着色、模型不能贴地）由 CHECK 约束与属性面板共同保证。
 --   疆域内部实体（势力/地块/兼并事件）
---   JSON 内联进 element_territory；元素标签（label）内联为 label_json。
---   代价与补偿：跨表引用（connector 端点、keyframe 归属）失去外键，改由
+--   JSON 内联进 element_territory；元素标签（label）平铺为 label_* 列。
+--   代价与补偿：跨表引用（keyframe 归属、asset 素材）失去外键，改由
 --   应用层清理 + 一致性自检视图兜底（不使用触发器，见第 10 节）；
 --   跨类别列表查询用 v_element_index。
 -- =============================================================================
@@ -259,13 +260,12 @@ CREATE INDEX IF NOT EXISTS ix_marker_type    ON element_marker(project_id, type)
 CREATE INDEX IF NOT EXISTS ix_marker_asset   ON element_marker(asset_id);
 CREATE INDEX IF NOT EXISTS ix_marker_layer   ON element_marker(layer_id);
 
--- 5.2 路线类元素（Route 工具）：line（线/贝塞尔/大圆弧）· moving_point（移动点）·
---     connector（连接线，引用其它元素 → 弱引用 from/to）
-CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）：line / moving_point / connector 一张宽表，type 判别
+-- 5.2 路线类元素（Route 工具）：line（线/贝塞尔/大圆弧）· moving_point（移动点）
+CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）：line / moving_point 一张宽表，type 判别
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
-  type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),  -- 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）
+  type           TEXT NOT NULL CHECK (type IN ('line','moving_point')),  -- 子类型判别列：line 线 / moving_point 移动点（Route 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
@@ -344,24 +344,14 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   trail_width       REAL,  -- 拖尾宽度（px）
   trail_length      INTEGER,  -- 拖尾长度（帧）
 
-  -- connector 专属：端点弱引用（可指向任意类别元素，因元素已分表，无法建外键）
-  from_element_id   TEXT,  -- 连接线起点元素（弱引用：可指向任意类别元素，元素已分表故无外键；删元素时由应用层连带删除本行）
-  to_element_id     TEXT,  -- 连接线终点元素（弱引用；与起点不得相同）
-  animated          INTEGER CHECK (animated  IS NULL OR animated  IN (0,1)),  -- 连接线是否流动动画（0/1）
-  arrowhead         INTEGER CHECK (arrowhead IS NULL OR arrowhead IN (0,1)),  -- 连接线是否显示末端箭头（0/1）
 
   CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'line'         OR coords_json IS NOT NULL),
-  CHECK (type <> 'moving_point' OR coords_json IS NOT NULL),
-  CHECK (type <> 'connector'    OR (from_element_id IS NOT NULL AND to_element_id IS NOT NULL)),
-  CHECK (from_element_id IS NULL OR to_element_id IS NULL OR from_element_id <> to_element_id)
+  CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS ix_route_chapter ON element_route(project_id, ord);
 CREATE INDEX IF NOT EXISTS ix_route_type    ON element_route(project_id, type);
--- 连接线端点：应用层按 from/to 反查清理，必须建索引（否则删元素时全表扫描）
-CREATE INDEX IF NOT EXISTS ix_route_from    ON element_route(project_id, from_element_id);
-CREATE INDEX IF NOT EXISTS ix_route_to      ON element_route(project_id, to_element_id);
 CREATE INDEX IF NOT EXISTS ix_route_layer   ON element_route(layer_id);
 
 -- 5.3 形状类元素（Shape 工具，含「区域」行政区高亮）：polygon · arrow · double_arrow ·
@@ -561,7 +551,7 @@ CREATE INDEX IF NOT EXISTS ix_image_layer   ON element_image(layer_id);
 -- -----------------------------------------------------------------------------
 -- 4c. 公共图层 / 公共元素表（跨项目图库：把项目图层连元素整体复制过来）
 --     与项目元素表同构，但：无 project_id/layer_id，改 public_layer_id 外键；
---     其余引用（asset_id / connector 端点）一律改弱引用（无 FK）。
+--     其余引用（asset_id）一律改弱引用（无 FK）。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public_layer (  -- 公共图层：跨项目图库（把项目图层连元素整体复制过来，导入到任意项目）
   public_layer_id TEXT PRIMARY KEY,  -- 公共图层 id
@@ -670,7 +660,7 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
 
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
-  type           TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),  -- 子类型判别列：line 线 / moving_point 移动点 / connector 连接线（Route 工具）
+  type           TEXT NOT NULL CHECK (type IN ('line','moving_point')),  -- 子类型判别列：line 线 / moving_point 移动点（Route 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
@@ -749,18 +739,11 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   trail_width       REAL,  -- 拖尾宽度（px）
   trail_length      INTEGER,  -- 拖尾长度（帧）
 
-  -- connector 专属：端点弱引用（可指向任意类别元素，因元素已分表，无法建外键）
-  from_element_id   TEXT,  -- 连接线起点元素（弱引用：可指向任意类别元素，元素已分表故无外键；删元素时由应用层连带删除本行）
-  to_element_id     TEXT,  -- 连接线终点元素（弱引用；与起点不得相同）
-  animated          INTEGER CHECK (animated  IS NULL OR animated  IN (0,1)),  -- 连接线是否流动动画（0/1）
-  arrowhead         INTEGER CHECK (arrowhead IS NULL OR arrowhead IN (0,1)),  -- 连接线是否显示末端箭头（0/1）
 
   CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'line'         OR coords_json IS NOT NULL),
-  CHECK (type <> 'moving_point' OR coords_json IS NOT NULL),
-  CHECK (type <> 'connector'    OR (from_element_id IS NOT NULL AND to_element_id IS NOT NULL)),
-  CHECK (from_element_id IS NULL OR to_element_id IS NULL OR from_element_id <> to_element_id)
+  CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_route_layer ON public_element_route(public_layer_id);
 
@@ -1100,7 +1083,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 -- =============================================================================
 -- 背景：SQLite 对外键的强制检查成本极低（实测 31k 行插入，FK 开/关仅差 ~1µs/行），
 --       但**父行被删除/更新时，若子表外键列没有索引，SQLite 必须全表扫描子表**。
---       实测：5000 行连接线表，删除 200 个被引用端点 ——
+--       实测：5000 行子表、删除 200 个被引用父行 ——
 --         无索引 3592ms  →  补索引 129ms（27×）
 --       所以正确做法不是删外键，而是把子表列索引补齐。
 -- 审计工具：node --experimental-sqlite tools/audit-fk-indexes.mjs（改 DDL 后必跑）
@@ -1134,9 +1117,12 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 --   3) 清理逻辑与写入端重复，隐式行为干扰调试、导入与数据修复。
 --
 -- 因此把规则前移到唯一的写入路径（应用层），两端行为一致：
---   · 删除元素 → 一并删除「以它为端点的 connector」与「挂在它名下的关键帧」
---   · camera_keyframe.follow_route_element_id 只允许引用**同一章节**内的路线元素
---   · 写入顺序：先建元素，再建引用它的连接线 / 关键帧
+--   · 删除元素无需连带清理：动画关键帧已内联在类别表的 keyframes_json，随行生灭；
+--     asset_id / follow_route_element_id 是真外键，SET NULL 由数据库负责
+--   · 剩余弱引用只有三处，全部由写入端保证：
+--       element_image.asset_id（贴图本体）、public_element_*.asset_id（公共库副本）、
+--       element_territory 的 countries/plots/events JSON 内部引用
+--   · camera_keyframe.follow_route_element_id 另需「同一项目」约束（复合外键做不到，见 2.4）
 --
 -- 数据库侧只保留 v_check_dangling / v_check_territory_ref 两个**自检视图**用于体检，
 -- 它们不拦截写入，只把「数据已损坏」从隐性变为可检测。
@@ -1169,49 +1155,10 @@ SELECT 'image', element_id, project_id, layer_id, type, name, visible,
 
 -- 12.2 悬空引用自检（弱引用 + 外键未开启时应为 0；迁移后与老库体检）
 CREATE VIEW IF NOT EXISTS v_check_dangling AS
-SELECT 'connector.from' AS edge, r.element_id AS ref_id, r.from_element_id AS target
-  FROM element_route r
-  WHERE r.type = 'connector' AND r.from_element_id IS NOT NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM element_marker    WHERE element_id = r.from_element_id
-      UNION ALL SELECT 1 FROM element_route     WHERE element_id = r.from_element_id
-      UNION ALL SELECT 1 FROM element_shape     WHERE element_id = r.from_element_id
-      UNION ALL SELECT 1 FROM element_territory WHERE element_id = r.from_element_id)
-UNION ALL
-SELECT 'connector.to', r.element_id, r.to_element_id
-  FROM element_route r
-  WHERE r.type = 'connector' AND r.to_element_id IS NOT NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM element_marker    WHERE element_id = r.to_element_id
-      UNION ALL SELECT 1 FROM element_route     WHERE element_id = r.to_element_id
-      UNION ALL SELECT 1 FROM element_shape     WHERE element_id = r.to_element_id
-      UNION ALL SELECT 1 FROM element_territory WHERE element_id = r.to_element_id)
-UNION ALL
-SELECT 'camera.follow_route', k.kf_id, k.follow_route_element_id
+SELECT 'camera.follow_route' AS edge, k.kf_id AS ref_id, k.follow_route_element_id AS target
   FROM camera_keyframe k
   WHERE k.follow_route_element_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM element_route WHERE element_id = k.follow_route_element_id)
-UNION ALL
--- 公共库副本必须自洽：端点要在**同一公共图层**内解析（跨图层的端点在复制时应已剔除）
-SELECT 'public_connector.from', r.element_id, r.from_element_id
-  FROM public_element_route r
-  WHERE r.type = 'connector' AND r.from_element_id IS NOT NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM public_element_marker    p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id
-      UNION ALL SELECT 1 FROM public_element_route     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id
-      UNION ALL SELECT 1 FROM public_element_shape     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id
-      UNION ALL SELECT 1 FROM public_element_territory p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id
-      UNION ALL SELECT 1 FROM public_element_image     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.from_element_id)
-UNION ALL
-SELECT 'public_connector.to', r.element_id, r.to_element_id
-  FROM public_element_route r
-  WHERE r.type = 'connector' AND r.to_element_id IS NOT NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM public_element_marker    p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id
-      UNION ALL SELECT 1 FROM public_element_route     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id
-      UNION ALL SELECT 1 FROM public_element_shape     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id
-      UNION ALL SELECT 1 FROM public_element_territory p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id
-      UNION ALL SELECT 1 FROM public_element_image     p WHERE p.public_layer_id = r.public_layer_id AND p.element_id = r.to_element_id);
+    AND NOT EXISTS (SELECT 1 FROM element_route WHERE element_id = k.follow_route_element_id);
 
 -- 12.3 疆域 JSON 内部一致性（复合外键被 JSON 化后，用 json_each 恢复部分校验）
 CREATE VIEW IF NOT EXISTS v_check_territory_ref AS
@@ -1235,12 +1182,14 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
 -- =============================================================================
 -- 1) 底图 / 高程图不入库：配置是代码内置常量，project 只存 id 字符串。
 --    理由：配置数量固定、无需用户自定义，入库只会多出两张表与两处外键（还曾形成循环）。
--- 2) 【本版最大取舍】取消 element 基表后，跨表弱引用失去数据库级外键：
---    · connector.from/to（可指向任意类别元素）→ 应用层清理 + 自检视图
---    · element_keyframe 表已取消（关键帧内联进类别表 keyframes_json），不再有此弱引用
---    代价：写入侧需保证「先建元素、再建引用它的连接线 / 关键帧」，
---          且删除元素时要一并清理引用它的连接线与关键帧（无触发器兜底，见第 10 节）。
---    收益：元素表数量 14 → 4，模块边界与工具栏一致，读写路径更直观。
+-- 2) 【本版最大取舍】取消 element 基表后，跨表引用失去数据库级外键：
+--    · element_keyframe 表已取消（关键帧内联进类别表 keyframes_json），随行生灭
+--    · 曾存在的 connector.from/to 端点弱引用已随「连接线」整条下线（2026-09-19）：
+--      它没有工具入口、坐标解析器从未接上，属于不可达代码，保留只会让每条写入路径
+--      都背上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套。
+--    · 剩余的弱引用只有 element_image.asset_id、public_element_*.asset_id 与疆域 JSON
+--      内部引用，由写入端保证 + 自检视图兜底。
+--    收益：元素表数量 14 → 5，模块边界与工具栏一致，读写路径更直观。
 -- 3) 疆域内部实体（势力/地块/兼并事件）JSON 内联进 element_territory：
 --    放弃了原先的复合外键与唯一约束，一致性改由 12.3 视图 + 应用层保证。
 --    好处是疆域自包含、整体读写、无 4 次 JOIN。

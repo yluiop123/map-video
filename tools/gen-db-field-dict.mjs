@@ -48,10 +48,10 @@ const GROUPS = [
 
 // 元素表的「工具入口」标注（事实源：src/components/Toolbar.tsx 的 TOOLS / SHAPE_GROUPS / TERR_ITEMS
 // + interactionStore 的 PlaceKind + PropertiesPanel 的标记形态切换）
-// 2026-09-10 改版：4 张类别宽表，每表用 type 判别列承载该工具下的全部元素类型；图片类已下线
+// 2026-09-10 改版：5 张类别宽表，每表用 type 判别列承载该工具下的全部元素类型
 const TOOL_ENTRY = {
   element_marker: 'Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表',
-  element_route: 'Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表；连接线无工具入口',
+  element_route: 'Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表',
   element_shape: 'Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表',
   element_territory: 'Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）',
   element_image: 'Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库',
@@ -71,11 +71,11 @@ const TABLE_FRONTEND = {
   asset: { role: '素材仓库（**唯一**素材存储，合并原 custom_symbol / custom_image）：按项目 / 类型 / 时间戳落盘', fe: '属性面板上传行（PropertiesPanel ResourceUploadRow）、标记面板自定义图片网格（CustomImageGrid）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）' },
   camera_keyframe: { role: '视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）', fe: '「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）' },
   screen_fx: { role: '屏幕空间特效窗口（天气 / 画面叠加，非地图元素）', fe: '右侧「特效」面板（FxPanelBody.tsx）+ 时间轴特效轨道' },
-  narration: { role: '字幕 / 配音档（样式部分，1:1）', fe: '右侧「字幕」面板（FxPanelBody.tsx）' },
-  narration_entry: { role: '字幕条：文本 + 配音音频 + 显示时长', fe: '时间轴「🎙 配音」轨道（TimelineEditor.tsx）+ 字幕面板逐条编辑 / TTS / 导入 SRT' },
+  narration: { role: '字幕 / 配音档（样式部分，1:1）', fe: '顶栏「字幕生成」弹窗的字幕样式区（GenerateDialog.tsx）' },
+  narration_entry: { role: '字幕条：文本 + 配音音频 + 显示时长', fe: '顶栏「字幕生成」弹窗逐条编辑 / TTS / 导入 SRT（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）' },
   music_track: { role: '项目级背景音乐：单轨多段（绝对时间、循环、淡入淡出）', fe: '时间轴「音乐」轨道（TimelineEditor.tsx）+ 音乐面板（内置/导入）' },
-  element_marker: { role: '标记类元素：Pin 工具产出，3 种 type 合并一张宽表', fe: '工具条「标记」按钮 + 标记属性面板（PropertiesPanel，9 种视觉形态）' },
-  element_route: { role: '路线类元素：line / moving_point / connector', fe: '工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）' },
+  element_marker: { role: '标记类元素：Pin 工具产出，3 种 type 合并一张宽表', fe: '工具条「标记」按钮 + 标记属性面板（PropertiesPanel，10 种视觉形态）' },
+  element_route: { role: '路线类元素：line / moving_point', fe: '工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）' },
   element_shape: { role: '形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）', fe: '工具条「形状」下拉 + 形状属性面板' },
   element_territory: { role: '疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含', fe: '工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）' },
   element_image: { role: '贴图元素：地理配准图片（控制点网格），图片存全局素材库、本表只存配准参数', fe: '工具条「图片」（导入/素材库插入）+ 贴图属性面板（PropertiesPanel GeoImageSettings）' },

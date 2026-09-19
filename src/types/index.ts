@@ -98,7 +98,6 @@ export type ElementType =
   | 'encirclement'
   | 'gathering'
   | 'military_symbol'
-  | 'connector'
   | 'flag'
   | 'territory'
   | 'geo_image';
@@ -367,17 +366,6 @@ export interface GatheringElement extends MapElementBase {
   rotation?: number;
 }
 
-export interface ConnectorElement extends MapElementBase {
-  type: 'connector';
-  fromElementId: string;
-  toElementId: string;
-  lineWidth: number;
-  lineColor: string;
-  lineDashArray?: [number, number];
-  animated?: boolean;            // 流动动画
-  arrowhead?: boolean;
-}
-
 export interface FlagElement extends MapElementBase {
   type: 'flag';
   coordinates: [number, number];
@@ -473,7 +461,6 @@ export type MapElement =
   | DoubleArrowElement
   | EncirclementElement
   | GatheringElement
-  | ConnectorElement
   | FlagElement
   | TerritoryElement
   | GeoImageElement;

@@ -234,7 +234,7 @@ function registerIpc() {
     // 把导入后的图层原样回传：渲染进程据此并入内存项目，避免整项目 reload 冲掉未保存修改与撤销栈
     const proj = getProjectV2(db, projectId);
     const layer = (proj?.layers || []).find((L) => L.id === r.id) || null;
-    return { layerId: r.id, layer, dropped: r.dropped };
+    return { layerId: r.id, layer };
   });
   ipcMain.handle('db:publicLayers:remove', (_e, id) => { removePublicLayerV2(db, id); return { ok: true }; });
 

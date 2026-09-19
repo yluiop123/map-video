@@ -27,9 +27,9 @@ declare global {
       /** 公共图层库（跨项目）：把项目图层连元素复制过去 / 导入回项目 */
       publicLayers: {
         list: () => Promise<{ id: string; type: string; name: string; count: number; updatedAt?: number }[]>;
-        save: (p: { layerId: string }) => Promise<{ id: string | null; dropped?: string[] }>;
+        save: (p: { layerId: string }) => Promise<{ id: string | null }>;
         import: (p: { publicLayerId: string; projectId: string }) => Promise<{
-          layerId: string | null; layer?: import('../types').Layer; dropped?: string[];
+          layerId: string | null; layer?: import('../types').Layer;
         }>;
         remove: (id: string) => Promise<{ ok: boolean }>;
       };

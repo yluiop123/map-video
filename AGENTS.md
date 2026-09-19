@@ -74,7 +74,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **★ 图层顺序 = 地图叠放顺序（列表靠前的在上层）**：新建图层（含自动建的）一律经 `insertLayerSorted()` 按 `LAYER_RANK`（标记 0 → 路线 1 → 形状 2 → 疆域 3 → 图片 4）插入，所以默认序固定为**标记·路线·形状·疆域·图片**、图片在最底、标记在最上；用户拖动后以拖动结果为准（该函数只给新层定位，不重排既有层）。图层面板与时间线都读 `project.layers`，顺序天然一致。地图侧 MapLibre 只认 `addImage/addLayer` 先后、重渲染不会移动图层，故 `renderElements` 之后要调 **`restackByLayerOrder(map, project.elements.map(e => e.id))`**（编辑端 `EditableMap` 与导出端 `MapScene` **都要调**）；它按列表倒序自底向上排，**同一元素的图层保持组内现有顺序**，所以「路线的移动标记在其线之上」「疆域标签在其面之上」不会被打破。签名（当前相对序）未变化时直接返回，避免每帧 `moveLayer`。
 - **★ 选中图层 = 地图上的「可编辑层」**：`editorStore.selectedLayerId` 非空时，**只有该层的元素**在地图上有激活态编辑效果（可点选 / 可拖 / 顶点 / 高亮），其它层在地图上只读；**为 null 时全部可编辑**（否则一进编辑器什么都点不动）。门禁由 `editableIdSet(project, selectedLayerId)` 统一（`EditableMap.tsx`），插在 `pickElement`（命中即跳过不可编辑者，继续往下找，否则上层不可编辑元素会把点击吃掉）、`hitRouteVertex`、顶点标识 feats、`routeEdit` 失效判定。**关键：`selectElement` 不再清 `selectedLayerId`**（否则点一下元素门禁自毁）；代价是 Del 优先级翻转为**有选中元素先删元素，无元素才删整层**。收口两处：`projectStore.patch()` 每次写回后把「选中元素的宿主层」同步为可编辑层（改类型迁移也走这里）；新建/导入后调 `focusHostOf(id)`（`createElementAndSelect` / `pendingPlace` / 区域导入）让刚画的东西立刻可拖。图层面板元素行点击用 `focusLayer(id)`（只改门禁、不改写入目标），图层行/时间线图层块用 `selectLayer(id, type)`（两者都改）。
 - **★ 归属解析只有一处：`resolveTargetLayerId(layers, type, targets, explicitId)`**（`lib/layers.ts`）= 显式指定 → 该类型的「写入目标」→ 该类第一个图层 → 调用方新建。**「写入目标」按类型记在 `editorStore.targetLayers`**（会话内状态，不入库）：入口是**每个工具弹窗底部那一行「图层」**（`Toolbar.tsx` `LayerPickRow`）——只列该类型的图层，选择即调 `selectLayer(id, type)` 同步设为「写入目标」+「可编辑层」（图层面板与时间线随之激活）；该类型一个图层都没有时只显示「新建×图层」。（早先放在浮动工具条上的 `LayerTargetChip` 芯片已移除，不再提供「自动」选项。）配套：元素行 hover 的「移动到…」（`movableLayersFor` 只列同类型、排除当前层，调 `moveElementsToLayer`）；`updateElement` 在 `changes.type` 跨类别时**自动把元素迁到目标类型图层**——单类型图层的不变量靠这两处守住，新增任何改 `type` 的路径都必须走 `updateElement`。
-- **MapElement** 判别联合：point(9种形态: shape=circle/pin/bubble/emoji/text + image/gif/model/icon；可带 iconUrl 自定义图)、line(straight/bezier/arc + label + routeEffect + flowSpeed)、moving_point(path+pathProgress)、polygon(shapeKind=poly/rect/circle + circleMeta/rectMeta)、arrow(7种箭头)、double_arrow、encirclement、gathering、flag、connector、military_symbol、territory。（**custom_icon 类型与 Image 工具已于 2026-09-10 下线**；旧数据由 `normalizeChapters` 在 load/import 时退化为 point）
+- **MapElement** 判别联合：point(9种形态: shape=circle/pin/bubble/emoji/text + image/gif/model/icon；可带 iconUrl 自定义图)、line(straight/bezier/arc + label + routeEffect + flowSpeed)、moving_point(path+pathProgress)、polygon(shapeKind=poly/rect/circle + circleMeta/rectMeta)、arrow(7种箭头)、double_arrow、encirclement、gathering、flag、military_symbol、territory。（**custom_icon 类型与 Image 工具已于 2026-09-10 下线**；旧数据由 `normalizeChapters` 在 load/import 时退化为 point）
 - **CameraKeyframe**：frame=**到达时间**（绝对帧）；`moveDuration`(帧)=起飞提前量，**默认 2*fps**；语义=停留→飞行→落位（`interpolateCamera(kfs, frame, fps)`）。
 - **LabelConfig**：text/color/position(上左下右中)/bgColor(默认透明)/bgPadding/bgRadius/fontWeight。渲染=canvas 气泡位图（makeBubbleImageData，仅 BUBBLE 样式带尾巴）。
 - **PointElement 特有**：shape、emoji、scale(0.3–3 等比缩放点+label)、orientation(faceCam/flat)、rotation(贴地旋转)、iconUrl、label。
@@ -139,7 +139,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2：桌面端已落地，网页端仍为简化实现）
 
-**规模**：22 张表 / 3 视图 / **0 触发器** / 655 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：22 张表 / 3 视图 / **0 触发器** / 647 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 片长（`project.endFrame`）不入库**（2026-09-19）：`project.end_sec` 列已删——它是纯派生量且**没有任何 UI 能改它**（`setProjectEndFrame` 零调用）。读取端 `getProjectV2` 现按内容实际结束推导：`endFrame = max(60s × fps, 元素/特效/弹窗/机位/字幕/音乐的结束帧)`，与时间线口径一致；空项目从原来的「100 秒幽灵容器」变成 60 秒。新增任何「容器长度」类字段前先问它是不是派生值。
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
@@ -152,14 +152,14 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   | 表 | type 取值 | 工具栏 |
   |---|---|---|
   | `element_marker` | point / flag / military_symbol | Pin |
-  | `element_route` | line / moving_point / connector | Route |
+  | `element_route` | line / moving_point | Route |
   | `element_shape` | polygon / arrow / double_arrow / gathering / encirclement | Shape |
   | `element_territory` | territory（势力/地块/事件 JSON 内联） | Terr |
   | `element_image` | geo_image（地理配准贴图，控制点网格 JSON 内联） | Image（图片） |
 
 - **★ 不使用触发器（2026-09-12 起全部移除）**：数据库侧只有表 / 索引 / 视图，**没有触发器**。理由：网页端 Dexie（IndexedDB）没有触发器，数据库侧触发器只在桌面端生效 → 同一规则两套真相；且规则藏在表定义外、与写入端重复。
-- **改版的代价 —— 弱引用**：仅剩 `element_route.from/to_element_id`（连接线端点）无外键，**由应用层在删除元素时一并删除以它为端点的连接线**（动画关键帧已内联进各类别表的 `keyframes_json`，随元素生灭，无此弱引用）；`camera_keyframe.follow_route_element_id` 只引用同章节路线也由写入端校验。数据库侧只留 `v_check_dangling`（悬空引用）与 `v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）两个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
-- **★ 公共图层副本必须自洽（新增不变量，2026-09-19）**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 与连接线端点**全部是弱引用**（公共库不属任何项目，建不了外键）。因此**端点无法在本图层内解析的连接线，在「保存到公共库」和「导入到项目」两条路径上都要整条剔除**并回报 UI（`electron/db-v2.mjs` `pruneUnresolvedConnectors` / `src/lib/layers.ts` `pruneForeignConnectors`）—— 宁缺不悬空，否则副本里留下源项目删除后再也没人清理的死引用。导入时还要**先**为副本引用的 `asset_id` 补占位行（项目侧 `element_*.asset_id` 有真外键，缺行会回滚整笔事务）。回归：`node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`。
+- **改版的代价 —— 弱引用**：只剩三处，`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries/plots/events JSON 内部引用，全部由写入端保证。项目侧 `element_marker.asset_id` / `move_icon_asset_id` / 音频列 / `camera_keyframe.follow_route_element_id` 都是**真外键**（SET NULL），删除素材或路线不需要应用层连带清理；动画关键帧内联在 `keyframes_json`，随元素生灭。曾存在的第三类 `element_route.from/to_element_id`（连接线端点）已随「连接线」整条下线（2026-09-19：无工具入口、坐标解析器从未接上，属不可达代码，却给每条写入路径加上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套）。数据库侧只留 `v_check_dangling`（悬空引用）与 `v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）两个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
+- **★ 公共图层副本必须自洽（不变量，2026-09-19）**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 是**弱引用**（公共库不属任何项目，建不了外键）。导入时要在插入元素**之前**先为副本引用的 `asset_id` 补占位行（项目侧 `element_*.asset_id` 有真外键，缺行会回滚整笔事务）；副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归：`node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`。
 - **★ 新增/改动字段的同步清单（漏一步就会设计↔实现漂移）**：
 
   1. `docs/db-schema-v2.sql`（唯一事实源）改 DDL
@@ -177,7 +177,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **能力矩阵三处联动，改一处必须同步另两处**：**只有 `emoji` 不可着色**（表情字符自带颜色）、`model` 不可贴地（位图贴片）——其余 9 种形态都可着色（multiply 染色，白色=原色）。① DDL 的 CHECK（**不要**再给 model/gif 加 `color IS NULL` 约束，2026-09-19 已删）② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键（**不要为性能删外键**，强制检查 ≈1µs/行），但不使用触发器（见上一条）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
-- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（655 字段中文说明词表，**新增字段漏补说明会直接报错**）。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（647 字段中文说明词表，**新增字段漏补说明会直接报错**）。
 - **文档一律 Markdown**（2026-09-11 起）：`docs/` 下不再有 HTML，也不要用脚本生成 HTML；图用 ```mermaid 代码块内嵌（E-R 图源 `docs/db-er-diagram.mmd`），不再预渲染 SVG。
 
 ## 11. 标记（Pin）形态扩展的代码落点

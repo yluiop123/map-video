@@ -10,12 +10,14 @@
 
 把数据语义下沉到数据库，由结构本身保证正确性：
 
-- **元素建模**：12 个元素子类型按工具栏聚合为 **4 张类别宽表**（标记 / 路线 / 形状 / 疆域），表内用 `type` 判别列区分子类型，子类型必填规则由 CHECK 约束表达
-- **关联与多重性**：用主外键、唯一索引与 1:N / 1:1 表结构固化；元素间引用（连接线端点、关键帧归属）因元素分表而失去外键目标，改由**应用层清理 + 自检视图**兜底（不使用触发器）
+- **元素建模**：12 个元素子类型按工具栏聚合为 **5 张类别宽表**（标记 / 路线 / 形状 / 疆域 / 贴图），表内用 `type` 判别列区分子类型，子类型必填规则由 CHECK 约束表达
+- **关联与多重性**：用主外键、唯一索引与 1:N / 1:1 表结构固化；少数无法建外键的引用（贴图 / 公共库副本的 `asset_id`、疆域 JSON 内部引用）由**写入端保证 + 自检视图**兜底（不使用触发器）
 - **生命周期**：用 `CASCADE / SET NULL / RESTRICT` 三档策略区分，删除父实体时由数据库负责清理
 - **大体积素材**：二进制内容从项目数据中剥离进 `asset` 表（sha256 内容寻址），业务表只留 `asset_id`
 
 ## 一、页面元素清单与关系梳理
+
+> 本节是 **V1 运行时（改造前）的快照**，用来说明设计动机，不代表当前结构：`Chapter`、`custom_icon`、`connector`、独立 `element_keyframe` 表与 6 个触发器此后都已下线。
 
 ### 1.1 三层结构
 
@@ -126,17 +128,17 @@
 | **2. 资源与素材** | `asset` | 唯一素材存储，承担 P4 外置存储；按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重）；底图 / 高程图不入库（代码内置常量，项目只存 id，但**地形夸张覆盖值**存 `project`）；尺寸 / 时长 / 帧数等派生值不入库 |
 | **3. 时间轴** | `camera_keyframe`、`screen_fx`、`narration`、`narration_entry`、`music_track` | 镜头 / 特效 / 字幕 / 音乐（项目=单条连续时间线） |
 | **4. 标记类元素** | `element_marker` | type ∈ point / flag / military_symbol |
-| **5. 路线类元素** | `element_route` | type ∈ line / moving_point / connector |
+| **5. 路线类元素** | `element_route` | type ∈ line / moving_point |
 | **6. 形状类元素** | `element_shape` | type ∈ polygon / arrow / double_arrow / gathering / encirclement |
 | **7. 疆域类元素** | `element_territory` | type = territory；势力 / 地块 / 兼并事件 JSON 内联 |
 | **8. 贴图类元素** | `element_image` | type = geo_image；地理配准图片（控制点网格 JSON 内联），图片本体走全局素材库 |
 | **9. 叠加层** | `overlay` | 弹窗本体；custom / person 的内容块内联在 `payload_json`（原 overlay_block / person_block 已删除） |
 | **10. 应用配置** | `provider` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证 |
-| **11. 公共图层库** | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image` | 跨项目复用的图层图库：把某个图层连元素**整体复制**为一份独立副本，导入到任意项目。与项目侧同构，但**不属于任何项目** —— 故 `asset_id` 与连接线端点全部降级为弱引用（建不了外键），代价见 2.6「副本自洽」条 |
+| **11. 公共图层库** | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image` | 跨项目复用的图层图库：把某个图层连元素**整体复制**为一份独立副本，导入到任意项目。与项目侧同构，但**不属于任何项目** —— 故 `asset_id` 降级为弱引用（建不了外键），代价见 2.6「副本自洽」条 |
 
 ### 2.3 元素建模：按工具栏聚合的 5 张类别宽表
 
-元素共 13 个子类型（point / flag / military_symbol / line / moving_point / connector / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、项目与图层归属、时间轴、可见性、层级、动画与移动配置），但**专有字段差异极大**（从 3 个到 47 个）。
+元素共 12 个子类型（point / flag / military_symbol / line / moving_point / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、项目与图层归属、时间轴、可见性、层级、动画与移动配置），但**专有字段差异极大**（从 3 个到 47 个）。
 
 三种映射方案的取舍：
 
@@ -149,19 +151,19 @@
 **为什么按工具栏聚合**
 
 - **贴合使用心智**：工具栏只有 4 个元素入口（标记 / 路线 / 形状 / 疆域），属性面板、渲染管线、查询维度都按这个维度组织，表结构与之一一对应
-- **表数量可控**：12 张子表 → 4 张宽表，DDL、映射层与后续演进都显著简化
+- **表数量可控**：12 张子表 → 5 张宽表，DDL、映射层与后续演进都显著简化
 - **约束不丢失**：子类型必填仍写在表上，例如
 
   ```sql
   -- element_marker：emoji 形态必须有字符
   CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)
-  -- element_route：连接线禁止自环
-  CHECK (from_element_id IS NULL OR to_element_id IS NULL OR from_element_id <> to_element_id)
+  -- element_route：line 必须有路径点
+  CHECK (type <> 'line' OR coords_json IS NOT NULL)
   ```
 
 **代价与补偿**
 
-取消 `element` 基表后，跨类别的**元素间引用**失去外键目标，由「应用层清理 + 自检视图」兜底（见 2.5；无触发器）；跨类别列举元素（时间线轨道、元素列表）改用视图 `v_element_index`（4 张表公共列的 UNION），**不做 4 路 JOIN**。
+取消 `element` 基表后，跨类别的**元素间引用**失去外键目标，只能由「写入端保证 + 自检视图」兜底（见 2.5；无触发器）—— 这是连接线当年被否掉的直接原因；跨类别列举元素（时间线轨道、元素列表）改用视图 `v_element_index`（5 张表公共列的 UNION），**不做 5 路 JOIN**。
 
 ### 2.4 关键表字段定义
 
@@ -173,7 +175,7 @@
 | `project_id` | TEXT | **FK** → project CASCADE | 所属项目（另有 `layer_id` FK → layer CASCADE 表图层归属） |
 | `type` | TEXT | **CHECK** IN (point, flag, military_symbol) | 子类型判别列 |
 | `lng` / `lat` | REAL | NOT NULL | 坐标（三类标记都落在单点） |
-| `shape` | TEXT | **CHECK** IN (circle, text, pin, bubble, emoji, image, gif, model, icon) | 点的 9 种视觉形态 |
+| `shape` | TEXT | **CHECK** IN (circle, text, pin, bubble, emoji, image, gif, model, icon, military_symbol) | 点的 10 种视觉形态 |
 | `asset_id` | TEXT | **FK** → asset SET NULL | 上传素材（图片 / GIF / 模型） |
 | `builtin_id`、`icon_lib` + `icon_name` | TEXT | — | 内置资源 / 图标库引用 |
 | `visual_meta_json` | TEXT | `json_valid()` | 形态专属参数（fit / fps / autoRotate / strokeWidth…） |
@@ -181,22 +183,21 @@
 
 其余公共列（`name` / `visible` / `locked` / `start_sec` / `end_sec` / `z_index` / `shape_category` / `anim_effect` / `fly_mode` / `show_icon` / `move_icon_json` / `ord`）见 `docs/db-tables.md` 的字段字典。
 
-#### element_route —— 路线类（含唯一的元素间引用）
+#### element_route —— 路线类
 
 ```sql
 CREATE TABLE element_route (
   element_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
-  type       TEXT NOT NULL CHECK (type IN ('line','moving_point','connector')),
+  layer_id   TEXT NOT NULL REFERENCES layer(layer_id) ON DELETE CASCADE,
+  type       TEXT NOT NULL CHECK (type IN ('line','moving_point')),
   coords_json TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),
-  -- connector 专用：端点弱引用（元素已分表，无外键目标）
-  from_element_id TEXT,
-  to_element_id   TEXT,
-  CHECK (from_element_id IS NULL OR to_element_id IS NULL OR from_element_id <> to_element_id)
+  CHECK (type <> 'line'         OR coords_json IS NOT NULL),
+  CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)
 );
 ```
 
-端点用**弱引用**：删除端点元素时，由应用层连带删除以它为端点的连接线。
+本表**不引用任何其它元素**：曾有的 `connector`（连接线，端点弱引用两个元素）已于 2026-09-19 整条下线 —— 它没有工具入口、坐标解析器从未接上，属于不可达代码，却要求每条写入路径都背上「应用层清理 + 自检视图 + 端点索引 + 副本重映射」四件套。要做「A 指向 B」应当是一条有产品入口的功能，而不是一个没人能创建的表分支。
 
 #### 动画关键帧 —— 内联进类别表的 `keyframes_json`
 
@@ -215,14 +216,13 @@ CREATE TABLE element_route (
 | `asset` 内部（`kind='icon'` 被元素引用） | N:1 | 应用层检查 | 三表合并后图标与素材同行，删除被引用素材由引用检查保护 |
 | `element_marker.asset_id` → `asset` | N:1 | **SET NULL** | 素材被删则元素退回内置或空态 |
 | `overlay（内容块内联）` / `overlay（人物块内联）` → `overlay` | N:1 | **CASCADE** | 内容块随弹窗消亡 |
-| **`connector` 端点（`from` / `to`）** | N:1 ×2 | **弱引用 + 应用层清理** | 元素已分表，无外键目标 |
 
 #### 弱引用的补偿机制
 
-取消基表后有两处引用失去外键目标，改由**应用层清理 + 自检视图**兜底（**不使用触发器**）：
+取消基表后剩下的弱引用只有三处，全部由写入端保证（**不使用触发器**）：
 
-1. **应用层清理**（唯一的写入路径）：删除元素时连带删除以它为端点的连接线、以及挂在它名下的关键帧
-2. **`v_check_dangling` 视图**：检出悬空引用（连接线端点、关键帧归属、跟随机位、自定义图标符号），正常应返回 0 行
+1. **写入端保证**：`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries / plots / events JSON 内部引用。项目侧 `element_marker.asset_id`、`move_icon_asset_id`、音频列、`camera_keyframe.follow_route_element_id` 都是真外键（SET NULL），删除父行由数据库负责，应用层无需连带清理
+2. **`v_check_dangling` 视图**：检出悬空的跟随机位（`PRAGMA foreign_keys=OFF` 的批量迁移与老库才会出现），`v_check_territory_ref` 检出疆域 JSON 内部失配，正常应返回 0 行
 
 > 为什么不用触发器：网页端是 Dexie（IndexedDB），**没有触发器**，数据库侧触发器只在桌面端生效，同一条规则会有两套真相；且规则藏在表定义之外、与写入端逻辑重复。详见 2.6。
 
@@ -249,10 +249,9 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 | 原规则 | 现由谁保证 |
 |---|---|
-| 删元素 → 连带删除以它为端点的 connector、以及它名下的关键帧 | 应用层删除元素时一并清理 |
 | 跟随机位只能引用同一章节内的路线元素 | 写入端校验（选择跟随机位时只列本章路线） |
 
-**同类规则（公共图层副本必须自洽）**：`public_element_*` 与项目侧同构，但副本**脱离源项目独立存在**，所以连接线端点只在**同一图层内**才有意义 —— 端点指向本图层外元素的连接线，在「保存到公共库」与「导入到项目」两条路径上都由应用层**整条剔除**并回报 UI（`pruneUnresolvedConnectors` / `pruneForeignConnectors`）。宁缺不悬空：留着就是在库里埋一条源项目删除后再也没人清理的死引用。
+**同类规则（公共图层副本必须自洽）**：`public_element_*` 与项目侧同构，但副本**脱离源项目独立存在**，`asset_id` 建不了指向项目 `asset` 的外键。于是导入路径上有两条硬性顺序与命名约束：① **先补 `asset` 占位行、再插元素**（项目侧 `element_*.asset_id` 是真外键，缺行会让整笔事务回滚）；② **副本 `element_id` 一律加后缀**（保存 `:pb<pubId>` / 导入 `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归：`node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`。
 
 ### 2.7 一致性自检
 
@@ -261,7 +260,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 | 视图 | 检出 |
 |---|---|
 | `v_element_index` | **读取便利**：5 张类别表的公共列 UNION 成「元素总表」，轨道 / 列表 / 计数直接查它 |
-| `v_check_dangling` | 悬空引用：项目侧连接线端点、跟随机位，以及公共库副本内未在同一公共图层解析的连接线端点（`public_connector.from` / `.to`） |
+| `v_check_dangling` | 悬空引用：跟随机位指向已删除的路线元素 |
 | `v_check_territory_ref` | 疆域 JSON 内部一致性：`plots_json.ownerId` / `events_json.toCountryId` 必须能在 `countries_json` 中命中 |
 
 ## 三、设计依据汇总
@@ -283,7 +282,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 #### 收益
 
-- **正确性：**引用完整性由外键（`CASCADE` / `SET NULL` / `RESTRICT`）保证；弱引用（连接线端点、关键帧归属）由**应用层**在删除元素时一并清理
+- **正确性：**引用完整性由外键（`CASCADE` / `SET NULL` / `RESTRICT`）保证；仅存的三处弱引用（贴图素材、公共库副本素材、疆域 JSON）由写入端保证 + 自检视图兜底
 
 - **性能：**素材外置后项目 JSON 从数 MB 降到数十 KB；保存从全量重写变为按实体增量
 
@@ -299,7 +298,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 - **写入需事务：**保存一个元素要写它所属的类别表（+ 可能的关键帧表），必须包在事务里
 
-- **弱引用的维护成本：**连接线端点与关键帧归属没有外键目标，新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式；且清理只在写入端生效，数据库侧不再有第二道保险
+- **弱引用的维护成本：**贴图 / 公共库副本的 `asset_id` 与疆域 JSON 没有外键目标，新增跨表引用时必须重复「写入端保证 + 自检视图」这个模式；且校验只在写入端生效，数据库侧不再有第二道保险
 
 - **两类存储范式并存：**桌面端规范化、网页端文档型，需在 mapper 层明确边界
 
@@ -310,27 +309,23 @@ DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执�
 - 18 表创建成功
 - 3 视图
 - 0 触发器（不使用触发器）
-- 17/17 用例通过
+- 13/13 用例通过（原 17 条中的 4 条连接线用例随该类型下线删除）
 
 | 用例 | 验证内容 | 结果 |
 |---|---|---|
 | 1 | marker 表按 `type` 承载 point / flag / military_symbol 三种子类型 | 通过 |
-| 2 | shape / route / territory 三张类别表插入正常 | 通过 |
+| 2 | shape / route / territory / image 四张类别表插入正常 | 通过 |
 | 3 | CHECK：point 的 `shape='emoji'` 必须给 emoji | 通过 被拒 |
 | 4 | CHECK：flag 必须给 `flag_text` | 通过 被拒 |
-| 5 | CHECK：connector 端点不得自环 | 通过 被拒 |
-| 6 | CHECK：connector 必须给两端 | 通过 被拒 |
-| 7 | `keyframes_json` 内联插入正常（合法 JSON） | 通过 |
-| 8 | 删章节 → 元素与关键帧级联清理 | 通过 |
-| 9 | **删元素 → 以它为端点的 connector 由应用层清理** | 通过 1 → 0（应用层） |
-| 10 | 删元素 → 它名下的 keyframe 自动清理 | 通过 |
-| 11 | 删连接线自身 → 无递归、无误删 | 通过 |
-| 12 | 删被跟随的路线 → 跟随机位置空（FK SET NULL） | 通过 |
-| 13 | follow 指向不存在 / 跨章节路线 → 由写入端拒绝 | 通过 被拒（应用层） |
-| 14 | `v_check_territory_ref` 抓到「地块归属 / 兼并目标势力不存在」 | 通过 2 行 |
-| 15 | `v_element_index` 汇总 4 类元素 | 通过 |
-| 16 | `v_check_dangling` 在干净库上返回 0 行 | 通过 |
-| 17 | `provider` 每 kind 至多一条 active | 通过 被拒 |
+| 5 | `keyframes_json` 内联插入正常（合法 JSON） | 通过 |
+| 6 | 删项目 → 图层与元素级联清理 | 通过 |
+| 7 | 删图层 → 层内元素级联清理 | 通过 |
+| 8 | 删被跟随的路线 → 跟随机位置空（FK SET NULL） | 通过 |
+| 9 | follow 指向不存在的路线 → 外键拒绝 | 通过 被拒 |
+| 10 | `v_check_territory_ref` 抓到「地块归属 / 兼并目标势力不存在」 | 通过 2 行 |
+| 11 | `v_element_index` 汇总 5 类元素 | 通过 |
+| 12 | `v_check_dangling` 在干净库上返回 0 行 | 通过 |
+| 13 | `provider` 每 kind 至多一条 active | 通过 被拒 |
 
 完整可执行 DDL：`docs/db-schema-v2.sql`（含分节注释与自检视图，无触发器）。
 
@@ -343,7 +338,7 @@ DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执�
 | Q3 | 素材文件的生命周期与垃圾回收 | 元素被删后 `asset` 行仍在（无反向引用）。需要定期「孤儿素材清理」任务，或改用引用计数 |
 | Q4 | `move_icon_json` 内的 `symbolId` 是弱引用 | P3 JSON 内的符号引用无法用外键约束。可选：把 `moveIcon` 提升为独立表以换取约束能力，但会为各类元素都增加一次 JOIN |
 | Q5 | 撤销/重做（50 步历史栈）与数据库的关系 | 历史栈完全在内存（快照式）；数据库只承载「已保存」状态，这是有意的边界 |
-| Q6 | 弱引用的一致性兜底策略 | `connector` 端点无外键目标，现由**应用层清理** + `v_check_dangling` 兜底（无触发器；关键帧已内联进元素表，不再有该弱引用）。**待定：是否在保存 / 导入后强制跑一次自检，非 0 行即回滚？** |
+| Q6 | 弱引用的一致性兜底策略 | 连接线端点已随该类型整条下线，弱引用只剩贴图 / 公共库副本的 `asset_id` 与疆域 JSON，由**写入端保证** + `v_check_dangling` / `v_check_territory_ref` 兜底（无触发器）。**待定：是否在保存 / 导入后强制跑一次自检，非 0 行即回滚？** |
 | Q7 | 疆域 JSON 内联后的一致性校验时机 | `plots_json.ownerId` / `events_json.toCountryId` 的合法性由 `v_check_territory_ref` 校验（`json_each` 实现）。待定：是否前置为写路径硬校验（保存前跑），避免脏数据入库 |
 | Q8 | 图标库（原 `custom_symbol`）的 UI 入口 | 三表合并后图标库条目 = `asset(kind='icon')`；当前仍无上传/管理面板，待确认是否补入口或下线该能力 |
 

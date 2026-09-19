@@ -4,7 +4,7 @@
  * 数据模型：项目 = Layer[]，每个图层含自己的显隐 / 显示区间 / 元素列表。
  * `project.elements` 是**派生镜像**（store 的 patch 自动重算），供渲染 / 面板 / 相机等沿用扁平读取。
  */
-import type { ConnectorElement, Layer, LayerType, MapElement } from '../types';
+import type { Layer, LayerType, MapElement } from '../types';
 import { generateId } from '../types';
 import { IS_DESKTOP } from './backend';
 
@@ -12,7 +12,7 @@ import { IS_DESKTOP } from './backend';
 export function layerTypeOf(el: MapElement): LayerType {
   switch (el.type) {
     case 'point': case 'flag': return 'marker';
-    case 'line': case 'moving_point': case 'connector': return 'route';
+    case 'line': case 'moving_point': return 'route';
     case 'polygon': case 'arrow': case 'double_arrow': case 'gathering': case 'encirclement': return 'shape';
     case 'territory': return 'territory';
     case 'geo_image': return 'image';
@@ -128,24 +128,6 @@ export interface PublicLayer {
   savedAt: number;
 }
 
-/**
- * 复制体必须自洽：端点不在本图层内的连接线整条剔除。
- * 图层是单类型的，而连接线的端点常是另一图层的标记——带着解析不到的端点导入到别的项目，
- * 连接线会变成悬空引用（宁缺不悬空，与桌面端 SQL 侧 prune 同一规则）。
- */
-export function pruneForeignConnectors(elements: MapElement[]): { kept: MapElement[]; dropped: string[] } {
-  const ids = new Set(elements.map((el) => el.id));
-  const dropped: string[] = [];
-  const kept = elements.filter((el) => {
-    if (el.type !== 'connector') return true;
-    const c = el as ConnectorElement;
-    const ok = (!c.fromElementId || ids.has(c.fromElementId)) && (!c.toElementId || ids.has(c.toElementId));
-    if (!ok) dropped.push(c.name || c.id);
-    return ok;
-  });
-  return { kept, dropped };
-}
-
 const LIB_KEY = 'mapvideo.publicLayers';
 
 function listLocal(): PublicLayer[] {
@@ -171,51 +153,35 @@ export async function listPublicLayers(): Promise<PublicLayerInfo[]> {
   return listLocal().map((x) => ({ id: x.id, type: x.type || 'marker', name: x.name, count: x.elements.length }));
 }
 
-/** 把项目图层存为公共图层；返回因跨图层引用被剔除的元素名（同名覆盖） */
-export async function saveLayerToPublic(layer: Layer): Promise<string[]> {
+/** 把项目图层存为公共图层（同名覆盖） */
+export async function saveLayerToPublic(layer: Layer): Promise<void> {
   if (IS_DESKTOP && window.mapvideo?.publicLayers) {
-    const r = await window.mapvideo.publicLayers.save({ layerId: layer.id });
-    return r.dropped || [];
+    await window.mapvideo.publicLayers.save({ layerId: layer.id });
+    return;
   }
-  const { kept, dropped } = pruneForeignConnectors(layer.elements);
   const item: PublicLayer = {
     id: `pl_${Date.now().toString(36)}`, type: layer.type, name: layer.name || '未命名图层',
-    startFrame: layer.startFrame, endFrame: layer.endFrame, elements: kept, savedAt: Date.now(),
+    startFrame: layer.startFrame, endFrame: layer.endFrame, elements: layer.elements, savedAt: Date.now(),
   };
   writeLocal([item, ...listLocal().filter((x) => x.name !== layer.name)]);
-  return dropped;
 }
 
 /** 导入公共图层到项目：返回可直接并入项目的新图层（时间沿用源图层，不做自动归零） */
-export async function importPublicLayer(publicId: string, projectId: string): Promise<{ layer?: Layer; dropped?: string[] }> {
+export async function importPublicLayer(publicId: string, projectId: string): Promise<Layer | null> {
   if (IS_DESKTOP && window.mapvideo?.publicLayers) {
     const r = await window.mapvideo.publicLayers.import({ publicLayerId: publicId, projectId });
-    return { layer: r.layer || undefined, dropped: r.dropped };
+    return r.layer || null;
   }
   const local = listLocal().find((x) => x.id === publicId);
-  if (!local) return {};
+  if (!local) return null;
   // 与桌面端同规则：副本必须带**新 id** 进项目，否则同一库导入两次就是重复 id
   // （deleteElement 按 id 过滤会一次删两条、updateElement 只命中第一条）。
   const layerId = generateId();
   const suf = `:im${layerId}`;
-  const remap = new Map<string, string>();
-  for (const el of local.elements) remap.set(el.id, el.id + suf);
-  // 先整体换 id 与端点，再裁剪：裁剪判据是「端点是否在本图层内」，顺序反了会误删全部连接线
-  const moved = local.elements.map((el) => {
-    if (el.type !== 'connector') return { ...el, id: remap.get(el.id)! };
-    const c = el as ConnectorElement;
-    return {
-      ...c, id: remap.get(c.id)!,
-      fromElementId: remap.get(c.fromElementId) || c.fromElementId,
-      toElementId: remap.get(c.toElementId) || c.toElementId,
-    };
-  });
-  const { kept } = pruneForeignConnectors(moved);
   return {
-    layer: {
-      id: layerId, type: local.type || 'marker', name: local.name, visible: true,
-      startFrame: local.startFrame, endFrame: local.endFrame, elements: kept,
-    },
+    id: layerId, type: local.type || 'marker', name: local.name, visible: true,
+    startFrame: local.startFrame, endFrame: local.endFrame,
+    elements: local.elements.map((el) => ({ ...el, id: el.id + suf })),
   };
 }
 

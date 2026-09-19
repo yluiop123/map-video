@@ -1,7 +1,7 @@
 /**
  * verify-public-layers.mjs — 公共图层库（复制/导入）回归验证
  *
- * 覆盖：跨图层连接线端点的自洽裁剪、素材占位顺序、级联删除、自检视图，
+ * 覆盖：整层复制的 id 重映射与自洽、素材占位顺序、级联删除、自检视图，
  *       以及时间窗保长平移（clampWindowMove，直接测 src/lib/time.ts 的真函数）。
  * 运行：node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs
  * 退出码非 0 表示有失败项。
@@ -28,10 +28,7 @@ function open() {
   return db;
 }
 
-/**
- * 夹具项目：marker 层两个标记 + route 层两条路线、两条连接线
- * —— cCross 的端点是**另一个图层**的标记（真实常规用法），cSame 的端点是本图层内的路线。
- */
+/** 夹具项目：marker 层两个标记 + route 层两条路线 */
 function baseProject(id) {
   const markerLayer = {
     id: `${id}:Lm`, type: 'marker', name: '标记层', visible: true, startFrame: 0, endFrame: 10 * FPS,
@@ -45,8 +42,6 @@ function baseProject(id) {
     elements: [
       { id: `${id}:r1`, type: 'line', name: '路A', startFrame: FPS, endFrame: 8 * FPS, coordinates: [[116.3, 39.9], [116.35, 39.95]], lineWidth: 3, lineColor: '#fff' },
       { id: `${id}:r2`, type: 'line', name: '路B', startFrame: FPS, endFrame: 8 * FPS, coordinates: [[116.4, 39.8], [116.45, 39.85]], lineWidth: 3, lineColor: '#fff' },
-      { id: `${id}:cCross`, type: 'connector', name: '跨层连线', startFrame: FPS, endFrame: 8 * FPS, fromElementId: `${id}:m1`, toElementId: `${id}:m2`, lineWidth: 4, lineColor: '#FF6600' },
-      { id: `${id}:cSame`, type: 'connector', name: '同层连线', startFrame: FPS, endFrame: 8 * FPS, fromElementId: `${id}:r1`, toElementId: `${id}:r2`, lineWidth: 4, lineColor: '#00CCFF' },
     ],
   };
   const layers = [markerLayer, routeLayer];
@@ -59,24 +54,25 @@ function baseProject(id) {
   };
 }
 
+/** 某 scope 下的全部元素 id（跨 5 张类别表） */
 const liveElementIds = (db, whereCol, id, tables) => {
   const out = new Set();
   for (const t of tables) for (const r of db.prepare(`SELECT element_id FROM ${t} WHERE ${whereCol} = ?`).all(id)) out.add(r.element_id);
   return out;
 };
-/** 连接线端点（只有 route 表有端点列） */
-function connectorEndpoints(db, routeTable, whereCol, id) {
+/** 整库元素 id（用于查全库重复） */
+const allElementIds = (db, tables) => {
   const out = [];
-  for (const r of db.prepare(`SELECT element_id, from_element_id, to_element_id FROM ${routeTable} WHERE ${whereCol} = ? AND type = 'connector'`).all(id)) {
-    out.push([r.element_id, r.from_element_id], [r.element_id, r.to_element_id]);
-  }
-  return out.filter(([, end]) => end);
-}
-const danglingOf = (db, tables, whereCol, id) => {
-  const ids = liveElementIds(db, whereCol, id, tables);
-  const routeTable = tables.find((t) => t.endsWith('element_route'));
-  return connectorEndpoints(db, routeTable, whereCol, id).filter(([, end]) => !ids.has(end));
+  for (const t of tables) out.push(...db.prepare(`SELECT element_id FROM ${t}`).all().map((r) => r.element_id));
+  return out;
 };
+/** 按表的列定义造一行（notnull 列给类型零值，其余 null） */
+function blankRow(db, table, over) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  const vals = Object.fromEntries(cols.map((c) => [c.name, c.notnull ? (/INT|REAL|NUMERIC/.test(c.type) ? 0 : '') : null]));
+  Object.assign(vals, over);
+  db.prepare(`INSERT INTO ${table} (${cols.map((c) => c.name).join(',')}) VALUES (${cols.map((c) => '@' + c.name).join(',')})`).run(vals);
+}
 
 let failed = 0;
 const check = (name, pass, detail) => {
@@ -84,32 +80,27 @@ const check = (name, pass, detail) => {
   console.log(`${pass ? '  ok  ' : ' FAIL '} ${name}${detail ? `\n         ${detail}` : ''}`);
 };
 
-// ---------- 1. 复制进公共库：跨图层端点的连接线被剔除且被报告 ----------
+// ---------- 1. 图层 → 公共库：副本整体换 id，不残留源 id ----------
 {
   console.log('\n[1] 图层 → 公共库：副本自洽');
   const db = open();
   saveProjectV2(db, baseProject('p1'));
   const r = saveLayerToPublicV2(db, 'p1:Lr');
-  check('1.1 报告被剔除的连接线', r.dropped.length === 1 && r.dropped[0] === '跨层连线', `dropped=${JSON.stringify(r.dropped)}`);
-  const d = danglingOf(db, PUB_TABLES, 'public_layer_id', r.id);
-  check('1.2 公共库内无悬空端点', d.length === 0, `悬空 ${d.length} 个: ${JSON.stringify(d)}`);
-  const left = db.prepare('SELECT name FROM public_element_route WHERE public_layer_id = ?').all(r.id).map((x) => x.name);
-  check('1.3 同图层端点的连接线完整保留', left.includes('同层连线') && left.includes('路A') && left.length === 3, JSON.stringify(left));
-  // 端点 id 必须指向副本自己（不是源项目）
-  const src = db.prepare("SELECT COUNT(*) AS c FROM public_element_route WHERE public_layer_id = ? AND (from_element_id LIKE 'p1:%' OR to_element_id LIKE 'p1:%') AND from_element_id NOT LIKE '%:pb%'").get(r.id).c;
-  check('1.4 不残留源项目元素 id', src === 0, `残留 ${src} 行`);
-  // 自检视图现在能发现公共库的悬空引用
-  check('1.5 v_check_dangling 对健康副本为 0', db.prepare("SELECT COUNT(*) AS c FROM v_check_dangling WHERE edge LIKE 'public_%'").get().c === 0);
-  db.prepare('INSERT INTO public_element_route (element_id, public_layer_id, type, name, visible, start_sec, end_sec, fly_mode, show_icon, from_element_id, to_element_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-    .run('bad:1', r.id, 'connector', '手工悬空', 1, 0, 5, 0, 0, 'nope:not-exist', 'nope:not-exist-2');
-  check('1.6 v_check_dangling 能抓出公共库悬空端点', db.prepare("SELECT COUNT(*) AS c FROM v_check_dangling WHERE edge LIKE 'public_%'").get().c === 2,
-    JSON.stringify(db.prepare("SELECT edge, ref_id, target FROM v_check_dangling WHERE edge LIKE 'public_%'").all()));
-  // 源项目删除后公共库仍自洽
+  const ids = [...liveElementIds(db, 'public_layer_id', r.id, PUB_TABLES)];
+  check('1.1 副本元素数与源图层一致', ids.length === 2, `${ids.length} 个: ${JSON.stringify(ids)}`);
+  check('1.2 副本 id 全部带公共图层后缀', ids.every((x) => x.endsWith(`:pb${r.id}`)), JSON.stringify(ids));
+  check('1.3 不残留源项目元素 id', !ids.some((x) => x === 'p1:r1' || x === 'p1:r2'), JSON.stringify(ids));
+  // 两张公共图层互不撞 id（element_id 是全库主键）
+  const r2 = saveLayerToPublicV2(db, 'p1:Lm');
+  const all = allElementIds(db, PUB_TABLES);
+  check('1.4 两张公共图层元素 id 不重复', new Set(all).size === all.length, JSON.stringify(all));
+  check('1.5 v_check_dangling 对健康库为 0', db.prepare('SELECT COUNT(*) AS c FROM v_check_dangling').get().c === 0);
   db.prepare("DELETE FROM project WHERE project_id = 'p1'").run();
-  check('1.7 删源项目后公共库依旧自洽', danglingOf(db, PUB_TABLES, 'public_layer_id', r.id).filter(([, e]) => !e.startsWith('nope:')).length === 0);
+  const after = allElementIds(db, PUB_TABLES);
+  check('1.6 删源项目后公共库副本完好', after.length === all.length, `删前 ${all.length} → 删后 ${after.length}`);
 }
 
-// ---------- 2. 公共库 → 项目：导入后端点全部可解析 ----------
+// ---------- 2. 公共库 → 项目：导入带新 id，可重复导入 ----------
 {
   console.log('\n[2] 公共库 → 目标项目');
   const db = open();
@@ -117,20 +108,31 @@ const check = (name, pass, detail) => {
   saveProjectV2(db, baseProject('dst'));
   const pub = saveLayerToPublicV2(db, 'src:Lr').id;
   const imp = importPublicLayerV2(db, pub, 'dst');
-  check('2.1 导入不新增悬空', imp.dropped.length === 0 && danglingOf(db, PROJ_TABLES, 'layer_id', imp.id).length === 0,
-    `dropped=${JSON.stringify(imp.dropped)}`);
   const proj = getProjectV2(db, 'dst');
   const layer = proj.layers.find((L) => L.id === imp.id);
-  check('2.2 导入图层可被读取端还原', !!layer && layer.type === 'route' && layer.elements.length === 3,
+  check('2.1 导入图层可被读取端还原', !!layer && layer.type === 'route' && layer.elements.length === 2,
     layer ? `${layer.name}: ${layer.elements.map((e) => e.type).join(',')}` : '未找到图层');
-  const cSame = layer?.elements.find((e) => e.name === '同层连线');
-  const endsOk = cSame && layer.elements.some((e) => e.id === cSame.fromElementId) && layer.elements.some((e) => e.id === cSame.toElementId);
-  check('2.3 连接线端点解析到导入后的元素', !!endsOk, cSame ? `${cSame.fromElementId} → ${cSame.toElementId}` : '无连接线');
-  check('2.4 原项目元素不受影响', getProjectV2(db, 'src').layers.find((L) => L.id === 'src:Lr').elements.length === 4);
+  check('2.2 导入元素 id 全部带新后缀', (layer?.elements || []).every((e) => e.id.endsWith(`:im${imp.id}`)),
+    (layer?.elements || []).map((e) => e.id).join(','));
+  const dstIds = allElementIds(db, PROJ_TABLES);
+  check('2.3 全库元素 id 无重复', new Set(dstIds).size === dstIds.length, JSON.stringify(dstIds));
+  check('2.4 原项目元素不受影响', getProjectV2(db, 'src').layers.find((L) => L.id === 'src:Lr').elements.length === 2);
   check('2.5 导入图层 ord 不与既有图层重复', (() => {
     const ords = db.prepare("SELECT ord FROM layer WHERE project_id = 'dst'").all().map((r) => r.ord);
     return new Set(ords).size === ords.length;
   })(), db.prepare("SELECT ord FROM layer WHERE project_id = 'dst'").all().map((r) => r.ord).join(','));
+  // 同一公共图层导入两次：id 必须再次换掉，否则 deleteElement 按 id 一次删两条
+  const imp2 = importPublicLayerV2(db, pub, 'dst');
+  const twice = allElementIds(db, PROJ_TABLES);
+  check('2.6 同一公共图层可重复导入且 id 不撞', imp2.id !== imp.id && new Set(twice).size === twice.length,
+    `${imp.id} / ${imp2.id} · 共 ${twice.length} 个元素`);
+  // 自检视图仍能抓出弱引用悬空（外键关闭时插入的坏跟随机位 —— 视图正是为迁移/老库体检而存在）
+  db.exec('PRAGMA foreign_keys = OFF');
+  blankRow(db, 'camera_keyframe', { kf_id: 'dst:kfBad', project_id: 'dst', sec: 1, follow_route_element_id: 'nope' });
+  db.exec('PRAGMA foreign_keys = ON');
+  const dangling = db.prepare('SELECT edge, ref_id, target FROM v_check_dangling').all();
+  check('2.7 v_check_dangling 能抓出悬空跟随机位', dangling.length === 1 && dangling[0].edge === 'camera.follow_route',
+    JSON.stringify(dangling));
 }
 
 // ---------- 3. 素材缺失：占位必须早于元素插入（否则整笔事务被外键打回） ----------
@@ -139,13 +141,10 @@ const check = (name, pass, detail) => {
   const db = open();
   saveProjectV2(db, baseProject('p3'));
   const pub = saveLayerToPublicV2(db, 'p3:Lm').id;
-  const info = db.prepare('PRAGMA table_info(public_element_marker)').all();
-  const vals = Object.fromEntries(info.map((c) => [c.name, c.notnull ? (/INT|REAL|NUMERIC/.test(c.type) ? 0 : '') : null]));
-  Object.assign(vals, {
+  blankRow(db, 'public_element_marker', {
     element_id: 'ghost:host', public_layer_id: pub, type: 'point', name: '幽灵', visible: 1,
     start_sec: 0, end_sec: 5, asset_id: 'asset-not-exists', fly_mode: 0, show_icon: 0,
   });
-  db.prepare(`INSERT INTO public_element_marker (${info.map((c) => c.name).join(',')}) VALUES (${info.map((c) => '@' + c.name).join(',')})`).run(vals);
   let err = null;
   try { importPublicLayerV2(db, pub, 'p3'); } catch (e) { err = e; }
   check('3.1 导入成功（不再外键回滚）', !err, err ? err.message : '');
@@ -159,7 +158,7 @@ const check = (name, pass, detail) => {
   const db = open();
   saveProjectV2(db, baseProject('p4'));
   const pub = saveLayerToPublicV2(db, 'p4:Lr').id;
-  check('4.1 列表元素数按裁剪后统计', listPublicLayersV2(db).find((x) => x.id === pub)?.count === 3,
+  check('4.1 列表元素数与图层内元素一致', listPublicLayersV2(db).find((x) => x.id === pub)?.count === 2,
     JSON.stringify(listPublicLayersV2(db).map((x) => `${x.name}:${x.count}`)));
   removePublicLayerV2(db, pub);
   const left = PUB_TABLES.reduce((n, t) => n + db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get().c, 0);
