@@ -84,6 +84,8 @@ interface EditorState {
   selectLayer: (id: string | null, type?: LayerType) => void;
   /** 只把某层设为「可编辑层」，不动「写入目标」（点中元素时随宿主层收口用） */
   focusLayer: (id: string | null) => void;
+  /** 切项目 / 新建项目时清掉所有指向旧项目对象的选中态 */
+  resetSelection: () => void;
   setPanelMode: (mode: 'element' | 'keyframe' | 'fx' | 'none') => void;
   /** 选中镜头关键帧（进入右侧视角属性面板） */
   selectKeyframe: (idx: number | null) => void;
@@ -114,6 +116,12 @@ export const useEditorStore = create<EditorState>()((set) => ({
     return { selectedLayerId: id, activeLayerType: type, targetLayers: { ...s.targetLayers, [type]: id } };
   }),
   focusLayer: (id) => set({ selectedLayerId: id }),
+  // 选中态存的是**项目内对象的 id**，换项目后全部指向不存在的东西（元素面板高亮、
+  // 时间线选中块、属性面板都会跟着错位），所以随项目切换一并清掉。
+  resetSelection: () => set({
+    selectedElementId: null, selectedLayerId: null, selectedKeyframeIdx: null,
+    fxSelId: null, panelMode: 'element',
+  }),
   setPanelMode: (mode) => set({ panelMode: mode }),
   selectKeyframe: (idx) => set({ selectedKeyframeIdx: idx, panelMode: idx !== null ? 'keyframe' : 'none' }),
   setCurrentCamera: (cam) => set({ currentCamera: cam }),

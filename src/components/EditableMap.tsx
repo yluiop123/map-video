@@ -2230,11 +2230,14 @@ function nearestRingVertexIndex(ring: [number, number][], pt: [number, number]):
 /**
  * 当前「可编辑元素集合」：没选中图层 = 全部（否则一进编辑器就什么都点不动）；
  * 选中某图层 = 只有该图层的元素在地图上有激活态编辑效果（可点选 / 可拖 / 顶点）。
+ * 图层被删掉后 selectedLayerId 会留着（撤销/重做也可能换掉图层集合）——
+ * 指向不存在的图层**等同于没选**，必须回到「全部可编辑」，否则整张地图静默变成只读。
  */
 function editableIdSet(project: MapVideoProject, activeLayerId: string | null): Set<string> | null {
   if (!activeLayerId) return null;
   const L = project.layers?.find((x) => x.id === activeLayerId);
-  return new Set((L?.elements || []).map((e) => e.id));
+  if (!L) return null;
+  return new Set(L.elements.map((e) => e.id));
 }
 
 function pickElement(map: maplibregl.Map, point: maplibregl.PointLike, elements: MapElement[], editable?: Set<string> | null): string | null {
@@ -2268,6 +2271,9 @@ function getAllElementLayers(map: maplibregl.Map): string[] {
       if (id === 'draw-preview-fill' || id === 'draw-preview-line' || id === 'draw-preview-point') return false;
       if (id === 'selection-line' || id === 'selection-fill' || id === 'selection-point') return false;
       if (id.startsWith('linespot-')) return false;
+      // 移动点的「全程路径虚线引导」是编辑辅助：它覆盖整条路径，纳入命中区会让
+      // 虚线上任意一点都能选中/拖动那个移动图标，并吃掉它下面其它元素的点击
+      if (id.startsWith('moving-guide-layer-')) return false;
       const eid = elementIdFromLayerId(id, []);
       return eid !== '';
     });

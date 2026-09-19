@@ -378,12 +378,14 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         elevationMaps: [...DEFAULT_ELEVATION_MAPS],
         activeElevationMapId: 'none',
       };
+      useEditorStore.getState().resetSelection();
       set({ project, history: [], future: [] });
       await storage.saveProject(project);
       markProjectSaved(project);
     },
 
     loadProject: async (id: string) => {
+      useEditorStore.getState().resetSelection();
       releaseAssetUrls();
       clearGifCache();
       (await import('../lib/map-renderer')).clearRenderCaches();
@@ -705,6 +707,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         collectionId: collectionId || DEFAULT_COLLECTION_ID,
         updatedAt: new Date(),
       }));
+      useEditorStore.getState().resetSelection();
       set({ project, history: [], future: [] });
       await storage.saveProject(project);
       markProjectSaved(project);
