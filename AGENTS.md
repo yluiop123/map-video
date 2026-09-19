@@ -95,7 +95,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 3. **MapLibre 重名 layer 会自动加数字后缀**：从 layerId 反解元素 id 必须用「已知元素 id 前缀匹配」（`EditableMap.elementIdFromLayerId`），简单截断会匹配失败。
 4. **thin line 难选中**：线元素有透明宽热区层 `line-hit-{id}`（line-width≥12, opacity 0）。
 5. **数据默认值**：moveDuration 默认 2s；label.bgColor 默认透明；仅 BUBBLE 样式带尾巴；TEXT 无位置项（强制 center）；缩放/尺寸走 `scale`，不要再加固定像素字段。
-6. **自动保存：停止编辑 5s 后静默落盘**（2026-09-19 用户拍板保留）。三条硬规矩：① 排程前必须 `isProjectDirty(project)` 判脏，否则 `saveProject` 造新引用 → effect 重跑变成每 5 秒无限写库；② 回项目列表前要先 `void saveProject()` 补存（应用内导航不触发 beforeunload，5s 内退出会丢最后一次编辑）；③ 导出视频**不落盘**。手动 💾 仍在。
+6. **自动保存：停止编辑 5s 后静默落盘**（2026-09-19 用户拍板保留）。三条硬规矩：① 排程前必须 `isProjectDirty(project)` 判脏，否则 `saveProject` 造新引用 → effect 重跑变成每 5 秒无限写库；② 回项目列表前要先 `void saveProject()` 补存（应用内导航不触发 beforeunload，5s 内退出会丢最后一次编辑）；③ 导出视频**不落盘**。手动 💾 仍在。④ `saveProject` 在 `await` 之后**只在当前项目仍是那份快照时才回填**（`if (get().project !== project) return;`）：退出项目是「先发起补存、再 `set({project:null})`」，无条件 `set({project:updated})` 会把旧快照塞回去，表现成**「点『项目列表』没反应」**（实测：撤掉守卫即复现，加上守卫即停在列表页），顺带还会回滚这几秒内的编辑。
 7. **双端一致**：改渲染/相机逻辑必须同时检查编辑器 `EditableMap` 与导出端 `compositions/MapScene`。导出端相机已传 fps。
  8. **PowerShell 内联 node -e 处理中文/复杂引号会碎**：批量改文件一律写一次性 `.cjs` 脚本用 fs+utf8（用完即删）。
 9. **pincer(钳形) 与 double_arrow**：预览与最终必须同用 `buildDoubleArrow`；不要用 buildArrowGeometry 的 pincer 分支做预览。

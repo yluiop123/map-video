@@ -403,6 +403,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       if (!project) return;
       const updated = { ...project, updatedAt: new Date() };
       await storage.saveProject(updated);
+      // 写盘期间当前项目可能已经变了：回项目列表会 set({project:null})（退出前的补存就是这条），
+      // 用户也可能继续编辑。此时无条件回填会把旧快照塞回去，表现为「点项目列表没反应」，
+      // 顺带回滚掉这几秒内的编辑。数据已经落盘了，跳过回填、交给下一次保存即可。
+      if (get().project !== project) return;
       set({ project: updated });
       markProjectSaved(updated);
     },
