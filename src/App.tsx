@@ -145,7 +145,9 @@ export default function App() {
   // 自动保存：停止编辑 5s 后静默落盘。
   // 视频编辑是长时创作，此前只能手动保存且无关闭保护 —— 崩溃/误关会丢掉全部未保存工作。
   useEffect(() => {
-    if (!project) return;
+    // 必须先看脏标记：saveProject 会 set 一个新 project 引用 → 本 effect 重跑 →
+    // 无条件排程就成了「每 5 秒无限写库」，updatedAt 持续变化还会让列表排序抖动。
+    if (!project || !isProjectDirty(project)) return;
     const t = setTimeout(() => {
       void useProjectStore.getState().saveProject().catch((err) => console.warn('[autosave] 保存失败:', err));
     }, AUTOSAVE_DELAY_MS);

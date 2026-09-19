@@ -194,6 +194,8 @@ export function TopBar({ onOpenExport, onOpenSettings }: ToolbarProps) {
           // 退出项目：停止播放与预览音频，避免音乐在项目列表页继续响
           useEditorStore.getState().setIsPlaying(false);
           stopPreviewAudio();
+          // 自动保存有 5s 延迟，退出前补存一次，否则最后一次编辑静默丢失（应用内导航不触发 beforeunload）
+          void useProjectStore.getState().saveProject().catch((err) => console.warn('[autosave] 退出前保存失败:', err));
           useProjectStore.setState({ project: null });
         }}
         className="h-9 px-3 flex items-center gap-2 rounded-lg bg-white/[0.05] border border-white/10 text-sm text-foreground/90 hover:bg-white/10 transition-colors shrink-0"

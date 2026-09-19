@@ -56,12 +56,11 @@ const NOTES = {
     "projection": "地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走）",
     "active_base_map_id": "当前生效底图的配置 id（底图是代码内置常量，不入库）",
     "active_elevation_map_id": "当前生效高程图的配置 id（同上）",
-    "default_duration_sec": "默认章节时长（秒）",
+    "default_duration_sec": "默认时长（秒，仅作新建项目的初始容器长度）",
     "default_fps": "默认帧率（1–240）",
     "resolution_w": "默认导出宽度（px）",
     "resolution_h": "默认导出高度（px）",
     "default_easing": "默认缓动类型",
-    "end_sec": "全片总长（秒）",
     "elevation_exaggeration": "地形夸张系数（覆盖内置默认 1.5；0=平坦、1=真实比例；空=用内置默认）"
   },
   "asset": {
@@ -136,7 +135,7 @@ const NOTES = {
     "audio_asset_id": "配音音频（TTS 生成或导入）",
     "url": "音频地址（asset 不可用时的内联 dataURL / 站内路径）",
     "duration_sec": "显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖",
-    "start_sec": "章内起始时间（秒，默认自动顺排）",
+    "start_sec": "起始时间（秒，项目绝对时间；默认自动顺排）",
     "locked": "手动定位后锁定，不再参与自动顺排",
     "ord": "同项目内排序"
   },
@@ -175,8 +174,8 @@ const NOTES = {
     "lng": "经度（三类标记都落在单点）",
     "lat": "纬度",
     "rotation": "贴地旋转角（0–360 度）",
-    "color": "可着色形态的主色（shape=model / gif 时禁用，CHECK 保证）",
-    "shape": "点呈现形态（9 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库",
+    "color": "主色（着色）：除 emoji 外全部形态可用（multiply 染色，白色=原色）",
+    "shape": "点呈现形态（10 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库 / military_symbol 军标",
     "emoji": "表情字符（type=point 且 shape=emoji 时必填）",
     "scale": "等比缩放（0.3–3，同时影响点与标签字号）",
     "orientation": "朝向：faceCam 面向镜头 / flat 贴地（shape=model 不能贴地，CHECK 保证）",

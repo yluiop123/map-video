@@ -194,10 +194,27 @@ export async function importPublicLayer(publicId: string, projectId: string): Pr
   }
   const local = listLocal().find((x) => x.id === publicId);
   if (!local) return {};
+  // 与桌面端同规则：副本必须带**新 id** 进项目，否则同一库导入两次就是重复 id
+  // （deleteElement 按 id 过滤会一次删两条、updateElement 只命中第一条）。
+  const layerId = generateId();
+  const suf = `:im${layerId}`;
+  const remap = new Map<string, string>();
+  for (const el of local.elements) remap.set(el.id, el.id + suf);
+  // 先整体换 id 与端点，再裁剪：裁剪判据是「端点是否在本图层内」，顺序反了会误删全部连接线
+  const moved = local.elements.map((el) => {
+    if (el.type !== 'connector') return { ...el, id: remap.get(el.id)! };
+    const c = el as ConnectorElement;
+    return {
+      ...c, id: remap.get(c.id)!,
+      fromElementId: remap.get(c.fromElementId) || c.fromElementId,
+      toElementId: remap.get(c.toElementId) || c.toElementId,
+    };
+  });
+  const { kept } = pruneForeignConnectors(moved);
   return {
     layer: {
-      id: generateId(), type: local.type || 'marker', name: local.name, visible: true,
-      startFrame: local.startFrame, endFrame: local.endFrame, elements: local.elements,
+      id: layerId, type: local.type || 'marker', name: local.name, visible: true,
+      startFrame: local.startFrame, endFrame: local.endFrame, elements: kept,
     },
   };
 }

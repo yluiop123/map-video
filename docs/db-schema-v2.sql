@@ -5,7 +5,7 @@
 --          主键统一 <实体>_id，时间统一 *_sec（秒，REAL）/ *_at（epoch ms，仅审计字段用）
 -- 字符集：UTF-8；时间单位：**秒**（REAL，存用户输入的原值）；
 --          渲染 / 导出时按 project.default_fps 换算为帧（帧是派生量，不入库）
--- 规模：15 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
+-- 规模：22 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 4 张「类别宽表」，
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计
   active_elevation_map_id TEXT,  -- 当前生效高程图的配置 id（同上）
 
   -- 项目级配置（GlobalConfig；原 project_config 1:1 表已合并进来）
-  default_duration_sec      REAL NOT NULL DEFAULT 5 CHECK (default_duration_sec > 0),  -- 默认章节时长（秒）
+  default_duration_sec      REAL NOT NULL DEFAULT 5 CHECK (default_duration_sec > 0),  -- 默认时长（秒，仅作新建项目的初始容器长度）
   default_fps           INTEGER NOT NULL DEFAULT 30 CHECK (default_fps BETWEEN 1 AND 240),  -- 默认帧率（1–240）
   resolution_w          INTEGER NOT NULL DEFAULT 1920 CHECK (resolution_w > 0),  -- 默认导出宽度（px）
   resolution_h          INTEGER NOT NULL DEFAULT 1080 CHECK (resolution_h > 0),  -- 默认导出高度（px）
@@ -70,9 +70,6 @@ CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计
   default_easing        TEXT    NOT NULL DEFAULT 'easeInOut',  -- 默认缓动类型
   -- 地形夸张：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例，面板范围 0–50）
   elevation_exaggeration REAL CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)  -- 地形夸张系数（覆盖内置默认 1.5；0=平坦、1=真实比例；空=用内置默认）
-,
-  -- 全片总长（秒）
-  end_sec REAL NOT NULL DEFAULT 0 CHECK (end_sec >= 0)  -- 全片总长（秒）
 );
 
 -- -----------------------------------------------------------------------------
@@ -209,12 +206,12 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   -- point 专属：视觉形态（9 种）+ 资源引用
   --   circle 圆点 · text 文字 · pin 水滴针 · bubble 气泡 · emoji 表情
   --   image 图片 · gif 动图 · model 3D 模型（three.js + custom layer）· icon 图标库（lucide / react-icons / 自建）
-  shape          TEXT CHECK (shape IS NULL OR shape IN (  -- 点呈现形态（9 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库
-                   'circle','text','pin','bubble','emoji','image','gif','model','icon')),
+  shape          TEXT CHECK (shape IS NULL OR shape IN (  -- 点呈现形态（10 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库 / military_symbol 军标
+                   'circle','text','pin','bubble','emoji','image','gif','model','icon','military_symbol')),
   emoji          TEXT,  -- 表情字符（type=point 且 shape=emoji 时必填）
   scale          REAL CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3)),  -- 等比缩放（0.3–3，同时影响点与标签字号）
   orientation    TEXT CHECK (orientation IS NULL OR orientation IN ('faceCam','flat')),  -- 朝向：faceCam 面向镜头 / flat 贴地（shape=model 不能贴地，CHECK 保证）
-  color          TEXT,  -- 可着色形态的主色（shape=model / gif 时禁用，CHECK 保证）
+  color          TEXT,  -- 主色（着色）：除 emoji 外全部形态可用（multiply 染色，白色=原色）
   asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 用户上传的图片 / GIF / 模型素材（删除素材则置空）
   builtin_id     TEXT,  -- 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin
   icon_lib       TEXT,  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用）
@@ -253,8 +250,6 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
          OR asset_id IS NOT NULL OR builtin_id IS NOT NULL),
   CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL),
   -- 能力矩阵（与属性面板「隐藏不可用控件」一一对应）
-  CHECK (shape IS NOT 'model' OR color IS NULL),                        -- 模型不可着色（多材质）
-  CHECK (shape IS NOT 'gif'   OR color IS NULL),                        -- GIF 不可着色（多帧彩色）
   CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam'),  -- 模型不能贴地
   CHECK (type <> 'flag'  OR flag_text IS NOT NULL),
   CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)
@@ -621,12 +616,12 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   -- point 专属：视觉形态（9 种）+ 资源引用
   --   circle 圆点 · text 文字 · pin 水滴针 · bubble 气泡 · emoji 表情
   --   image 图片 · gif 动图 · model 3D 模型（three.js + custom layer）· icon 图标库（lucide / react-icons / 自建）
-  shape          TEXT CHECK (shape IS NULL OR shape IN (  -- 点呈现形态（9 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库
-                   'circle','text','pin','bubble','emoji','image','gif','model','icon')),
+  shape          TEXT CHECK (shape IS NULL OR shape IN (  -- 点呈现形态（10 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库 / military_symbol 军标
+                   'circle','text','pin','bubble','emoji','image','gif','model','icon','military_symbol')),
   emoji          TEXT,  -- 表情字符（type=point 且 shape=emoji 时必填）
   scale          REAL CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3)),  -- 等比缩放（0.3–3，同时影响点与标签字号）
   orientation    TEXT CHECK (orientation IS NULL OR orientation IN ('faceCam','flat')),  -- 朝向：faceCam 面向镜头 / flat 贴地（shape=model 不能贴地，CHECK 保证）
-  color          TEXT,  -- 可着色形态的主色（shape=model / gif 时禁用，CHECK 保证）
+  color          TEXT,  -- 主色（着色）：除 emoji 外全部形态可用（multiply 染色，白色=原色）
   asset_id       TEXT,  -- 用户上传的图片 / GIF / 模型素材（删除素材则置空）
   builtin_id     TEXT,  -- 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin
   icon_lib       TEXT,  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用）
@@ -665,8 +660,6 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
          OR asset_id IS NOT NULL OR builtin_id IS NOT NULL),
   CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL),
   -- 能力矩阵（与属性面板「隐藏不可用控件」一一对应）
-  CHECK (shape IS NOT 'model' OR color IS NULL),                        -- 模型不可着色（多材质）
-  CHECK (shape IS NOT 'gif'   OR color IS NULL),                        -- GIF 不可着色（多帧彩色）
   CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam'),  -- 模型不能贴地
   CHECK (type <> 'flag'  OR flag_text IS NOT NULL),
   CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)
@@ -1051,8 +1044,8 @@ CREATE TABLE IF NOT EXISTS narration_entry (  -- 字幕条：文本 + 配音音�
   -- 音频地址（asset 不可用时的内联 dataURL / 站内路径；与 audio_asset_id 二选一）
   url           TEXT,  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径）
   -- 显示时长（秒）：NULL = 自动（有配音随音频、无配音按字数估算）；非空 = 手动覆盖值
-  duration_sec REAL CHECK (duration_sec IS NULL OR duration_sec >= 1),  -- 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖
-  start_sec     REAL NOT NULL CHECK (start_sec >= 0),  -- 章内起始时间（秒，默认自动顺排）
+  duration_sec REAL CHECK (duration_sec IS NULL OR duration_sec > 0),  -- 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖
+  start_sec     REAL NOT NULL CHECK (start_sec >= 0),  -- 起始时间（秒，项目绝对时间；默认自动顺排）
   locked        INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),  -- 手动定位后锁定，不再参与自动顺排
   ord           INTEGER NOT NULL DEFAULT 0  -- 同项目内排序
 );

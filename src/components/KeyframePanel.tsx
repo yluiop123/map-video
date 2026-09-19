@@ -110,11 +110,11 @@ export function KeyframePanel({ project, index }: { project: MapVideoProject; in
             <div className="grid grid-cols-2 gap-2">
               <Field label={t('开始时间', 'Start Time')}>
                 <FrameTimeField value={kf.followRoute?.startFrame ?? kf.frame} fps={fps}
-                  onFrameChange={(f) => patchKf({ followRoute: { routeElementId: kf.followRoute?.routeElementId || '', startFrame: Math.round(f) } })} />
+                  onFrameChange={(f) => patchKf({ followRoute: { ...kf.followRoute, routeElementId: kf.followRoute?.routeElementId || '', startFrame: Math.round(f) } })} />
               </Field>
               <Field label={t('结束时间', 'End Time')}>
                 <FrameTimeField value={kf.followRoute?.endFrame ?? project.endFrame} fps={fps}
-                  onFrameChange={(f) => patchKf({ followRoute: { routeElementId: kf.followRoute?.routeElementId || '', endFrame: Math.round(f) } })} />
+                  onFrameChange={(f) => patchKf({ followRoute: { ...kf.followRoute, routeElementId: kf.followRoute?.routeElementId || '', endFrame: Math.round(f) } })} />
               </Field>
             </div>
           </>

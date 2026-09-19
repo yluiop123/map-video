@@ -7,7 +7,6 @@ interface ExportDialogProps {
   onClose: () => void;
 }
 
-const FPS_OPTIONS = [24, 30, 60];
 
 type ExportTab = 'video' | 'config';
 
@@ -18,7 +17,6 @@ export function ExportDialog({ onClose }: ExportDialogProps) {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [support, setSupport] = useState<boolean | null>(null);
-  const [fps, setFps] = useState(project?.globalConfig.defaultFPS ?? 30);
 
   const resolution = project?.globalConfig.defaultResolution;
 
@@ -38,7 +36,6 @@ export function ExportDialog({ onClose }: ExportDialogProps) {
         project,
         width: resolution.width,
         height: resolution.height,
-        fps,
         onProgress: (p) => setProgress(p),
       });
       downloadBlob(blob, `${project.name || 'map-video'}.mp4`);
@@ -111,23 +108,6 @@ export function ExportDialog({ onClose }: ExportDialogProps) {
                   <p className="text-xs text-muted-foreground">
                     画幅 {resolution.width}×{resolution.height} px（在时间线「画幅」按钮切换）
                   </p>
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground block mb-1">帧率</label>
-                  <div className="flex gap-1">
-                    {FPS_OPTIONS.map((f) => (
-                      <button
-                        key={f}
-                        onClick={() => setFps(f)}
-                        disabled={exporting}
-                        className={`px-3 py-1 text-xs border rounded disabled:opacity-40 ${
-                          fps === f ? 'bg-white text-black border-white' : 'bg-white/[0.03] border-white/10 hover:bg-white/[0.07]'
-                        }`}
-                      >
-                        {f} fps
-                      </button>
-                    ))}
-                  </div>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   使用 Remotion 在浏览器中渲染导出。

@@ -279,20 +279,20 @@ export function saveProjectV2(db, project) {
     db.prepare(`INSERT INTO project (
       project_id, name, description, collection_id, created_at, updated_at, projection,
       active_base_map_id, active_elevation_map_id, default_duration_sec, default_fps,
-      resolution_w, resolution_h, default_easing, elevation_exaggeration, end_sec
+      resolution_w, resolution_h, default_easing, elevation_exaggeration
     ) VALUES (@project_id,@name,@description,@collection_id,@created_at,@updated_at,@projection,
       @active_base_map_id,@active_elevation_map_id,@default_duration_sec,@default_fps,
-      @resolution_w,@resolution_h,@default_easing,@elevation_exaggeration,@end_sec)`).run({
+      @resolution_w,@resolution_h,@default_easing,@elevation_exaggeration)`).run({
       project_id: project.id, name: project.name || '未命名', description: n(project.description),
       collection_id: project.collectionId || 'default',
       created_at: new Date(project.createdAt || now).getTime(), updated_at: now,
       projection: project.globalConfig?.projection || 'mercator',
       active_base_map_id: n(project.activeBaseMapId), active_elevation_map_id: n(project.activeElevationMapId),
-      default_duration_sec: n(gc.defaultDuration) ?? 5, default_fps: fps,
+      // 帧 → 秒：defaultDuration 运行时是帧，列是秒（§10「时间一律存秒」）
+      default_duration_sec: n(f2s(gc.defaultDuration)) ?? 5, default_fps: fps,
       resolution_w: n(gc.defaultResolution?.width) ?? 1920, resolution_h: n(gc.defaultResolution?.height) ?? 1080,
       default_easing: gc.defaultEasing || 'easeInOut',
       elevation_exaggeration: gc.elevationExaggeration ?? null,
-      end_sec: f2s(project.endFrame),
     });
 
     const insKf = db.prepare(`INSERT INTO camera_keyframe (
@@ -604,6 +604,21 @@ export function getProjectV2(db, id) {
     id: e.entry_id, text: e.text, audioUrl: e.url ?? undefined, durationFrames: s2f(e.duration_sec ?? 0), startFrame: s2f(e.start_sec), locked: e.locked === 1,
   }));
   const elements = readElementsV2(db, pid, s2f);
+  const music = db.prepare('SELECT * FROM music_track WHERE project_id = ? ORDER BY ord').all(pid).map((m) => ({
+    id: m.track_id, name: m.name, url: m.url ?? undefined, startFrame: s2f(m.start_sec), endFrame: m.end_sec == null ? s2f(m.start_sec) : s2f(m.end_sec),
+    volume: m.volume, loop: m.loop === 1, fadeIn: m.fade_in, fadeOut: m.fade_out,
+  }));
+  // 片长不入库（派生量，§10「只存输入原值」）：内容实际结束 + 至少 60 秒留白，与时间线口径一致
+  const contentEnd = Math.max(
+    0,
+    ...elements.map((e) => e.endFrame || 0),
+    ...fx.map((f) => f.endFrame || 0),
+    ...overlays.map((o) => o.endFrame || 0),
+    ...camera.map((k) => k.frame || 0),
+    ...entries.map((e) => (e.startFrame || 0) + (e.durationFrames || 0)),
+    ...music.map((m) => m.endFrame || 0),
+  );
+  const endFrame = Math.max(Math.round(60 * fps), contentEnd);
   // 图层（项目 ▸ 图层 ▸ 元素）：按 layer_id 归组；无图层表时兜底一个默认图层
   const layerRows = db.prepare('SELECT * FROM layer WHERE project_id = ? ORDER BY ord').all(pid);
   const byLayer = new Map();
@@ -617,23 +632,21 @@ export function getProjectV2(db, id) {
         id: L.layer_id, type: L.type || 'marker', name: L.name, visible: L.visible !== 0,
         startFrame: s2f(L.start_sec), endFrame: s2f(L.end_sec), elements: byLayer.get(L.layer_id) || [],
       }))
-    : [{ id: `${pid}:layer`, type: 'marker', name: '标记 1', visible: true, startFrame: 0, endFrame: s2f(p.end_sec), elements }];
+    : [{ id: `${pid}:layer`, type: 'marker', name: '标记 1', visible: true, startFrame: 0, endFrame, elements }];
   return {
     id: pid, name: p.name, description: p.description ?? undefined,
     collectionId: p.collection_id, createdAt: new Date(p.created_at), updatedAt: new Date(p.updated_at),
     globalConfig: {
-      defaultDuration: p.default_duration_sec, defaultFPS: p.default_fps,
+      // 秒 → 帧：defaultDuration 运行时是帧
+      defaultDuration: Math.round((p.default_duration_sec || 5) * fps), defaultFPS: p.default_fps,
       defaultResolution: { width: p.resolution_w, height: p.resolution_h, label: `${p.resolution_w}x${p.resolution_h}` },
       defaultEasing: p.default_easing, projection: p.projection, elevationExaggeration: p.elevation_exaggeration ?? undefined,
     },
     startFrame: 0,
-    endFrame: s2f(p.end_sec),
+    endFrame,
     layers, elements, camera, fx, overlays,
     narration: { entries, style: st ? { fontSize: st.font_size, fontFamily: st.font_family ?? undefined, color: st.color, strokeColor: st.stroke_color, strokeWidth: st.stroke_width, bg: st.bg, bgColor: st.bg_color, posY: st.pos_y, maxPct: st.max_pct } : undefined },
-    music: db.prepare('SELECT * FROM music_track WHERE project_id = ? ORDER BY ord').all(pid).map((m) => ({
-      id: m.track_id, name: m.name, url: m.url ?? undefined, startFrame: s2f(m.start_sec), endFrame: m.end_sec == null ? s2f(m.start_sec) : s2f(m.end_sec),
-      volume: m.volume, loop: m.loop === 1, fadeIn: m.fade_in, fadeOut: m.fade_out,
-    })),
+    music,
     baseMaps: [], elevationMaps: [], activeBaseMapId: p.active_base_map_id ?? 'osm', activeElevationMapId: p.active_elevation_map_id ?? 'none',
   };
 }

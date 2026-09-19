@@ -15,7 +15,7 @@ export type PinSourceKind = 'none' | 'media' | 'icon';
 export interface PinCapability {
   /** 面板显示名 */
   label: string;
-  /** 可着色（模型 / GIF / emoji 为 false） */
+  /** 可着色（仅 emoji 为 false：表情字符自带颜色） */
   canTint: boolean;
   /** 可贴地 flat（模型为 false） */
   canFlat: boolean;

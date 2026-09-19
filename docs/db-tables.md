@@ -4,7 +4,7 @@
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：22 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 3 个视图 · 0 个触发器 · 656 列（外键全部有索引）
+- **规模**：22 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 3 个视图 · 0 个触发器 · 655 列（外键全部有索引）
 
 **目录**
 
@@ -181,7 +181,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **22 张表 / 656 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，656 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **22 张表 / 655 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，655 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -221,7 +221,7 @@
 
 **职责**：项目本体：身份 / 归属 / 审计 / 投影与生效底图的**默认值**引用　**前端**：项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project
 
-16 列 · 主键 `project_id`
+15 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -234,13 +234,12 @@
 | `projection` | TEXT | `NOT NULL` | 地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走） · 默认 `'mercator'` · `CHECK (projection IN ('mercator','globe'))` |
 | `active_base_map_id` | TEXT | — | 当前生效底图的配置 id（底图是代码内置常量，不入库） |
 | `active_elevation_map_id` | TEXT | — | 当前生效高程图的配置 id（同上） |
-| `default_duration_sec` | REAL | `NOT NULL` | 默认章节时长（秒） · 默认 `5` · `CHECK (default_duration_sec > 0)` |
+| `default_duration_sec` | REAL | `NOT NULL` | 默认时长（秒，仅作新建项目的初始容器长度） · 默认 `5` · `CHECK (default_duration_sec > 0)` |
 | `default_fps` | INTEGER | `NOT NULL` | 默认帧率（1–240） · 默认 `30` · `CHECK (default_fps BETWEEN 1 AND 240)` |
 | `resolution_w` | INTEGER | `NOT NULL` | 默认导出宽度（px） · 默认 `1920` · `CHECK (resolution_w > 0)` |
 | `resolution_h` | INTEGER | `NOT NULL` | 默认导出高度（px） · 默认 `1080` · `CHECK (resolution_h > 0)` |
 | `default_easing` | TEXT | `NOT NULL` | 默认缓动类型 · 默认 `'easeInOut'` |
 | `elevation_exaggeration` | REAL | — | 地形夸张系数（覆盖内置默认 1.5；0=平坦、1=真实比例；空=用内置默认） · `CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)` |
-| `end_sec` | REAL | `NOT NULL` | 全片总长（秒） · 默认 `0` · `CHECK (end_sec >= 0)` |
 
 #### layer — 图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层（标记/路线/形状/疆域/图片），带自己的显隐与显示区间
 
@@ -372,8 +371,8 @@
 | `text` | TEXT | `NOT NULL` | 字幕文本（同时也是配音朗读文本） · 默认 `''` |
 | `audio_asset_id` | TEXT | `FK → asset SET NULL` | 配音音频（TTS 生成或导入） |
 | `url` | TEXT | — | 音频地址（asset 不可用时的内联 dataURL / 站内路径） |
-| `duration_sec` | REAL | — | 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖 · `CHECK (duration_sec IS NULL OR duration_sec >= 1)` |
-| `start_sec` | REAL | `NOT NULL` | 章内起始时间（秒，默认自动顺排） · `CHECK (start_sec >= 0)` |
+| `duration_sec` | REAL | — | 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖 · `CHECK (duration_sec IS NULL OR duration_sec > 0)` |
+| `start_sec` | REAL | `NOT NULL` | 起始时间（秒，项目绝对时间；默认自动顺排） · `CHECK (start_sec >= 0)` |
 | `locked` | INTEGER | `NOT NULL` | 手动定位后锁定，不再参与自动顺排 · 默认 `0` · `CHECK (locked IN (0,1))` |
 | `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
@@ -442,11 +441,11 @@
 | `lng` | REAL | `NOT NULL` | 经度（三类标记都落在单点） |
 | `lat` | REAL | `NOT NULL` | 纬度 |
 | `rotation` | REAL | — | 贴地旋转角（0–360 度） |
-| `shape` | TEXT | — | 点呈现形态（9 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库 · `CHECK (shape IS NULL OR shape IN ( 'circle','text','pin','bubble','emoji','image','gif','model','icon'))` |
+| `shape` | TEXT | — | 点呈现形态（10 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库 / military_symbol 军标 · `CHECK (shape IS NULL OR shape IN ( 'circle','text','pin','bubble','emoji','image','gif','model','icon','military_symbol'))` |
 | `emoji` | TEXT | — | 表情字符（type=point 且 shape=emoji 时必填） |
 | `scale` | REAL | — | 等比缩放（0.3–3，同时影响点与标签字号） · `CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3))` |
 | `orientation` | TEXT | — | 朝向：faceCam 面向镜头 / flat 贴地（shape=model 不能贴地，CHECK 保证） · `CHECK (orientation IS NULL OR orientation IN ('faceCam','flat'))` |
-| `color` | TEXT | — | 可着色形态的主色（shape=model / gif 时禁用，CHECK 保证） |
+| `color` | TEXT | — | 主色（着色）：除 emoji 外全部形态可用（multiply 染色，白色=原色） |
 | `asset_id` | TEXT | `FK → asset SET NULL` | 用户上传的图片 / GIF / 模型素材（删除素材则置空） |
 | `builtin_id` | TEXT | — | 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin |
 | `icon_lib` | TEXT | — | 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用） |
@@ -478,9 +477,7 @@
 - `CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)`
 - `CHECK (type <> 'point' OR shape IS NULL OR shape IN ('circle','text','pin','bubble','emoji') OR asset_id IS NOT NULL OR builtin_id IS NOT NULL)`（媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin）
 - `CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL)`
-- `CHECK (shape IS NOT 'model' OR color IS NULL)`（能力矩阵（与属性面板「隐藏不可用控件」一一对应））
-- `CHECK (shape IS NOT 'gif' OR color IS NULL)`（模型不可着色（多材质））
-- `CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam')`（GIF 不可着色（多帧彩色））
+- `CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam')`（能力矩阵（与属性面板「隐藏不可用控件」一一对应））
 - `CHECK (type <> 'flag' OR flag_text IS NOT NULL)`（模型不能贴地）
 - `CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)`
 
@@ -884,11 +881,11 @@
 | `lng` | REAL | `NOT NULL` | 经度（三类标记都落在单点） |
 | `lat` | REAL | `NOT NULL` | 纬度 |
 | `rotation` | REAL | — | 贴地旋转角（0–360 度） |
-| `shape` | TEXT | — | 点呈现形态（9 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库 · `CHECK (shape IS NULL OR shape IN ( 'circle','text','pin','bubble','emoji','image','gif','model','icon'))` |
+| `shape` | TEXT | — | 点呈现形态（10 种）：circle 圆点 / text 纯文字 / pin 水滴针 / bubble 气泡 / emoji 表情 / image 图片 / gif 动图 / model 3D 模型 / icon 图标库 / military_symbol 军标 · `CHECK (shape IS NULL OR shape IN ( 'circle','text','pin','bubble','emoji','image','gif','model','icon','military_symbol'))` |
 | `emoji` | TEXT | — | 表情字符（type=point 且 shape=emoji 时必填） |
 | `scale` | REAL | — | 等比缩放（0.3–3，同时影响点与标签字号） · `CHECK (scale IS NULL OR (scale >= 0.3 AND scale <= 3))` |
 | `orientation` | TEXT | — | 朝向：faceCam 面向镜头 / flat 贴地（shape=model 不能贴地，CHECK 保证） · `CHECK (orientation IS NULL OR orientation IN ('faceCam','flat'))` |
-| `color` | TEXT | — | 可着色形态的主色（shape=model / gif 时禁用，CHECK 保证） |
+| `color` | TEXT | — | 主色（着色）：除 emoji 外全部形态可用（multiply 染色，白色=原色） |
 | `asset_id` | TEXT | — | 用户上传的图片 / GIF / 模型素材（删除素材则置空） |
 | `builtin_id` | TEXT | — | 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin |
 | `icon_lib` | TEXT | — | 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用） |
@@ -920,9 +917,7 @@
 - `CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)`
 - `CHECK (type <> 'point' OR shape IS NULL OR shape IN ('circle','text','pin','bubble','emoji') OR asset_id IS NOT NULL OR builtin_id IS NOT NULL)`（媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin）
 - `CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL)`
-- `CHECK (shape IS NOT 'model' OR color IS NULL)`（能力矩阵（与属性面板「隐藏不可用控件」一一对应））
-- `CHECK (shape IS NOT 'gif' OR color IS NULL)`（模型不可着色（多材质））
-- `CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam')`（GIF 不可着色（多帧彩色））
+- `CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam')`（能力矩阵（与属性面板「隐藏不可用控件」一一对应））
 - `CHECK (type <> 'flag' OR flag_text IS NOT NULL)`（模型不能贴地）
 - `CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)`
 

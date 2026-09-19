@@ -757,6 +757,9 @@ export function clearRenderCaches(): void {
   shapeImageCache.clear();
   gifPending.clear();
   modelPending.clear();
+  // 地图实例会随切项目/换底图重建，届时这些「已建过」标记必须一起作废，
+  // 否则新地图上永不重试（旗帜曾因 flagIconCache 中招，贴图同理）
+  geoTileSig.clear();
 }
 
 /** 当前元素相对自身起点的播放毫秒（GIF 循环 / 程序化动画的相位基准） */

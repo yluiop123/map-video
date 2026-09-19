@@ -392,7 +392,7 @@ function PinSettings({ element, patch }: {
             />
           </Field>
           <p className="text-[10px] text-muted-foreground/70">
-            {t('模型以位图贴片呈现：不可着色、不能贴地，俯仰变化时不做透视变形', 'Rendered as billboard: no tint, no flat, no perspective')}
+            {t('模型以位图贴片呈现：可按「图标颜色」着色，但不能贴地，俯仰变化时不做透视变形', 'Rendered as billboard: tintable, but no flat and no perspective')}
           </p>
         </Section>
       )}
