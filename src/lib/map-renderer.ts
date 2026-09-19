@@ -1013,19 +1013,19 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const layerId = `line-layer-${element.id}`;
   const hitLayerId = `line-hit-${element.id}`;
 
-  // 动画区间：路线线(shapeCategory='route')的显式 moveStartFrame/moveEndFrame 优先；
-  // 形状线(shapeCategory='multi')直接完整显示，不套用 grow/fill/move 动画（与「一致显示」一致）
-  const isShapeLine = element.shapeCategory === 'multi' || element.shapeCategory === 'special';
-  const animStart = (!isShapeLine && element.moveStartFrame !== undefined) ? element.moveStartFrame : element.startFrame;
-  const animEnd = (!isShapeLine && element.moveEndFrame !== undefined) ? element.moveEndFrame : element.endFrame;
-  // 路线默认动画 = 路线移动（move）；形状线不套用动画，保留 grow 语义
-  const anim = element.animEffect || (isShapeLine ? 'grow' : 'move');
+  // 形状线(shapeCategory='multi'/'special')默认「一致显示」：不自己套动画、也不看动画起止。
+  // 但用户在面板里**显式**选了动画效果，就得照办 —— 否则「动画开始/结束时间」两栏是摆设。
+  const noAnim = (element.shapeCategory === 'multi' || element.shapeCategory === 'special') && !element.animEffect;
+  const animStart = (!noAnim && element.moveStartFrame !== undefined) ? element.moveStartFrame : element.startFrame;
+  const animEnd = (!noAnim && element.moveEndFrame !== undefined) ? element.moveEndFrame : element.endFrame;
+  // 路线默认动画 = 路线移动（move）；形状线未指定动画时保留 grow 语义
+  const anim = element.animEffect || (noAnim ? 'grow' : 'move');
   const isGrowOrFill = anim === 'grow' || anim === 'fill';
-  const isMarch = (anim === 'march' || anim === 'marchplain') && !isShapeLine;
-  const isFlyMode = !!element.flyMode && !isShapeLine;
+  const isMarch = (anim === 'march' || anim === 'marchplain') && !noAnim;
+  const isFlyMode = !!element.flyMode && !noAnim;
   // 非均匀移动：线增长与标记同步（按各点到达帧映射路径比例；首点=绘制开始，末点=完成）
   const nonUniform = element.uniformMove === false && element.pointTimes && element.pointTimes.length >= 2;
-  let progress = isShapeLine
+  let progress = noAnim
     ? 1
     : isGrowOrFill || isMarch
       ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
