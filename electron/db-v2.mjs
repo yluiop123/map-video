@@ -279,10 +279,10 @@ export function saveProjectV2(db, project) {
     db.prepare(`INSERT INTO project (
       project_id, name, description, collection_id, created_at, updated_at, projection,
       active_base_map_id, active_elevation_map_id, default_duration_sec, default_fps,
-      resolution_w, resolution_h, default_easing, elevation_exaggeration
+      resolution_w, resolution_h, default_easing
     ) VALUES (@project_id,@name,@description,@collection_id,@created_at,@updated_at,@projection,
       @active_base_map_id,@active_elevation_map_id,@default_duration_sec,@default_fps,
-      @resolution_w,@resolution_h,@default_easing,@elevation_exaggeration)`).run({
+      @resolution_w,@resolution_h,@default_easing)`).run({
       project_id: project.id, name: project.name || '未命名', description: n(project.description),
       collection_id: project.collectionId || 'default',
       created_at: new Date(project.createdAt || now).getTime(), updated_at: now,
@@ -292,7 +292,17 @@ export function saveProjectV2(db, project) {
       default_duration_sec: n(f2s(gc.defaultDuration)) ?? 5, default_fps: fps,
       resolution_w: n(gc.defaultResolution?.width) ?? 1920, resolution_h: n(gc.defaultResolution?.height) ?? 1080,
       default_easing: gc.defaultEasing || 'easeInOut',
-      elevation_exaggeration: gc.elevationExaggeration ?? null,
+    });
+
+    // 底图 / 高程图目录：内置项在创建项目时就是普通行，之后每个项目各改各的
+    const insBaseMap = db.prepare(`INSERT INTO base_map (base_map_id, project_id, name, style_url, style_json, ord) VALUES (?,?,?,?,?,?)`);
+    (project.baseMaps || []).forEach((b, i) => {
+      const asUrl = typeof b.style === 'string';
+      insBaseMap.run(b.id, project.id, b.name || '', asUrl ? b.style : null, asUrl ? null : JSON.stringify(b.style || {}), i);
+    });
+    const insElevMap = db.prepare(`INSERT INTO elevation_map (elevation_map_id, project_id, name, url, encoding, exaggeration, style_url, ord) VALUES (?,?,?,?,?,?,?,?)`);
+    (project.elevationMaps || []).forEach((e, i) => {
+      insElevMap.run(e.id, project.id, e.name || '', e.url || '', n(e.encoding), n(e.exaggeration), n(e.style), i);
     });
 
     const insKf = db.prepare(`INSERT INTO camera_keyframe (
@@ -631,6 +641,15 @@ export function getProjectV2(db, id) {
         startFrame: s2f(L.start_sec), endFrame: s2f(L.end_sec), elements: byLayer.get(L.layer_id) || [],
       }))
     : [{ id: `${pid}:layer`, type: 'marker', name: '标记 1', visible: true, startFrame: 0, endFrame, elements }];
+  const baseMaps = db.prepare('SELECT * FROM base_map WHERE project_id = ? ORDER BY ord').all(pid)
+    .map((b) => ({ id: b.base_map_id, name: b.name, style: b.style_url ?? J(b.style_json, {}) }));
+  const elevationMaps = db.prepare('SELECT * FROM elevation_map WHERE project_id = ? ORDER BY ord').all(pid)
+    .map((e) => ({
+      id: e.elevation_map_id, name: e.name, url: e.url,
+      ...(e.encoding ? { encoding: e.encoding } : {}),
+      ...(e.exaggeration == null ? {} : { exaggeration: e.exaggeration }),
+      ...(e.style_url ? { style: e.style_url } : {}),
+    }));
   return {
     id: pid, name: p.name, description: p.description ?? undefined,
     collectionId: p.collection_id, createdAt: new Date(p.created_at), updatedAt: new Date(p.updated_at),
@@ -638,14 +657,15 @@ export function getProjectV2(db, id) {
       // 秒 → 帧：defaultDuration 运行时是帧
       defaultDuration: Math.round((p.default_duration_sec || 5) * fps), defaultFPS: p.default_fps,
       defaultResolution: { width: p.resolution_w, height: p.resolution_h, label: `${p.resolution_w}x${p.resolution_h}` },
-      defaultEasing: p.default_easing, projection: p.projection, elevationExaggeration: p.elevation_exaggeration ?? undefined,
+      defaultEasing: p.default_easing, projection: p.projection,
     },
     startFrame: 0,
     endFrame,
     layers, elements, camera, fx, overlays,
     narration: { entries, style: st ? { fontSize: st.font_size, fontFamily: st.font_family ?? undefined, color: st.color, strokeColor: st.stroke_color, strokeWidth: st.stroke_width, bg: st.bg, bgColor: st.bg_color, posY: st.pos_y, maxPct: st.max_pct } : undefined },
     music,
-    baseMaps: [], elevationMaps: [], activeBaseMapId: p.active_base_map_id ?? 'osm', activeElevationMapId: p.active_elevation_map_id ?? 'none',
+    baseMaps, elevationMaps,
+    activeBaseMapId: p.active_base_map_id ?? 'osm', activeElevationMapId: p.active_elevation_map_id ?? 'none',
   };
 }
 

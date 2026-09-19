@@ -124,15 +124,11 @@ export function isProjectNameTaken(name: string, existing: string[]): boolean {
 /** 已下线的底图 id：MapLibre 示例（Natural Earth，中国边界不符合国标） */
 const REMOVED_BASE_MAP_IDS = new Set(['demotiles']);
 
-/** 底图归一化（load/import 时调用）：移除已下线底图、补上新增的默认底图 */
+/** 底图归一化（load/import 时调用）：只清掉已下线的底图 id */
 function stripRemovedBaseMaps(project: MapVideoProject): MapVideoProject {
   const source = project.baseMaps || [];
   const baseMaps = source.filter((b) => !REMOVED_BASE_MAP_IDS.has(b.id));
-  let changed = baseMaps.length !== source.length;
-  for (const bm of DEFAULT_BASE_MAPS) {
-    if (!baseMaps.some((b) => b.id === bm.id)) { baseMaps.push(bm); changed = true; }
-  }
-  if (!changed) return project;
+  if (baseMaps.length === source.length) return project;
   const activeBaseMapId = baseMaps.some((b) => b.id === project.activeBaseMapId)
     ? project.activeBaseMapId
     : (baseMaps[0]?.id || 'osm');

@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 22 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表（另有 5 张同构的公共元素副本表），从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 24 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表（另有 5 张同构的公共元素副本表），从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：22 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 3 个视图 · 0 个触发器 · 647 列（外键全部有索引）
+- **规模**：24 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 3 个视图 · 0 个触发器 · 647 列（外键全部有索引）
 
 **目录**
 
-- 一、22 张表的构成与分流规则
+- 一、24 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、22 张表逐表速查（按 11 组）
+- 三、24 张表逐表速查（按 11 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：3 个视图，以及为什么没有触发器
 
-## 一、22 张表的构成与分流规则
+## 一、24 张表的构成与分流规则
 
-**22 张表不是 22 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**24 张表不是 24 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,7 +28,7 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 22 张表的构成
+#### 一句话理解 24 张表的构成
 
 - **5 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域 · 图片**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
 - **6 张**是「公共图层库」：`public_layer` + 5 张与项目元素表**同构**的公共副本表（把某个图层连元素整体复制一份，供其它项目导入）；
@@ -47,8 +47,9 @@
 | `MapVideoProject.id / name / description / createdAt / updatedAt` | `project` | P1 列化 |
 | `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing） | `project` 的配置列（`default_duration_sec` / `default_fps` / `resolution_w` / `resolution_h` / `default_easing`） | P1 列化：配置并入项目本体（原 1:1 `project_config` 表已取消） |
 | `globalConfig.projection` | `project` 的 `projection` 列 | P1 列化：地图投影是项目自身的属性（渲染方式），随项目走，不属于「默认值类」配置 |
-| `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | **不入库**：配置是代码内置常量，项目只存选中的 id 字符串 |
-| `elevationMaps[].exaggeration`（面板滑动条可调） | `project.elevation_exaggeration` | 对当前生效高程图的**覆盖值**（0–50，默认 1.5）；配置本身不入库，但这一项用户可改，所以必须落库 |
+| `baseMaps[]`（`BaseMapConfig`：id/name/style） | `base_map`（**每项目一份**） | 面板能增删改 → 必须能存：内置目录在创建项目时作为普通行复制进来，之后各项目各改各的；`style` 是 URL 走 `style_url`，是内联样式对象走 `style_json` |
+| `elevationMaps[]`（`ElevationMapConfig`：id/name/url/encoding/exaggeration/style） | `elevation_map`（**每项目一份**） | 同上；**地形夸张系数直接落在本行**（0–50，空=渲染端默认 1.5），不再是 `project` 上的孤立覆盖值 |
+| `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | 弱引用上面两张表的行；不建外键是因为父子互引（项目行须先于子行写入） |
 | `customSymbols[]` / `customImages[]`（图标库 / 图片库登记） | `asset`（`kind='icon'` / `kind='image'`） | **三表已合并**：两者都只是项目收录的一个素材行，二进制走 P4 外置 |
 | `layers[]`（`Layer`：type/name/visible/startFrame/endFrame/elements[]） | `layer` + 各元素表的 `layer_id` | P2：**项目 ▸ 图层 ▸ 元素**；单类型图层（marker / route / shape / territory / image）；删图层连带删元素（CASCADE） |
 | （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— `asset_id` 是弱引用，导入时先补 `asset` 占位行；`element_id` 是全库主键，副本一律加后缀避免撞车 |
@@ -65,10 +66,10 @@
 | （二进制素材） | `asset` | P4 外置存储：图片 / 音频 / 视频 / 字体统一入表，业务表只留 `asset_id` |
 | `providers` | `provider` | 独立聚合；「每 kind 至多一条 active」由部分唯一索引保证 |
 
-> 注：底图 / 高程图**不入库** —— 它们是代码内置的常量配置，项目只保存所选配置的 id 字符串（`project.active_base_map_id` / `active_elevation_map_id`）。
+> 注：底图 / 高程图**每项目一份**（`base_map` / `elevation_map`）—— 面板支持增删改与调地形夸张，「内置常量不入库」的前提早已不成立。
 > **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、22 张表逐表速查（按 11 组）
+## 三、24 张表逐表速查（按 11 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
@@ -80,10 +81,12 @@
 | `project` | 项目本体：身份 + 归属 + 审计字段 + 地图投影 + 当前生效的底图与高程图 | `project_id` | `collection_id` 指回所属合集（默认 `default`）；`active_base_map_id` 有意不建索引（恒 1 行，扫描成本是常数） | 项目卡片（`ProjectManager.tsx`）；运行时即 `projectStore.project` |
 | `layer` | 图层：元素的分组，**单类型**（marker / route / shape / territory / image），带显隐与显示区间 | `layer_id` | 随项目 **CASCADE**；元素通过 `layer_id` 归属（删图层连带删元素）；`ord` 定序 | 左侧「图层」浮层（`ElementsPanel.tsx`）+ 时间线图层轨道 |
 
-### 组 2 · 资源与素材 1 张
+### 组 2 · 底图 / 高程图 / 素材 3 张
 
 | 表 | 职责 | 主键 | 删除行为 | 前端对应 |
 |---|---|---|---|---|
+| `base_map` | 底图目录（**项目自带一份**）：id / 名称 / 样式（URL 或内联对象二选一） | `project_id + base_map_id`（内置 id 各项目同名） | 随项目 **CASCADE** | 地图左下角底图芯片面板（`MapStyleChip.tsx`）+ `projectStore.addBaseMap / removeBaseMap` |
+| `elevation_map` | 高程图目录（**项目自带一份**）：瓦片 URL / 编码 / **地形夸张系数** / 可选配套底图 | `project_id + elevation_map_id` | 随项目 **CASCADE** | 同一面板的「高程」区（选择 + 夸张系数滑动条） |
 | `asset` | 唯一素材存储（图片 / GIF / 模型 / 音频 / 字体 / 用户图标，`kind` 区分），按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重） | `asset_id` | 随项目 **CASCADE**；孤儿回收是待办项（需定期清理或引用计数） | 属性面板上传行（`ResourceUploadRow`）、标记面板自定义图片网格（`CustomImageGrid`）、字幕/配乐音频上传（`lib/assets.ts`） |
 
 ### 组 3 · 时间轴 5 张
@@ -105,7 +108,7 @@
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
-| `element_marker` | `point` | `element_id` | Pin 工具（一键放置） | 经纬度、**9 种形态**（圆点/文字/水滴针/气泡/表情 ＋ 图片/GIF/模型/图标库）、缩放、朝向、贴地旋转、资源引用（asset_id / builtin_id / icon_lib+icon_name） |
+| `element_marker` | `point` | `element_id` | Pin 工具（一键放置） | 经纬度、**10 种形态**（圆点/文字/水滴针/气泡/表情 ＋ 图片/GIF/模型/图标库/军标）、缩放、朝向、贴地旋转、资源引用（asset_id / builtin_id / icon_lib+icon_name） |
 | `element_marker` | `flag` | `element_id` | 标记面板切到 Marker（原地改类型） | 位置、旗面文案（flag_text）、配色、字号、宽度 |
 | `element_marker` | `military_symbol` | `element_id` | **当前无入口**（导入 / 旧数据） | 军标 SIDC、位置、旋转、梯队、附加文字 |
 
@@ -180,7 +183,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **22 张表 / 647 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，647 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **24 张表 / 660 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，660 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -189,7 +192,7 @@
 #### 快速跳转
 
 - **组 1 · 合集 / 项目 / 图层（含配置）**：`collection` · `project` · `layer`
-- **组 2 · 资源与素材**：`asset`
+- **组 2 · 底图 / 高程图 / 素材**：`base_map` · `elevation_map` · `asset`
 - **组 3 · 时间轴**：`camera_keyframe` · `screen_fx` · `narration` · `narration_entry` · `music_track`
 - **组 4 · 标记类元素（Pin 工具）**：`element_marker`
 - **组 5 · 路线类元素（Route 工具）**：`element_route`
@@ -216,11 +219,11 @@
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后修改时间（毫秒时间戳） |
 
-#### project — 项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程 / GlobalConfig 配置列
+#### project — 项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程指针 / GlobalConfig 配置列
 
-**职责**：项目本体：身份 / 归属 / 审计 / 投影与生效底图的**默认值**引用　**前端**：项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project
+**职责**：项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程指针　**前端**：项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project
 
-15 列 · 主键 `project_id`
+14 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -231,14 +234,13 @@
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后保存时间（毫秒时间戳） |
 | `projection` | TEXT | `NOT NULL` | 地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走） · 默认 `'mercator'` · `CHECK (projection IN ('mercator','globe'))` |
-| `active_base_map_id` | TEXT | — | 当前生效底图的配置 id（底图是代码内置常量，不入库） |
-| `active_elevation_map_id` | TEXT | — | 当前生效高程图的配置 id（同上） |
+| `active_base_map_id` | TEXT | — | 当前生效底图 id（弱引用 base_map.base_map_id，只引用本项目内的行） |
+| `active_elevation_map_id` | TEXT | — | 当前生效高程图 id（弱引用 elevation_map.elevation_map_id；NULL = 无高程） |
 | `default_duration_sec` | REAL | `NOT NULL` | 默认时长（秒，仅作新建项目的初始容器长度） · 默认 `5` · `CHECK (default_duration_sec > 0)` |
 | `default_fps` | INTEGER | `NOT NULL` | 默认帧率（1–240） · 默认 `30` · `CHECK (default_fps BETWEEN 1 AND 240)` |
 | `resolution_w` | INTEGER | `NOT NULL` | 默认导出宽度（px） · 默认 `1920` · `CHECK (resolution_w > 0)` |
 | `resolution_h` | INTEGER | `NOT NULL` | 默认导出高度（px） · 默认 `1080` · `CHECK (resolution_h > 0)` |
 | `default_easing` | TEXT | `NOT NULL` | 默认缓动类型 · 默认 `'easeInOut'` |
-| `elevation_exaggeration` | REAL | — | 地形夸张系数（覆盖内置默认 1.5；0=平坦、1=真实比例；空=用内置默认） · `CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)` |
 
 #### layer — 图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层（标记/路线/形状/疆域/图片），带自己的显隐与显示区间
 
@@ -261,7 +263,48 @@
 
 - `CHECK (end_sec >= start_sec)`（同项目内排序）
 
-### 组 2 · 资源与素材
+### 组 2 · 底图 / 高程图 / 素材
+
+#### base_map — 底图目录：项目自带一份（内置项在创建项目时复制进来），存底图名与样式（URL 或内联对象）
+
+**职责**：底图目录：项目自带一份（内置项创建项目时复制进来），可增删改　**前端**：地图左下角「底图」芯片面板（MapStyleChip.tsx）+ projectStore.addBaseMap / removeBaseMap
+
+6 列 · 主键 —
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `base_map_id` | TEXT | `NOT NULL` | 底图 id（同项目内唯一：内置项如 osm / satellite 在各项目里同名） |
+| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `name` | TEXT | `NOT NULL` | 显示名（底图面板里的名字） · 默认 `''` |
+| `style_url` | TEXT | — | 底图样式 URL（与 style_json 二选一；可为相对路径如 geo/x.json） |
+| `style_json` | TEXT | — | 内联 MapLibre 样式对象（卫星底图走这条；与 style_url 二选一） · `CHECK (style_json IS NULL OR json_valid(style_json))` |
+| `ord` | INTEGER | `NOT NULL` | 同项目内排序（面板顺序） · 默认 `0` |
+
+**表级约束**
+
+- `CHECK (style_url IS NOT NULL OR style_json IS NOT NULL)`（同项目内排序（面板顺序））
+- `PRIMARY KEY (project_id, base_map_id)`
+
+#### elevation_map — 高程图目录：项目自带一份，地形夸张系数直接落在本行
+
+**职责**：高程图目录：项目自带一份，地形夸张系数直接落在本行　**前端**：底图芯片面板的「高程」区（MapStyleChip.tsx 选择 + 夸张系数滑动条）
+
+8 列 · 主键 —
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `elevation_map_id` | TEXT | `NOT NULL` | 高程图 id（同项目内唯一：内置项如 none / aws-terrain 在各项目里同名） |
+| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `name` | TEXT | `NOT NULL` | 显示名（高程面板里的名字） · 默认 `''` |
+| `url` | TEXT | `NOT NULL` | 高程栅格瓦片 URL；空串 = 「无高程（平面）」占位项 · 默认 `''` |
+| `encoding` | TEXT | — | 高程编码：mapbox / terrarium（缺省按 terrarium） · `CHECK (encoding IS NULL OR encoding IN ('mapbox','terrarium'))` |
+| `exaggeration` | REAL | — | 地形夸张系数（0=平坦、1=真实比例；空=用渲染端默认 1.5） · `CHECK (exaggeration IS NULL OR exaggeration BETWEEN 0 AND 50)` |
+| `style_url` | TEXT | — | 可选：选用该高程时一并换用的底图样式 URL |
+| `ord` | INTEGER | `NOT NULL` | 同项目内排序（面板顺序） · 默认 `0` |
+
+**表级约束**
+
+- `PRIMARY KEY (project_id, elevation_map_id)`（同项目内排序（面板顺序））
 
 #### asset — 素材仓库：图片 / GIF / 模型 / 音频 / 视频 / 图标 / 字体统一存此表，业务表只留 asset_id
 
@@ -1176,7 +1219,7 @@
 
 <!-- FIELD-DICT:END -->
 
-## 五、工具栏与元素类型：5 个按钮 → 5 张表 / 13 种元素
+## 五、工具栏与元素类型：5 个按钮 → 5 张表 / 12 种元素
 
 元素**按工具栏聚合为 5 张类别宽表**，表内用 `type` 判别列区分子类型。工具条当前是 **5 个按钮**（标记 / 路线 / 形状 / 疆域 / 图片，见 `Toolbar.tsx` 的 `TOOLS`），其中「形状」「疆域」带下拉子菜单；「区域」（行政区高亮）的产物就是 `polygon`，与形状共用一张表，不单列按钮。
 
@@ -1212,7 +1255,7 @@
 | 包围圈 / 集结点 | `element_shape` | `encirclement` / `gathering` | center_lng/lat、radius、pulse_animation |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_json ＋ countries_json / plots_json / events_json |
 
-### 点标记的 9 种形态与能力矩阵
+### 点标记的 10 种形态与能力矩阵
 
 这张矩阵同时驱动三处：**属性面板**（不满足则隐藏控件）、**数据库 CHECK**（不满足则拒绝写入）、**渲染端**（按形态选管线）。
 
@@ -1222,11 +1265,12 @@
 | 水滴针 | `pin` | — | ✓ | ✓ | ✓ | ✓ | — |
 | 气泡 | `bubble` | — | ✓ | ✓ | ✓ | ✓ | — |
 | 文字 | `text` | — | ✓ | ✓ | ✓ | ✓ | — |
-| 表情 | `emoji` | 内置字符 | ✓ | ✓ | ✓ | ✗（自带色） | — |
+| 表情 | `emoji` | 内置字符 | ✓ | ✓ | ✓ | **✗**（唯一不可着色：表情字符自带颜色） | — |
 | **图片** | `image` | 内置图集 / 上传 png·jpg·webp·**svg** | ✓ | ✓ | ✓ | ✓ | `{fit, tintable}` |
-| **GIF** | `gif` | 内置动图 / 上传 gif·webp | ✓ | ✓ | ✓ | **✗**（多帧彩色） | `{fps, loop}` |
-| **模型** | `model` | 内置模型 / 上传 glb·gltf | ✓ | **✗**（强制 3D 朝向） | ✓ | **✗**（多材质） | `{scale, altitude, autoRotate, spin, pitchAlign, animation}` |
+| **GIF** | `gif` | 内置动图 / 上传 gif·webp | ✓ | ✓ | ✓ | ✓ | `{fps, loop}` |
+| **模型** | `model` | 内置模型 / 上传 glb·gltf | ✓ | **✗**（位图贴片，强制面向镜头） | ✓ | ✓ | `{altitude, autoRotate, spin, pitchAlign, animation}` |
 | **图标库** | `icon` | lucide / react-icons / 自建库 | ✓ | ✓ | ✓ | ✓ | `{strokeWidth}` |
+| **军标** | `military_symbol` | 内置 milsymbol 按 SIDC 生成 | ✓ | ✓ | ✓ | ✓ | `{fit, tintable}` |
 
 资源两来源：**`asset_id`**（用户上传，进 asset 表外置存储）与 **`builtin_id`**（内置资源，打包进应用、不入库）；图标形态额外用 `icon_lib` + `icon_name` 定位，自建库条目落在 `asset`（`kind='icon'`，`UNIQUE` 由应用层保证）。
 

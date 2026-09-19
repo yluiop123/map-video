@@ -5,7 +5,7 @@
 --          主键统一 <实体>_id，时间统一 *_sec（秒，REAL）/ *_at（epoch ms，仅审计字段用）
 -- 字符集：UTF-8；时间单位：**秒**（REAL，存用户输入的原值）；
 --          渲染 / 导出时按 project.default_fps 换算为帧（帧是派生量，不入库）
--- 规模：22 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
+-- 规模：24 张表 / 3 视图 / 0 触发器（不使用触发器，理由见第 10 节）
 --
 -- ★ 2026-09-10 元素建模改版（按工具栏类别聚合）：
 --   取消 element 基表与 13 张按元素类型拆分的子表，改为 5 张「类别宽表」，
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS collection (  -- 合集：项目之上的一层分组
   updated_at    INTEGER NOT NULL  -- 最后修改时间（毫秒时间戳）
 );
 
-CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程 / GlobalConfig 配置列
+CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程指针 / GlobalConfig 配置列
   project_id            TEXT PRIMARY KEY,  -- 项目 id
   name                  TEXT    NOT NULL,  -- 项目名
   description           TEXT,  -- 项目描述
@@ -58,9 +58,10 @@ CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计
   projection            TEXT    NOT NULL DEFAULT 'mercator'  -- 地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走）
                         CHECK (projection IN ('mercator','globe')),
 
-  -- 当前生效的底图 / 高程图：存内置配置的 id 字符串（如 'osm' / 'none'），配置本身在代码里
-  active_base_map_id      TEXT,  -- 当前生效底图的配置 id（底图是代码内置常量，不入库）
-  active_elevation_map_id TEXT,  -- 当前生效高程图的配置 id（同上）
+  -- 当前生效的底图 / 高程图：指向 base_map / elevation_map 的行
+  -- 不建外键：项目行须先于子行写入（子行反过来引用 project），建 FK 就要「插项目 → 插子行 → 回写项目」三步
+  active_base_map_id      TEXT,  -- 当前生效底图 id（弱引用 base_map.base_map_id，只引用本项目内的行）
+  active_elevation_map_id TEXT,  -- 当前生效高程图 id（弱引用 elevation_map.elevation_map_id；NULL = 无高程）
 
   -- 项目级配置（GlobalConfig；原 project_config 1:1 表已合并进来）
   default_duration_sec      REAL NOT NULL DEFAULT 5 CHECK (default_duration_sec > 0),  -- 默认时长（秒，仅作新建项目的初始容器长度）
@@ -68,22 +69,44 @@ CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计
   resolution_w          INTEGER NOT NULL DEFAULT 1920 CHECK (resolution_w > 0),  -- 默认导出宽度（px）
   resolution_h          INTEGER NOT NULL DEFAULT 1080 CHECK (resolution_h > 0),  -- 默认导出高度（px）
   -- 画幅标签（如「1080p 横屏 (16:9)」）由 w×h 推导，不落库
-  default_easing        TEXT    NOT NULL DEFAULT 'easeInOut',  -- 默认缓动类型
-  -- 地形夸张：覆盖当前生效高程图的内置默认值（内置 1.5；0=平坦、1=真实比例，面板范围 0–50）
-  elevation_exaggeration REAL CHECK (elevation_exaggeration IS NULL OR elevation_exaggeration BETWEEN 0 AND 50)  -- 地形夸张系数（覆盖内置默认 1.5；0=平坦、1=真实比例；空=用内置默认）
+  default_easing        TEXT    NOT NULL DEFAULT 'easeInOut'  -- 默认缓动类型
 );
 
 -- -----------------------------------------------------------------------------
 -- 2. 资源与素材
 -- -----------------------------------------------------------------------------
 
--- 【底图 / 高程图不入库】
--- 它们是代码内置的常量配置（BUILTIN_BASE_MAPS / BUILTIN_ELEVATION_MAPS），
--- 项目与章节只保存所选配置的 id 字符串（project.active_base_map_id）。
--- 取舍：省掉两张表与两处外键（连带消除原本的循环外键问题）；
---       代价是底图 / 高程图配置不可由用户在运行时增删改。
--- 例外：**地形夸张系数用户可调**（面板滑动条 0–50），因此作为「对当前生效高程图的覆盖值」
---      落在 project.elevation_exaggeration（NULL = 沿用内置默认的 1.5）。
+-- 【底图 / 高程图：项目自带一份】
+-- 早期假设「底图是代码内置常量、不入库」，但面板早已能 addBaseMap / removeBaseMap /
+-- updateElevationMap（含地形夸张系数）—— 「用户能改的值就必须能存」的前提被推翻了，
+-- 于是这两张表补上：内置目录在**创建项目时**作为普通行复制进来，之后每个项目各改各的。
+-- active_* 两列仍不建外键：项目行必须先于子行写（子行引用 project），
+-- 建 FK 就得「插项目 → 插子行 → 回写项目」三步；改由写入端保证只引用本项目内的行。
+
+CREATE TABLE IF NOT EXISTS base_map (  -- 底图目录：项目自带一份（内置项在创建项目时复制进来），存底图名与样式（URL 或内联对象）
+  base_map_id  TEXT NOT NULL,  -- 底图 id（同项目内唯一：内置项如 osm / satellite 在各项目里同名）
+  project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  name         TEXT NOT NULL DEFAULT '',  -- 显示名（底图面板里的名字）
+  style_url    TEXT,  -- 底图样式 URL（与 style_json 二选一；可为相对路径如 geo/x.json）
+  style_json   TEXT CHECK (style_json IS NULL OR json_valid(style_json)),  -- 内联 MapLibre 样式对象（卫星底图走这条；与 style_url 二选一）
+  ord          INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序（面板顺序）
+  CHECK (style_url IS NOT NULL OR style_json IS NOT NULL),
+  PRIMARY KEY (project_id, base_map_id)
+);
+CREATE INDEX IF NOT EXISTS ix_base_map_project ON base_map(project_id, ord);
+
+CREATE TABLE IF NOT EXISTS elevation_map (  -- 高程图目录：项目自带一份，地形夸张系数直接落在本行
+  elevation_map_id TEXT NOT NULL,  -- 高程图 id（同项目内唯一：内置项如 none / aws-terrain 在各项目里同名）
+  project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+  name         TEXT NOT NULL DEFAULT '',  -- 显示名（高程面板里的名字）
+  url          TEXT NOT NULL DEFAULT '',  -- 高程栅格瓦片 URL；空串 = 「无高程（平面）」占位项
+  encoding     TEXT CHECK (encoding IS NULL OR encoding IN ('mapbox','terrarium')),  -- 高程编码：mapbox / terrarium（缺省按 terrarium）
+  exaggeration REAL CHECK (exaggeration IS NULL OR exaggeration BETWEEN 0 AND 50),  -- 地形夸张系数（0=平坦、1=真实比例；空=用渲染端默认 1.5）
+  style_url    TEXT,  -- 可选：选用该高程时一并换用的底图样式 URL
+  ord          INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序（面板顺序）
+  PRIMARY KEY (project_id, elevation_map_id)
+);
+CREATE INDEX IF NOT EXISTS ix_elevation_map_project ON elevation_map(project_id, ord);
 
 -- 素材表（**唯一**的素材存储，合并了原 custom_symbol / custom_image）：
 -- 把 base64 dataURL 从项目 JSON 中剥离出来，是本次改造收益最大的一项。
@@ -1119,9 +1142,10 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 -- 因此把规则前移到唯一的写入路径（应用层），两端行为一致：
 --   · 删除元素无需连带清理：动画关键帧已内联在类别表的 keyframes_json，随行生灭；
 --     asset_id / follow_route_element_id 是真外键，SET NULL 由数据库负责
---   · 剩余弱引用只有三处，全部由写入端保证：
+--   · 剩余弱引用只有四处，全部由写入端保证：
 --       element_image.asset_id（贴图本体）、public_element_*.asset_id（公共库副本）、
---       element_territory 的 countries/plots/events JSON 内部引用
+--       element_territory 的 countries/plots/events JSON 内部引用、
+--       project.active_base_map_id / active_elevation_map_id（父子互引，见第 2 节）
 --   · camera_keyframe.follow_route_element_id 另需「同一项目」约束（复合外键做不到，见 2.4）
 --
 -- 数据库侧只保留 v_check_dangling / v_check_territory_ref 两个**自检视图**用于体检，
@@ -1187,8 +1211,8 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
 --    · 曾存在的 connector.from/to 端点弱引用已随「连接线」整条下线（2026-09-19）：
 --      它没有工具入口、坐标解析器从未接上，属于不可达代码，保留只会让每条写入路径
 --      都背上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套。
---    · 剩余的弱引用只有 element_image.asset_id、public_element_*.asset_id 与疆域 JSON
---      内部引用，由写入端保证 + 自检视图兜底。
+--    · 剩余的弱引用：element_image.asset_id、public_element_*.asset_id、疆域 JSON 内部
+--      引用、project.active_*_map_id（父子互引），由写入端保证 + 自检视图兜底。
 --    收益：元素表数量 14 → 5，模块边界与工具栏一致，读写路径更直观。
 -- 3) 疆域内部实体（势力/地块/兼并事件）JSON 内联进 element_territory：
 --    放弃了原先的复合外键与唯一约束，一致性改由 12.3 视图 + 应用层保证。

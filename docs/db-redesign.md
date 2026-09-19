@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：22 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：24 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -31,7 +31,7 @@
 | 叠加层 | `OverlayItem`（11 类型） | 屏幕空间弹窗：图表、人物卡、战报、时间线、引用、对比、计数、对话、地点、自定义块 | 每章 0 – 数十 |
 | 时间层 | `CameraKeyframe` / `ScreenFxItem` / `ChapterEffect` / `NarrationTrack` | 镜头、天气与画面特效、章特效、字幕 | 每章 0 – 数十 |
 | 配乐层 | `MusicTrack` | 项目级背景音乐（单轨多段） | 每项目 0 – 数十段 |
-| 资源层 | `BaseMapConfig` / `ElevationMapConfig` / `CustomSymbol` / `CustomImage` | 底图、地形、自定义图标、自定义图片库；其中**底图 / 高程图是代码内置常量（不入库，但地形夸张覆盖值存 `project`）**，图标 / 图片统一入 `asset`（`kind='icon'` / `'image'`，三表已合并） | 各 0 – 数十 |
+| 资源层 | `BaseMapConfig` / `ElevationMapConfig` / `CustomSymbol` / `CustomImage` | 底图、地形、自定义图标、自定义图片库；其中底图 / 高程图最初按「代码内置常量、不入库」设计（地形夸张先中和本该被否），V2 落地时改为**每项目一份**（见 2.2 组 2），图标 / 图片统一入 `asset`（`kind='icon'` / `'image'`，三表已合并） | 各 0 – 数十 |
 | 配置层 | `ProviderConfig` | AI 连接配置（文案生成 / 语音含克隆 / 图片生成），**独立聚合**，不属于项目内容 | 0 – 数十 |
 
 ### 1.2 元素结构：一个判别联合
@@ -119,13 +119,13 @@
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（22 张表，按结构分 11 组）
+### 2.2 实体清单（24 张表，按结构分 11 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
 | **1. 合集与项目** | `collection`、`project` | 合集是项目之上的分组；`project` 承载身份 / 归属 / 审计 / 生效底图 + GlobalConfig 配置列（原 1:1 `project_config` 已合并） |
 | **1.5 图层** | `layer` | 元素的分组（**项目 ▸ 图层 ▸ 元素**），**单类型图层**（marker / route / shape / territory / image），带显隐与显示区间；元素表以 `layer_id` 外键归属（删图层连带删元素） |
-| **2. 资源与素材** | `asset` | 唯一素材存储，承担 P4 外置存储；按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重）；底图 / 高程图不入库（代码内置常量，项目只存 id，但**地形夸张覆盖值**存 `project`）；尺寸 / 时长 / 帧数等派生值不入库 |
+| **2. 底图 / 高程图 / 素材** | `base_map`、`elevation_map`、`asset` | 前两张是**每项目一份**的目录表（复合主键 `project_id + *_id`，内置项在创建项目时复制成行）：面板支持增删改底图与调地形夸张，「配置不入库」的前提不成立；`asset` 是唯一素材存储，承担 P4 外置存储，按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重）；尺寸 / 时长 / 帧数等派生值不入库 |
 | **3. 时间轴** | `camera_keyframe`、`screen_fx`、`narration`、`narration_entry`、`music_track` | 镜头 / 特效 / 字幕 / 音乐（项目=单条连续时间线） |
 | **4. 标记类元素** | `element_marker` | type ∈ point / flag / military_symbol |
 | **5. 路线类元素** | `element_route` | type ∈ line / moving_point |
@@ -219,9 +219,9 @@ CREATE TABLE element_route (
 
 #### 弱引用的补偿机制
 
-取消基表后剩下的弱引用只有三处，全部由写入端保证（**不使用触发器**）：
+取消基表后剩下的弱引用只有四处，全部由写入端保证（**不使用触发器**）：
 
-1. **写入端保证**：`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries / plots / events JSON 内部引用。项目侧 `element_marker.asset_id`、`move_icon_asset_id`、音频列、`camera_keyframe.follow_route_element_id` 都是真外键（SET NULL），删除父行由数据库负责，应用层无需连带清理
+1. **写入端保证**：`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries / plots / events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（项目 ↔ 子行互引，见 2.2）。项目侧 `element_marker.asset_id`、`move_icon_asset_id`、音频列、`camera_keyframe.follow_route_element_id` 都是真外键（SET NULL），删除父行由数据库负责，应用层无需连带清理
 2. **`v_check_dangling` 视图**：检出悬空的跟随机位（`PRAGMA foreign_keys=OFF` 的批量迁移与老库才会出现），`v_check_territory_ref` 检出疆域 JSON 内部失配，正常应返回 0 行
 
 > 为什么不用触发器：网页端是 Dexie（IndexedDB），**没有触发器**，数据库侧触发器只在桌面端生效，同一条规则会有两套真相；且规则藏在表定义之外、与写入端逻辑重复。详见 2.6。
@@ -282,7 +282,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 #### 收益
 
-- **正确性：**引用完整性由外键（`CASCADE` / `SET NULL` / `RESTRICT`）保证；仅存的三处弱引用（贴图素材、公共库副本素材、疆域 JSON）由写入端保证 + 自检视图兜底
+- **正确性：**引用完整性由外键（`CASCADE` / `SET NULL` / `RESTRICT`）保证；仅存的四处弱引用（贴图素材、公共库副本素材、疆域 JSON、生效底图/高程指针）由写入端保证 + 自检视图兜底
 
 - **性能：**素材外置后项目 JSON 从数 MB 降到数十 KB；保存从全量重写变为按实体增量
 
@@ -298,7 +298,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 - **写入需事务：**保存一个元素要写它所属的类别表（+ 可能的关键帧表），必须包在事务里
 
-- **弱引用的维护成本：**贴图 / 公共库副本的 `asset_id` 与疆域 JSON 没有外键目标，新增跨表引用时必须重复「写入端保证 + 自检视图」这个模式；且校验只在写入端生效，数据库侧不再有第二道保险
+- **弱引用的维护成本：**贴图 / 公共库副本的 `asset_id`、疆域 JSON、生效底图与高程指针没有外键目标，新增跨表引用时必须重复「写入端保证 + 自检视图」这个模式；且校验只在写入端生效，数据库侧不再有第二道保险
 
 - **两类存储范式并存：**桌面端规范化、网页端文档型，需在 mapper 层明确边界
 

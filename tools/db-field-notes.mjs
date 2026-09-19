@@ -15,7 +15,9 @@
 /** 每张表的中文描述（用于 DDL 表头行尾注释；key 必须与 DDL 表名一致） */
 export const TABLE_DESC = {
   collection: '合集：项目之上的一层分组（合集 ▸ 项目 ▸ 元素）；默认合集恒为 default，不可改名/删除',
-  project: '项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程 / GlobalConfig 配置列',
+  project: '项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程指针 / GlobalConfig 配置列',
+  base_map: '底图目录：项目自带一份（内置项在创建项目时复制进来），存底图名与样式（URL 或内联对象）',
+  elevation_map: '高程图目录：项目自带一份，地形夸张系数直接落在本行',
   layer: '图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层（标记/路线/形状/疆域/图片），带自己的显隐与显示区间',
   asset: '素材仓库：图片 / GIF / 模型 / 音频 / 视频 / 图标 / 字体统一存此表，业务表只留 asset_id',
   camera_keyframe: '视角关键帧：停留 → 飞行 → 落位；含 follow 跟随 / orbit 环绕视角',
@@ -54,14 +56,31 @@ const NOTES = {
     "created_at": "创建时间（毫秒时间戳）",
     "updated_at": "最后保存时间（毫秒时间戳）",
     "projection": "地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走）",
-    "active_base_map_id": "当前生效底图的配置 id（底图是代码内置常量，不入库）",
-    "active_elevation_map_id": "当前生效高程图的配置 id（同上）",
+    "active_base_map_id": "当前生效底图 id（弱引用 base_map.base_map_id，只引用本项目内的行）",
+    "active_elevation_map_id": "当前生效高程图 id（弱引用 elevation_map.elevation_map_id；NULL = 无高程）",
     "default_duration_sec": "默认时长（秒，仅作新建项目的初始容器长度）",
     "default_fps": "默认帧率（1–240）",
     "resolution_w": "默认导出宽度（px）",
     "resolution_h": "默认导出高度（px）",
-    "default_easing": "默认缓动类型",
-    "elevation_exaggeration": "地形夸张系数（覆盖内置默认 1.5；0=平坦、1=真实比例；空=用内置默认）"
+    "default_easing": "默认缓动类型"
+  },
+  "base_map": {
+    "base_map_id": "底图 id（同项目内唯一：内置项如 osm / satellite 在各项目里同名）",
+    "project_id": "所属项目",
+    "name": "显示名（底图面板里的名字）",
+    "style_url": "底图样式 URL（与 style_json 二选一；可为相对路径如 geo/x.json）",
+    "style_json": "内联 MapLibre 样式对象（卫星底图走这条；与 style_url 二选一）",
+    "ord": "同项目内排序（面板顺序）"
+  },
+  "elevation_map": {
+    "elevation_map_id": "高程图 id（同项目内唯一：内置项如 none / aws-terrain 在各项目里同名）",
+    "project_id": "所属项目",
+    "name": "显示名（高程面板里的名字）",
+    "url": "高程栅格瓦片 URL；空串 = 「无高程（平面）」占位项",
+    "encoding": "高程编码：mapbox / terrarium（缺省按 terrarium）",
+    "exaggeration": "地形夸张系数（0=平坦、1=真实比例；空=用渲染端默认 1.5）",
+    "style_url": "可选：选用该高程时一并换用的底图样式 URL",
+    "ord": "同项目内排序（面板顺序）"
   },
   "asset": {
     "asset_id": "素材 id（随机生成，与文件名/内容解耦，改名不影响引用）",
