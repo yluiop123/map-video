@@ -1021,6 +1021,6 @@ export interface ProjectExport {
   version: number;
   exportedAt: Date;
   project: MapVideoProject;
-  /** 项目引用的全部素材字节（导入时按 sha256 内容寻址幂等还原） */
+  /** 项目引用的全部素材字节（导入时逐个还原成新 assetId，并改写项目里的引用） */
   assets?: ExportedAsset[];
 }

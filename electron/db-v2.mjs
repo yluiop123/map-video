@@ -64,6 +64,7 @@ export function ensureV2Schema(db) {
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
     db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref;');
     db.exec(ddl);
+    repairAssetRefs(db);
     return true;
   } catch (e) {
     console.error('[db-v2] V2 DDL 执行失败:', e?.message || e);
@@ -263,18 +264,6 @@ export function saveProjectV2(db, project) {
     const collectionId = project.collectionId || 'default';
     db.prepare('INSERT OR IGNORE INTO collection (collection_id, name, ord, created_at, updated_at) VALUES (?,?,?,?,?)')
       .run(collectionId, '', 0, now, now);
-
-    // 素材占位：元素/移动标记引用的 assetId 在当前桌面端是文件式存储、不在 V2 asset 表，
-    // 为保证 FK 通过，先插入占位行（读取时不依赖 asset 表）。
-    const assetIds = new Set();
-    for (const el of project.elements || []) {
-      if (el.assetId) assetIds.add(el.assetId);
-      if (el.moveIcon?.assetId) assetIds.add(el.moveIcon.assetId);
-    }
-    if (assetIds.size) {
-      const insAsset = db.prepare('INSERT OR IGNORE INTO asset (asset_id,kind,name,mime,storage,rel_path,created_at) VALUES (?,?,?,?,?,?,?)');
-      for (const a of assetIds) insAsset.run(a, 'image', '', 'application/octet-stream', 'file', '', now);
-    }
 
     db.prepare(`INSERT INTO project (
       project_id, name, description, collection_id, created_at, updated_at, projection,
@@ -800,15 +789,37 @@ function columnsOf(db, table) {
   return db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 }
 
-/** 元素引用到的素材 id（含移动图标素材） */
-function collectAssetIds(db, table, whereCol, id) {
-  const cols = columnsOf(db, table).filter((c) => c === 'asset_id' || c === 'move_icon_asset_id');
-  if (!cols.length) return [];
-  const out = new Set();
-  for (const r of db.prepare(`SELECT ${cols.join(',')} FROM ${table} WHERE ${whereCol} = ?`).all(id)) {
-    for (const c of cols) if (r[c]) out.add(r[c]);
+/** 引用素材的 (表, 列)：项目侧有真外键，公共库副本与 element_image 没有 */
+const ASSET_REFS = [
+  ['element_image', 'asset_id'],
+  ['public_element_marker', 'asset_id'],
+  ['public_element_image', 'asset_id'],
+  ['public_element_route', 'move_icon_asset_id'],
+  ['public_element_shape', 'move_icon_asset_id'],
+];
+
+/**
+ * 启动体检：把解析不到素材的引用清空（v_check_dangling 的写入侧对应物）。
+ * 素材是全局资源，删掉它时 assets:remove 会一并清空副本引用；但老库里可能还留着
+ * 指向空壳 asset 行的引用 —— 那种行不澄清、留着就是「素材库里有 ID、读出来什么都没有」。
+ */
+export function repairAssetRefs(db) {
+  let cleared = 0;
+  for (const [t, col] of ASSET_REFS) {
+    try {
+      const r = db.prepare(`UPDATE ${t} SET ${col} = NULL
+        WHERE ${col} IS NOT NULL AND ${col} NOT IN (SELECT asset_id FROM asset)`).run();
+      cleared += Number(r.changes || 0);
+    } catch { /* 表尚未建（首次启动）*/ }
   }
-  return [...out];
+  // 空壳素材行 = storage='file' 但没登记相对路径（旧版占位行造出来的）：清掉，
+  // 否则素材库列表里全是一排点不开的条目。
+  try {
+    const ghost = db.prepare("DELETE FROM asset WHERE storage = 'file' AND (rel_path IS NULL OR rel_path = '')").run();
+    cleared += Number(ghost.changes || 0);
+  } catch { /* 忽略 */ }
+  if (cleared) console.log(`[db-v2] 素材引用体检：清空/清理 ${cleared} 项失效引用`);
+  return cleared;
 }
 
 /** 项目图层 → 公共图层（复制图层行 + 全部元素；元素 id 加后缀，避免跨公共图层冲突） */
@@ -846,13 +857,8 @@ export function importPublicLayerV2(db, publicLayerId, projectId, now = Date.now
     const layerOrd = (db.prepare('SELECT COALESCE(MAX(ord), -1) + 1 AS o FROM layer WHERE project_id = ?').get(projectId) || {}).o || 0;
     db.prepare(`INSERT INTO layer (layer_id, project_id, type, name, visible, start_sec, end_sec, ord)
       VALUES (?,?,?,?,?,?,?,?)`).run(newLayerId, projectId, pl.type, pl.name, pl.visible, pl.start_sec, pl.end_sec, layerOrd);
-    // 素材占位必须**早于**元素插入：项目侧 asset_id 有外键，缺行会让整笔事务回滚（与 saveProjectV2 同一约定）。
-    const insAsset = db.prepare('INSERT OR IGNORE INTO asset (asset_id,kind,name,mime,storage,rel_path,created_at) VALUES (?,?,?,?,?,?,?)');
-    for (const pub of pubTables) {
-      for (const a of collectAssetIds(db, pub, 'public_layer_id', publicLayerId)) {
-        insAsset.run(a, 'image', '', 'application/octet-stream', 'file', '', now);
-      }
-    }
+    // 副本的 asset_id 直接照搬：素材是全局资源，上传时就登记进 asset 表了；
+    // 删素材会一并清空副本里的引用（main.mjs assets:remove），所以这里不该再造占位行。
     for (const [proj, pub] of ELEMENT_TABLE_PAIRS) {
       const cols = columnsOf(db, pub).filter((c) => c !== 'public_layer_id');
       const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');

@@ -39,7 +39,7 @@ declare global {
         remove: (id: string) => Promise<{ ok: boolean }>;
         setActive: (kind: 'llm' | 'tts' | 'image', id: string | null) => Promise<{ ok: boolean }>;
       };
-      /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId = sha256） */
+      /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId 随机；登记在 asset 表） */
       assets: {
         save: (p: { mime: string; bytes: Uint8Array; name?: string; kind?: string }) => Promise<{ assetId: string; relPath: string; byteSize: number }>;
         read: (assetId: string) => Promise<{ bytes: Uint8Array; mime?: string; name?: string } | null>;

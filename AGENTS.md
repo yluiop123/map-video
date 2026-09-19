@@ -160,7 +160,8 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **★ 不使用触发器（2026-09-12 起全部移除）**：数据库侧只有表 / 索引 / 视图，**没有触发器**。理由：网页端 Dexie（IndexedDB）没有触发器，数据库侧触发器只在桌面端生效 → 同一规则两套真相；且规则藏在表定义外、与写入端重复。
 - **改版的代价 —— 弱引用**：只剩四处，`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries/plots/events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（父子互引，见 §5 底图条），全部由写入端保证。项目侧 `element_marker.asset_id` / `move_icon_asset_id` / 音频列 / `camera_keyframe.follow_route_element_id` 都是**真外键**（SET NULL），删除素材或路线不需要应用层连带清理；动画关键帧内联在 `keyframes_json`，随元素生灭。曾存在的第三类 `element_route.from/to_element_id`（连接线端点）已随「连接线」整条下线（2026-09-19：无工具入口、坐标解析器从未接上，属不可达代码，却给每条写入路径加上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套）。数据库侧只留 `v_check_dangling`（悬空引用）与 `v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）两个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
-- **★ 公共图层副本必须自洽（不变量，2026-09-19）**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 是**弱引用**（公共库不属任何项目，建不了外键）。导入时要在插入元素**之前**先为副本引用的 `asset_id` 补占位行（项目侧 `element_*.asset_id` 有真外键，缺行会回滚整笔事务）；副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归：`node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`。
+- **★ 素材登记只有 `asset` 表这一本账（2026-09-19）**：桌面端曾另存一份 `userData/media/index.json` 映射，同一条事实两处真相，而 `asset` 表里的行反而是为过外键造的壳。现在 `assets:save/read/remove/list/exists` 全部读写 `asset` 表（`storage='file'` + `rel_path`）；删素材时项目侧靠 FK SET NULL，**公共库副本的引用要手工清**（`assets:remove` 里的 UPDATE）+ 启动 `repairAssetRefs` 兜底。配置 JSON 导入还原素材走 `putAssetBytes`（桌面落盘 / 网页存 Dexie Blob），**任一素材失败就中止整笔导入**，不再静默留下坏引用。
+- **★ 公共图层副本必须自洽（不变量，2026-09-19）**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 是**弱引用**（公共库不属任何项目，建不了外键）。副本引用的素材若已不存在，由启动体检 `repairAssetRefs(db)` 把引用清空（**不再补占位行** —— 造一条 `rel_path=''` 的空壳 asset 只会让素材库多出一排点不开的死条目），元素保留、图不保留；副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归：`node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`。
 - **★ 新增/改动字段的同步清单（漏一步就会设计↔实现漂移）**：
 
   1. `docs/db-schema-v2.sql`（唯一事实源）改 DDL
@@ -187,14 +188,14 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 11. 标记（Pin）形态扩展的代码落点
 
-point 有 **9 种视觉形态**：`circle/text/pin/bubble/emoji` + `image/gif/model/icon`。资源两来源：`asset_id`（用户上传，外置）与 `builtin_id`（内置、**不入库**）；图标形态用 `icon_lib` + `icon_name`（自建库条目落 `asset`，`kind='icon'`）。
+point 有 **10 种视觉形态**：`circle/text/pin/bubble/emoji` + `image/gif/model/icon/military_symbol`。资源两来源：`asset_id`（用户上传，外置）与 `builtin_id`（内置、**不入库**）；图标形态用 `icon_lib` + `icon_name`（自建库条目落 `asset`，`kind='icon'`）。
 
 | 文件 | 职责 |
 |---|---|
 | `lib/builtin-assets.ts` | 内置资源：20 图（内联 SVG）+ 8 动图（程序化）+ 5 模型（程序化简模）；换真实文件只需改常量 |
 | `lib/pin-visual.ts` | **能力矩阵 + `defaultVisualFor` 的唯一事实源**（UI/CHECK/渲染三处共用） |
 | `lib/icon-library.ts` | lucide 懒加载 → 位图（Vite 自动切 chunk） |
-| `lib/assets.ts` | 素材门面：**assetId = sha256** 内容寻址，objectURL 缓存；桌面端走 IPC 落盘、网页端 Dexie Blob |
+| `lib/assets.ts` | 素材门面：**assetId 随机**（不做内容去重，同文件传两次就是两份），objectURL 缓存；桌面端走 IPC 落盘 + `asset` 表登记、网页端 Dexie Blob |
 | `lib/model-renderer.ts` | 3D 模型**离屏渲染**（独立 canvas + GL 上下文）→ ImageData |
 | `lib/gif-decoder.ts` / `lib/procedural-anim.ts` | GIF 解码（gifuct-js，含 disposal 合成）/ 内置动图 canvas 绘制 |
 

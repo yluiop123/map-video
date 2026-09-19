@@ -121,7 +121,7 @@ export function ProjectManager() {
       await reload();
     } catch (err) {
       console.error(err);
-      alert('导入失败，请检查文件格式');
+      alert(err instanceof Error && err.message ? `导入失败：${err.message}` : '导入失败，请检查文件格式');
     } finally {
       e.target.value = '';
     }

@@ -52,7 +52,7 @@
 | `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | 弱引用上面两张表的行；不建外键是因为父子互引（项目行须先于子行写入） |
 | `customSymbols[]` / `customImages[]`（图标库 / 图片库登记） | `asset`（`kind='icon'` / `kind='image'`） | **三表已合并**：两者都只是项目收录的一个素材行，二进制走 P4 外置 |
 | `layers[]`（`Layer`：type/name/visible/startFrame/endFrame/elements[]） | `layer` + 各元素表的 `layer_id` | P2：**项目 ▸ 图层 ▸ 元素**；单类型图层（marker / route / shape / territory / image）；删图层连带删元素（CASCADE） |
-| （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— `asset_id` 是弱引用，导入时先补 `asset` 占位行；`element_id` 是全库主键，副本一律加后缀避免撞车 |
+| （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— `asset_id` 是弱引用，失效引用由启动体检清空（不造假素材行）；`element_id` 是全库主键，副本一律加后缀避免撞车 |
 | `project.elements[]`（`layers[].elements` 的派生镜像） | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`（5 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表）；镜像不入库，只存图层归属 |
 | `elements[].style` / `drawProgress` / `morphKeyframes`（关键帧数组） | 类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
 | `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：1:1 且可选，跟随元素整体读写 |
@@ -175,9 +175,9 @@
 | `public_element_route` | 路线类副本 | `element_id` | 与 `element_route` 同构 | 同上 |
 | `public_element_shape` | 形状类副本 | `element_id` | 与 `element_shape` 同构 | 同上 |
 | `public_element_territory` | 疆域类副本 | `element_id` | 与 `element_territory` 同构（三个 JSON 列整体复制） | 同上 |
-| `public_element_image` | 贴图类副本 | `element_id` | 与 `element_image` 同构；`asset_id` 弱引用，导入时在项目 `asset` 补占位行 | 同上 |
+| `public_element_image` | 贴图类副本 | `element_id` | 与 `element_image` 同构；`asset_id` 弱引用，解析不到时由启动体检清空 | 同上 |
 
-**副本必须自洽**（不变量）：`asset_id` 是弱引用，导入时要在插入元素**之前**先补 `asset` 占位行（项目侧 `element_*.asset_id` 有真外键，缺行会让整笔事务回滚）；副本元素 id 一律加后缀（保存 `:pb<pubId>`、导入 `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车（`deleteElement` 按 id 过滤会一次删两条）。数据库侧留 `v_check_dangling` 做体检 —— 兜底，不拦截写入。
+**副本必须自洽**（不变量）：`asset_id` 是弱引用，素材被删后副本可能指向不存在的行 —— 由启动体检 `repairAssetRefs` 把这类引用清空（不造假素材行；项目侧 `element_*.asset_id` 是外键，带着悬空引用插入会被整笔事务打回）；副本元素 id 一律加后缀（保存 `:pb<pubId>`、导入 `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车（`deleteElement` 按 id 过滤会一次删两条）。数据库侧留 `v_check_dangling` 做体检 —— 兜底，不拦截写入。
 
 
 ## 四、每张表的字段（字段字典）
@@ -1325,7 +1325,7 @@
 | 视图 | 类别 | 作用 |
 |---|---|---|
 | `v_element_index` | 读取便利 | 把 5 张类别表的公共列 UNION 成一张「元素总表」：取消基表后，轨道 / 列表 / 计数查这里，不用手写 5 表 UNION |
-| `v_check_dangling` | 一致性自检 | 查悬空引用：跟随机位指向已删除的路线元素。迁移后与老库体检用（外键开启时写入端已被拦住，视图是给 `PRAGMA foreign_keys=OFF` 的批量迁移与老库准备的），正常应返回 0 行 |
+| `v_check_dangling` | 一致性自检 | 查悬空引用：跟随机位指向已删除的路线元素；`element_image.asset_id` 与公共库副本的 `asset_id` 指向不存在的素材（这几列没有外键，只能靠视图）。写入端对应动作是启动体检 `repairAssetRefs`；正常应返回 0 行 |
 | `v_check_territory_ref` | 一致性自检 | 疆域 JSON 内部一致性：`plots_json` 的 `ownerId`、`events_json` 的 `toCountryId` 必须能在 `countries_json` 中命中（复合外键被 JSON 化后的补偿） |
 
 ### 为什么没有触发器（原 6 条已全部移除）
@@ -1340,7 +1340,7 @@
 
 | 原触发器承担的规则 | 现在由谁保证 |
 |---|---|
-| 公共图层副本的素材引用不得悬空 | 应用层在「导入到项目」时先补 `asset` 占位行，再插元素（`importPublicLayerV2`） |
+| 公共图层副本的素材引用不得悬空 | 删素材时一并清空副本引用（`assets:remove`）+ 启动体检 `repairAssetRefs` 兜底 |
 | 副本元素 id 不得与既有行撞车 | 保存 / 导入两条路径统一给 `element_id` 加后缀（`:pb<pubId>` / `:im<layerId>`） |
 | 跟随机位只能引用同一项目内的路线元素 | 写入端校验（选择跟随机位时只列本项目路线）+ 外键 `SET NULL` 兜底 |
 

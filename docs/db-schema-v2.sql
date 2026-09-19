@@ -1178,11 +1178,28 @@ SELECT 'image', element_id, project_id, layer_id, type, name, visible,
   FROM element_image;
 
 -- 12.2 悬空引用自检（弱引用 + 外键未开启时应为 0；迁移后与老库体检）
+--     项目侧的 asset_id / follow_route 有真外键，正常写入不会悬空；
+--     public_element_* 与 element_image.asset_id 没有，所以由本视图兜底。
 CREATE VIEW IF NOT EXISTS v_check_dangling AS
 SELECT 'camera.follow_route' AS edge, k.kf_id AS ref_id, k.follow_route_element_id AS target
   FROM camera_keyframe k
   WHERE k.follow_route_element_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM element_route WHERE element_id = k.follow_route_element_id);
+    AND NOT EXISTS (SELECT 1 FROM element_route WHERE element_id = k.follow_route_element_id)
+UNION ALL
+SELECT 'image.asset', t.element_id, t.asset_id
+  FROM element_image t
+  WHERE t.asset_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM asset a WHERE a.asset_id = t.asset_id)
+UNION ALL
+SELECT 'public_marker.asset', t.element_id, t.asset_id
+  FROM public_element_marker t
+  WHERE t.asset_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM asset a WHERE a.asset_id = t.asset_id)
+UNION ALL
+SELECT 'public_image.asset', t.element_id, t.asset_id
+  FROM public_element_image t
+  WHERE t.asset_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM asset a WHERE a.asset_id = t.asset_id);
 
 -- 12.3 疆域 JSON 内部一致性（复合外键被 JSON 化后，用 json_each 恢复部分校验）
 CREATE VIEW IF NOT EXISTS v_check_territory_ref AS

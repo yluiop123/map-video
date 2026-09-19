@@ -2,9 +2,9 @@ import Dexie, { type Table } from 'dexie';
 import type { MapVideoProject, Collection } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID } from '../types';
 
-/** 素材行：图片 / GIF / 模型等大文件，存 Blob（内容寻址，assetId = sha256） */
+/** 素材行：图片 / GIF / 模型等大文件，存 Blob（assetId 为随机 id，与文件名/内容解耦） */
 export interface AssetRow {
-  /** 内容哈希，同文件天然去重 */
+  /** 随机 id（同一文件传两次就是两份，不做内容去重） */
   assetId: string;
   /** 归属项目（'' 表示未归属，交由孤儿清理任务回收） */
   projectId: string;
@@ -81,8 +81,8 @@ export async function deleteCollection(id: string): Promise<void> {
 // ---------- 素材 ----------
 
 export async function saveAsset(row: AssetRow): Promise<void> {
-  // 已存在则不覆盖：素材是内容寻址（sha256 全局唯一），同一文件被第二个项目引用时
-  // 若直接 put 会改写 projectId 归属，让前一个项目失去归属记录（孤儿素材）。
+  // 已存在则不覆盖：同一 assetId 可能被多个项目引用，直接 put 会改写 projectId 归属，
+  // 让前一个项目失去归属记录（表现为孤儿素材）。
   const existing = await db.assets.get(row.assetId);
   if (existing) return;
   await db.assets.put(row);

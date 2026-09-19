@@ -12,7 +12,7 @@ import { normalizeTerritoryDisplay } from '../lib/territory';
 import { deriveElements, layerTypeOf, insertLayerSorted, LAYER_TYPE_LABEL, resolveTargetLayerId } from '../lib/layers';
 import { useEditorStore } from './editorStore';
 import { planChapterCamera } from '../lib/camera-plan';
-import { releaseAssetUrls, getAssetBytes, uploadAsset, type AssetKind } from '../lib/assets';
+import { releaseAssetUrls, getAssetBytes, putAssetBytes, type AssetKind } from '../lib/assets';
 import { clearGifCache } from '../lib/gif-decoder';
 
 /** 元素归一化：custom_icon 下线 → 点；旧 fly 动画 → move；疆域 display 补默认 */
@@ -687,13 +687,13 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       if (data.assets?.length) {
         const idMap: Record<string, string> = {};
         for (const a of data.assets) {
-          try {
-            const bin = atob(a.dataUrl.split(',')[1] || '');
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            const ref = await uploadAsset(new Blob([bytes], { type: a.mime }), mimeToAssetKind(a.mime));
-            idMap[a.assetId] = ref.assetId;
-          } catch { /* 单个素材失败不阻塞导入 */ }
+          // 素材还原失败要中止整笔导入：留着指向空素材的 assetId，导入后是坏图，
+          // 桌面端还会被 element_*.asset_id 的外键把整次保存打回。
+          const bin = atob(a.dataUrl.split(',')[1] || '');
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const ref = await putAssetBytes(bytes, a.mime, '', mimeToAssetKind(a.mime));
+          idMap[a.assetId] = ref.assetId;
         }
         imported = { ...data, project: remapAssetIds(data.project, idMap) };
       }

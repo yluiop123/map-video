@@ -1,7 +1,7 @@
 /**
  * verify-public-layers.mjs — 公共图层库（复制/导入）回归验证
  *
- * 覆盖：整层复制的 id 重映射与自洽、素材占位顺序、级联删除、自检视图，
+ * 覆盖：整层复制的 id 重映射与自洽、失效素材引用的启动体检、级联删除、自检视图，
  *       以及时间窗保长平移（clampWindowMove，直接测 src/lib/time.ts 的真函数）。
  * 运行：node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs
  * 退出码非 0 表示有失败项。
@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   saveProjectV2, getProjectV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2, listPublicLayersV2,
+  repairAssetRefs,
 } from '../electron/db-v2.mjs';
 import { clampWindowMove } from '../src/lib/time.ts';
 
@@ -135,7 +136,7 @@ const check = (name, pass, detail) => {
     JSON.stringify(dangling));
 }
 
-// ---------- 3. 素材缺失：占位必须早于元素插入（否则整笔事务被外键打回） ----------
+// ---------- 3. 素材引用失效：启动体检清空引用，绝不造假素材行 ----------
 {
   console.log('\n[3] 引用缺失素材的元素');
   const db = open();
@@ -145,11 +146,21 @@ const check = (name, pass, detail) => {
     element_id: 'ghost:host', public_layer_id: pub, type: 'point', name: '幽灵', visible: 1,
     start_sec: 0, end_sec: 5, asset_id: 'asset-not-exists', fly_mode: 0, show_icon: 0,
   });
+  // 旧版占位行造出来的空壳素材（storage=file 却没有 rel_path）
+  blankRow(db, 'asset', { asset_id: 'shell:empty', kind: 'image', name: '', mime: 'application/octet-stream', storage: 'file', rel_path: '', created_at: 1 });
   let err = null;
   try { importPublicLayerV2(db, pub, 'p3'); } catch (e) { err = e; }
-  check('3.1 导入成功（不再外键回滚）', !err, err ? err.message : '');
-  check('3.2 素材占位已补齐', db.prepare("SELECT COUNT(*) AS c FROM asset WHERE asset_id = 'asset-not-exists'").get().c === 1);
-  check('3.3 幽灵元素确实落到了项目里', db.prepare("SELECT COUNT(*) AS c FROM element_marker WHERE element_id LIKE 'ghost:host:im%' AND project_id = 'p3'").get().c === 1);
+  check('3.1 体检前：悬空引用被自检视图抓到', db.prepare("SELECT COUNT(*) AS c FROM v_check_dangling WHERE edge = 'public_marker.asset'").get().c === 1);
+  check('3.2 直接导入会被项目侧外键打回（不再偷偷塞占位行）', !!err, err ? '抛错（预期）' : '竟然成功了');
+  repairAssetRefs(db);
+  err = null;
+  try { importPublicLayerV2(db, pub, 'p3'); } catch (e) { err = e; }
+  check('3.3 体检后导入成功', !err, err ? err.message : '');
+  check('3.4 不产生空壳素材行', db.prepare("SELECT COUNT(*) AS c FROM asset WHERE asset_id = 'asset-not-exists'").get().c === 0);
+  check('3.5 空壳素材行被清掉', db.prepare("SELECT COUNT(*) AS c FROM asset WHERE asset_id = 'shell:empty'").get().c === 0);
+  const ghost = db.prepare("SELECT asset_id FROM element_marker WHERE element_id LIKE 'ghost:host:im%'").get();
+  check('3.6 导入后引用已清空（元素保留、图不保留）', !!ghost && ghost.asset_id == null, JSON.stringify(ghost));
+  check('3.7 体检后自检视图归零', db.prepare('SELECT COUNT(*) AS c FROM v_check_dangling').get().c === 0);
 }
 
 // ---------- 4. 删除公共图层级联清元素 ----------

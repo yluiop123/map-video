@@ -5,7 +5,7 @@
  *
  * assetId = **随机 id**（与文件名/内容解耦，改名不影响引用）
  *   · 桌面端：Electron IPC → userData/media/<类型>/<时间戳>-<assetId><ext>
- *     （按类型分文件夹、时间戳命名；assetId→文件映射在 media/index.json）
+ *     （按类型分文件夹、时间戳命名；assetId→相对路径登记在 V2 的 asset 表，只有这一本账）
  *   · 网页端：Dexie `assets` 表（Blob，无文件系统）
  *
  * 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份。
@@ -14,6 +14,7 @@
  */
 import { IS_DESKTOP } from './backend';
 import * as dexie from '../stores/db';
+import { generateId } from '../types';
 
 export interface AssetRef {
   /** 随机 id，元素里存这个 */
@@ -52,16 +53,24 @@ function resolveMime(file: File | Blob): string {
 }
 
 /**
- * 上传素材 → 返回 assetId；素材进入**全局素材库**（跨项目可用），元素只需存这个 id。
- * **仅桌面端**：网页端定位为静态浏览形态，不支持上传（上传按钮在 UI 层隐藏，这里是最后防线）。
+ * 把一份**已在手的字节**登记进素材库 → 返回 assetId（元素只存 id）。
+ * 桌面端落 userData/media 并在 asset 表登记；网页端存 Dexie 的 Blob 行。
+ * （UI 上的「上传」按钮仍只在桌面端给，但配置 JSON 导入必须能还原素材，所以这里不拦网页端。）
  */
+export async function putAssetBytes(bytes: Uint8Array, mime: string, name: string, kind: AssetKind): Promise<AssetRef> {
+  if (IS_DESKTOP) {
+    const r = await window.mapvideo!.assets.save({ mime, bytes, name, kind });
+    return { assetId: r.assetId, mime, byteSize: r.byteSize };
+  }
+  const assetId = 'a' + generateId();
+  await dexie.saveAsset({ assetId, projectId: '', mime, name, byteSize: bytes.length, blob: new Blob([bytes], { type: mime }), createdAt: Date.now() });
+  return { assetId, mime, byteSize: bytes.length };
+}
+
+/** 上传文件 → 素材库（走原生文件对话框，仅桌面端 UI 提供该入口） */
 export async function uploadAsset(file: File | Blob, kind: AssetKind): Promise<AssetRef> {
-  if (!IS_DESKTOP) throw new Error('上传功能仅桌面端支持');
   const buf = await file.arrayBuffer();
-  const mime = resolveMime(file);
-  const name = (file as File).name || '';
-  const r = await window.mapvideo!.assets.save({ mime, bytes: new Uint8Array(buf), name, kind });
-  return { assetId: r.assetId, mime, byteSize: r.byteSize };
+  return putAssetBytes(new Uint8Array(buf), resolveMime(file), (file as File).name || '', kind);
 }
 
 /** 列出全局素材库（kindPrefix 如 'image' / 'model' / 'audio'，按 mime 前缀过滤；不传返回全部） */

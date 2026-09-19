@@ -244,10 +244,9 @@ function registerIpc() {
     try {
       const root = mediaRoot();
       for (const f of fs.readdirSync(root)) {
-        const p = path.join(root, f);
-        if (f === 'index.json') { fs.writeFileSync(p, '{}'); continue; }
-        fs.rmSync(p, { recursive: true, force: true });
+        fs.rmSync(path.join(root, f), { recursive: true, force: true });
       }
+      db.exec('DELETE FROM asset');   // 文件删了，登记行必须一起删（否则素材库全是死行）
     } catch { /* 目录不存在时忽略 */ }
     const now = Date.now();
     db.prepare(`
@@ -341,9 +340,10 @@ function registerIpc() {
   }));
 
   // 素材（asset）：**用户级全局资源**（跨项目可用），按**类型分子目录、时间戳命名**（保留原格式扩展名）：
-  //   userData/media/<images|models|audio|video|fonts>/<YYYYMMDD-HHmmss>-<assetId><ext>
-  // assetId 是**随机 id**（与文件名解耦，改名不影响引用）；assetId → 文件的映射存在 media/index.json。
-  // 不再做 sha256 内容寻址去重 —— 同一文件上传两次就是两份（时间戳命名永不重名）。
+  //   userData/media/<images|gifs|models|icons|audio|video|fonts>/<YYYYMMDD-HHmmss>-<assetId><ext>
+  // assetId 是**随机 id**（与文件名解耦，改名不影响引用）；不做内容寻址去重 —— 传两次就是两份。
+  // ★ 登记簿**只有 V2 的 asset 表这一本**（storage='file' + rel_path）：
+  //   以前另存一份 media/index.json，同一条事实两处真相，而且库里的 asset 行反而是空壳。
   const EXT_BY_MIME = {
     'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif',
     'image/svg+xml': '.svg',
@@ -365,52 +365,64 @@ function registerIpc() {
           : mime.startsWith('video/') ? 'video'
             : mime.startsWith('font') ? 'fonts' : 'misc');
 
-  const indexFile = () => path.join(mediaRoot(), 'index.json');
-  const readIndex = () => {
-    try { return JSON.parse(fs.readFileSync(indexFile(), 'utf8')); } catch { return {}; }
-  };
-  const writeIndex = (idx) => fs.writeFileSync(indexFile(), JSON.stringify(idx, null, 2));
+  // kind 列有 CHECK 白名单：前端没传或传了别的，一律按 mime 归到合法值上
+  const ASSET_KINDS = new Set(['image', 'gif', 'model', 'audio', 'video', 'font', 'icon']);
+  const kindOf = (kind, mime) => (ASSET_KINDS.has(kind) ? kind
+    : mime === 'image/gif' ? 'gif'
+      : mime.startsWith('image/') ? 'image'
+        : mime.startsWith('model/') ? 'model'
+          : mime.startsWith('audio/') ? 'audio'
+            : mime.startsWith('video/') ? 'video'
+              : mime.startsWith('font') ? 'font' : 'icon');
+  const assetRow = (id) => db.prepare('SELECT kind, name, mime, rel_path FROM asset WHERE asset_id = ?').get(String(id || ''));
 
   ipcMain.handle('assets:save', (_e, { mime, bytes, name, kind }) => {
     const buf = Buffer.from(bytes);
     const assetId = 'a' + crypto.randomBytes(8).toString('hex');
+    const m = String(mime || '');
+    const k = kindOf(String(kind || ''), m);
     const now = new Date();
     const p2 = (n) => String(n).padStart(2, '0');
     const stamp = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`;
-    const dir = path.join(mediaRoot(), kindDirOf(String(kind || ''), String(mime || '')));
+    const dir = path.join(mediaRoot(), kindDirOf(k, m));
     fs.mkdirSync(dir, { recursive: true });
-    const fileName = `${stamp}-${assetId}${EXT_BY_MIME[mime] || ''}`;
-    fs.writeFileSync(path.join(dir, fileName), buf);
-    const rel = path.relative(mediaRoot(), path.join(dir, fileName)).replace(/\\/g, '/');
-    const idx = readIndex();
-    idx[assetId] = { rel, mime, byteSize: buf.length, name: String(name || '') };
-    writeIndex(idx);
+    const abs = path.join(dir, `${stamp}-${assetId}${EXT_BY_MIME[m] || ''}`);
+    fs.writeFileSync(abs, buf);
+    const rel = path.relative(mediaRoot(), abs).replace(/\\/g, '/');
+    db.prepare('INSERT INTO asset (asset_id, kind, name, mime, storage, rel_path, created_at) VALUES (?,?,?,?,?,?,?)')
+      .run(assetId, k, String(name || ''), m || 'application/octet-stream', 'file', rel, Date.now());
     return { assetId, relPath: rel, byteSize: buf.length };
   });
   ipcMain.handle('assets:read', (_e, assetId) => {
-    const meta = readIndex()[String(assetId || '')];
-    if (!meta) return null;
-    const abs = path.join(mediaRoot(), meta.rel);
+    const r = assetRow(assetId);
+    if (!r?.rel_path) return null;
+    const abs = path.join(mediaRoot(), r.rel_path);
     if (!fs.existsSync(abs)) return null;
-    return { bytes: new Uint8Array(fs.readFileSync(abs)), mime: meta.mime, name: meta.name };
+    return { bytes: new Uint8Array(fs.readFileSync(abs)), mime: r.mime, name: r.name };
   });
   ipcMain.handle('assets:remove', (_e, assetId) => {
-    const idx = readIndex();
-    const meta = idx[String(assetId || '')];
-    if (meta) {
-      const abs = path.join(mediaRoot(), meta.rel);
+    const r = assetRow(assetId);
+    const id = String(assetId || '');
+    db.prepare('DELETE FROM asset WHERE asset_id = ?').run(id);
+    // 项目侧 element_*.asset_id 有真外键（SET NULL 自动清），公共库副本没有 → 手工清，
+    // 否则库里留下一条永远解析不到的死引用（v_check_dangling 会报出来）
+    for (const t of ['public_element_marker', 'public_element_image']) {
+      db.prepare(`UPDATE ${t} SET asset_id = NULL WHERE asset_id = ?`).run(id);
+    }
+    for (const t of ['public_element_route', 'public_element_shape']) {
+      db.prepare(`UPDATE ${t} SET move_icon_asset_id = NULL WHERE move_icon_asset_id = ?`).run(id);
+    }
+    if (r?.rel_path) {
+      const abs = path.join(mediaRoot(), r.rel_path);
       if (fs.existsSync(abs)) fs.unlinkSync(abs);
-      delete idx[String(assetId)];
-      writeIndex(idx);
     }
     return { ok: true };
   });
-  ipcMain.handle('assets:exists', (_e, assetId) => !!readIndex()[String(assetId || '')]);
+  ipcMain.handle('assets:exists', (_e, assetId) => !!assetRow(assetId));
   /** 全局素材库列表（可选 mime 类型前缀过滤，供面板浏览选择） */
   ipcMain.handle('assets:list', (_e, kindPrefix) => {
-    const idx = readIndex();
-    const out = Object.entries(idx).map(([assetId, m]) => ({ assetId, name: m.name || '', mime: m.mime || '' }));
-    return kindPrefix ? out.filter((m) => m.mime.startsWith(String(kindPrefix))) : out;
+    const out = db.prepare('SELECT asset_id AS assetId, name, mime FROM asset ORDER BY created_at DESC').all();
+    return kindPrefix ? out.filter((m) => (m.mime || '').startsWith(String(kindPrefix))) : out;
   });
   /** 孤儿素材扫描：递归统计文件数与总字节数（供设置页/维护用） */
   ipcMain.handle('assets:stat', () => {
@@ -421,7 +433,7 @@ function registerIpc() {
       for (const f of fs.readdirSync(d, { withFileTypes: true })) {
         const p = path.join(d, f.name);
         if (f.isDirectory()) walk(p);
-        else if (f.name !== 'index.json') { count++; bytes += fs.statSync(p).size; }
+        else { count++; bytes += fs.statSync(p).size; }
       }
     };
     walk(root);
