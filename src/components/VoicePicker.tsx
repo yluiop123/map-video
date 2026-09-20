@@ -163,7 +163,8 @@ export function VoicePicker() {
         <input
           value={orphan ? current : ''}
           onChange={(e) => pick(e.target.value.trim())}
-          className="input h-7 w-28 text-[11px]"
+          disabled={!tts}
+          className="input h-7 w-28 text-[11px] disabled:opacity-40"
           placeholder={t('或手填音色 ID', 'or paste voice ID')}
           title={t('填入官方音色名或已有的 voice_id（不在列表里的音色也能用）', 'Any voice name or existing voice_id, including ones not listed here')}
         />
