@@ -566,10 +566,10 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                 </p>
                 <button onClick={addRow} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10" title={t('在末尾加一行字幕', 'Append a line')}>＋ {t('加一行', 'Add')}</button>
                 <label className="h-7 px-2 inline-flex items-center rounded-md border border-white/15 text-[11px] hover:bg-white/10 cursor-pointer" title={t('导入 SRT 覆盖当前行', 'Import SRT (replaces lines)')}>
-                  📥 SRT
+                  📥 {t('导入 SRT', 'Import SRT')}
                   <input type="file" accept=".srt,text/plain" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void importSrt(f); e.target.value = ''; }} />
                 </label>
-                <button onClick={exportSrt} disabled={!rows.length} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40" title={t('导出为 SRT', 'Export SRT')}>📤 SRT</button>
+                <button onClick={exportSrt} disabled={!rows.length} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40" title={t('导出为 SRT', 'Export SRT')}>📤 {t('导出 SRT', 'Export SRT')}</button>
                 <button
                   onClick={genAllMissing}
                   disabled={busy || genIdx !== null || !tts?.baseUrl}
