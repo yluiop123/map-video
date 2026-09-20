@@ -3,7 +3,7 @@
  * 这里同时是**字幕条目与字幕样式的唯一编辑处**（特效弹窗已无字幕页签）：
  * 项目已有字幕时可直接「编辑现有字幕」，该模式只改 narration，不动元素 / 弹窗 / 相机。
  */
-import { useState } from 'react';
+import { useState, useRef, useEffect, type ComponentProps } from 'react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore, activeProvider } from '../stores/providerStore';
@@ -180,6 +180,20 @@ function shiftElementTime(el: MapElement, startRel: number, hold: number): MapEl
   return e as unknown as MapElement;
 }
 
+/** 字幕行输入框：默认只有一行高，文字换行了才继续增高（原来固定 rows=2，空行也占两行） */
+function LineInput(props: ComponentProps<'textarea'>) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const fit = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  };
+  // 值被外部改写（导入 SRT / 贴入拆分）时也要重算
+  useEffect(fit, [props.value]);
+  return <textarea ref={ref} rows={1} {...props} onInput={fit} />;
+}
+
 export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const t = useT();
   const project = useProjectStore((s) => s.project);
@@ -190,6 +204,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
 
   const [topic, setTopic] = useState('');
   const [reference, setReference] = useState('');
+  const [refFiles, setRefFiles] = useState<string[]>([]);
   // 整片一条连续脚本；此值仅作「无内容时」的时长兜底
   const secondsPerChapter = 20;
   const [plan, setPlan] = useState<GenChapter[] | null>(null);
@@ -228,6 +243,23 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       ? { ...r, text, durationFrames: r.audioUrl ? r.durationFrames : estimateTextDurationFrames(text, fps) }
       : r
   ))));
+  /** 改文本；**一旦含换行就按行拆成多条字幕**（整篇文案一次贴入的入口，回车同义） */
+  const commitRowText = (id: string, text: string) => {
+    if (!text.includes('\n')) return editText(id, text);
+    const parts = text.split('\n').map((x) => x.trim()).filter(Boolean);
+    setRows((rs) => {
+      const at = rs.findIndex((r) => r.id === id);
+      if (at < 0) return rs;
+      const base = rs[at];
+      const extra = parts.slice(1).map((p) => mkRow(p, base.ci));
+      return resequenceRows([
+        ...rs.slice(0, at),
+        { ...base, text: parts[0] || '', durationFrames: base.audioUrl ? base.durationFrames : estimateTextDurationFrames(parts[0] || '', fps) },
+        ...extra,
+        ...rs.slice(at + 1),
+      ]);
+    });
+  };
   const addRow = () => setRows((rs) => [...rs, mkRow('', rs.length ? rs[rs.length - 1].ci : 0)]);
   const delRow = (id: string) => setRows((rs) => resequenceRows(rs.filter((r) => r.id !== id)));
 
@@ -502,7 +534,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
         <div className="flex items-center gap-2 mb-1">
           <span className="text-[11px] text-muted-foreground shrink-0">{t('参考资料', 'Reference')}</span>
           <label className="inline-flex items-center gap-1.5 h-6 px-2 rounded-md border border-white/15 bg-white/[0.045] text-[11px] hover:border-white/25 cursor-pointer transition-colors">
-            ⬆ {t('上传（txt/md/json）', 'Upload (txt/md/json)')}
+            ⬆ {t('上传文件（txt/md/json）', 'Upload file (txt/md/json)')}
             <input
               type="file"
               accept=".txt,.md,.markdown,.json,.csv,text/*"
@@ -513,6 +545,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                   try {
                     const text = await f.text();
                     setReference((prev) => (prev ? prev + '\n\n' + text : text));
+                    setRefFiles((prev) => [...prev, f.name]);
                   } catch (err) {
                     setError(err instanceof Error ? err.message : String(err));
                   }
@@ -522,7 +555,21 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
             />
           </label>
         </div>
-        <textarea value={reference} onChange={(e) => setReference(e.target.value)} rows={3} className="input text-xs resize-none mb-2" placeholder={t('可粘贴，或上传文件后自动填入', 'Paste, or upload a file to fill in')} />
+        {/* 参考资料只走文件上传（不提供粘贴框）：内容作为提示词上下文，不需要手改 */}
+        <div className="flex items-center gap-1.5 mb-2 min-h-5">
+          <span className="text-[11px] text-muted-foreground truncate">
+            {reference
+              ? t(`已载入 ${refFiles.join('、')} · ${reference.length} 字`, `Loaded ${refFiles.join(', ')} · ${reference.length} chars`)
+              : t('未载入（上传后自动拼进提示词）', 'Nothing loaded (uploaded text is appended to the prompt)')}
+          </span>
+          {!!reference && (
+            <button
+              onClick={() => { setReference(''); setRefFiles([]); }}
+              className="h-5 px-1.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/10 shrink-0"
+              title={t('清除参考资料', 'Clear reference')}
+            >✕ {t('清除', 'Clear')}</button>
+          )}
+        </div>
 
         {progress && <p className="text-[11px] text-sky-400/90 mb-2">{progress}</p>}
         {error && <p className="text-[11px] text-red-400/90 mb-2">{error}</p>}
@@ -583,12 +630,11 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                 {rows.map((r, idx) => (
                   <div key={r.id} className="flex items-start gap-1.5 rounded-md border border-white/10 bg-white/[0.03] p-1.5">
                     <span className="shrink-0 w-5 pt-1.5 text-right text-[10px] text-muted-foreground tabular-nums">{idx + 1}</span>
-                    <textarea
+                    <LineInput
                       value={r.text}
-                      onChange={(e) => editText(r.id, e.target.value)}
-                      rows={2}
+                      onChange={(e) => commitRowText(r.id, e.target.value)}
                       className="input text-xs resize-none flex-1 min-w-0"
-                      placeholder={t('一行字幕', 'Subtitle line')}
+                      placeholder={t('一行字幕（可直接贴入整篇文案，按行拆分）', 'One subtitle per line (paste a whole script to split)')}
                     />
                     <div className="shrink-0 flex items-center gap-1 pt-0.5">
                       <button
