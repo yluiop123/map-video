@@ -960,7 +960,7 @@ export interface ProviderConfig {
   viaBackend?: boolean;
 }
 
-export type TtsProtocol = 'openai-speech' | 'minimax-t2a' | 'volc-tts' | 'qwen-tts' | 'custom';
+export type TtsProtocol = 'openai-speech' | 'minimax-t2a' | 'volc-tts' | 'cosyvoice' | 'qwen-tts' | 'custom';
 
 export interface ProviderPreset {
   id: string;

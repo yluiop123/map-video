@@ -9,7 +9,11 @@ export const LLM_PRESETS: ProviderPreset[] = [
 ];
 
 export const TTS_PRESETS: ProviderPreset[] = [
-  { id: 'qwen-tts', label: '通义语音 (Qwen)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'qwen3-tts', models: ['qwen3-tts', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus'], voice: 'longxiaochun', protocol: 'qwen-tts', keyHint: 'bailian.console.aliyun.com（DashScope Key）', note: '只需填 DashScope API Key；音色可填预设名或克隆得到 voice_id' },
+  // 模型名与音色必须配对：CosyVoice 走 /services/audio/tts/SpeechSynthesizer（音色 long* 系列），
+  // Qwen-TTS 走 /services/aigc/multimodal-generation/generation（音色 Cherry 系列）。
+  // 名字不能互串——把 qwen3-tts* 发给 CosyVoice 端点，上游就是 HTTP 400 "Model not exist."
+  { id: 'cosyvoice', label: '通义语音 (CosyVoice)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'cosyvoice-v3-flash', models: ['cosyvoice-v3-flash', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v2'], voice: 'longanyang', protocol: 'cosyvoice', keyHint: 'bailian.console.aliyun.com（DashScope Key）', note: '只需填 DashScope API Key；音色填官方列表里的 long* 名，或用下方声音克隆得到的 voice_id' },
+  { id: 'qwen-tts', label: '通义语音 (Qwen-TTS)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'qwen3-tts-flash', models: ['qwen3-tts-flash', 'qwen-tts'], voice: 'Cherry', protocol: 'qwen-tts', keyHint: 'bailian.console.aliyun.com（DashScope Key）', note: 'Qwen-TTS 合成：音色用 Cherry / Serena 等系统音色名（不是 long* 那套）' },
   { id: 'custom-tts', label: '自定义语音', baseUrl: '', model: '', voice: '', protocol: 'custom', note: 'POST JSON（含 extra 合并），响应为音频或 JSON 内 base64 / url' },
 ];
 
@@ -175,15 +179,25 @@ export async function callTTS(cfg: ProviderConfig, text: string): Promise<TtsRes
           res = await fetch(cfg.baseUrl.replace(/\/+$/, ''), { method: 'POST', headers, body: JSON.stringify(body) });
         }
         break;
-      case 'qwen-tts':
+      case 'cosyvoice':
         // 通义 CosyVoice（参照 createVideo/scripts）：POST /services/audio/tts/SpeechSynthesizer
         headers.Authorization = `Bearer ${cfg.apiKey}`;
         body = {
-          model: cfg.model || 'cosyvoice-v3.5-flash',
+          model: cfg.model || 'cosyvoice-v3-flash',
           input: { text, voice: cfg.voice },
           parameters: { format: 'mp3', sample_rate: 24000, ...extra },
         };
         res = await fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/services/audio/tts/SpeechSynthesizer`, { method: 'POST', headers, body: JSON.stringify(body) });
+        break;
+      case 'qwen-tts':
+        // Qwen-TTS 非实时合成：POST /services/aigc/multimodal-generation/generation
+        // 响应里给 output.audio.url（下面统一的 JSON 解析分支已覆盖该字段）
+        headers.Authorization = `Bearer ${cfg.apiKey}`;
+        body = {
+          model: cfg.model || 'qwen3-tts-flash',
+          input: { text, voice: cfg.voice || 'Cherry', ...extra },
+        };
+        res = await fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/services/aigc/multimodal-generation/generation`, { method: 'POST', headers, body: JSON.stringify(body) });
         break;
       case 'openai-speech':
         headers.Authorization = `Bearer ${cfg.apiKey}`;

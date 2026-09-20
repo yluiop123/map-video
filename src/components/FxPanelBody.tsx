@@ -795,7 +795,8 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
   useEffect(() => {
     const st = useProviderStore.getState();
     if (kind === 'llm' && st.llm.length === 0) setSelId(st.addFromPreset('deepseek', 'llm'));
-    else if (kind === 'tts' && st.tts.length === 0) setSelId(st.addFromPreset('qwen-tts', 'tts'));
+    // 默认预置 CosyVoice：它同时是「声音克隆」那条通路（克隆出的 voice_id 绑在 cosyvoice 模型上）
+    else if (kind === 'tts' && st.tts.length === 0) setSelId(st.addFromPreset('cosyvoice', 'tts'));
     else if (kind === 'image' && st.image.length === 0) setSelId(st.addFromPreset('qwen-image', 'image'));
   }, [kind]);
 
@@ -920,7 +921,8 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
                         <option value="openai-speech">OpenAI /audio/speech</option>
                         <option value="minimax-t2a">MiniMax t2a_v2</option>
                         <option value="volc-tts">火山 TTS (appid|token)</option>
-                        <option value="qwen-tts">DashScope CosyVoice</option>
+                        <option value="cosyvoice">DashScope CosyVoice</option>
+                        <option value="qwen-tts">DashScope Qwen-TTS</option>
                         <option value="custom">{t('自定义协议', 'Custom')}</option>
                       </select>
                     </div>
@@ -928,7 +930,7 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
                   </>
                 )}
                 {/* 声音克隆：参考音频 → voice_id（参照 clone_qwen_voice.py） */}
-                {sel.protocol === 'qwen-tts' && (
+                {sel.protocol === 'cosyvoice' && (
                   <div className="border-t border-white/10 pt-2 space-y-1.5">
                     <p className="text-[11px] text-muted-foreground">{t('声音克隆：上传 3~60s 参考音频，克隆出绑定 CosyVoice 模型的 voice_id（成功后自动填入音色并切换模型）', 'Voice clone: upload 3–60s reference audio to create a voice_id for a CosyVoice model')}</p>
                     <div className="flex items-center gap-2">
