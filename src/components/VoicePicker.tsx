@@ -27,7 +27,9 @@ export function VoicePicker() {
 
   const model = tts?.model || '';
   const current = tts?.voice || '';
-  const system = systemVoicesFor(tts?.protocol);
+  const system = systemVoicesFor(tts?.protocol, model);
+  /** 声音克隆只存在于 CosyVoice 那条端点（voice-enrollment + target_model），Qwen-TTS 没有克隆音色 */
+  const canClone = tts?.protocol === 'cosyvoice';
   const genders: { key: 'male' | 'female'; label: string }[] = [
     { key: 'male', label: t('男声', 'Male') },
     { key: 'female', label: t('女声', 'Female') },
@@ -78,7 +80,8 @@ export function VoicePicker() {
   };
 
   /** 当前值不在系统表也不在克隆账本里（如更早克隆的 voice_id）：显示出来并可移除 */
-  const known = new Set<string>([...system.map((v) => v.id), ...cloned.map((c) => c.voiceId)]);
+  const usable = cloned.filter((c) => !model || c.model === model);
+  const known = new Set<string>([...system.map((v) => v.id), ...usable.map((c) => c.voiceId)]);
   const orphan = current && !known.has(current);
 
   const cell = (id: string, title: string, sub?: string) => (
@@ -108,10 +111,10 @@ export function VoicePicker() {
         );
       })}
 
-      {cloned.length > 0 && (
+      {usable.length > 0 && (
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="text-[10px] text-muted-foreground/80 shrink-0">{t('我的克隆', 'Mine')}</span>
-          {cloned.map((c) => (
+          {usable.map((c) => (
             <span key={c.voiceId} className="inline-flex items-center">
               {cell(c.voiceId, `${c.label}·${c.model.replace(/^cosyvoice-|^qwen-audio-/, '')}`, c.voiceId)}
               <button
@@ -131,24 +134,32 @@ export function VoicePicker() {
       )}
 
       <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="text-[10px] text-muted-foreground/80 shrink-0">{t('克隆音色', 'Clone')}</span>
-        {CLIP_PRESETS.map((p) => (
-          <button
-            key={p.key}
-            onClick={() => void fetchClipBytes(p.file).then((b) => cloneFrom(b, p.label, `mv${p.key === 'male' ? 'm' : 'f'}`)).catch((e) => setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`))}
-            disabled={busy !== null || !tts?.baseUrl}
-            className="h-7 px-2 rounded-md border border-emerald-400/35 bg-emerald-500/10 text-[11px] text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40"
-            title={t(`用内置样本 ${p.file} 克隆一个${p.label}音色（目标模型 = 当前配音模型 ${model || '未设'}）`, `Clone a ${p.label} voice from the bundled sample (target model = current)`)}
-          >
-            ⬇ {p.label}
-          </button>
-        ))}
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={busy !== null || !tts?.baseUrl}
-          className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
-          title={t('上传 3~60 秒参考音频克隆音色', 'Upload 3–60s reference audio to clone a voice')}
-        >⬆ {t('上传参考音频', 'Upload reference')}</button>
+        {canClone && <span className="text-[10px] text-muted-foreground/80 shrink-0">{t('克隆音色', 'Clone')}</span>}
+        {canClone ? (
+          <>
+            {CLIP_PRESETS.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => void fetchClipBytes(p.file).then((b) => cloneFrom(b, p.label, `mv${p.key === 'male' ? 'm' : 'f'}`)).catch((e) => setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`))}
+                disabled={busy !== null || !tts?.baseUrl}
+                className="h-7 px-2 rounded-md border border-emerald-400/35 bg-emerald-500/10 text-[11px] text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40"
+                title={t(`用内置样本 ${p.file} 克隆一个${p.label}音色（目标模型 = 当前配音模型 ${model || '未设'}）`, `Clone a ${p.label} voice from the bundled sample (target model = current)`)}
+              >
+                ⬇ {p.label}
+              </button>
+            ))}
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={busy !== null || !tts?.baseUrl}
+              className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
+              title={t('上传 3~60 秒参考音频克隆音色', 'Upload 3–60s reference audio to clone a voice')}
+            >⬆ {t('上传参考音频', 'Upload reference')}</button>
+          </>
+        ) : (
+          <span className="text-[10px] text-muted-foreground/70">
+            {t('该协议没有克隆音色（克隆只在 CosyVoice 供应商下可用）', 'This protocol has no cloned voices (cloning needs a CosyVoice provider)')}
+          </span>
+        )}
         <input
           ref={fileRef}
           type="file"
@@ -179,6 +190,9 @@ export function VoicePicker() {
       <span className="text-[10px] text-muted-foreground/70 w-full truncate" title={current}>
         {t('音色写回当前配音供应商', 'Voice is saved on the active TTS provider')}
         {current ? ` · ${current}` : ''}
+        {tts?.protocol === 'qwen-tts' && model === 'qwen-tts'
+          ? t(' · 旧模型 qwen-tts 只带 4 个系统音色，改用 qwen3-tts-flash 可选全部', ' · the legacy model qwen-tts ships 4 voices only; use qwen3-tts-flash for the full list')
+          : ''}
         {msg ? ` · ${msg}` : ''}
       </span>
     </div>
