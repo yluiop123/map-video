@@ -42,7 +42,7 @@ components/
   ShortcutsDialog.tsx  # 快捷键速查弹窗（时间线「快捷键」按钮触发）；改键盘绑定需同步此文件内容
   MapSearchBox.tsx     # 地名/坐标搜索，内嵌顶栏（项目芯片右侧）；地图实例经 lib/shared-map.ts 共享，EditableMap load/unload 时 set
   FxPanelBody.tsx      # 特效面板主体：天气/画面/弹窗/音乐 四页签（**无字幕页签**，字幕已迁到 GenerateDialog）；含配音/音乐/服务配置内联弹窗
-  VoicePicker.tsx      # 字幕生成里的「配音音色」区：系统音色（男/女）+ 我的克隆 + ⬇内置样本/⬆上传克隆 + 试听
+  VoicePicker.tsx      # 字幕生成里的音色区：上「配音音色」（系统音色，男/女两组默认折叠）＋ 下「克隆音色」（内置男声/女声样本格 + ⬆上传其它音色）+ 试听
   GenerateDialog.tsx   # 顶栏「字幕生成」：需求 → LLM 整片脚本 → **逐行字幕 + 逐行配音（可覆盖）+ SRT 导入导出 + 字幕样式**；也是字幕条目与样式的唯一编辑处
   TimelineEditor.tsx   # 播放条(播放预览胶囊+步进+元素面板开关) + 镜头流块(宽=移动时长) + 元素轨道；刻度间隔随时长自适应
   KeyframePanel.tsx    # 右侧「视角属性」：到达时间/移动时长(默认2s)/中心/缩放(1位小数)/俯仰/方向/缓动
@@ -58,6 +58,7 @@ lib/
   military-plots.ts / military-geometry.ts  # 移植自 plot_ol 的军标算法（燕尾/钳形/进攻/集结地）
   regions.ts           # 行政区边界加载与点选/按名查找（默认 johan world.geo.json，可换源）
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
+  tw-colors.ts         # Tailwind 官方色板（22 族 × 11 阶，ColorPicker 的唯一取色来源，数值由 tailwindcss/colors 导出后落盘）
   voices.ts            # 配音音色目录（系统音色名一律抄官方表）+「我的克隆音色」localStorage 账本 + 内置参考音频
 stores/
   projectStore.ts      # 项目数据全部操作 + 撤销/重做 + IndexedDB(dexie) 持久化
@@ -81,7 +82,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **PointElement 特有**：shape、emoji、scale(0.3–3 等比缩放点+label)、orientation(faceCam/flat)、rotation(贴地旋转)、iconUrl、label。
 - **★ 字幕 / 配音只在「字幕生成」里编辑**（特效弹窗已无字幕页签，`FxTab` 也去掉了 `'subtitle'`）。入口两处：顶栏「字幕生成」按钮、时间线「🎙 配音」块点击 —— 都走 `editorStore.subtitleOpen`（同一个弹窗实例，`Toolbar.tsx` 里挂载）。弹窗内：逐行字幕（一行 = 一条字幕 + 一段配音），每行 🔊/🔁 生成或**覆盖**配音、▶ 试听、✕ 删除、＋加一行、SRT 导入/导出（标签写全「导入 SRT / 导出 SRT」）、顶部「▶▶ 全部生成配音」（串行、只补没配音的行）。**字幕行的输入框含换行即按行拆成多条字幕**（整篇文案一次贴入的入口，回车同义；首句留在原行以保住它已有的配音）；输入框用 `LineInput` 按 `scrollHeight` 自增高（默认一行，不再固定两行）。步骤①的**参考资料只走文件上传**（没有粘贴框，下面显示已载入的文件名与字数 + ✕ 清除）—— 它只是提示词上下文，不需要用户手改；底部「字幕样式」写 `setNarrationStyle`，**随时生效**（样式是项目级设置，`applyGeneratedProject` 那套强制默认样式的做法早已去掉）。
   **单页布局**（2026-09-20 改版）：需求 + 参考资料在上、字幕行在中、样式在下，一屏到底；**没有步骤①/②，也没有「手动填写文案」与「返回重写」**。文案有三个来源：🤖 AI 生成、📥 粘贴文本（`splitScript` 认 SRT 序号/时间轴/行首编号与引号）、📥 导入 SRT；也可在行内直接贴整篇（含换行即按行拆分）。
-  **配音音色在弹窗内选**（`VoicePicker`）：系统音色按协议分男声/女声两组，名字全部逐字取自官方音色表（`lib/voices.ts`，改表前先核对官方，别凭印象加）—— CosyVoice 端点是 `long*` 那一套 25 个（含 `qwen-audio-3.0-tts-flash` 这个模型家族，它走同一端点），Qwen-TTS 端点是 `Cherry`/`Serena`/`Ethan`… 那一套 38 个（普通话；10 个方言音色未列，用「手填音色 ID」输入），**两边不通用**。Qwen 侧再按模型收窄：旧模型 `qwen-tts` 只带 4 个系统音色（`legacy: true`），选它时列表自动缩短。声音克隆只有**两个**入口（⬇内置 `public/voices/male.mp3`/`female.mp3` 样本、⬆上传参考音频），且**只在 CosyVoice 协议下渲染**（`voice-enrollment` 是那条端点独有的，Qwen-TTS 行显示一句提示而不是死按钮）；voice_id 连模型一起记在 `localStorage` 的 `mapvideo.clonedVoices` 里，同样本同模型直接复用不在服务端反复建音色，且「我的克隆」只显示克隆模型 == 当前配音模型的条目（换模型后 voice_id 即失效）。音色与克隆**只在这里**，设置 ⚙ → 配音服务 只剩 Base URL / Key / 协议 / 模型。
+  **配音音色在弹窗内选**（`VoicePicker`，两段式）：上段「配音音色」= 系统音色，按协议分**男声 / 女声两组，默认折叠**（折叠时标题带条数与当前选中的音色名，别改成默认展开 —— 一组就有 19 个色块，展开会把字幕区挤走）；名字全部逐字取自官方音色表（`lib/voices.ts`，改表前先核对官方，别凭印象加）—— CosyVoice 端点是 `long*` 那一套 25 个（含 `qwen-audio-3.0-tts-flash` 这个模型家族，它走同一端点），Qwen-TTS 端点是 `Cherry`/`Serena`/`Ethan`… 那一套 38 个（普通话；官方另有 10 个方言音色未列进来），**两边不通用**。Qwen 侧再按模型收窄：旧模型 `qwen-tts` 只带 4 个系统音色（`legacy: true`），选它时列表自动缩短并给一句说明。下段「克隆音色」= 内置样本格（**男声·内置 / 女声·内置**，对应 `public/voices/male.mp3`/`female.mp3`，即用户提供的历史-男/女）+ ⬆ 上传其它音色；样本格没克隆过时是**虚线**，点它=先克隆再选中，克隆过即与寻常音色无异。**不给「手填音色 ID」输入框**（曾有过，已按用户要求删掉）。voice_id 连模型一起记在 `localStorage` 的 `mapvideo.clonedVoices` 里，同样本同模型直接复用不在服务端反复建音色，且只显示克隆模型 == 当前配音模型的条目（换模型后 voice_id 即失效）。声音克隆只在 CosyVoice 协议下渲染（`voice-enrollment` 是那条端点独有的），其它协议这一区换成一句说明。音色与克隆**只在这里**，设置 ⚙ → 配音服务 只剩 Base URL / Key / 协议 / 模型。
   **打开即载入项目现有字幕继续编辑**（不再有 `editOnly` 分支）；「应用字幕与配音」只写 `setNarrationEntries`（字幕比片长久时补一次 `setProjectEndFrame`），**不动元素 / 弹窗 / 特效 / 相机**。
   原「AI 顺带生成地图元素」的整条链路已删除：`lib/generate-elements.ts` / `lib/gazetteer.ts` / `lib/geocode.ts` / `lib/camera-plan.ts` / `projectStore.applyGeneratedProject` / 类型 `GeneratedChapterPlan`·`GeneratedOverlaySpec`，以及弹窗里的地名解析与「待填坐标」区块。
 - **时间线配音块只能整体平移**：`beginBlockDrag` 的 kind 多了一支 `'narration'`，块上只挂 `onPointerDown(mode:'move')`、**不给 `DragHandles`**（所以两端拉不出），拖动写 `setNarrationEntries` 且置 `locked: true`（顺排不再把它拉回）。时长始终由音频/字数估算决定，与其它轨道（fx/弹窗/图层可拉伸）不同。
@@ -128,7 +129,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - 顶栏工具是**扁平一键直达**（点击即创建/进入模式），样式差异全部放右侧 Settings 面板切换；**没有下拉工具组**。工具条/时间线上的「图层」按钮开合左侧图层浮层（editorStore.elementsOpen，默认收起）。界面上指 Layer 的地方一律叫「图层」，「元素」只留给单个 element。
 - Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
 - 右侧浮层显示条件：element 模式需有选中元素；keyframe 模式始终显示（editorStore.panelMode 三态）。
-- 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（预设色板+自定义弹窗），不要再写裸 `input[type=color]`；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
+- 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（色板 = Tailwind 官方表 `lib/tw-colors.ts`：默认只铺**每族 500 那一列** 24 格 + 「展开全色阶」看 22 族 × 11 阶，底部留 input[type=color] 兜底任意色；不要再写裸 `input[type=color]`，也不要再维护第四份色值表）；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
 - 时间显示用秒（`lib/time.ts` / FrameTimeField），内部仍存帧。
 - **路线「显示标记」与标记设置走同一套形态约定**：`moveIconStyleOf`（PropertiesPanel）与 `pinStyleOf` 逐条对应 —— **圆点 / 水滴针 归入「图片」类**（是内置图形，不是跳出图片类的独立形态），所以资源网格开头那两格点下去后资源区**不会消失**，只是选中态从圆点换到图片/水滴针；非资源形态（气泡/旗帜/文字/表情）不渲染资源区（`MoveResourcePicker` 自己 return null，调用处不再写 include 列表）。「图标样式」按钮行只列 气泡/旗帜/文字/表情 + 5 个资源形态，**不要**把圆点/水滴针单独提成按钮。
 - **路线顶点编辑**：EditableMap 对 line/moving_point/arrow/double_arrow 显示路径点标记（vertex-dot 图层，选中的更大更蓝），mousedown 优先命中顶点（12px）→ 拖拽只更新该点坐标（routePathOf/hitRouteVertex 辅助函数）；路径点坐标也可在属性面板「路径点」中输入/删除。燕尾箭头归入形状类别（categoryOf 特判 arrowType）。

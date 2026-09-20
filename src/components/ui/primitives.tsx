@@ -5,6 +5,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEditorStore } from '../../stores/editorStore';
+import { TW_COLUMN_500, TW_FAMILIES, TW_MONO, TW_SHADES, twLabelOf } from '../../lib/tw-colors';
 
 /** 属性面板双语标签：t('中文', 'English')，随顶栏语言切换 */
 export function useT() {
@@ -143,43 +144,18 @@ export function PanelHeader({ icon, title, onClose }: {
 }
 
 /**
- * 预设色板（全局统一，40 色 = 5 行 × 8 列）
- * 排列顺序：红橙 → 黄绿 → 青蓝 → 紫粉 → 中性明暗；深浅成对，便于成体系地挑色。
- */
-export const COLOR_PALETTE = [
-  // 红 / 橙
-  '#7F1D1D', '#B91C1C', '#DC2626', '#EF4444', '#F87171', '#FDA4AF', '#EA580C', '#F97316',
-  // 黄 / 绿
-  '#D97706', '#F59E0B', '#FBBF24', '#FDE68A', '#365314', '#4D7C0F', '#22C55E', '#4ADE80',
-  // 青 / 蓝
-  '#0F766E', '#14B8A6', '#06B6D4', '#22D3EE', '#1E3A8A', '#2563EB', '#3B82F6', '#60A5FA',
-  // 紫 / 粉
-  '#4C1D95', '#6D28D9', '#8B5CF6', '#C4B5FD', '#86198F', '#C026D3', '#DB2777', '#EC4899',
-  // 中性 / 明暗
-  '#000000', '#1F2937', '#374151', '#6B7280', '#9CA3AF', '#D1D5DB', '#F5F5F4', '#FFFFFF',
-];
-
-/** input[type=color] 只认 #rrggbb，把 8 位 hex / rgba 等归一化 */
-function toHex6(value: string): string {
-  if (!value) return '#000000';
-  const v = value.trim();
-  if (/^#[0-9a-fA-F]{6}/.test(v)) return v.slice(0, 7);
-  if (/^#[0-9a-fA-F]{3}$/.test(v)) return v;
-  return '#000000';
-}
-
-/**
- * 统一颜色选择器：色块按钮 + 弹出预设色板/自定义取色。
+ * 预设色板 = Tailwind 官方色板（`lib/tw-colors.ts`）：
+ * 默认只铺「500 这一列」（每个色族一格 + 纯白/纯黑），要别的深浅点「展开全色阶」。
  * 替代裸 input[type=color]（.input-color）。
  */
-export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled, title }: {
+export function ColorPicker({ value, onChange, disabled, title }: {
   value: string;
   onChange: (c: string) => void;
-  palette?: string[];
   disabled?: boolean;
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [full, setFull] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
 
@@ -220,7 +196,20 @@ export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled
     left = Math.min(Math.max(M, left), Math.max(M, window.innerWidth - M - w));
     pop.style.top = `${Math.round(top)}px`;
     pop.style.left = `${Math.round(left)}px`;
-  }, [open, value, palette]);
+  }, [open, value, full]);
+
+  const same = (hex: string) => (value || '').trim().toUpperCase() === hex.toUpperCase();
+  const pick = (hex: string) => { onChange(hex); setOpen(false); };
+  const swatch = (hex: string, label: string, cls: string, style?: React.CSSProperties) => (
+    <button
+      key={label}
+      type="button"
+      title={`${label} · ${hex}`}
+      onClick={() => pick(hex)}
+      className={`${cls} rounded border-2 shrink-0 transition-transform hover:scale-110 ${same(hex) ? 'border-white/80' : 'border-white/15'}`}
+      style={{ backgroundColor: hex, ...style }}
+    />
+  );
 
   return (
     <div ref={wrapRef} className="relative">
@@ -236,21 +225,38 @@ export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled
       </button>
       {open && !disabled && createPortal(
         <div ref={popRef} className="fixed top-0 left-0 z-[120] w-[300px] max-w-[86vw] bg-card border border-white/10 rounded-xl shadow-2xl p-2.5">
-          <div className="grid grid-cols-8 gap-1.5">
-            {palette.map((c) => (
-              <button
-                key={c}
-                type="button"
-                title={c}
-                onClick={() => { onChange(c); setOpen(false); }}
-                className={`w-7 h-7 rounded-md border-2 transition-transform hover:scale-110 ${
-                  value.toLowerCase() === c.toLowerCase() ? 'border-white/80' : 'border-white/15'
-                }`}
-                style={{ backgroundColor: c }}
-              />
-            ))}
-          </div>
-          <div className="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-white/[0.06]">
+          {full ? (
+            <div className="max-h-[42vh] overflow-y-auto pr-1">
+              <div className="flex items-center gap-[2px] mb-1 pl-[22px]">
+                {TW_SHADES.map((s) => (
+                  <span key={s} className="w-[18px] shrink-0 text-[8px] leading-none text-center text-muted-foreground/70 tabular-nums">{s}</span>
+                ))}
+              </div>
+              {TW_FAMILIES.map((f) => (
+                <div key={f.family} className="flex items-center gap-[2px] mb-[2px]">
+                  <span className="w-[20px] shrink-0 text-[9px] text-muted-foreground/80" title={f.cn}>{f.family.slice(0, 4)}</span>
+                  {f.shades.map((hex, i) => swatch(hex, `${f.family}-${TW_SHADES[i]}`, 'w-[18px] h-[18px]'))}
+                </div>
+              ))}
+              <div className="flex items-center gap-[2px] mt-1">
+                <span className="w-[20px] shrink-0 text-[9px] text-muted-foreground/80">base</span>
+                {TW_MONO.map((m) => swatch(m.hex, m.family, 'w-[18px] h-[18px]', { marginRight: 2 }))}
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-8 gap-1.5">
+              {TW_COLUMN_500.map((s) => swatch(s.hex, s.label, 'w-7 h-7'))}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setFull(!full)}
+            className="mt-2 text-[11px] text-muted-foreground hover:text-foreground"
+            title={full ? '只保留每族 500 那一列' : 'Tailwind 全色板：每族 50–950'}
+          >
+            {full ? '▴ 只看 500' : `▾ 展开全色阶（${TW_FAMILIES.length} 族 × ${TW_SHADES.length} 阶）`}
+          </button>
+          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/[0.06]">
             <input
               type="color"
               value={toHex6(value)}
@@ -258,12 +264,22 @@ export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled
               className="w-7 h-7 rounded cursor-pointer bg-transparent border border-white/15 p-0.5"
             />
             <span className="text-[11px] text-muted-foreground">自定义颜色</span>
+            {twLabelOf(value) && <span className="text-[11px] text-muted-foreground/70 ml-auto">{twLabelOf(value)}</span>}
           </div>
         </div>,
         document.body,
       )}
     </div>
   );
+}
+
+/** input[type=color] 只认 #rrggbb，把 8 位 hex / rgba 等归一化 */
+function toHex6(value: string): string {
+  if (!value) return '#000000';
+  const v = value.trim();
+  if (/^#[0-9a-fA-F]{6}/.test(v)) return v.slice(0, 7);
+  if (/^#[0-9a-fA-F]{3}$/.test(v)) return v;
+  return '#000000';
 }
 
 /**
