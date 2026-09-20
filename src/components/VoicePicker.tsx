@@ -77,6 +77,10 @@ export function VoicePicker() {
     }
   };
 
+  /** 当前值不在系统表也不在克隆账本里（如更早克隆的 voice_id）：显示出来并可移除 */
+  const known = new Set<string>([...system.map((v) => v.id), ...cloned.map((c) => c.voiceId)]);
+  const orphan = current && !known.has(current);
+
   const cell = (id: string, title: string, sub?: string) => (
     <button
       key={id}
@@ -120,6 +124,12 @@ export function VoicePicker() {
         </div>
       )}
 
+      {orphan && (
+        <span className="inline-flex items-center">
+          {cell(current, t('当前音色', 'Current'), t('不在系统表与克隆记录里', 'Not in the catalog or clone list'))}
+        </span>
+      )}
+
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[10px] text-muted-foreground/80 shrink-0">{t('克隆音色', 'Clone')}</span>
         {CLIP_PRESETS.map((p) => (
@@ -149,6 +159,13 @@ export function VoicePicker() {
             if (f) await cloneFrom(await f.arrayBuffer(), f.name.replace(/\.[^.]+$/, ''), 'mv');
             e.target.value = '';
           }}
+        />
+        <input
+          value={orphan ? current : ''}
+          onChange={(e) => pick(e.target.value.trim())}
+          className="input h-7 w-28 text-[11px]"
+          placeholder={t('或手填音色 ID', 'or paste voice ID')}
+          title={t('填入官方音色名或已有的 voice_id（不在列表里的音色也能用）', 'Any voice name or existing voice_id, including ones not listed here')}
         />
         <button
           onClick={() => void audition()}
