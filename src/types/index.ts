@@ -889,35 +889,6 @@ export interface NarrationStyle {
   maxPct: number;
 }
 
-/** 生成用：一档弹窗规格（帧由 store 落帧） */
-export interface GeneratedOverlaySpec {
-  type: OverlayType;
-  name?: string;
-  position: OverlayPosition;
-  content: OverlayContent;
-  animation?: AnimationPreset;
-  exitAnimation?: AnimationPreset;
-  /** 章内相对起点（帧） */
-  startOffset: number;
-  /** 持续帧数 */
-  duration: number;
-  scale?: number;
-}
-
-/** 生成用：一章的构建计划 */
-export interface GeneratedChapterPlan {
-  title: string;
-  entries: NarrationEntry[];
-  overlays?: GeneratedOverlaySpec[];
-  fx?: ScreenFxType[];
-  /** 相机中心（由字幕地名解析得出）；缺省用默认概览 */
-  cameraTarget?: { center: [number, number]; zoom?: number };
-  /** 本章自动落点标记（坐标固定，可见时间=整章） */
-  markers?: { name: string; center: [number, number] }[];
-  /** 由 LLM 意图构造的内置元素（帧为章内相对帧，store 落到绝对帧） */
-  elements?: MapElement[];
-}
-
 export interface NarrationTrack {
   entries: NarrationEntry[];
   style: NarrationStyle;

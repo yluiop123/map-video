@@ -5,13 +5,12 @@ import type {
   ElevationMapConfig, OverlayItem, CameraKeyframe,
   ProjectExport, ScreenFxItem, ExportedAsset,
   NarrationEntry, NarrationStyle, MusicTrack,
-  GeneratedChapterPlan, Layer, LayerType,
+  Layer, LayerType,
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
 import { deriveElements, layerTypeOf, insertLayerSorted, LAYER_TYPE_LABEL, resolveTargetLayerId } from '../lib/layers';
 import { useEditorStore } from './editorStore';
-import { planChapterCamera } from '../lib/camera-plan';
 import { releaseAssetUrls, getAssetBytes, putAssetBytes, type AssetKind } from '../lib/assets';
 import { clearGifCache } from '../lib/gif-decoder';
 
@@ -228,8 +227,6 @@ interface ProjectState {
   saveProject: () => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   listProjects: () => Promise<MapVideoProject[]>;
-  /** 一键生成：用 AI 段落计划重建整条时间线 */
-  applyGeneratedProject: (segments: GeneratedChapterPlan[], secondsPerSegment: number) => void;
   setProjectEndFrame: (endFrame: number) => void;
 
   // 图层操作（单类型图层）
@@ -418,90 +415,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     },
 
     listProjects: async () => storage.listProjects(),
-
-    /** 一键生成：把多段计划铺成一条连续时间线 */
-    applyGeneratedProject: (segments, secondsPerSegment) => {
-      commit();
-      set((state) => {
-        if (!state.project) return state;
-        const p = state.project;
-        const fps = p.globalConfig.defaultFPS || 30;
-        const target = Math.max(1, Math.round(secondsPerSegment * fps));
-        const elements: MapElement[] = [];
-        const overlays: OverlayItem[] = [];
-        const fx: ScreenFxItem[] = [];
-        const camera: CameraKeyframe[] = [];
-        const entries: NarrationEntry[] = [];
-        let cursor = 0;
-        segments.forEach((seg, i) => {
-          const start = cursor;
-          let f = start;
-          for (const e of seg.entries) {
-            entries.push({ ...e, startFrame: f });
-            f += Math.max(1, e.durationFrames);
-          }
-          const contentDur = f - start;
-          const end = start + (contentDur > 0 ? contentDur : target);
-          // 弹窗
-          for (const o of seg.overlays || []) {
-            overlays.push({
-              id: generateId(), type: o.type, name: o.name || '', position: o.position, content: o.content,
-              startFrame: Math.min(end - 1, start + Math.max(0, o.startOffset)),
-              endFrame: Math.min(end, start + Math.max(0, o.startOffset) + Math.max(1, o.duration)),
-              animation: o.animation, exitAnimation: o.exitAnimation, scale: o.scale, offsetX: 0, offsetY: 0,
-            });
-          }
-          // 画面特效：vignette 铺满本段；其余片头 1.5s
-          for (const type of seg.fx || []) {
-            const full = type === 'vignette';
-            const dur = full ? Math.max(1, end - start) : Math.min(Math.max(1, end - start), Math.round(1.5 * fps));
-            fx.push({ id: generateId(), kind: 'screen', name: type, startFrame: start, endFrame: start + dur, effect: { type, intensity: type === 'vignette' ? 0.4 : 0.6 }, enabled: true });
-          }
-          // 元素（段内相对帧 → 绝对帧）
-          for (const el of seg.elements || []) {
-            elements.push({ ...el, startFrame: start + Math.max(0, el.startFrame), endFrame: Math.min(end, start + Math.max(1, el.endFrame)) });
-          }
-          // 地名落点：显示时间对齐到该地名**首次被提及**的字幕（未提及则铺满本段）
-          for (const mk of seg.markers || []) {
-            const hit = entries.find((e) => e.text.includes(mk.name));
-            const ms = hit ? hit.startFrame : start;
-            const me = Math.min(end, ms + Math.round(4 * fps));
-            elements.push({
-              id: generateId(), type: 'point', name: mk.name, visible: true, locked: false,
-              startFrame: ms, endFrame: Math.max(ms + 1, me), style: {}, coordinates: mk.center, shape: 'pin', color: '#f59e0b',
-              label: { text: mk.name, fontSize: 13, color: '#ffffff', bgColor: 'rgba(12,10,9,0.72)', offsetY: 32 },
-            } as MapElement);
-          }
-          // 相机
-          camera.push(...planChapterCamera(start, end, fps, seg.cameraTarget));
-          cursor = end;
-          void i;
-        });
-        // 单类型图层：生成元素按类型分组，各建一个图层
-        const byType = new Map<LayerType, MapElement[]>();
-        for (const el of elements) {
-          const lt = layerTypeOf(el);
-          const arr = byType.get(lt);
-          if (arr) arr.push(el); else byType.set(lt, [el]);
-        }
-        const genLayers: Layer[] = [...byType.entries()].map(([type, els]) => ({
-          id: generateId(), type, name: `${LAYER_TYPE_LABEL[type]} · 生成`, visible: true,
-          startFrame: 0, endFrame: Math.max(1, cursor), elements: els,
-        }));
-        return {
-          project: {
-            ...p,
-            layers: [...p.layers, ...genLayers],
-            elements: [],
-            overlays: [...p.overlays, ...overlays],
-            fx: [...p.fx, ...fx],
-            camera,
-            narration: { ...p.narration, entries },
-            endFrame: cursor,
-          },
-        };
-      });
-    },
 
     setProjectEndFrame: (endFrame: number) => patch((p) => ({ ...p, endFrame: Math.max(1, Math.round(endFrame)) })),
 

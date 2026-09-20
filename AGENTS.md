@@ -54,11 +54,8 @@ compositions/          # Remotion 导出端：MapVideo(单轴渲染) / MapScene 
 lib/
   map-renderer.ts      # ★ 核心：所有地图元素的渲染（点7样式/路线/形状/标签位图/动画）
   keyframe-interpolation.ts  # 相机/通用关键帧插值（含 moveDuration 停留-飞行语义）
-  camera-plan.ts       # 确定性镜头编排（起点概览→推近落位；无需 AI，产出普通 CameraKeyframe 可再编辑）
   military-plots.ts / military-geometry.ts  # 移植自 plot_ol 的军标算法（燕尾/钳形/进攻/集结地）
   regions.ts           # 行政区边界加载与点选/按名查找（默认 johan world.geo.json，可换源）
-  gazetteer.ts         # 本地地名库 + 文本抽地名（无需 AI/离线）；生成时→相机中心 + 自动落点标记
-  geocode.ts           # 联网地理编码（Nominatim，与顶栏搜索同源）；本地库未命中时兜底，查不到→用户手填坐标
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
 stores/
   projectStore.ts      # 项目数据全部操作 + 撤销/重做 + IndexedDB(dexie) 持久化
@@ -80,7 +77,10 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **CameraKeyframe**：frame=**到达时间**（绝对帧）；`moveDuration`(帧)=起飞提前量，**默认 2*fps**；语义=停留→飞行→落位（`interpolateCamera(kfs, frame, fps)`）。
 - **LabelConfig**：text/color/position(上左下右中)/bgColor(默认透明)/bgPadding/bgRadius/fontWeight。渲染=canvas 气泡位图（makeBubbleImageData，仅 BUBBLE 样式带尾巴）。
 - **PointElement 特有**：shape、emoji、scale(0.3–3 等比缩放点+label)、orientation(faceCam/flat)、rotation(贴地旋转)、iconUrl、label。
-- **★ 字幕 / 配音只在「字幕生成」里编辑**（特效弹窗已无字幕页签，`FxTab` 也去掉了 `'subtitle'`）。入口两处：顶栏「字幕生成」按钮、时间线「🎙 配音」块点击 —— 都走 `editorStore.subtitleOpen`（同一个弹窗实例，`Toolbar.tsx` 里挂载）。弹窗内：逐行字幕（一行 = 一条字幕 + 一段配音），每行 🔊/🔁 生成或**覆盖**配音、▶ 试听、✕ 删除、＋加一行、SRT 导入/导出（标签写全「导入 SRT / 导出 SRT」）、顶部「▶▶ 全部生成配音」（串行、只补没配音的行）。**字幕行的输入框含换行即按行拆成多条字幕**（整篇文案一次贴入的入口，回车同义；首句留在原行以保住它已有的配音）；输入框用 `LineInput` 按 `scrollHeight` 自增高（默认一行，不再固定两行）。步骤①的**参考资料只走文件上传**（没有粘贴框，下面显示已载入的文件名与字数 + ✕ 清除）—— 它只是提示词上下文，不需要用户手改；底部「字幕样式」写 `setNarrationStyle`，**随时生效**。项目已有字幕时步骤①出现「✎ 编辑现有字幕」→ `editOnly` 模式，确认按钮变「应用字幕」，**只写 narration、不动元素/弹窗/特效/相机**。`applyGeneratedProject` 不再强制 `defaultNarrationStyle()`，样式作为项目级设置保留。
+- **★ 字幕 / 配音只在「字幕生成」里编辑**（特效弹窗已无字幕页签，`FxTab` 也去掉了 `'subtitle'`）。入口两处：顶栏「字幕生成」按钮、时间线「🎙 配音」块点击 —— 都走 `editorStore.subtitleOpen`（同一个弹窗实例，`Toolbar.tsx` 里挂载）。弹窗内：逐行字幕（一行 = 一条字幕 + 一段配音），每行 🔊/🔁 生成或**覆盖**配音、▶ 试听、✕ 删除、＋加一行、SRT 导入/导出（标签写全「导入 SRT / 导出 SRT」）、顶部「▶▶ 全部生成配音」（串行、只补没配音的行）。**字幕行的输入框含换行即按行拆成多条字幕**（整篇文案一次贴入的入口，回车同义；首句留在原行以保住它已有的配音）；输入框用 `LineInput` 按 `scrollHeight` 自增高（默认一行，不再固定两行）。步骤①的**参考资料只走文件上传**（没有粘贴框，下面显示已载入的文件名与字数 + ✕ 清除）—— 它只是提示词上下文，不需要用户手改；底部「字幕样式」写 `setNarrationStyle`，**随时生效**（样式是项目级设置，`applyGeneratedProject` 那套强制默认样式的做法早已去掉）。
+  **单页布局**（2026-09-20 改版）：需求 + 参考资料在上、字幕行在中、样式在下，一屏到底；**没有步骤①/②，也没有「手动填写文案」与「返回重写」**。文案有三个来源：🤖 AI 生成、📥 粘贴文本（`splitScript` 认 SRT 序号/时间轴/行首编号与引号）、📥 导入 SRT；也可在行内直接贴整篇（含换行即按行拆分）。
+  **打开即载入项目现有字幕继续编辑**（不再有 `editOnly` 分支）；「应用字幕与配音」只写 `setNarrationEntries`（字幕比片长久时补一次 `setProjectEndFrame`），**不动元素 / 弹窗 / 特效 / 相机**。
+  原「AI 顺带生成地图元素」的整条链路已删除：`lib/generate-elements.ts` / `lib/gazetteer.ts` / `lib/geocode.ts` / `lib/camera-plan.ts` / `projectStore.applyGeneratedProject` / 类型 `GeneratedChapterPlan`·`GeneratedOverlaySpec`，以及弹窗里的地名解析与「待填坐标」区块。
 - **时间线配音块只能整体平移**：`beginBlockDrag` 的 kind 多了一支 `'narration'`，块上只挂 `onPointerDown(mode:'move')`、**不给 `DragHandles`**（所以两端拉不出），拖动写 `setNarrationEntries` 且置 `locked: true`（顺排不再把它拉回）。时长始终由音频/字数估算决定，与其它轨道（fx/弹窗/图层可拉伸）不同。
 - **背景音乐（项目级）**：`project.music: MusicTrack[]` 是**单轨多段**（段用**项目绝对帧**，段内可循环），不是片段字段；默认第一段铺满全片（内置 `public/bgm` 或导入）。时间线只显示与当前章节相交的段；播放/预览/导出（`MapVideo.ProjectMusic` / `preview-audio`）都按项目绝对帧走。
 - **坐标显示一律 5 位小数**（toFixed(5) + step=0.00001）；视角缩放显示 1 位小数。
