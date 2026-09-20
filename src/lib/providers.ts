@@ -123,7 +123,33 @@ export async function decodeAudioDuration(dataUrl: string, fallbackText = ''): P
   }
 }
 
+/**
+ * 协议 ↔ 模型名 ↔ 音色 的配对检查。DashScope 对不存在的模型只回
+ * `HTTP 400 {"code":"InvalidParameter","message":"Model not exist."}`，
+ * 完全看不出真正的原因是「模型名发错了端点」，所以本地先拦一道，直接说该填什么。
+ */
+function assertTtsPairing(cfg: ProviderConfig): void {
+  const model = (cfg.model || '').trim();
+  const voice = (cfg.voice || '').trim();
+  if (!model) return;
+  if (cfg.protocol === 'cosyvoice' && !model.startsWith('cosyvoice-')) {
+    throw new Error(`CosyVoice 协议的模型名要以 cosyvoice- 开头（如 cosyvoice-v3-flash / cosyvoice-v3.5-flash），当前填的是「${model}」`);
+  }
+  if (cfg.protocol === 'qwen-tts') {
+    if (model === 'qwen3-tts') {
+      throw new Error('「qwen3-tts」不是合法模型名（合法的是 qwen3-tts-flash / qwen-tts）。若你要用的是克隆音色（voice_id 形如 cosyvoice-…-mv-…），那是 CosyVoice 那条协议：协议选「DashScope CosyVoice」、模型填克隆时用的 cosyvoice 模型。');
+    }
+    if (!model.startsWith('qwen')) {
+      throw new Error(`Qwen-TTS 协议的模型名应以 qwen 开头（qwen3-tts-flash / qwen-tts），当前填的是「${model}」`);
+    }
+    if (voice.startsWith('cosyvoice-') || voice.startsWith('long')) {
+      throw new Error(`音色「${voice}」是 CosyVoice 的（克隆 voice_id 也属于它）；Qwen-TTS 用的是 Cherry / Serena 那套音色名。要保留这个音色就把协议改成「DashScope CosyVoice」`);
+    }
+  }
+}
+
 export async function callTTS(cfg: ProviderConfig, text: string): Promise<TtsResult> {
+  assertTtsPairing(cfg);
   // 桌面端：主进程管道（返回音频字节）
   if (IS_DESKTOP) {
     const res = await window.mapvideo!.aiTts(cfg, text);

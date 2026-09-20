@@ -141,15 +141,26 @@ async function synthAudio(cfg, text) {
       };
       break;
     }
-    case 'qwen-tts': {
+    case 'cosyvoice': {
       // 通义 CosyVoice（参照 createVideo/scripts）：POST /services/audio/tts/SpeechSynthesizer
       headers.Authorization = `Bearer ${cfg.apiKey}`;
       body = {
-        model: cfg.model || 'cosyvoice-v3.5-flash',
+        model: cfg.model || 'cosyvoice-v3-flash',
         input: { text, voice: cfg.voice },
         parameters: { format: 'mp3', sample_rate: 24000 },
       };
       url += '/services/audio/tts/SpeechSynthesizer';
+      break;
+    }
+    case 'qwen-tts': {
+      // Qwen-TTS 非实时合成：POST /services/aigc/multimodal-generation/generation
+      // 模型名与音色与 CosyVoice 不通用（qwen3-tts-flash + Cherry 那套），互串就是上游 400
+      headers.Authorization = `Bearer ${cfg.apiKey}`;
+      body = {
+        model: cfg.model || 'qwen3-tts-flash',
+        input: { text, voice: cfg.voice || 'Cherry' },
+      };
+      url += '/services/aigc/multimodal-generation/generation';
       break;
     }
     case 'openai-speech': {
