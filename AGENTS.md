@@ -111,6 +111,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 19. **「动画效果 = 路线移动」必须顺带打开「显示标记」**：那个沿路线走的标记就是这个动画的主体，而形状工具下拉建的「直线」默认 `showIcon: false`。原先写的是 `showIcon ?? true`，false 被原样保留 → 选了动画什么也不动，面板里的「动画开始/结束时间」也成了摆设。规则：**选 move 就 `showIcon = true`**（反向已在「显示标记」开关里：打开时若无动画则补 move）。
 20. **`renderLine` 的 `noAnim`（原名 isShapeLine）只表示「没被显式要求动画的形状线」**：形状线默认「一致显示」（整条一次画完、不看动画起止、不 march / 不 fly），判据是 `shapeCategory ∈ {multi,special}` **且 `animEffect` 为空**；用户显式选了动画，就别再拿「它是形状线」当理由忽略 `moveStartFrame/moveEndFrame`。以后写这类「按默认语义压制用户输入」的门禁，都要给显式值让路。
 21. **`PropertiesPanel.tsx` 曾混着单 `\r` 换行的行**（早年内联脚本改写的残留），git 因此把整个 blob 判成 `-text`：任何一处小改都显示成整文件重写，blame / review 全废（2026-09-19 已统一为 CRLF）。批量改文件时**读也要 `newline=''`**，只在 `open(...,'w')` 加是漏的 —— universal-newlines 会把 `\r` 和 `\r\n` 都吞成 `\n`。改完用 `git ls-files --eol <file>` 确认是 `i/lf w/crlf`。
+22. **TTS 的「协议 ↔ 模型名 ↔ 音色」三者必须成套**（2026-09-19 上游 HTTP 400 `InvalidParameter / Model not exist.` 的成因）：`providers.ts` 里 `case 'qwen-tts'` 实现的其实是 **CosyVoice** 端点（`/services/audio/tts/SpeechSynthesizer`，设置面板下拉一直标着 "DashScope CosyVoice"），而预设往里填的是 Qwen-TTS 的模型名 `qwen3-tts` —— 模型名发错了端点（能报 "Model not exist" 说明 baseUrl 与路径是对的）。现在拆成 `cosyvoice`（音色 `long*`，如 longanyang）与 `qwen-tts`（`/services/aigc/multimodal-generation/generation`，音色 `Cherry` 那套）。合法模型名：CosyVoice = `cosyvoice-v3-flash` / `v3.5-flash` / `v3-plus` / `v3.5-plus` / `v2`；Qwen-TTS = `qwen3-tts-flash` / `qwen-tts`（**`qwen3-tts` 单独不是合法名**）。声音克隆只走 CosyVoice。改任何一项都要同时核对端点、模型、音色三项。
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
 
