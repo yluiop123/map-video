@@ -58,7 +58,7 @@ lib/
   military-plots.ts / military-geometry.ts  # 移植自 plot_ol 的军标算法（燕尾/钳形/进攻/集结地）
   regions.ts           # 行政区边界加载与点选/按名查找（默认 johan world.geo.json，可换源）
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
-  tw-colors.ts         # Tailwind 官方色板（22 族 × 11 阶，ColorPicker 的唯一取色来源，数值由 tailwindcss/colors 导出后落盘）
+  tw-colors.ts         # Tailwind 官方色板（22 族 × 11 阶，ColorPicker 的唯一取色来源，数值由 tailwindcss/colors 导出后落盘；族顺序跟 docs/colors 页一致）
   voices.ts            # 配音音色目录（系统音色名一律抄官方表）+「我的克隆音色」localStorage 账本 + 内置参考音频
 stores/
   projectStore.ts      # 项目数据全部操作 + 撤销/重做 + IndexedDB(dexie) 持久化
@@ -117,7 +117,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 21. **`PropertiesPanel.tsx` 曾混着单 `\r` 换行的行**（早年内联脚本改写的残留），git 因此把整个 blob 判成 `-text`：任何一处小改都显示成整文件重写，blame / review 全废（2026-09-19 已统一为 CRLF）。批量改文件时**读也要 `newline=''`**，只在 `open(...,'w')` 加是漏的 —— universal-newlines 会把 `\r` 和 `\r\n` 都吞成 `\n`。改完用 `git ls-files --eol <file>` 确认是 `i/lf w/crlf`。
 22. **TTS 的「协议 ↔ 模型名 ↔ 音色」三者必须成套**（2026-09-19 上游 HTTP 400 `InvalidParameter / Model not exist.` 的成因）：`providers.ts` 里 `case 'qwen-tts'` 实现的其实是 **CosyVoice** 端点（`/services/audio/tts/SpeechSynthesizer`，设置面板下拉一直标着 "DashScope CosyVoice"），而预设往里填的是 Qwen-TTS 的模型名 `qwen3-tts` —— 模型名发错了端点（能报 "Model not exist" 说明 baseUrl 与路径是对的）。现在拆成 `cosyvoice`（音色 `long*`，如 longanyang）与 `qwen-tts`（`/services/aigc/multimodal-generation/generation`，音色 `Cherry` 那套）。合法模型名：CosyVoice 端点 = `cosyvoice-v3-flash` / `v3.5-flash` / `v3-plus` / `v3.5-plus` / `v2`，同端点还承载 `qwen-audio-3.0-tts-flash`（本机 `D:/frontend/qwen/vioce.py` 实测在用）；Qwen-TTS = `qwen3-tts-flash` / `qwen-tts`（**`qwen3-tts` 单独不是合法名**）。音色同理：`long*` 属 CosyVoice、`Cherry` 属 Qwen-TTS，且带 `_v3` 的名字不与 v2 通用 —— 所以 UI 里不给自由输入，只给官方表抄来的下拉列表。声音克隆只走 CosyVoice。改任何一项都要同时核对端点、模型、音色三项。
 23. **弹层的「层」有两个独立陷阱（2026-09-20 字幕生成弹窗两处同报）**：
-    - **宿主带 `overflow-y-auto` 时不能用 `absolute` 浮层**：子面板会被宿主裁掉，实测表现为「点了没反应」（`ColorPicker` 的色板当时顶边已经在弹窗之外）。共享原子一律走 `createPortal(…, document.body)` + `position:fixed`，在 `useLayoutEffect` 里按触发块与视口算位置（下方放不下就翻到上方，最后再夹一次 —— 只夹 `top` 不夹 `bottom` 仍会露半截）。面板脱离了 `wrapRef`，所以点击外关闭必须同时放过 `popRef`，否则 mousedown 先把面板卸掉、`click` 再也打不到色块；滚动 / 改窗口尺寸时直接收起（fixed 不跟宿主一起滚）。
+    - **宿主带 `overflow-y-auto` 时不能用 `absolute` 浮层**：子面板会被宿主裁掉，实测表现为「点了没反应」（`ColorPicker` 的色板当时顶边已经在弹窗之外）。共享原子一律走 `createPortal(…, document.body)` + `position:fixed`，在 `useLayoutEffect` 里按触发块与视口算位置（下方放不下就翻到上方，最后再夹一次 —— 只夹 `top` 不夹 `bottom` 仍会露半截）。面板脱离了 `wrapRef`，所以点击外关闭必须同时放过 `popRef`，否则 mousedown 先把面板卸掉、`click` 再也打不到色块；滚动 / 改窗口尺寸要**重新定位**而不是关闭（早先写成关闭，结果连面板内拖滚动条都把面板关掉 —— 宿主 `overflow-y-auto` 滚动时同理）。
     - **地图舞台内的 `zIndex` 会漏到模态窗之上**：`FxPreviewLayer` 里字幕是 `zIndex: 60`，而 `GenerateDialog` 是 `z-50`，舞台盒子原本没有层叠上下文，60 就跑去和根上下文比大小，于是**预览字幕盖住字幕生成弹窗**。修法是给 `App.tsx` 那个 `absolute` 的 stageBox 加 `isolate`，把地图 / 字幕 / 弹窗卡片 / 屏幕特效压成一个上下文（组内相对顺序不变，MapLibre 图层照旧）。A/B 实测：`isolation:isolate` 时舞台内 z-60 探针的命中区被弹窗夺回，改回 `auto` 即复现遮挡。以后新增「舞台内高 z-index 的预览层」不必再单独跟模态窗比大小。
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
@@ -129,7 +129,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - 顶栏工具是**扁平一键直达**（点击即创建/进入模式），样式差异全部放右侧 Settings 面板切换；**没有下拉工具组**。工具条/时间线上的「图层」按钮开合左侧图层浮层（editorStore.elementsOpen，默认收起）。界面上指 Layer 的地方一律叫「图层」，「元素」只留给单个 element。
 - Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
 - 右侧浮层显示条件：element 模式需有选中元素；keyframe 模式始终显示（editorStore.panelMode 三态）。
-- 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（色板 = Tailwind 官方表 `lib/tw-colors.ts`：默认只铺**每族 500 那一列** 24 格 + 「展开全色阶」看 22 族 × 11 阶，底部留 input[type=color] 兜底任意色；不要再写裸 `input[type=color]`，也不要再维护第四份色值表）；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
+- 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（色板 = Tailwind 官方表 `lib/tw-colors.ts`，**族顺序跟 docs/colors 页一致**：先 red→rose 彩色再 slate→stone 中性，v4 独有的 taupe/mauve/mist/olive 因项目锁在 3.4 不收；默认只铺**每族 500 那一列** 24 格 + 「展开全色阶」看 22 族 × 11 阶，底部是 `input[type=color]` + **`#RRGGBB` 文本框**（认 `#abc` 缩写，回车/失焦生效，非法就退回原值不吞输入）；不要再写裸 `input[type=color]`，也不要再维护第四份色值表）；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
 - 时间显示用秒（`lib/time.ts` / FrameTimeField），内部仍存帧。
 - **路线「显示标记」与标记设置走同一套形态约定**：`moveIconStyleOf`（PropertiesPanel）与 `pinStyleOf` 逐条对应 —— **圆点 / 水滴针 归入「图片」类**（是内置图形，不是跳出图片类的独立形态），所以资源网格开头那两格点下去后资源区**不会消失**，只是选中态从圆点换到图片/水滴针；非资源形态（气泡/旗帜/文字/表情）不渲染资源区（`MoveResourcePicker` 自己 return null，调用处不再写 include 列表）。「图标样式」按钮行只列 气泡/旗帜/文字/表情 + 5 个资源形态，**不要**把圆点/水滴针单独提成按钮。
 - **路线顶点编辑**：EditableMap 对 line/moving_point/arrow/double_arrow 显示路径点标记（vertex-dot 图层，选中的更大更蓝），mousedown 优先命中顶点（12px）→ 拖拽只更新该点坐标（routePathOf/hitRouteVertex 辅助函数）；路径点坐标也可在属性面板「路径点」中输入/删除。燕尾箭头归入形状类别（categoryOf 特判 arrowType）。

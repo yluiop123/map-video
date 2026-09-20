@@ -457,7 +457,6 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           <div className="flex items-center gap-2">
             <span className="w-14 shrink-0 text-[11px] text-muted-foreground">{t('字号', 'Size')}</span>
             <NumberInput className="input h-7 w-16 text-xs" value={style.fontSize} step={2} min={12} onCommit={(v) => setStyle({ fontSize: Math.max(12, v) })} />
-            <ColorPicker value={style.color} onChange={(c) => setStyle({ color: c })} />
             <span className="w-14 shrink-0 text-[11px] text-muted-foreground">{t('描边', 'Stroke')}</span>
             <NumberInput className="input h-7 w-16 text-xs" value={style.strokeWidth} step={1} min={0} onCommit={(v) => setStyle({ strokeWidth: Math.max(0, v) })} />
             <ColorPicker value={style.strokeColor} onChange={(c) => setStyle({ strokeColor: c })} />

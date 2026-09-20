@@ -156,34 +156,15 @@ export function ColorPicker({ value, onChange, disabled, title }: {
 }) {
   const [open, setOpen] = useState(false);
   const [full, setFull] = useState(false);
+  const [hex, setHex] = useState(value);
   const wrapRef = useRef<HTMLDivElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (wrapRef.current?.contains(t) || popRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    // fixed 面板不会跟着触发按钮走，滚动/改窗口尺寸时直接收起
-    const close = () => setOpen(false);
-    window.addEventListener('mousedown', onDown);
-    window.addEventListener('scroll', close, true);
-    window.addEventListener('resize', close);
-    return () => {
-      window.removeEventListener('mousedown', onDown);
-      window.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
-    };
-  }, [open]);
-
-  // 面板挂在 body 上：嵌在 overflow-y-auto 弹窗里时，absolute 定位会被宿主容器裁掉
-  // （字幕生成的「文字色」就是这么被挡住的），所以按触发块 + 视口算一次位置。
-  useLayoutEffect(() => {
+  /** 按触发块 + 视口算一次位置：下方放不下就翻到上方，最后夹进取（只夹 top 不夹 bottom 会露半截） */
+  function place() {
     const trig = wrapRef.current;
     const pop = popRef.current;
-    if (!open || !trig || !pop) return;
+    if (!trig || !pop) return;
     const r = trig.getBoundingClientRect();
     const { offsetWidth: w, offsetHeight: h } = pop;
     const M = 8;
@@ -196,18 +177,51 @@ export function ColorPicker({ value, onChange, disabled, title }: {
     left = Math.min(Math.max(M, left), Math.max(M, window.innerWidth - M - w));
     pop.style.top = `${Math.round(top)}px`;
     pop.style.left = `${Math.round(left)}px`;
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t) || popRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    // 滚动 / 改窗口尺寸：跟着触发块重新定位（早先是直接关闭，结果连面板内拖滚动条都会把它关掉）
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+    // place 只读 ref，不必随渲染重挂
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 面板挂在 body 上：嵌在 overflow-y-auto 弹窗里时，absolute 定位会被宿主容器裁掉
+  // （字幕生成的「文字色」就是这么被挡住的）。
+  useLayoutEffect(() => {
+    if (!open) { setHex(value); return; }
+    place();
   }, [open, value, full]);
 
-  const same = (hex: string) => (value || '').trim().toUpperCase() === hex.toUpperCase();
-  const pick = (hex: string) => { onChange(hex); setOpen(false); };
-  const swatch = (hex: string, label: string, cls: string, style?: React.CSSProperties) => (
+  const same = (c: string) => (value || '').trim().toUpperCase() === c.toUpperCase();
+  const pick = (c: string) => { onChange(c); setOpen(false); };
+  /** 手打色值：认 #RGB / #RRGGBB（带不带 # 都行），不合法就退回当前值而不是吞掉输入 */
+  const commitHex = () => {
+    let v = hex.trim().replace(/^#/, '');
+    if (/^[0-9a-fA-F]{3}$/.test(v)) v = v.split('').map((ch) => ch + ch).join('');
+    if (/^[0-9a-fA-F]{6}$/.test(v)) { onChange(`#${v.toUpperCase()}`); setOpen(false); }
+    else setHex(value);
+  };
+  const swatch = (c: string, label: string, cls: string, style?: React.CSSProperties) => (
     <button
       key={label}
       type="button"
-      title={`${label} · ${hex}`}
-      onClick={() => pick(hex)}
-      className={`${cls} rounded border-2 shrink-0 transition-transform hover:scale-110 ${same(hex) ? 'border-white/80' : 'border-white/15'}`}
-      style={{ backgroundColor: hex, ...style }}
+      title={`${label} · ${c}`}
+      onClick={() => pick(c)}
+      className={`${cls} rounded border-2 shrink-0 transition-transform hover:scale-110 ${same(c) ? 'border-white/80' : 'border-white/15'}`}
+      style={{ backgroundColor: c, ...style }}
     />
   );
 
@@ -261,9 +275,18 @@ export function ColorPicker({ value, onChange, disabled, title }: {
               type="color"
               value={toHex6(value)}
               onChange={(e) => onChange(e.target.value)}
-              className="w-7 h-7 rounded cursor-pointer bg-transparent border border-white/15 p-0.5"
+              className="w-7 h-7 shrink-0 rounded cursor-pointer bg-transparent border border-white/15 p-0.5"
             />
-            <span className="text-[11px] text-muted-foreground">自定义颜色</span>
+            <input
+              value={hex}
+              onChange={(e) => setHex(e.target.value)}
+              onBlur={commitHex}
+              onKeyDown={(e) => { if (e.key === 'Enter') commitHex(); }}
+              placeholder="#000000"
+              spellCheck={false}
+              className="h-7 w-24 min-w-0 rounded-md border border-white/15 bg-white/[0.045] px-2 text-[11px] font-mono uppercase text-foreground placeholder:text-muted-foreground/50 focus:border-white/30 focus:outline-none"
+              title="输入 6 位十六进制色值（也认 #abc 缩写），回车 / 失焦生效"
+            />
             {twLabelOf(value) && <span className="text-[11px] text-muted-foreground/70 ml-auto">{twLabelOf(value)}</span>}
           </div>
         </div>,

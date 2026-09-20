@@ -18,12 +18,13 @@ export interface TwFamily {
   shades: string[];
 }
 
+/**
+ * 色族顺序与 https://tailwindcss.com/docs/colors 页面一致：
+ * 先彩色系（red→rose）再中性系（slate→stone）。
+ * 页面另外列的 taupe / mauve / mist / olive 是 Tailwind v4 新增，本项目锁在 3.4，
+ * `tailwindcss/colors` 里没有这四族，故不收录。
+ */
 export const TW_FAMILIES: TwFamily[] = [
-  { family: 'slate', cn: '石板灰', shades: ['#F8FAFC', '#F1F5F9', '#E2E8F0', '#CBD5E1', '#94A3B8', '#64748B', '#475569', '#334155', '#1E293B', '#0F172A', '#020617'] },
-  { family: 'gray', cn: '灰', shades: ['#F9FAFB', '#F3F4F6', '#E5E7EB', '#D1D5DB', '#9CA3AF', '#6B7280', '#4B5563', '#374151', '#1F2937', '#111827', '#030712'] },
-  { family: 'zinc', cn: '锌灰', shades: ['#FAFAFA', '#F4F4F5', '#E4E4E7', '#D4D4D8', '#A1A1AA', '#71717A', '#52525B', '#3F3F46', '#27272A', '#18181B', '#09090B'] },
-  { family: 'neutral', cn: '中性灰', shades: ['#FAFAFA', '#F5F5F5', '#E5E5E5', '#D4D4D4', '#A3A3A3', '#737373', '#525252', '#404040', '#262626', '#171717', '#0A0A0A'] },
-  { family: 'stone', cn: '石灰（主题色）', shades: ['#FAFAF9', '#F5F5F4', '#E7E5E4', '#D6D3D1', '#A8A29E', '#78716C', '#57534E', '#44403C', '#292524', '#1C1917', '#0C0A09'] },
   { family: 'red', cn: '红', shades: ['#FEF2F2', '#FEE2E2', '#FECACA', '#FCA5A5', '#F87171', '#EF4444', '#DC2626', '#B91C1C', '#991B1B', '#7F1D1D', '#450A0A'] },
   { family: 'orange', cn: '橙', shades: ['#FFF7ED', '#FFEDD5', '#FED7AA', '#FDBA74', '#FB923C', '#F97316', '#EA580C', '#C2410C', '#9A3412', '#7C2D12', '#431407'] },
   { family: 'amber', cn: '琥珀', shades: ['#FFFBEB', '#FEF3C7', '#FDE68A', '#FCD34D', '#FBBF24', '#F59E0B', '#D97706', '#B45309', '#92400E', '#78350F', '#451A03'] },
@@ -41,6 +42,11 @@ export const TW_FAMILIES: TwFamily[] = [
   { family: 'fuchsia', cn: '洋红', shades: ['#FDF4FF', '#FAE8FF', '#F5D0FE', '#F0ABFC', '#E879F9', '#D946EF', '#C026D3', '#A21CAF', '#86198F', '#701A75', '#4A044E'] },
   { family: 'pink', cn: '粉', shades: ['#FDF2F8', '#FCE7F3', '#FBCFE8', '#F9A8D4', '#F472B6', '#EC4899', '#DB2777', '#BE185D', '#9D174D', '#831843', '#500724'] },
   { family: 'rose', cn: '玫红', shades: ['#FFF1F2', '#FFE4E6', '#FECDD3', '#FDA4AF', '#FB7185', '#F43F5E', '#E11D48', '#BE123C', '#9F1239', '#881337', '#4C0519'] },
+  { family: 'slate', cn: '石板灰', shades: ['#F8FAFC', '#F1F5F9', '#E2E8F0', '#CBD5E1', '#94A3B8', '#64748B', '#475569', '#334155', '#1E293B', '#0F172A', '#020617'] },
+  { family: 'gray', cn: '灰', shades: ['#F9FAFB', '#F3F4F6', '#E5E7EB', '#D1D5DB', '#9CA3AF', '#6B7280', '#4B5563', '#374151', '#1F2937', '#111827', '#030712'] },
+  { family: 'zinc', cn: '锌灰', shades: ['#FAFAFA', '#F4F4F5', '#E4E4E7', '#D4D4D8', '#A1A1AA', '#71717A', '#52525B', '#3F3F46', '#27272A', '#18181B', '#09090B'] },
+  { family: 'neutral', cn: '中性灰', shades: ['#FAFAFA', '#F5F5F5', '#E5E5E5', '#D4D4D4', '#A3A3A3', '#737373', '#525252', '#404040', '#262626', '#171717', '#0A0A0A'] },
+  { family: 'stone', cn: '石灰（界面主题色族）', shades: ['#FAFAF9', '#F5F5F4', '#E7E5E4', '#D6D3D1', '#A8A29E', '#78716C', '#57534E', '#44403C', '#292524', '#1C1917', '#0C0A09'] },
 ];
 
 /** Tailwind 只有 white / black 两个不带阶的底色 */
