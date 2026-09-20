@@ -12,7 +12,7 @@ export const TTS_PRESETS: ProviderPreset[] = [
   // 模型名与音色必须配对：CosyVoice 走 /services/audio/tts/SpeechSynthesizer（音色 long* 系列），
   // Qwen-TTS 走 /services/aigc/multimodal-generation/generation（音色 Cherry 系列）。
   // 名字不能互串——把 qwen3-tts* 发给 CosyVoice 端点，上游就是 HTTP 400 "Model not exist."
-  { id: 'cosyvoice', label: '通义语音 (CosyVoice)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'cosyvoice-v3-flash', models: ['cosyvoice-v3-flash', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v2'], voice: 'longanyang', protocol: 'cosyvoice', keyHint: 'bailian.console.aliyun.com（DashScope Key）', note: '只需填 DashScope API Key；音色填官方列表里的 long* 名，或用下方声音克隆得到的 voice_id' },
+  { id: 'cosyvoice', label: '通义语音 (CosyVoice)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'cosyvoice-v3-flash', models: ['cosyvoice-v3-flash', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v2', 'qwen-audio-3.0-tts-flash'], voice: 'longanyang', protocol: 'cosyvoice', keyHint: 'bailian.console.aliyun.com（DashScope Key）', note: '只需填 DashScope API Key；音色填官方列表里的 long* 名，或用下方声音克隆得到的 voice_id' },
   { id: 'qwen-tts', label: '通义语音 (Qwen-TTS)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'qwen3-tts-flash', models: ['qwen3-tts-flash', 'qwen-tts'], voice: 'Cherry', protocol: 'qwen-tts', keyHint: 'bailian.console.aliyun.com（DashScope Key）', note: 'Qwen-TTS 合成：音色用 Cherry / Serena 等系统音色名（不是 long* 那套）' },
   { id: 'custom-tts', label: '自定义语音', baseUrl: '', model: '', voice: '', protocol: 'custom', note: 'POST JSON（含 extra 合并），响应为音频或 JSON 内 base64 / url' },
 ];
@@ -132,8 +132,9 @@ function assertTtsPairing(cfg: ProviderConfig): void {
   const model = (cfg.model || '').trim();
   const voice = (cfg.voice || '').trim();
   if (!model) return;
-  if (cfg.protocol === 'cosyvoice' && !model.startsWith('cosyvoice-')) {
-    throw new Error(`CosyVoice 协议的模型名要以 cosyvoice- 开头（如 cosyvoice-v3-flash / cosyvoice-v3.5-flash），当前填的是「${model}」`);
+  // 该端点同时承载 CosyVoice 与 Qwen-Audio-TTS 两个模型家族（音色不通用，但请求形状一致）
+  if (cfg.protocol === 'cosyvoice' && !/^(cosyvoice-|qwen-audio-)/.test(model)) {
+    throw new Error(`该端点的模型名要以 cosyvoice- 或 qwen-audio- 开头（如 cosyvoice-v3-flash / qwen-audio-3.0-tts-flash），当前填的是「${model}」`);
   }
   if (cfg.protocol === 'qwen-tts') {
     if (model === 'qwen3-tts') {

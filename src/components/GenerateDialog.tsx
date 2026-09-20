@@ -11,6 +11,7 @@ import { useProjectStore } from '../stores/projectStore';
 import { useProviderStore, activeProvider } from '../stores/providerStore';
 import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
 import { callLLM, callTTS, parseSrt, srtTime } from '../lib/providers';
+import { VoicePicker } from './VoicePicker';
 import { estimateTextDurationFrames, generateId, defaultNarrationStyle, type NarrationEntry } from '../types';
 
 /** 一行 = 一条字幕 + 它自己的配音（可单独生成 / 覆盖） */
@@ -374,6 +375,11 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
             </div>
           </div>
         )}
+
+        <div className="mb-2">
+          <p className="text-[11px] text-muted-foreground mb-1.5">{t('配音音色', 'Voice')}</p>
+          <VoicePicker />
+        </div>
 
         <div className="border-t border-white/10 pt-2 mb-2">
           <div className="space-y-1.5 max-h-[38vh] overflow-y-auto pr-1">

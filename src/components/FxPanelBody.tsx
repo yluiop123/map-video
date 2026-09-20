@@ -18,7 +18,7 @@ import {
   type PersonContent, type PersonStyle,
   type MusicTrack, type TtsProtocol,
 } from '../types';
-import { callLLM, callTTS, callImage, cloneVoice, readAudioFile, LLM_PRESETS, TTS_PRESETS, IMAGE_PRESETS } from '../lib/providers';
+import { callLLM, callTTS, callImage, readAudioFile, LLM_PRESETS, TTS_PRESETS, IMAGE_PRESETS } from '../lib/providers';
 import { projectContentEndFrame } from '../lib/project-duration';
 
 const FPS_FALLBACK = 30;
@@ -803,35 +803,7 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
   // 连通性测试
   const [test, setTest] = useState<{ s: 'idle' | 'run' | 'ok' | 'err'; m?: string }>({ s: 'idle' });
   useEffect(() => { setTest({ s: 'idle' }); }, [selId, kind]);
-  // 声音克隆（克隆只能用 CosyVoice 模型：qwen3-tts 无 enroll 预处理服务）
-  const [cloneMsg, setCloneMsg] = useState('');
-  const [cloneModel, setCloneModel] = useState('cosyvoice-v3.5-flash');
-  useEffect(() => { setCloneMsg(''); }, [selId]);
-  const runClone = async (file: File) => {
-    if (!sel) return;
-    setCloneMsg(t('上传中…', 'Uploading…'));
-    try {
-      let bytes = await file.arrayBuffer();
-      // 先存到本地素材库（桌面端：userData/media/audio），再读回字节用于克隆
-      // ——与 clone_qwen_voice.py「读取本地参考音频 → 转 wav → dataURI」一致。
-      if (IS_DESKTOP && window.mapvideo?.assets) {
-        const saved = await window.mapvideo.assets.save({
-          mime: file.type || 'audio/mpeg', bytes: new Uint8Array(bytes), name: file.name, kind: 'audio',
-        });
-        const back = await window.mapvideo.assets.read(saved.assetId);
-        if (back?.bytes?.length) {
-          bytes = back.bytes.buffer.slice(back.bytes.byteOffset, back.bytes.byteOffset + back.bytes.byteLength);
-        }
-      }
-      setCloneMsg(t('克隆中…', 'Cloning…'));
-      const vid = await cloneVoice(sel, bytes, cloneModel);
-      // 克隆出的音色绑定在 cosyvoice 模型上：合成模型一并切过去，否则音色不可用
-      useProviderStore.getState().update(sel.id, { voice: vid, model: cloneModel });
-      setCloneMsg('✓ ' + vid);
-    } catch (e) {
-      setCloneMsg('✕ ' + (e instanceof Error ? e.message : String(e)));
-    }
-  };
+
   const runTest = async () => {
     if (!sel) return;
     setTest({ s: 'run' });
@@ -916,7 +888,6 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
                 {!builtin && (
                   <>
                     <div className="flex gap-2">
-                      <input value={sel.voice || ''} onChange={(e) => store.update(sel.id, { voice: e.target.value })} className="input h-7 text-xs flex-1" placeholder={t('音色/说话人 ID', 'Voice ID')} />
                       <select value={sel.protocol || 'custom'} onChange={(e) => store.update(sel.id, { protocol: e.target.value as TtsProtocol })} className="input h-7 text-xs w-36">
                         <option value="openai-speech">OpenAI /audio/speech</option>
                         <option value="minimax-t2a">MiniMax t2a_v2</option>
@@ -929,24 +900,7 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
                     <input value={sel.extra || ''} onChange={(e) => store.update(sel.id, { extra: e.target.value })} className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（可选）', 'Extra JSON (optional)')} />
                   </>
                 )}
-                {/* 声音克隆：参考音频 → voice_id（参照 clone_qwen_voice.py） */}
-                {sel.protocol === 'cosyvoice' && (
-                  <div className="border-t border-white/10 pt-2 space-y-1.5">
-                    <p className="text-[11px] text-muted-foreground">{t('声音克隆：上传 3~60s 参考音频，克隆出绑定 CosyVoice 模型的 voice_id（成功后自动填入音色并切换模型）', 'Voice clone: upload 3–60s reference audio to create a voice_id for a CosyVoice model')}</p>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] text-muted-foreground shrink-0">{t('克隆模型', 'Clone model')}</span>
-                      <select value={cloneModel} onChange={(e) => setCloneModel(e.target.value)} className="input h-7 text-xs flex-1">
-                        <option value="cosyvoice-v3.5-flash">cosyvoice-v3.5-flash</option>
-                        <option value="cosyvoice-v3-plus">cosyvoice-v3-plus</option>
-                      </select>
-                    </div>
-                    <label className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-white/15 bg-white/[0.045] text-[11px] text-foreground/80 hover:border-white/25 cursor-pointer transition-colors">
-                      ⬆ {t('上传参考音频', 'Upload reference audio')}
-                      <input type="file" accept="audio/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void runClone(f); e.target.value = ''; }} />
-                    </label>
-                    {cloneMsg && <p className="text-[11px] text-muted-foreground break-all">{cloneMsg}</p>}
-                  </div>
-                )}
+                <p className="text-[10px] text-muted-foreground/80">{t('音色与声音克隆在顶栏「字幕生成」里做', 'Voice picking & cloning live in the Subtitle studio')}</p>
               </>
             )}
             {kind === 'llm' && !builtin && (
