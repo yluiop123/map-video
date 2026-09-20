@@ -201,7 +201,7 @@ export default function App() {
       {/* 地图舞台：全幅画布 + 特效预览层 + 浮动工具条/面板（震动=整体画面位移） */}
       <div ref={stageRef} className={`relative flex-1 overflow-hidden ${presenting ? 'bg-black' : 'bg-[#0c0a09]'}`}>
         <div
-          className="absolute overflow-hidden"
+          className="absolute isolate overflow-hidden"
           style={{ ...stageBoxStyle, transform: shake ? `translate(${shake.x.toFixed(2)}px, ${shake.y.toFixed(2)}px)` : undefined }}
         >
           <EditableMap

@@ -2,7 +2,8 @@
  * 共享 UI 基础组件（Mapimator Studio 深色风格对齐）
  * 此前 Section/Field/StyleGrid/Toggle 在 PropertiesPanel 与 KeyframePanel 各有一份，收敛于此统一维护。
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useEditorStore } from '../../stores/editorStore';
 
 /** 属性面板双语标签：t('中文', 'English')，随顶栏语言切换 */
@@ -179,20 +180,50 @@ export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current?.contains(e.target as Node)) return;
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t) || popRef.current?.contains(t)) return;
       setOpen(false);
     };
+    // fixed 面板不会跟着触发按钮走，滚动/改窗口尺寸时直接收起
+    const close = () => setOpen(false);
     window.addEventListener('mousedown', onDown);
-    return () => window.removeEventListener('mousedown', onDown);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
   }, [open]);
 
+  // 面板挂在 body 上：嵌在 overflow-y-auto 弹窗里时，absolute 定位会被宿主容器裁掉
+  // （字幕生成的「文字色」就是这么被挡住的），所以按触发块 + 视口算一次位置。
+  useLayoutEffect(() => {
+    const trig = wrapRef.current;
+    const pop = popRef.current;
+    if (!open || !trig || !pop) return;
+    const r = trig.getBoundingClientRect();
+    const { offsetWidth: w, offsetHeight: h } = pop;
+    const M = 8;
+    let top = r.bottom + 4;
+    if (top + h > window.innerHeight - M) top = r.top - 4 - h;
+    top = Math.min(Math.max(M, top), Math.max(M, window.innerHeight - M - h));
+    let left = r.right - w;
+    if (left < M) left = M;
+    if (left + w > window.innerWidth - M) left = window.innerWidth - M - w;
+    left = Math.min(Math.max(M, left), Math.max(M, window.innerWidth - M - w));
+    pop.style.top = `${Math.round(top)}px`;
+    pop.style.left = `${Math.round(left)}px`;
+  }, [open, value, palette]);
+
   return (
-    <div ref={ref} className="relative">
+    <div ref={wrapRef} className="relative">
       <button
         type="button"
         disabled={disabled}
@@ -203,8 +234,8 @@ export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled
         <span className="w-4 h-4 rounded border border-white/25 shrink-0" style={{ backgroundColor: value }} />
         <span className="text-xs text-foreground/70 font-mono uppercase truncate">{value || '—'}</span>
       </button>
-      {open && !disabled && (
-        <div className="absolute right-0 top-full mt-1 w-[300px] max-w-[86vw] bg-card border border-white/10 rounded-xl shadow-2xl p-2.5 z-50">
+      {open && !disabled && createPortal(
+        <div ref={popRef} className="fixed top-0 left-0 z-[120] w-[300px] max-w-[86vw] bg-card border border-white/10 rounded-xl shadow-2xl p-2.5">
           <div className="grid grid-cols-8 gap-1.5">
             {palette.map((c) => (
               <button
@@ -228,7 +259,8 @@ export function ColorPicker({ value, onChange, palette = COLOR_PALETTE, disabled
             />
             <span className="text-[11px] text-muted-foreground">自定义颜色</span>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
