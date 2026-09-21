@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Bot, AudioLines, ImageIcon, X } from 'lucide-react';
-import { ProviderSettingsDialog } from './FxPanelBody';
+import { ProviderPanel } from './ProviderPanel';
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -46,7 +46,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             ))}
           </aside>
           <main className="flex-1 min-w-0 overflow-y-auto p-4">
-            <ProviderSettingsDialog kind={kind} inline />
+            <ProviderPanel kind={kind} />
           </main>
         </div>
       </div>

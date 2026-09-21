@@ -2,7 +2,7 @@ import type { ProviderConfig, ProviderEndpoint } from '../types';
 import { IS_DESKTOP } from './backend';
 import { recipeById, type Recipe } from './recipes';
 import {
-  callEndpoint, EngineError, type CallResult, type EndpointTemplate,
+  buildRequest, callEndpoint, redact, EngineError, type CallResult, type EndpointTemplate,
   type ReqCtx, type ResolvedRequest, type Role, type SendResult,
 } from './request-engine';
 
@@ -151,6 +151,29 @@ async function fetchBytes(url: string): Promise<{ bytes: Uint8Array; mime?: stri
   const res = await fetch(url);
   if (!res.ok) throw new EngineError(`下载结果失败 HTTP ${res.status}`);
   return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get('content-type') || undefined };
+}
+
+/**
+ * 「预览请求」：只跑模板求值 + 密钥打码，**一个字节都不发出去**。
+ * 有了它，改完模板先看实际会长成什么样，再决定要不要花一次真调用。
+ */
+export function previewRequest(cfg: ProviderConfig, role: Role, inputs: Record<string, unknown> = {}): ResolvedRequest {
+  const row = endpointOf(cfg, role);
+  if (!row) throw new EngineError(`这个供应商没配 ${role} 接口`);
+  const extraPatch = safeExtra(cfg.extra);
+  const req = buildRequest(row, ctxOf(cfg, { ...(row.overrides ?? {}), ...inputs }));
+  const merged = extraPatch ? { ...req, body: deepMerge(req.body, extraPatch) } : req;
+  return redact(merged, ctxOf(cfg));
+}
+
+function safeExtra(s?: string): Record<string, unknown> | null {
+  if (!s?.trim()) return null;
+  try { return JSON.parse(s) as Record<string, unknown>; } catch { return null; }
+}
+
+/** 「试调用」：走完整引擎（含异步轮询），把 steps / 取到的字段 / 字节数原样交回界面 */
+export function runRoleDebug(cfg: ProviderConfig, role: Role, inputs: Record<string, unknown> = {}): Promise<CallResult> {
+  return runRole(cfg, role, inputs);
 }
 
 // ========== 对外四个动作（签名与旧版一致，调用点不用改） ==========

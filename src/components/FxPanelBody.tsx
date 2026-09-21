@@ -5,8 +5,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore, type FxTab } from '../stores/editorStore';
-import { useProviderStore } from '../stores/providerStore';
-import { IS_DESKTOP } from '../lib/backend';
 import { useT, Section, Field, OptionBlocks, Toggle, ColorPicker, NumberInput } from './ui/primitives';
 import { FrameTimeField } from './FrameTimeField';
 import {
@@ -18,9 +16,7 @@ import {
   type PersonContent, type PersonStyle,
   type MusicTrack,
 } from '../types';
-import { callLLM, callTTS, callImage, readAudioFile } from '../lib/providers';
-import { recipesFor, recipeById } from '../lib/recipes';
-import { pickLabel } from '../lib/i18n';
+import { readAudioFile } from '../lib/providers';
 import { projectContentEndFrame } from '../lib/project-duration';
 
 const FPS_FALLBACK = 30;
@@ -778,160 +774,6 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
 }
 
 // ========== 弹窗微调辅助 ==========
-
-// ========== 配音 / AI 服务设置（可扩展） ==========
-
-export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind: 'llm' | 'tts' | 'image'; onClose?: () => void; inline?: boolean }) {
-  const t = useT();
-  const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
-  const list = useProviderStore((s) => (kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image));
-  const activeId = useProviderStore((s) => (kind === 'llm' ? s.activeLlmId : kind === 'tts' ? s.activeTtsId : s.activeImageId));
-  const recipes = recipesFor(kind);
-  const [selId, setSelId] = useState<string | null>(activeId || list[0]?.id || null);
-  const sel = list.find((c) => c.id === selId) || null;
-  const store = useProviderStore.getState();
-  // 「内置形态」由 recipe 决定（早先是拿显示名去反查预设，用户改个名就掉出内置形态）
-  const recipe = sel ? recipeById(sel.recipe) : undefined;
-  const builtin = !!recipe && !recipe.id.startsWith('custom');
-  /** 需要第二个密钥槽的两家（早先是把两个值拼进 apiKey，现在各占一格） */
-  const needsSecret2 = sel?.recipe === 'volc-tts' || sel?.recipe === 'minimax-t2a';
-
-  // 内置默认供应商：文案=OpenAI 兼容、语音=CosyVoice（它同时是声音克隆那条通路）、图片=通义；
-  // 首次进入且无配置时自动预置，用户只需填 API Key
-  useEffect(() => {
-    const st = useProviderStore.getState();
-    if (kind === 'llm' && st.llm.length === 0) setSelId(st.addFromRecipe('openai-chat', 'llm'));
-    else if (kind === 'tts' && st.tts.length === 0) setSelId(st.addFromRecipe('dashscope-cosyvoice', 'tts'));
-    else if (kind === 'image' && st.image.length === 0) setSelId(st.addFromRecipe('dashscope-image', 'image'));
-  }, [kind]);
-
-  // 连通性测试
-  const [test, setTest] = useState<{ s: 'idle' | 'run' | 'ok' | 'err'; m?: string }>({ s: 'idle' });
-  useEffect(() => { setTest({ s: 'idle' }); }, [selId, kind]);
-
-  const runTest = async () => {
-    if (!sel) return;
-    setTest({ s: 'run' });
-    try {
-      if (kind === 'llm') {
-        const out = await callLLM(sel, '你是连通性测试助手。', '只回复两个字：正常');
-        setTest({ s: 'ok', m: (out || '').trim().slice(0, 60) || '连接正常' });
-      } else if (kind === 'tts') {
-        const r = await callTTS(sel, '连通性测试');
-        setTest(r?.dataUrl ? { s: 'ok', m: '语音合成成功' } : { s: 'err', m: '返回为空' });
-      } else {
-        const img = await callImage(sel, '一只戴宇航员头盔的橘猫，赛博朋克风格，8k');
-        setTest(img ? { s: 'ok', m: '图片生成成功' } : { s: 'err', m: '返回为空' });
-      }
-    } catch (e) {
-      setTest({ s: 'err', m: e instanceof Error ? e.message : String(e) });
-    }
-  };
-
-  const KIND_TITLE = {
-    llm: '🤖 ' + t('文案生成 AI', 'Text AI'),
-    tts: '🔊 ' + t('语音克隆 / 配音', 'Voice (clone / TTS)'),
-    image: '🖼 ' + t('图片生成 AI', 'Image AI'),
-  } as const;
-
-  const body = (
-    <>
-        <h3 className="text-sm font-semibold mb-2">{KIND_TITLE[kind]}</h3>
-        <p className="text-[11px] text-muted-foreground mb-2">
-          {IS_DESKTOP
-            ? t('配置存本机 SQLite 数据库；请求经主进程转发（无 CORS）。Key 不出本机。', 'Stored in local SQLite; requests go through the main process. Keys never leave this machine.')
-            : t('网页开发模式：浏览器直连，可能被 CORS 拦截；正式使用请用桌面版。', 'Web dev mode: direct browser calls may hit CORS; use the desktop app.')}
-        </p>
-        <p className="text-[11px] text-muted-foreground mb-2">
-          {t('内置常用厂商，可直接添加并填 Key；也可「自定义」接入任何兼容服务。Key 仅存本机浏览器，不会写入项目文件。', 'Built-in presets + custom. Keys stay in this browser only.')}
-        </p>
-        <div className="flex flex-wrap gap-1.5 mb-2">
-          {recipes.map((p) => (
-            <button key={p.id} onClick={() => setSelId(store.addFromRecipe(p.id, kind))} className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-[11px] hover:border-white/25 transition-colors" title={pickLabel(p.note, lang)}>
-              ＋ {pickLabel(p.label, lang)}
-            </button>
-          ))}
-        </div>
-        {list.length === 0 && <p className="text-xs text-muted-foreground mb-2">{t('点上方厂商按钮添加一个服务。', 'Add a provider above.')}</p>}
-        <div className="flex flex-wrap gap-1.5 mb-3">
-          {list.map((c) => (
-            <div key={c.id} className="flex items-center rounded-md border overflow-hidden" style={{ borderColor: c.id === activeId ? 'var(--brand)' : 'rgba(255,255,255,0.1)' }}>
-              <button onClick={() => { store.setActive(kind, c.id); setSelId(c.id); }} className={`h-7 px-2 text-[11px] ${c.id === selId ? 'bg-white/10' : ''} hover:bg-white/10`}>
-                {c.id === activeId ? '● ' : ''}{c.label}
-              </button>
-              <button onClick={() => { store.remove(c.id); if (selId === c.id) setSelId(null); }} className="h-7 px-1.5 text-[11px] text-red-400/80 hover:bg-red-500/10" title={t('删除', 'Delete')}>✕</button>
-            </div>
-          ))}
-        </div>
-        {sel && (
-          <div className="space-y-2 border-t border-white/10 pt-2">
-            <div className="flex gap-2">
-              {!builtin && (
-                <input value={sel.label} onChange={(e) => store.update(sel.id, { label: e.target.value })} className="input h-7 text-xs flex-1" placeholder={t('名称', 'Label')} />
-              )}
-              {(() => {
-                const ms = recipe?.models;
-                if (ms && ms.length) {
-                  const opts = sel.model && !ms.includes(sel.model) ? [sel.model, ...ms] : ms;
-                  return (
-                    <select value={sel.model} onChange={(e) => store.update(sel.id, { model: e.target.value })} className="input h-7 text-xs w-32">
-                      {opts.map((m) => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                  );
-                }
-                return (
-                  <input value={sel.model} onChange={(e) => store.update(sel.id, { model: e.target.value })} className="input h-7 text-xs w-32" placeholder={kind === 'llm' ? t('模型', 'Model') : kind === 'tts' ? t('TTS 模型', 'TTS model') : t('图片模型', 'Image model')} />
-                );
-              })()}
-            </div>
-            {!builtin && (
-              <input value={sel.baseUrl} onChange={(e) => store.update(sel.id, { baseUrl: e.target.value })} className="input h-7 text-xs w-full" placeholder="https://…/v1" />
-            )}
-            <input value={sel.secrets.apiKey} onChange={(e) => store.update(sel.id, { secrets: { ...sel.secrets, apiKey: e.target.value } })} type="password" className="input h-7 text-xs w-full" placeholder={t('API Key（内置供应商只需填这里）', 'API Key')} />
-            {needsSecret2 && (
-              <input value={sel.secrets.secret2 || ''} onChange={(e) => store.update(sel.id, { secrets: { ...sel.secrets, secret2: e.target.value } })} type="password" className="input h-7 text-xs w-full"
-                placeholder={t('第二个密钥：火山 Access Key / MiniMax group_id', 'Second secret: Volc AccessKey / MiniMax group_id')} />
-            )}
-            <input value={sel.extra || ''} onChange={(e) => store.update(sel.id, { extra: e.target.value })} className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（可选，深合并进请求体）', 'Extra JSON (optional)')} />
-            {kind === 'tts' && (
-              <p className="text-[10px] text-muted-foreground/80">{t('音色与声音克隆在顶栏「字幕生成」里做', 'Voice picking & cloning live in the Subtitle studio')}</p>
-            )}
-            <p className="text-[10px] text-muted-foreground">
-              {pickLabel(recipe?.note, lang)}
-              {(sel.endpoints?.length ?? 0) > 0 && ` · ${t('接口', 'Endpoints')}: ${sel.endpoints.map((e) => e.role).join(' / ')}`}
-            </p>
-            {/* 连通性测试 */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={runTest}
-                disabled={test.s === 'run'}
-                className="h-7 px-3 rounded-md border border-white/15 bg-white/[0.05] text-[11px] hover:bg-white/10 disabled:opacity-50 transition-colors shrink-0"
-              >
-                {test.s === 'run' ? t('测试中…', 'Testing…') : t('测试连通性', 'Test connection')}
-              </button>
-              {test.s !== 'idle' && test.s !== 'run' && (
-                <span className={`text-[11px] truncate ${test.s === 'ok' ? 'text-emerald-400' : 'text-red-400'}`} title={test.m}>
-                  {test.s === 'ok' ? '✓ ' : '✕ '}{test.m}
-                </span>
-              )}
-            </div>
-          </div>
-        )}
-        {!inline && (
-          <button onClick={onClose} className="mt-3 w-full text-xs text-muted-foreground hover:text-foreground">{t('完成', 'Done')}</button>
-        )}
-    </>
-  );
-
-  if (inline) return <div className="space-y-2">{body}</div>;
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-card border border-white/10 rounded-xl shadow-2xl p-4 w-[30rem] max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        {body}
-      </div>
-    </div>
-  );
-}
 
 // ========== 背景音乐 ==========
 

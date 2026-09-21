@@ -1,6 +1,6 @@
 # 供应商请求引擎设计（模板即数据）
 
-> 状态：**8 条拍板已按建议值确认，批次 1 已实现** —— `src/lib/request-engine.ts`（引擎纯函数）、`src/lib/recipes.ts`（11 个模板包）、`src/lib/i18n.ts`（`L` + `pickLabel`）、`tools/verify-request-engine.mjs`（55 项离线回归全绿）。
+> 状态：**8 条拍板已按建议值确认；批次 1–3 已实现** —— 批次 1：`src/lib/request-engine.ts`（引擎纯函数）+ `src/lib/recipes.ts`（11 个模板包）+ `src/lib/i18n.ts`（`L` + `pickLabel`），`tools/verify-request-engine.mjs` 55 项离线回归全绿；批次 2：`provider_endpoint` 建表 + 旧库搬迁 + 双端持久化，`main.mjs` 的两处协议 switch 与 4 个 AI 通道全部删除，换成通用 `net:request` / `net:fetchUrl`，`tools/verify-provider-endpoint.mjs` 18 项全绿；批次 3：`src/components/ProviderPanel.tsx` 两页签（配置 / 接口模板）+ 每接口「预览请求」「试调用」，⚙ 成为唯一入口（内联那份删了）。
 > 第 2 批才动 DDL 与调用链：`provider.protocol` 一删，主进程 switch 与 upsert SQL 同时失效，所以「建表 + 持久化 + 切引擎」必须同批，否则中间态会打断配音与导出。
 > 目标：把「某家供应商怎么发请求」从散落 4 处的代码，收敛成一份可配置、可自检、双端共用的数据。
 
