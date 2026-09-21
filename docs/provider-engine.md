@@ -1,6 +1,6 @@
 # 供应商请求引擎设计（模板即数据）
 
-> 状态：**8 条拍板已按建议值确认；批次 1–3 已实现** —— 批次 1：`src/lib/request-engine.ts`（引擎纯函数）+ `src/lib/recipes.ts`（11 个模板包）+ `src/lib/i18n.ts`（`L` + `pickLabel`），`tools/verify-request-engine.mjs` 55 项离线回归全绿；批次 2：`provider_endpoint` 建表 + 旧库搬迁 + 双端持久化，`main.mjs` 的两处协议 switch 与 4 个 AI 通道全部删除，换成通用 `net:request` / `net:fetchUrl`，`tools/verify-provider-endpoint.mjs` 18 项全绿；批次 3：`src/components/ProviderPanel.tsx` 两页签（配置 / 接口模板）+ 每接口「预览请求」「试调用」，⚙ 成为唯一入口（内联那份删了）。
+> 状态：**8 条拍板已按建议值确认；批次 1–3 已实现** —— 批次 1：`src/lib/request-engine.ts`（引擎纯函数）+ `src/lib/recipes.ts`（11 个模板包）+ `src/lib/i18n.ts`（`L` + `pickLabel`），`tools/verify-request-engine.mjs` 55 项离线回归全绿；批次 2：`provider_endpoint` 建表 + 旧库搬迁 + 双端持久化，`main.mjs` 的两处协议 switch 与 4 个 AI 通道全部删除，换成通用 `net:request` / `net:fetchUrl`，`tools/verify-provider-endpoint.mjs` 18 项全绿；批次 3：`src/components/ProviderPanel.tsx` 两个页面（供应商配置 ↔ `provider_endpoint` 接口模板，可增删接口）+ 每接口「预览请求」「试调用」，⚙ 成为唯一入口（内联那份删了）。
 > 第 2 批才动 DDL 与调用链：`provider.protocol` 一删，主进程 switch 与 upsert SQL 同时失效，所以「建表 + 持久化 + 切引擎」必须同批，否则中间态会打断配音与导出。
 > 目标：把「某家供应商怎么发请求」从散落 4 处的代码，收敛成一份可配置、可自检、双端共用的数据。
 
@@ -240,9 +240,9 @@ CREATE INDEX IF NOT EXISTS ix_pe_status ON provider_endpoint(status_endpoint_id)
 
 ## 八、UI：页面分工与参数归属
 
-### 8.1 不新增顶级入口，⚙ 里分两层两页签
+### 8.1 不新增顶级入口，⚙ 里分两层、两个页面
 
-现状（`SettingsDialog` + `FxPanelBody:ProviderSettingsDialog`）：⚙ 设置 · AI → 左侧三类（文案 / 语音 / 图片）→ 右侧上方是厂商芯片 + 供应商行（● 生效 / ✕ 删除），下方是选中项的编辑区。改造保持这个骨架，只把下方编辑区拆成两个页签：
+现状（`SettingsDialog` + `FxPanelBody:ProviderSettingsDialog`）：⚙ 设置 · AI → 左侧三类（文案 / 语音 / 图片）→ 右侧上方是厂商芯片 + 供应商行（● 生效 / ✕ 删除），下方是选中项的编辑区。骨架不变，但把它拆成**两个页面**：`接口模板 · N →` 进入、「← 返回配置」退出；换供应商或换类别自动退回配置页（否则会停在一张已被删掉的模板卡上）：
 
 | 页面 | 装什么 | 面向 |
 |---|---|---|
@@ -254,7 +254,8 @@ CREATE INDEX IF NOT EXISTS ix_pe_status ON provider_endpoint(status_endpoint_id)
 - **同一份配置只有一处能改**（已落地）：`FxPanelBody` 的 `inline` 版与 ⚙ 曾是同一组件的两个入口，属 UI 版「双份真相」→ 内联那份已删，`VoicePicker` 只留「选音色 + 试听」。
 - **「内置」的判定换成 `provider.recipe`**。现在靠 `sel.label === preset.label` 反查，用户改个显示名就掉出内置形态（`builtin` 分支失效、裸露出 baseUrl 等）；模板包 id 落在列上，改名无感。
 
-两页签独立滚动容器，不混在一条长流里 —— 混了以后没人敢动 body 模板，也看不清自己改了什么。
+两页各自独立滚动容器，不混在一条长流里 —— 混了以后没人敢动 body 模板，也看不清自己改了什么。
+- **配置页的每个控件都必须对得上库里某一列**：参数取自该行 `vars_json` 中 `kind='param'` 且 `when` 成立的变量（`when` 不成立就不显示，否则是「看着能配、实际不发」），写回 `overrides_json`；`inject` 变量只读展示（标「调用时传入」）；空值写成「删键」而不是存 `null`。
 
 ### 8.2 同步 / 异步归属
 
