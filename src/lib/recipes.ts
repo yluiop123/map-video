@@ -422,6 +422,30 @@ export function recipeById(id: string): Recipe | undefined {
   return RECIPES.find((r) => r.id === id);
 }
 
+/** 每个 kind 可能出现的 role（「接口模板」页据此列出还能补哪个接口；不再是自由字符串） */
+export const ROLES_BY_KIND: Record<ProviderKind, Role[]> = {
+  llm: ['llm.generate'],
+  tts: ['tts.synthesize', 'tts.clone', 'tts.query'],
+  image: ['image.generate', 'image.query'],
+};
+
+/**
+ * 新建一条接口模板时的种子：同类任一模板包里有这个 role 的现成形状就照它来
+ * （例：给只有同步出图的供应商补一个 image.query），否则给一个最小骨架。
+ */
+export function seedTemplate(kind: ProviderKind, role: Role): EndpointTemplate {
+  for (const r of RECIPES) {
+    if (r.kind !== kind) continue;
+    const t = r.roles.find((x) => x.role === role);
+    if (t) return JSON.parse(JSON.stringify(t)) as EndpointTemplate;
+  }
+  return {
+    role, mode: 'sync', method: 'POST', path: '{baseUrl}/',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer {secrets.apiKey}' },
+    body: { model: '{model}' }, vars: [], resp: { kind: 'auto' },
+  };
+}
+
 export function recipesFor(kind: ProviderKind): Recipe[] {
   return RECIPES.filter((r) => r.kind === kind);
 }

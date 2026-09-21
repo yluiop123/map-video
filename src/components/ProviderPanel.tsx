@@ -13,7 +13,8 @@ import { OptionBlocks, NumberInput, Toggle, useT } from './ui/primitives';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import type { ProviderConfig, ProviderEndpoint } from '../types';
-import { recipesFor, recipeById, REQUIRED_ROLES, type Recipe } from '../lib/recipes';
+import { recipesFor, recipeById, REQUIRED_ROLES, ROLES_BY_KIND, seedTemplate, type Recipe } from '../lib/recipes';
+import { useConfirm } from './ui/ConfirmHost';
 import { endpointsOfRecipe } from '../lib/providers';
 import { pickLabel } from '../lib/i18n';
 import { previewRequest, runRoleDebug } from '../lib/providers';
@@ -360,28 +361,41 @@ function ListEditor({ v, value, onChange }: { v: VarSpec; value: unknown[]; onCh
 
 function TemplateTab({ cfg, recipe }: { cfg: ProviderConfig; recipe?: Recipe }) {
   const t = useT();
+  const confirm = useConfirm();
+  const setEndpoints = (endpoints: ProviderEndpoint[]) => useProviderStore.getState().update(cfg.id, { endpoints });
+  const missing = ROLES_BY_KIND[cfg.kind].filter((r) => !cfg.endpoints.some((e) => e.role === r));
+  const addRole = (role: Role) => {
+    const seed = seedTemplate(cfg.kind, role);
+    setEndpoints([...cfg.endpoints, { ...seed, enabled: true, overrides: {} }]);
+  };
+  const drop = async (role: Role) => {
+    if (await confirm({ message: t(`从这家供应商移除接口「${role}」？模板包的默认形状不受影响，可再点「＋」加回来（你在模板里改过的内容会丢）`, `Remove endpoint ${role}? Re-adding it from the recipe loses your edits.`), danger: true })) {
+      setEndpoints(cfg.endpoints.filter((e) => e.role !== role));
+    }
+  };
   return (
     <div className="space-y-2">
       <p className="text-[11px] text-muted-foreground">
         {t('改的是「这家怎么发请求」。占位符：{name} 取变量（标量保留类型），{@name} 在数组里展开成多个元素。', 'Edit how requests are built. {name} = a variable (type kept), {@name} splices array elements.')}
       </p>
-      {cfg.endpoints.map((e) => <EndpointCard key={e.role} cfg={cfg} ep={e} defaults={recipe ? endpointsOfRecipe(recipe.id).find((d) => d.role === e.role) : undefined} />)}
-      {recipe && recipe.roles.length > cfg.endpoints.length && (
-        <button
-          onClick={() => {
-            const have = new Set(cfg.endpoints.map((e) => e.role));
-            const add = endpointsOfRecipe(recipe.id).filter((r) => !have.has(r.role));
-            useProviderStore.getState().update(cfg.id, { endpoints: [...cfg.endpoints, ...add] });
-          }}
-          className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10"
-        >＋ {t('补齐模板包里剩下的接口', 'Add the remaining endpoints from the recipe')}</button>
+      {cfg.endpoints.map((e) => (
+        <EndpointCard key={e.role} cfg={cfg} ep={e} onDelete={() => void drop(e.role)}
+          defaults={recipe ? endpointsOfRecipe(recipe.id).find((d) => d.role === e.role) : undefined} />
+      ))}
+      {missing.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] text-muted-foreground/70">{t('可添加的接口', 'Add endpoint')}</span>
+          {missing.map((r) => (
+            <button key={r} onClick={() => addRole(r)} className="h-6 px-2 rounded-md border border-white/15 text-[10px] font-mono hover:bg-white/10">＋ {r}</button>
+          ))}
+        </div>
       )}
       <p className="text-[10px] text-muted-foreground/70">{t('改完自动存本机库；「预览请求」不联网，「试调用」会真发一次请求。', 'Saved locally; Preview never touches the network, Test does.')}</p>
     </div>
   );
 }
 
-function EndpointCard({ cfg, ep, defaults }: { cfg: ProviderConfig; ep: ProviderEndpoint; defaults?: ProviderEndpoint }) {
+function EndpointCard({ cfg, ep, defaults, onDelete }: { cfg: ProviderConfig; ep: ProviderEndpoint; defaults?: ProviderEndpoint; onDelete: () => void }) {
   const t = useT();
   const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
   const [inputs, setInputs] = useState<Record<string, string>>({});
@@ -416,6 +430,10 @@ function EndpointCard({ cfg, ep, defaults }: { cfg: ProviderConfig; ep: Provider
         <span className="text-[11px] font-medium flex-1 truncate">{pickLabel(ep.label, lang) || ep.role}</span>
         <span className="text-[10px] font-mono text-muted-foreground/70">{ep.role}</span>
         <Toggle checked={ep.enabled !== false} label={t('启用', 'Enabled')} onChange={(v) => patch({ enabled: v })} />
+        <button
+          onClick={onDelete}
+          className="h-6 px-1.5 rounded-md border border-white/15 text-[10px] text-red-400/80 hover:bg-red-500/10" title={t('移除这个接口（模板包里的形状没丢，随时可再加回来）', 'Remove this endpoint')}
+        >✕</button>
         {defaults && (
           <button
             onClick={() => patch({ ...defaults, overrides: ep.overrides })}
