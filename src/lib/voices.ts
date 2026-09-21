@@ -101,9 +101,12 @@ export const QWEN_TTS_VOICES: SystemVoice[] = [
   { id: 'Ono Anna', name: '小野杏', gender: 'female', note: '中英多语' },
 ];
 
-/** 按协议取可用系统音色；Qwen 侧再按模型收窄（旧模型 qwen-tts 只带 4 个音色） */
-export function systemVoicesFor(protocol?: string, model?: string): SystemVoice[] {
-  if (protocol !== 'qwen-tts') return COSYVOICE_VOICES;
+/**
+ * 按模板包取可用系统音色（协议列已随「模板即数据」改版删掉，音色目录挂在 recipe 上）
+ * Qwen 侧再按模型收窄：旧模型 qwen-tts 只带 4 个系统音色。
+ */
+export function systemVoicesFor(recipeId?: string, model?: string): SystemVoice[] {
+  if (recipeId !== 'dashscope-qwen-tts') return COSYVOICE_VOICES;
   if ((model || '').trim() === 'qwen-tts') return QWEN_TTS_VOICES.filter((v) => v.legacy);
   return QWEN_TTS_VOICES;
 }

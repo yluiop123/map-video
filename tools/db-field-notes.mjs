@@ -466,16 +466,35 @@ const NOTES = {
   "provider": {
     "provider_id": "服务商配置 id",
     "kind": "类别：llm 文案生成 / tts 语音合成（含克隆）/ image 图片生成",
+    "recipe": "模板包 id（决定「内置形态」与铺出哪些接口；改显示名不影响）",
     "label": "显示名",
     "base_url": "接口基础地址",
-    "api_key": "密钥（只存本机，不入项目文件）",
+    "secrets_json": "命名密钥槽 JSON：{apiKey, secret2}（火山 Access Key / MiniMax group_id 用 secret2）",
     "model": "模型名 / TTS 音色模型",
-    "protocol": "TTS 协议：openai-speech / minimax-t2a / volc-tts / cosyvoice / qwen-tts / custom",
     "voice": "音色 / 说话人 ID",
     "speed": "语速（0.5–2）",
     "extra": "附加请求参数（JSON，合并进请求体）",
     "active": "是否生效（每个 kind 至多一条为 1）",
     "ord": "同类内排序"
+  },
+  "provider_endpoint": {
+    "endpoint_id": "接口模板行 id，形如 <provider_id>:<role>",
+    "provider_id": "所属供应商",
+    "role": "用途：llm.generate / tts.synthesize / tts.clone / tts.query / image.generate / image.query",
+    "ord": "同一供应商内的展示顺序",
+    "enabled": "是否启用（关掉即该 role 不可用）",
+    "mode": "sync 一次到位 / async 提交后轮询",
+    "method": "HTTP 方法",
+    "path": "路径模板（支持 {baseUrl} 等占位）",
+    "headers_json": "请求头模板 JSON",
+    "query_json": "查询串参数模板 JSON",
+    "body_json": "请求体模板 JSON（值是 {var} 占位）",
+    "vars_json": "变量声明表 JSON（inject 调用期注入 / param 配置期可填）",
+    "overrides_json": "用户在配置期给该接口参数填的值",
+    "resp_kind": "响应类别：auto / audio / json / text",
+    "decode_kind": "结果解码：hex / base64 / url（远端产物再下载）",
+    "pick_json": "出参登记表 JSON（text/audio/image/voiceId/error… 的取值路径）",
+    "poll_json": "异步轮询规则 JSON（任务 id 路径、查询 role、完成/失败判定、超时）"
   }
 };
 

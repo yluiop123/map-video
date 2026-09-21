@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { ProviderConfig } from '../types';
-import { configFromPreset } from '../lib/providers';
+import type { ProviderConfig, ProviderEndpoint } from '../types';
+import { configFromRecipe, endpointsOfRecipe } from '../lib/providers';
 import { IS_DESKTOP } from '../lib/backend';
 
 type ProviderKind = 'llm' | 'tts' | 'image';
@@ -13,9 +13,12 @@ interface ProviderState {
   activeLlmId: string | null;
   activeTtsId: string | null;
   activeImageId: string | null;
-  addFromPreset: (presetId: string, kind: ProviderKind) => string;
+  /** 按模板包新建（模板包 = 一家供应商配齐哪几个接口、各自怎么发） */
+  addFromRecipe: (recipeId: string, kind: ProviderKind) => string;
   addCustom: (kind: ProviderKind) => string;
   update: (id: string, patch: Partial<ProviderConfig>) => void;
+  /** 覆写某个接口的模板（「接口模板」页保存 / 恢复模板包默认） */
+  updateEndpoint: (id: string, role: string, patch: Partial<ProviderEndpoint>) => void;
   remove: (id: string) => void;
   setActive: (kind: ProviderKind, id: string | null) => void;
   hydrate: () => Promise<void>;
@@ -32,8 +35,33 @@ function dbSync(action: () => Promise<unknown>): void {
   action().catch((e) => console.warn('[providers] SQLite 同步失败:', e));
 }
 
-const CUSTOM_PRESET: Record<ProviderKind, string> = { llm: 'custom-llm', tts: 'custom-tts', image: 'custom-image' };
+const LIST_OF: Record<ProviderKind, 'llm' | 'tts' | 'image'> = { llm: 'llm', tts: 'tts', image: 'image' };
+const ACTIVE_OF: Record<ProviderKind, 'activeLlmId' | 'activeTtsId' | 'activeImageId'> = {
+  llm: 'activeLlmId', tts: 'activeTtsId', image: 'activeImageId',
+};
+const CUSTOM_RECIPE: Record<ProviderKind, string> = { llm: 'custom-llm', tts: 'custom-tts', image: 'custom-image' };
 const CUSTOM_LABEL: Record<ProviderKind, string> = { llm: '自定义文案 AI', tts: '自定义语音', image: '自定义图片 AI' };
+
+/** 库里的配置可能还没有接口模板行（旧结构只有一个 protocol 字符串）—— 按模板包铺出来 */
+function withEndpoints(cfg: ProviderConfig): ProviderConfig {
+  return {
+    ...cfg,
+    endpoints: cfg.endpoints?.length ? cfg.endpoints : endpointsOfRecipe(cfg.recipe),
+    secrets: { ...(cfg.secrets ?? {}), apiKey: cfg.secrets?.apiKey ?? '' },
+  };
+}
+
+/** 新增一条供应商后的 state patch（三种 kind 走同一段逻辑，不再复制三遍） */
+function appended(s: ProviderState, kind: ProviderKind, cfg: ProviderConfig): Partial<ProviderState> {
+  const list = (s[LIST_OF[kind]] as ProviderConfig[]).concat(cfg);
+  return { [LIST_OF[kind]]: list, [ACTIVE_OF[kind]]: ensureActive(list, s[ACTIVE_OF[kind]]) } as Partial<ProviderState>;
+}
+
+const mapAll = (s: ProviderState, fn: (c: ProviderConfig) => ProviderConfig) => ({
+  llm: s.llm.map(fn),
+  tts: s.tts.map(fn),
+  image: s.image.map(fn),
+});
 
 export const useProviderStore = create<ProviderState>()(
   persist(
@@ -44,49 +72,27 @@ export const useProviderStore = create<ProviderState>()(
       activeLlmId: null,
       activeTtsId: null,
       activeImageId: null,
-      addFromPreset: (presetId, kind) => {
-        const cfg = configFromPreset(presetId, kind);
-        set((s) => {
-          const list = (kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image).concat(cfg);
-          return {
-            llm: kind === 'llm' ? list : s.llm,
-            tts: kind === 'tts' ? list : s.tts,
-            image: kind === 'image' ? list : s.image,
-            ...(kind === 'llm'
-              ? { activeLlmId: ensureActive(list, s.activeLlmId) }
-              : kind === 'tts'
-                ? { activeTtsId: ensureActive(list, s.activeTtsId) }
-                : { activeImageId: ensureActive(list, s.activeImageId) }),
-          };
-        });
+      addFromRecipe: (recipeId, kind) => {
+        const cfg = configFromRecipe(recipeId, kind);
+        set((s) => appended(s, kind, cfg));
         dbSync(() => window.mapvideo!.providers.upsert(cfg));
         return cfg.id;
       },
       addCustom: (kind) => {
-        const base = configFromPreset(CUSTOM_PRESET[kind], kind);
-        const cfg = { ...base, label: CUSTOM_LABEL[kind] };
-        set((s) => {
-          const list = (kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image).concat(cfg);
-          return {
-            llm: kind === 'llm' ? list : s.llm,
-            tts: kind === 'tts' ? list : s.tts,
-            image: kind === 'image' ? list : s.image,
-            ...(kind === 'llm'
-              ? { activeLlmId: ensureActive(list, s.activeLlmId) }
-              : kind === 'tts'
-                ? { activeTtsId: ensureActive(list, s.activeTtsId) }
-                : { activeImageId: ensureActive(list, s.activeImageId) }),
-          };
-        });
+        const cfg = { ...configFromRecipe(CUSTOM_RECIPE[kind], kind), label: CUSTOM_LABEL[kind] };
+        set((s) => appended(s, kind, cfg));
         dbSync(() => window.mapvideo!.providers.upsert(cfg));
         return cfg.id;
       },
       update: (id, patch) => {
-        set((s) => ({
-          llm: s.llm.map((c) => (c.id === id ? { ...c, ...patch } : c)),
-          tts: s.tts.map((c) => (c.id === id ? { ...c, ...patch } : c)),
-          image: s.image.map((c) => (c.id === id ? { ...c, ...patch } : c)),
-        }));
+        set((s) => mapAll(s, (c) => (c.id === id ? { ...c, ...patch } : c)));
+        const cfg = [...get().llm, ...get().tts, ...get().image].find((c) => c.id === id);
+        if (cfg) dbSync(() => window.mapvideo!.providers.upsert(cfg));
+      },
+      updateEndpoint: (id, role, patch) => {
+        set((s) => mapAll(s, (c) => (c.id === id
+          ? { ...c, endpoints: (c.endpoints ?? []).map((e) => (e.role === role ? { ...e, ...patch } : e)) }
+          : c)));
         const cfg = [...get().llm, ...get().tts, ...get().image].find((c) => c.id === id);
         if (cfg) dbSync(() => window.mapvideo!.providers.upsert(cfg));
       },
@@ -114,12 +120,14 @@ export const useProviderStore = create<ProviderState>()(
       hydrate: async () => {
         if (!IS_DESKTOP) return;
         try {
-          const list = await window.mapvideo!.providers.list();
-          const llm = list.filter((c) => c.kind === 'llm');
-          const tts = list.filter((c) => c.kind === 'tts');
-          const image = list.filter((c) => c.kind === 'image');
+          const raw = await window.mapvideo!.providers.list();
+          const list = raw.map(withEndpoints);
+          const byKind = (kind: ProviderKind) => list.filter((c) => c.kind === kind);
+          const llm = byKind('llm');
+          const tts = byKind('tts');
+          const image = byKind('image');
           const activeOf = (kind: ProviderKind, arr: ProviderConfig[]) =>
-            list.find((c) => c.kind === kind && (c as ProviderConfig & { active?: number }).active === 1)?.id
+            list.find((c) => c.kind === kind && (c as ProviderConfig & { active?: boolean }).active === true)?.id
             ?? ensureActive(arr, null);
           set({
             llm,
@@ -129,15 +137,23 @@ export const useProviderStore = create<ProviderState>()(
             activeTtsId: activeOf('tts', tts),
             activeImageId: activeOf('image', image),
           });
+          // 旧库第一次跑：接口模板刚铺出来，写回去，下次启动不必再补。
+          // 这里必须 await —— 早先是 fire-and-forget 的 dbSync，写失败只留一条 console.warn，
+          // 实测桌面端启动后 provider_endpoint 仍是 0 行且无人发现（与 AGENTS §6.24 同一类「当场能用、重启就丢」）。
+          const missing = raw.filter((r) => !r.endpoints?.length);
+          for (const c of missing) {
+            const filled = withEndpoints(c as ProviderConfig);
+            await window.mapvideo!.providers.upsert(filled);
+          }
+          if (missing.length) console.log(`[providers] 已按模板包补齐 ${missing.length} 家供应商的接口模板`);
         } catch (e) {
           console.warn('[providers] SQLite 加载失败:', e);
         }
       },
     }),
     {
-      name: 'mapvideo-providers',
-      // 桌面端以 SQLite 为源，跳过 localStorage 持久化
-      skipHydration: false,
+      // 换成接口模板结构后旧本地存储作废（按「不为兼容牺牲设计」直接换 key，不写迁移分支）
+      name: 'mapvideo-providers.v2',
       storage: {
         getItem: (name) => {
           if (IS_DESKTOP) return null;
@@ -163,5 +179,5 @@ export function activeProvider(kind: ProviderKind): ProviderConfig | null {
   const list = kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image;
   const activeId = kind === 'llm' ? s.activeLlmId : kind === 'tts' ? s.activeTtsId : s.activeImageId;
   const cfg = list.find((c) => c.id === activeId) || list[0];
-  return cfg || null;
+  return cfg ? withEndpoints(cfg) : null;
 }

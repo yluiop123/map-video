@@ -37,10 +37,11 @@ contextBridge.exposeInMainWorld('mapvideo', {
     list: (kindPrefix) => ipcRenderer.invoke('assets:list', kindPrefix),
     stat: () => ipcRenderer.invoke('assets:stat'),
   },
-  aiChat: (config, system, user) => ipcRenderer.invoke('ai:chat', { config, system, user }),
-  aiTts: (config, text) => ipcRenderer.invoke('ai:tts', { config, text }),
-  aiImage: (config, prompt) => ipcRenderer.invoke('ai:image', { config, prompt }),
-  aiVoiceClone: (config, body) => ipcRenderer.invoke('ai:voiceClone', { config, body }),
+  /** 通用网络：渲染进程按接口模板算好请求，主进程代发（无 CORS，Key 不出本机） */
+  net: {
+    request: (req) => ipcRenderer.invoke('net:request', req),
+    fetchUrl: (url) => ipcRenderer.invoke('net:fetchUrl', url),
+  },
   /** 主进程代拉 JSON/GeoJSON 文本（避开渲染进程 CORS） */
   netJson: (url) => ipcRenderer.invoke('net:json', url),
   env: () => ipcRenderer.invoke('env:get'),

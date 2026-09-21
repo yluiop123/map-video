@@ -1,3 +1,5 @@
+import type { EndpointTemplate } from '../lib/request-engine';
+
 // ========== 项目类型 ==========
 
 /** 合集：项目之上的一层分组容器 */
@@ -909,43 +911,41 @@ export interface MusicTrack {
   fadeOut: number;
 }
 
-/** AI / 配音服务配置（localStorage 持久化，不入项目文件防泄密） */
+/**
+ * AI / 配音服务配置（密钥只存本机，不入项目文件）
+ *
+ * 「怎么发请求」不再由 protocol 字符串 + 两处 switch 决定，而是 `recipe` 铺出的一组接口模板
+ * （`endpoints`）——见 docs/provider-engine.md。protocol 列与 assertTtsPairing 一并删掉。
+ */
 export interface ProviderConfig {
   id: string;
   /** llm=文案生成 / tts=语音（含克隆）/ image=图片生成 */
   kind: 'llm' | 'tts' | 'image';
+  /** 模板包 id（lib/recipes.ts）；「内置形态」由它决定，改 label 不影响 */
+  recipe: string;
   label: string;
   baseUrl: string;
-  apiKey: string;
+  /** 命名密钥槽：apiKey 必填；secret2 给火山 Access Key / MiniMax group_id */
+  secrets: { apiKey: string; secret2?: string };
   /** LLM 模型名 / TTS 音色模型 / 图片模型 */
   model: string;
-  /** TTS 接口协议 */
-  protocol?: TtsProtocol;
-  /** TTS 音色/说话人 ID */
+  /** TTS 音色 / 说话人 ID */
   voice?: string;
   /** 语速 0.5–2 */
   speed?: number;
-  /** 附加 JSON 参数（合并进请求体） */
+  /** 该供应商配齐的接口模板（每个 role 一条；空 = 按 recipe 现场铺开） */
+  endpoints: ProviderEndpoint[];
+  /** 附加 JSON 参数（深合并进请求体的兜底口） */
   extra?: string;
-  /** true=走 MapVideo 后端代理（Full 模式，Key 在服务端）；false/缺省=浏览器直连 */
+  /** true=走 MapVideo 后端代理（Key 在服务端）；false/缺省=本机直连或主进程转发 */
   viaBackend?: boolean;
 }
 
-export type TtsProtocol = 'openai-speech' | 'minimax-t2a' | 'volc-tts' | 'cosyvoice' | 'qwen-tts' | 'custom';
-
-export interface ProviderPreset {
-  id: string;
-  label: string;
-  baseUrl: string;
-  model: string;
-  voice?: string;
-  protocol?: TtsProtocol;
-  /** 可选模型列表（提供时，属性面板的模型字段渲染为下拉框） */
-  models?: string[];
-  /** 获取 Key 的地址提示 */
-  keyHint?: string;
-  /** 备注（CORS/协议说明） */
-  note?: string;
+/** 一条接口模板 + 配置期给它的参数覆盖值 */
+export interface ProviderEndpoint extends EndpointTemplate {
+  /** 用户在「配置」页给该接口的 param 定的值（var name → value） */
+  overrides?: Record<string, string | number | boolean>;
+  enabled?: boolean;
 }
 
 /** 无音频时按字数估算字幕时长：0.28s/字 + 0.3s 尾巴 */

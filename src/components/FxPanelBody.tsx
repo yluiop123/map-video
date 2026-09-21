@@ -16,9 +16,11 @@ import {
   type OverlayItem, type OverlayType, type OverlayBlock, type ChartType,
   type OverlayPosition, type AnimationPreset,
   type PersonContent, type PersonStyle,
-  type MusicTrack, type TtsProtocol,
+  type MusicTrack,
 } from '../types';
-import { callLLM, callTTS, callImage, readAudioFile, LLM_PRESETS, TTS_PRESETS, IMAGE_PRESETS } from '../lib/providers';
+import { callLLM, callTTS, callImage, readAudioFile } from '../lib/providers';
+import { recipesFor, recipeById } from '../lib/recipes';
+import { pickLabel } from '../lib/i18n';
 import { projectContentEndFrame } from '../lib/project-duration';
 
 const FPS_FALLBACK = 30;
@@ -781,23 +783,26 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
 
 export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind: 'llm' | 'tts' | 'image'; onClose?: () => void; inline?: boolean }) {
   const t = useT();
+  const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
   const list = useProviderStore((s) => (kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image));
   const activeId = useProviderStore((s) => (kind === 'llm' ? s.activeLlmId : kind === 'tts' ? s.activeTtsId : s.activeImageId));
-  const presets = kind === 'llm' ? LLM_PRESETS : kind === 'tts' ? TTS_PRESETS : IMAGE_PRESETS;
+  const recipes = recipesFor(kind);
   const [selId, setSelId] = useState<string | null>(activeId || list[0]?.id || null);
   const sel = list.find((c) => c.id === selId) || null;
   const store = useProviderStore.getState();
-  // 内置供应商（非自定义）：只展示模型下拉 + API Key；名称/Base URL 固定内置
-  const matchedPreset = sel ? presets.find((p) => p.label === sel.label) : undefined;
-  const builtin = !!matchedPreset && !matchedPreset.id.startsWith('custom');
+  // 「内置形态」由 recipe 决定（早先是拿显示名去反查预设，用户改个名就掉出内置形态）
+  const recipe = sel ? recipeById(sel.recipe) : undefined;
+  const builtin = !!recipe && !recipe.id.startsWith('custom');
+  /** 需要第二个密钥槽的两家（早先是把两个值拼进 apiKey，现在各占一格） */
+  const needsSecret2 = sel?.recipe === 'volc-tts' || sel?.recipe === 'minimax-t2a';
 
-  // 内置默认供应商：文案=DeepSeek、语音/图片=通义千问；首次进入且无配置时自动预置，用户只需填 API Key
+  // 内置默认供应商：文案=OpenAI 兼容、语音=CosyVoice（它同时是声音克隆那条通路）、图片=通义；
+  // 首次进入且无配置时自动预置，用户只需填 API Key
   useEffect(() => {
     const st = useProviderStore.getState();
-    if (kind === 'llm' && st.llm.length === 0) setSelId(st.addFromPreset('deepseek', 'llm'));
-    // 默认预置 CosyVoice：它同时是「声音克隆」那条通路（克隆出的 voice_id 绑在 cosyvoice 模型上）
-    else if (kind === 'tts' && st.tts.length === 0) setSelId(st.addFromPreset('cosyvoice', 'tts'));
-    else if (kind === 'image' && st.image.length === 0) setSelId(st.addFromPreset('qwen-image', 'image'));
+    if (kind === 'llm' && st.llm.length === 0) setSelId(st.addFromRecipe('openai-chat', 'llm'));
+    else if (kind === 'tts' && st.tts.length === 0) setSelId(st.addFromRecipe('dashscope-cosyvoice', 'tts'));
+    else if (kind === 'image' && st.image.length === 0) setSelId(st.addFromRecipe('dashscope-image', 'image'));
   }, [kind]);
 
   // 连通性测试
@@ -841,9 +846,9 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
           {t('内置常用厂商，可直接添加并填 Key；也可「自定义」接入任何兼容服务。Key 仅存本机浏览器，不会写入项目文件。', 'Built-in presets + custom. Keys stay in this browser only.')}
         </p>
         <div className="flex flex-wrap gap-1.5 mb-2">
-          {presets.map((p) => (
-            <button key={p.id} onClick={() => setSelId(store.addFromPreset(p.id, kind))} className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-[11px] hover:border-white/25 transition-colors" title={p.note || p.keyHint}>
-              ＋ {p.label}
+          {recipes.map((p) => (
+            <button key={p.id} onClick={() => setSelId(store.addFromRecipe(p.id, kind))} className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-[11px] hover:border-white/25 transition-colors" title={pickLabel(p.note, lang)}>
+              ＋ {pickLabel(p.label, lang)}
             </button>
           ))}
         </div>
@@ -865,9 +870,9 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
                 <input value={sel.label} onChange={(e) => store.update(sel.id, { label: e.target.value })} className="input h-7 text-xs flex-1" placeholder={t('名称', 'Label')} />
               )}
               {(() => {
-                const presetModels = presets.find((p) => p.label === sel.label)?.models;
-                if (presetModels && presetModels.length) {
-                  const opts = sel.model && !presetModels.includes(sel.model) ? [sel.model, ...presetModels] : presetModels;
+                const ms = recipe?.models;
+                if (ms && ms.length) {
+                  const opts = sel.model && !ms.includes(sel.model) ? [sel.model, ...ms] : ms;
                   return (
                     <select value={sel.model} onChange={(e) => store.update(sel.id, { model: e.target.value })} className="input h-7 text-xs w-32">
                       {opts.map((m) => <option key={m} value={m}>{m}</option>)}
@@ -882,34 +887,18 @@ export function ProviderSettingsDialog({ kind, onClose, inline = false }: { kind
             {!builtin && (
               <input value={sel.baseUrl} onChange={(e) => store.update(sel.id, { baseUrl: e.target.value })} className="input h-7 text-xs w-full" placeholder="https://…/v1" />
             )}
-            <input value={sel.apiKey} onChange={(e) => store.update(sel.id, { apiKey: e.target.value })} type="password" className="input h-7 text-xs w-full" placeholder={t('API Key（内置供应商只需填这里）', 'API Key')} />
-            {kind === 'tts' && (
-              <>
-                {!builtin && (
-                  <>
-                    <div className="flex gap-2">
-                      <select value={sel.protocol || 'custom'} onChange={(e) => store.update(sel.id, { protocol: e.target.value as TtsProtocol })} className="input h-7 text-xs w-36">
-                        <option value="openai-speech">OpenAI /audio/speech</option>
-                        <option value="minimax-t2a">MiniMax t2a_v2</option>
-                        <option value="volc-tts">火山 TTS (appid|token)</option>
-                        <option value="cosyvoice">DashScope CosyVoice</option>
-                        <option value="qwen-tts">DashScope Qwen-TTS</option>
-                        <option value="custom">{t('自定义协议', 'Custom')}</option>
-                      </select>
-                    </div>
-                    <input value={sel.extra || ''} onChange={(e) => store.update(sel.id, { extra: e.target.value })} className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（可选）', 'Extra JSON (optional)')} />
-                  </>
-                )}
-                <p className="text-[10px] text-muted-foreground/80">{t('音色与声音克隆在顶栏「字幕生成」里做', 'Voice picking & cloning live in the Subtitle studio')}</p>
-              </>
+            <input value={sel.secrets.apiKey} onChange={(e) => store.update(sel.id, { secrets: { ...sel.secrets, apiKey: e.target.value } })} type="password" className="input h-7 text-xs w-full" placeholder={t('API Key（内置供应商只需填这里）', 'API Key')} />
+            {needsSecret2 && (
+              <input value={sel.secrets.secret2 || ''} onChange={(e) => store.update(sel.id, { secrets: { ...sel.secrets, secret2: e.target.value } })} type="password" className="input h-7 text-xs w-full"
+                placeholder={t('第二个密钥：火山 Access Key / MiniMax group_id', 'Second secret: Volc AccessKey / MiniMax group_id')} />
             )}
-            {kind === 'llm' && !builtin && (
-              <input value={sel.extra || ''} onChange={(e) => store.update(sel.id, { extra: e.target.value })} className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（可选，如 max_tokens）', 'Extra JSON (optional)')} />
+            <input value={sel.extra || ''} onChange={(e) => store.update(sel.id, { extra: e.target.value })} className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（可选，深合并进请求体）', 'Extra JSON (optional)')} />
+            {kind === 'tts' && (
+              <p className="text-[10px] text-muted-foreground/80">{t('音色与声音克隆在顶栏「字幕生成」里做', 'Voice picking & cloning live in the Subtitle studio')}</p>
             )}
             <p className="text-[10px] text-muted-foreground">
-              {presets.find((p) => sel.label === p.label)?.note || presets.find((p) => sel.label === p.label)?.keyHint || ''}
-              {kind === 'tts' && (sel.protocol === 'volc-tts') ? ' Key 填 AppID|AccessToken' : ''}
-              {kind === 'tts' && (sel.protocol === 'minimax-t2a') ? ' Key 填 Key&&GroupId' : ''}
+              {pickLabel(recipe?.note, lang)}
+              {(sel.endpoints?.length ?? 0) > 0 && ` · ${t('接口', 'Endpoints')}: ${sel.endpoints.map((e) => e.role).join(' / ')}`}
             </p>
             {/* 连通性测试 */}
             <div className="flex items-center gap-2">

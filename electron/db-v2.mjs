@@ -58,13 +58,14 @@ export function ensureV2Schema(db) {
   } catch { /* 忽略 */ }
   try {
     const ddl = fs.readFileSync(ddlPath, 'utf8');
+    // 旧形状的 provider 表（还带 api_key / protocol）必须先让位 —— **早于 ensureAllColumns**，
+    // 否则补列那一步会把 secrets_json 塞进旧表，形状漂移就检不出来了（实测踩过）
+    const staleProvider = retireProviderIfStale(db);
     // 先给旧表补缺失列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）；
     // 必须早于 db.exec(ddl)：视图引用了新列（layer_id），旧表缺列会让整段 DDL 失败。
     ensureAllColumns(db, ddl);
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
-    db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref;');
-    // CHECK 白名单变过（旧 provider 表不认 'cosyvoice'）→ 旧表让位，DDL 建新表后把行搬回
-    const staleProvider = retireProviderIfStale(db);
+    db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref; DROP VIEW IF EXISTS v_check_async_pairing;');
     db.exec(ddl);
     if (staleProvider) restoreProviderRows(db, staleProvider);
     repairAssetRefs(db);
@@ -802,38 +803,170 @@ const ASSET_REFS = [
 ];
 
 /**
- * 启动体检：把解析不到素材的引用清空（v_check_dangling 的写入侧对应物）。
- * 素材是全局资源，删掉它时 assets:remove 会一并清空副本引用；但老库里可能还留着
+ * 启动体检：把解析不到素材的引用清空（v_check_dangling 的写入侧对应物）。，删掉它时 assets:remove 会一并清空副本引用；但老库里可能还留着
  * 指向空壳 asset 行的引用 —— 那种行不澄清、留着就是「素材库里有 ID、读出来什么都没有」。
  */
 /**
- * provider.protocol 的 CHECK 是**白名单**：旧库那一版不认 'cosyvoice'（把 TTS 拆成
- * CosyVoice / Qwen-TTS 两条端点时才补进来），后果是新建的 CosyVoice 供应商行当场能用、
- * 重启就丢（hydrate 用库里的行覆盖）。CREATE TABLE IF NOT EXISTS 不会改已存在的表，
- * 所以这里让旧表改名让位给新 DDL，建好后再把行原样搬回（已填的 Key 与其它配置一律不动）。
+ * 「模板即数据」改版：provider 表用 `recipe` + `secrets_json` 取代了 `protocol` + `api_key`
+ * （protocol 那个 CHECK 白名单是四处真相之一，AGENTS §6.22 / §6.24 两次事故都出自它）。
+ * CREATE TABLE IF NOT EXISTS 不会改已存在的表，所以旧库这版让位改名 → DDL 建新表 → 把行搬回来。
+ * **搬的是用户资产**：api_key 进 secrets_json.apiKey，模型/音色/地址原样；接口模板行由渲染端按 recipe 铺开。
  * 返回让位的旧表名；不需要处理时 null。
  */
 export function retireProviderIfStale(db) {
-  const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'provider'").get();
-  if (!t || /'cosyvoice'/.test(String(t.sql))) return null;
+  const t = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'provider'").get();
+  if (!t) return null;   // 还没建表（首次启动），DDL 直接建新形状
+  const cols = db.prepare('PRAGMA table_info(provider)').all().map((c) => c.name);
+  // 认旧形状的正标志，而不是「缺新列」—— 补列那一步可能已经把新列名加上去了
+  if (!cols.includes('api_key') && !cols.includes('protocol')) return null;
   db.exec('ALTER TABLE provider RENAME TO provider__stale');
   return 'provider__stale';
 }
 
-/** 把让位出去的旧 provider 行搬回新表（按两表同名交集列复制，成功后删掉旧表） */
+/** 旧 protocol → 模板包 id（只在搬迁旧行时用一次；新库不再有 protocol 概念） */
+const PROTOCOL_TO_RECIPE = {
+  cosyvoice: 'dashscope-cosyvoice',
+  'qwen-tts': 'dashscope-qwen-tts',
+  'minimax-t2a': 'minimax-t2a',
+  'volc-tts': 'volc-tts',
+  'openai-speech': 'openai-speech',
+};
+
+function recipeOfLegacyRow(r) {
+  if (r.kind === 'tts') return PROTOCOL_TO_RECIPE[r.protocol] || 'custom-tts';
+  if (r.kind === 'image') return /dashscope|aliyuncs/i.test(r.base_url || '') ? 'dashscope-image' : 'custom-image';
+  return 'openai-chat';
+}
+
+/** 把让位出去的旧 provider 行搬回新表（列名/含义对得上的原样搬，api_key 与 protocol 做一次性翻译） */
 export function restoreProviderRows(db, staleTable) {
   try {
-    const staleCols = columnsOf(db, staleTable);
-    const shared = columnsOf(db, 'provider').filter((c) => staleCols.includes(c));
-    const r = db.prepare(`INSERT INTO provider (${shared.join(',')})
-      SELECT ${shared.map((c) => `"${c}"`).join(',')} FROM ${staleTable}`).run();
+    const rows = db.prepare(`SELECT * FROM ${staleTable}`).all();
+    const ins = db.prepare(`INSERT INTO provider
+      (provider_id, kind, recipe, label, base_url, secrets_json, model, voice, speed, extra, active, ord)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+    let n = 0;
+    for (const r of rows) {
+      ins.run(r.provider_id, r.kind, recipeOfLegacyRow(r), r.label ?? '', r.base_url ?? '',
+        JSON.stringify({ apiKey: r.api_key ?? '', secret2: '' }), r.model ?? '', r.voice ?? '',
+        r.speed ?? 1, r.extra ?? null, r.active ?? 0, r.ord ?? 0);
+      n += 1;
+    }
     db.exec(`DROP TABLE ${staleTable}`);
-    console.log(`[db-v2] provider 表已按新 DDL 重建，搬回 ${Number(r.changes || 0)} 行`);
+    console.log(`[db-v2] provider 表已按「模板即数据」重建，搬回 ${n} 行（Key 保留；接口模板由渲染端按 recipe 铺开）`);
   } catch (e) {
     console.error('[db-v2] provider 搬回失败（旧行留在 provider__stale，未删除）:', e?.message || e);
   }
 }
 
+// ========== 供应商与接口模板（Key 只存本机；「怎么发请求」= provider_endpoint 那些行） ==========
+
+const jsonCol = (v) => (v == null ? null : JSON.stringify(v));
+const parseCol = (s, fallback) => {
+  if (!s) return fallback;
+  try { return JSON.parse(s); } catch { return fallback; }
+};
+
+const EP_COLS = `endpoint_id AS endpointId, provider_id AS providerId, role, ord, enabled, mode, method, path,
+  headers_json AS headersJson, query_json AS queryJson, body_json AS bodyJson, vars_json AS varsJson,
+  overrides_json AS overridesJson, resp_kind AS respKind, decode_kind AS decodeKind,
+  pick_json AS pickJson, poll_json AS pollJson`;
+
+const rowToEndpoint = (e) => ({
+  role: e.role,
+  mode: e.mode,
+  method: e.method,
+  path: e.path,
+  headers: parseCol(e.headersJson, {}) ?? {},
+  query: parseCol(e.queryJson, {}) ?? {},
+  body: parseCol(e.bodyJson, {}),
+  vars: parseCol(e.varsJson, []) ?? [],
+  overrides: parseCol(e.overridesJson, {}),
+  resp: e.respKind || e.decodeKind || e.pickJson
+    ? { kind: e.respKind || undefined, decode: e.decodeKind || undefined, pick: parseCol(e.pickJson, {}) }
+    : undefined,
+  poll: parseCol(e.pollJson, null) ?? undefined,
+  enabled: e.enabled === 1,
+});
+
+/** 列出全部供应商（含各自的接口模板行），渲染端 hydrate 用 */
+export function listProvidersV2(db) {
+  const rows = db.prepare(`SELECT provider_id AS id, kind, recipe, label, base_url AS baseUrl,
+      secrets_json AS secretsJson, model, voice, speed, extra, active, ord AS sort
+      FROM provider ORDER BY ord, kind, label`).all();
+  const byProv = new Map();
+  for (const e of db.prepare(`SELECT ${EP_COLS} FROM provider_endpoint ORDER BY provider_id, ord`).all()) {
+    if (!byProv.has(e.providerId)) byProv.set(e.providerId, []);
+    byProv.get(e.providerId).push(rowToEndpoint(e));
+  }
+  return rows.map((r) => ({
+    id: r.id, kind: r.kind, recipe: r.recipe, label: r.label, baseUrl: r.baseUrl,
+    secrets: parseCol(r.secretsJson, { apiKey: '' }),
+    model: r.model, voice: r.voice || undefined, speed: r.speed ?? 1,
+    extra: r.extra || undefined, active: r.active === 1, sort: r.sort,
+    endpoints: byProv.get(r.id) ?? [],
+  }));
+}
+
+/**
+ * 写一条供应商。endpoints 给了就整组覆写（接口模板是一个整体，逐字段 diff 只会制造半新半旧），
+ * 没给则保留库里已有的 —— 否则改个模型名就会把用户调过的模板擦掉。
+ */
+export function upsertProviderV2(db, cfg) {
+  const id = String(cfg.id);
+  const p = {
+    id, kind: cfg.kind, recipe: String(cfg.recipe || ''), label: cfg.label || '', baseUrl: cfg.baseUrl || '',
+    secrets: jsonCol({ apiKey: cfg.secrets?.apiKey || '', secret2: cfg.secrets?.secret2 || '' }),
+    model: cfg.model || '', voice: cfg.voice || '', speed: cfg.speed ?? 1, extra: cfg.extra || null,
+  };
+  const own = db.prepare('BEGIN');
+  try {
+    own.run();
+    db.prepare(`
+      INSERT INTO provider (provider_id, kind, recipe, label, base_url, secrets_json, model, voice, speed, extra, ord)
+      VALUES (@id, @kind, @recipe, @label, @baseUrl, @secrets, @model, @voice, @speed, @extra,
+              COALESCE((SELECT ord FROM provider WHERE provider_id = @id), (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider)))
+      ON CONFLICT(provider_id) DO UPDATE SET kind=@kind, recipe=@recipe, label=@label, base_url=@baseUrl,
+        secrets_json=@secrets, model=@model, voice=@voice, speed=@speed, extra=@extra
+    `).run(p);
+    if (Array.isArray(cfg.endpoints)) {
+      db.prepare('DELETE FROM provider_endpoint WHERE provider_id = ?').run(id);
+      const ins = db.prepare(`
+        INSERT INTO provider_endpoint (endpoint_id, provider_id, role, ord, enabled, mode, method, path,
+          headers_json, query_json, body_json, vars_json, overrides_json, resp_kind, decode_kind, pick_json, poll_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      cfg.endpoints.forEach((e, i) => ins.run(
+        `${id}:${e.role}`, id, e.role, i, e.enabled === false ? 0 : 1, e.mode || 'sync',
+        String(e.method || 'POST').toUpperCase(), e.path || '',
+        jsonCol(e.headers), jsonCol(e.query), jsonCol(e.body), jsonCol(e.vars), jsonCol(e.overrides),
+        e.resp?.kind ?? null, e.resp?.decode ?? null, jsonCol(e.resp?.pick), jsonCol(e.poll),
+      ));
+    }
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    try { db.prepare('ROLLBACK').run(); } catch { /* 忽略 */ }
+    throw err;
+  }
+  return { id };
+}
+
+/** 删供应商：接口行随 FK 级联（外键在 main.mjs 里是开着的） */
+export function removeProviderV2(db, id) {
+  db.prepare('DELETE FROM provider WHERE provider_id = ?').run(String(id));
+  return { ok: true };
+}
+
+export function setActiveProviderV2(db, kind, id) {
+  db.prepare('UPDATE provider SET active = 0 WHERE kind = ?').run(kind);
+  if (id) db.prepare('UPDATE provider SET active = 1 WHERE provider_id = ? AND kind = ?').run(String(id), kind);
+  return { ok: true };
+}
+
+/**
+ * 启动体检：把解析不到素材的引用清空（v_check_dangling 的写入侧对应物）。
+ * 素材是全局资源，删掉它时 assets:remove 会一并清空副本引用；但老库里可能还留着
+ * 指向空壳 asset 行的引用 —— 那种行不澄清、留着就是「素材库里有 ID、读出来什么都没有」。
+ */
 export function repairAssetRefs(db) {
   let cleared = 0;
   for (const [t, col] of ASSET_REFS) {

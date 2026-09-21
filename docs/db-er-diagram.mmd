@@ -137,7 +137,20 @@ erDiagram
   PROVIDER {
     text provider_id PK
     text kind
+    text recipe "模板包 id"
+    text secrets_json "{apiKey, secret2}"
     int active
+  }
+  PROVIDER_ENDPOINT {
+    text endpoint_id PK "provider_id:role"
+    text provider_id FK
+    text role "llm.generate / tts.synthesize / tts.clone / tts.query / image.*"
+    text mode "sync | async"
+    text path "含 {baseUrl} 占位"
+    text body_json "请求体模板"
+    text vars_json "变量声明"
+    text pick_json "出参取值路径"
+    text poll_json "异步：taskId 路径 + statusRole 弱引用"
   }
   PUBLIC_LAYER {
     text public_layer_id PK
@@ -205,3 +218,4 @@ erDiagram
   PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_TERRITORY : "1:N 疆域副本"
   PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_IMAGE : "1:N 贴图副本"
   LAYER ||--o{ PUBLIC_LAYER : "整层复制（应用层 INSERT..SELECT，非外键）"
+  PROVIDER ||--o{ PROVIDER_ENDPOINT : "1:N 一家供应商配齐的接口（同 provider 同 role 唯一）"

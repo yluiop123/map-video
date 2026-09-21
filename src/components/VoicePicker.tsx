@@ -9,7 +9,7 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
 import { activeProvider, useProviderStore } from '../stores/providerStore';
-import { callTTS, cloneVoice } from '../lib/providers';
+import { callTTS, cloneVoice, recipeOf, supports } from '../lib/providers';
 import {
   CLIP_PRESETS, findCloned, forgetClonedVoice, fetchClipBytes, listClonedVoices,
   rememberClonedVoice, systemVoicesFor, type ClonedVoice, type VoiceGender,
@@ -32,8 +32,17 @@ export function VoicePicker() {
 
   const model = tts?.model || '';
   const current = tts?.voice || '';
-  const system = systemVoicesFor(tts?.protocol, model);
-  const canClone = tts?.protocol === 'cosyvoice';
+  const recipe = recipeOf(tts);
+  const system = systemVoicesFor(recipe?.id, model);
+  /** 能不能克隆 = 这个供应商有没有配 tts.clone 接口（早先是硬编 protocol === 'cosyvoice'） */
+  const canClone = supports(tts, 'tts.clone');
+  /**
+   * 克隆出的音色绑在「克隆时用的模型」上，合成时 model 必须一模一样。
+   * Qwen-TTS 的系统模型（qwen3-tts-flash）不吃克隆音色，只有 vc 那条吃 —— 所以克隆时顺带切过去，
+   * 并在提示里说明（不静默改：这一改会让上面的系统音色列表换成空）。
+   */
+  const vcModel = (recipe?.models ?? []).find((m) => m.includes('-vc')) || '';
+  const bindModel = recipe?.id === 'dashscope-qwen-tts' && vcModel && !model.includes('-vc') ? vcModel : model;
 
   const pick = (voiceId: string) => {
     if (!tts) return;
@@ -41,21 +50,23 @@ export function VoicePicker() {
     setMsg('');
   };
 
-  /** 参考音频 → voice_id；同样本同模型已克隆过就直接复用，不在服务端反复建音色 */
+  /** 参考音频 → 音色 ID；同样本同模型已克隆过就直接复用，不在服务端反复建音色 */
   const cloneFrom = async (bytes: ArrayBuffer, label: string, prefix: string) => {
     if (!tts?.baseUrl) { setMsg(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS provider configured')); return; }
-    const hit = findCloned(label, model);
+    const alsoModel = bindModel !== model ? bindModel : undefined;
+    const done = (s: string) => (alsoModel ? `${s} · ${t('配音模型已切成', 'model switched to')} ${bindModel}` : s);
+    const hit = findCloned(label, bindModel);
     if (hit) {
-      pick(hit.voiceId);
-      setMsg(t(`已复用之前的克隆 ${hit.voiceId}`, `Reused previous clone ${hit.voiceId}`));
+      useProviderStore.getState().update(tts.id, { voice: hit.voiceId, ...(alsoModel ? { model: alsoModel } : {}) });
+      setMsg(done(t(`已复用之前的克隆 ${hit.voiceId}`, `Reused previous clone ${hit.voiceId}`)));
       return;
     }
     setBusy('clone'); setBusyLabel(label); setMsg(t('克隆中…（约几秒）', 'Cloning…'));
     try {
-      const vid = await cloneVoice(tts, bytes, model, prefix);
-      setCloned(rememberClonedVoice({ label, voiceId: vid, model, createdAt: Date.now() }));
-      pick(vid);
-      setMsg(`✓ ${vid}`);
+      const vid = await cloneVoice(tts, bytes, bindModel, prefix);
+      setCloned(rememberClonedVoice({ label, voiceId: vid, model: bindModel, createdAt: Date.now() }));
+      useProviderStore.getState().update(tts.id, { voice: vid, ...(alsoModel ? { model: alsoModel } : {}) });
+      setMsg(done(`✓ ${vid}`));
     } catch (e) {
       setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -106,14 +117,14 @@ export function VoicePicker() {
 
   /** 内置样本：没克隆过的那一格是虚线（点下去=先克隆再选中），克隆后与寻常音色无异 */
   const sampleCells = CLIP_PRESETS.map((p) => {
-    const hit = findCloned(p.label, model);
+    const hit = findCloned(p.label, bindModel);
     const busyHere = busy === 'clone' && busyLabel === p.label;
     return cell({
       id: hit?.voiceId,
       title: `${p.label}·内置`,
       sub: hit
         ? t(`已克隆为 ${hit.voiceId}（模型 ${hit.model}）`, `Cloned as ${hit.voiceId} (model ${hit.model})`)
-        : t(`用内置样本 ${p.file} 克隆一个${p.label}（目标模型 ${model || '未设'}）`, `Clone from bundled sample ${p.file}`),
+        : t(`用内置样本 ${p.file} 克隆一个${p.label}（目标模型 ${bindModel || '未设'}）`, `Clone from bundled sample ${p.file} (target model ${bindModel || 'unset'})`),
       dashed: !hit,
       busy: busyHere,
       onClick: hit ? undefined : async () => {
@@ -123,11 +134,11 @@ export function VoicePicker() {
     });
   });
 
-  const myClones = cloned.filter((c) => !SAMPLE_LABELS.includes(c.label) && (!model || c.model === model));
+  const myClones = cloned.filter((c) => !SAMPLE_LABELS.includes(c.label) && (!bindModel || c.model === bindModel));
   /** 当前值既不在系统表也不在克隆账本里（如换模型后失效的 voice_id）：显示出来 */
   const known = new Set<string>([
     ...system.map((v) => v.id),
-    ...cloned.filter((c) => !model || c.model === model).map((c) => c.voiceId),
+    ...cloned.filter((c) => !bindModel || c.model === bindModel).map((c) => c.voiceId),
   ]);
   const orphan = current && !known.has(current);
 
@@ -218,7 +229,7 @@ export function VoicePicker() {
           <span className="text-[10px] text-muted-foreground/70 truncate" title={current}>
             {t('音色写回当前配音供应商', 'Voice is saved on the active TTS provider')}
             {current ? ` · ${current}` : ''}
-            {tts?.protocol === 'qwen-tts' && model === 'qwen-tts'
+            {recipe?.id === 'dashscope-qwen-tts' && model === 'qwen-tts'
               ? t(' · 旧模型 qwen-tts 只带 4 个系统音色，改用 qwen3-tts-flash 可选全部', ' · the legacy model qwen-tts ships 4 voices only; use qwen3-tts-flash for the full list')
               : ''}
             {msg ? ` · ${msg}` : ''}

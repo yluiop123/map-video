@@ -1084,22 +1084,44 @@ CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
 CREATE TABLE IF NOT EXISTS provider (  -- 应用配置：AI 文案 / 配音 / 图片服务商（密钥只存本机，与项目内容解耦）
   provider_id TEXT PRIMARY KEY,  -- 服务商配置 id
   kind       TEXT NOT NULL CHECK (kind IN ('llm','tts','image')),  -- 类别：llm 文案生成 / tts 语音合成（含克隆）/ image 图片生成
+  recipe     TEXT NOT NULL DEFAULT '',  -- 模板包 id（决定「内置形态」与铺出哪些接口；改显示名不影响）
   label      TEXT NOT NULL DEFAULT '',  -- 显示名
   base_url   TEXT NOT NULL DEFAULT '',  -- 接口基础地址
-  api_key    TEXT NOT NULL DEFAULT '',  -- 密钥（只存本机，不入项目文件）
+  secrets_json TEXT CHECK (secrets_json IS NULL OR json_valid(secrets_json)),  -- 命名密钥槽 JSON：{apiKey, secret2}（火山 Access Key / MiniMax group_id 用 secret2）
   model      TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型
-  protocol   TEXT CHECK (protocol IS NULL OR protocol IN (  -- TTS 协议：openai-speech / minimax-t2a / volc-tts / cosyvoice / qwen-tts / custom
-               'openai-speech','minimax-t2a','volc-tts','cosyvoice','qwen-tts','custom')),
   voice      TEXT,  -- 音色 / 说话人 ID
   speed      REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
   extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),  -- 附加请求参数（JSON，合并进请求体）
   active     INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),  -- 是否生效（每个 kind 至多一条为 1）
   ord        INTEGER NOT NULL DEFAULT 0  -- 同类内排序
 );
+-- 一家供应商 = 一组接口模板（role 各一条）：怎么发、怎么取回、同步还是异步全在这里，代码里不再有协议分支
+CREATE TABLE IF NOT EXISTS provider_endpoint (
+  endpoint_id TEXT PRIMARY KEY,  -- 接口模板行 id，形如 <provider_id>:<role>
+  provider_id TEXT NOT NULL REFERENCES provider(provider_id) ON DELETE CASCADE,  -- 所属供应商
+  role       TEXT NOT NULL,  -- 用途：llm.generate / tts.synthesize / tts.clone / tts.query / image.generate / image.query
+  ord        INTEGER NOT NULL DEFAULT 0,  -- 同一供应商内的展示顺序
+  enabled    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),  -- 是否启用（关掉即该 role 不可用）
+  mode       TEXT NOT NULL DEFAULT 'sync',  -- sync 一次到位 / async 提交后轮询
+  method     TEXT NOT NULL DEFAULT 'POST',  -- HTTP 方法
+  path       TEXT NOT NULL DEFAULT '',  -- 路径模板（支持 {baseUrl} 等占位）
+  headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 请求头模板 JSON
+  query_json TEXT CHECK (query_json IS NULL OR json_valid(query_json)),  -- 查询串参数模板 JSON
+  body_json  TEXT CHECK (body_json IS NULL OR json_valid(body_json)),  -- 请求体模板 JSON（值是 {var} 占位）
+  vars_json  TEXT CHECK (vars_json IS NULL OR json_valid(vars_json)),  -- 变量声明表 JSON（inject 调用期注入 / param 配置期可填）
+  overrides_json TEXT CHECK (overrides_json IS NULL OR json_valid(overrides_json)),  -- 用户在配置期给该接口参数填的值
+  resp_kind  TEXT,  -- 响应类别：auto / audio / json / text
+  decode_kind TEXT,  -- 结果解码：hex / base64 / url（远端产物再下载）
+  pick_json  TEXT CHECK (pick_json IS NULL OR json_valid(pick_json)),  -- 出参登记表 JSON（text/audio/image/voiceId/error… 的取值路径）
+  poll_json  TEXT CHECK (poll_json IS NULL OR json_valid(poll_json))  -- 异步轮询规则 JSON（任务 id 路径、查询 role、完成/失败判定、超时）
+);
 -- 每个 kind 至多一条生效（部分唯一索引，替代旧的「先清后置」两步写法）
 CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_active
   ON provider(kind) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
+-- 一家供应商里同一个 role 只能有一条（成对配置的落点）
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pe_role ON provider_endpoint(provider_id, role);
+CREATE INDEX IF NOT EXISTS ix_pe_provider ON provider_endpoint(provider_id, ord);
 
 -- =============================================================================
 -- 9. 外键支撑索引（FK 子表列必须建索引 —— SQLite 上外键唯一的真实成本来源）
@@ -1215,8 +1237,22 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
     AND NOT EXISTS (SELECT 1 FROM json_each(t.countries_json) c
                     WHERE c.value->>'countryId' = e.value->>'toCountryId');
 
+-- 12.4 异步接口的配对自检（poll_json.statusRole 指向的查询接口必须同供应商存在，
+--      否则该接口一调就卡住 —— 弱引用藏在 JSON 里，外键管不到，只能靠视图体检）
+CREATE VIEW IF NOT EXISTS v_check_async_pairing AS
+SELECT e.provider_id AS ref_id, e.role AS target,
+       '异步接口缺配套的状态查询接口 ' || (e.poll_json ->> '$.statusRole') AS problem
+  FROM provider_endpoint e
+  WHERE e.mode = 'async'
+    AND NOT EXISTS (
+      SELECT 1 FROM provider_endpoint s
+      WHERE s.provider_id = e.provider_id
+        AND s.role = (e.poll_json ->> '$.statusRole')
+    );
+
 -- 用法：SELECT * FROM v_check_dangling;
 --       SELECT * FROM v_check_territory_ref;
+--       SELECT * FROM v_check_async_pairing;
 
 -- =============================================================================
 -- 已知约束与设计取舍

@@ -9,7 +9,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2 } from './db-v2.mjs';
+import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2,
+  listProvidersV2, upsertProviderV2, removeProviderV2, setActiveProviderV2 } from './db-v2.mjs';
 
 const DIST = path.join(app.getAppPath(), 'dist');
 
@@ -28,176 +29,27 @@ function initDb() {
       db.prepare("INSERT OR IGNORE INTO collection (collection_id, name, ord, created_at, updated_at) VALUES ('default','默认合集',-1,?,?)").run(now, now);
     } catch { /* 忽略 */ }
     migrateLegacyProjects(db);
-    migrateLegacyProviders(db);
   }
 }
 
-/** 旧 `providers` 表 → V2 `provider` 表（字段一一对应：id→provider_id / sort→ord），迁移后删除旧表。 */
-function migrateLegacyProviders(db) {
-  try {
-    const legacy = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='providers'").get();
-    if (!legacy) return;
-    db.exec('PRAGMA foreign_keys = OFF');
-    db.exec(`INSERT OR IGNORE INTO provider (provider_id, kind, label, base_url, api_key, model, protocol, voice, speed, extra, active, ord)
-             SELECT id, kind, label, base_url, api_key, model, NULLIF(protocol,''), NULLIF(voice,''), speed, NULLIF(extra,''), active, sort FROM providers`);
-    db.exec('DROP TABLE IF EXISTS providers');
-    db.exec('PRAGMA foreign_keys = ON');
-    console.log('[db] 旧 providers 表已迁移到 provider 并删除');
-  } catch (e) {
-    console.warn('[db] providers 迁移失败:', e?.message || e);
-  }
-}
 
-// ---------- AI / TTS（协议实现，与 web 服务端同源） ----------
-function chatUrlOf(baseUrl) {
-  const b = String(baseUrl || '').replace(/\/+$/, '');
-  return /chatcompletion|chat\/completions/i.test(b) ? b : `${b}/chat/completions`;
-}
-
-async function forwardChat(cfg, system, user) {
-  let extra = {};
-  if (cfg.extra) { try { extra = JSON.parse(cfg.extra); } catch { /* ignore */ } }
-  const res = await fetch(chatUrlOf(cfg.baseUrl), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.7,
-      ...extra,
-    }),
+// ---------- 通用 HTTP 转发 ----------
+// 主进程不再认识任何供应商：怎么发请求由渲染端的接口模板算好，这里只负责发出去、按 Content-Type 分类拿回来。
+// （原先这里是 5 条 `switch (cfg.protocol)`，与渲染端那份互为影子，改一家要改两处 —— 见 AGENTS §6.7 / §6.22）
+async function httpRequest(req) {
+  const url = new URL(req.url);
+  for (const [k, v] of Object.entries(req.query || {})) url.searchParams.set(k, String(v));
+  const res = await fetch(url.href, {
+    method: req.method || 'POST',
+    headers: req.headers || {},
+    body: req.method === 'GET' || req.body == null ? undefined : JSON.stringify(req.body),
   });
-  if (!res.ok) throw new Error(`上游 HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = await res.json();
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== 'string') throw new Error('上游响应无 choices[0].message.content');
-  return content;
-}
-
-/** 文生图（通义万相 / 兼容接口）：返回图片 URL。参照 createVideo/scripts。 */
-async function generateImage(cfg, prompt) {
-  const url = `${String(cfg.baseUrl || '').replace(/\/+$/, '')}/services/aigc/multimodal-generation/generation`;
-  const body = {
-    model: cfg.model || 'z-image-turbo',
-    input: { messages: [{ role: 'user', content: [{ text: prompt }] }] },
-    parameters: { prompt_extend: false, size: '2048*1152' },
-  };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`上游 HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = await res.json();
-  const img = data?.output?.choices?.[0]?.message?.content?.[0]?.image;
-  if (typeof img !== 'string') throw new Error('上游响应无 image 字段');
-  return img;
-}
-
-/** CosyVoice 声音克隆：转发 customization（body 由渲染端组装，含参考音频 dataURI）。参照 clone_qwen_voice.py。 */
-async function voiceClone(cfg, body) {
-  const url = `${String(cfg.baseUrl || '').replace(/\/+$/, '')}/services/audio/tts/customization`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`上游 HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = await res.json();
-  const voice = data?.output?.voice_id || data?.output?.voice;
-  if (typeof voice !== 'string') throw new Error('上游响应无 voice_id');
-  return voice;
-}
-
-async function synthAudio(cfg, text) {
-  const speed = cfg.speed ?? 1;
-  let headers = { 'Content-Type': 'application/json' };
-  let body;
-  let url = String(cfg.baseUrl || '').replace(/\/+$/, '');
-  switch (cfg.protocol) {
-    case 'minimax-t2a': {
-      if (cfg.apiKey?.includes('&&')) {
-        const [key, group] = cfg.apiKey.split('&&');
-        headers.Authorization = `Bearer ${key}`;
-        url += `?group_id=${group}`;
-      } else {
-        headers.Authorization = `Bearer ${cfg.apiKey}`;
-      }
-      body = { model: cfg.model, text, voice_setting: { voice_id: cfg.voice, speed, vol: 1, format: 'mp3' }, audio_setting: { format: 'mp3' } };
-      break;
-    }
-    case 'volc-tts': {
-      const [appid, token] = String(cfg.apiKey || '').split('|');
-      headers['X-Api-App-Key'] = appid || '';
-      headers['X-Api-Access-Key'] = token || '';
-      headers['X-Api-Resource-Id'] = 'volc.service_type.10029';
-      body = {
-        user: { uid: 'mapvideo' },
-        audio: { voice_type: cfg.voice, encoding: 'mp3', speed_ratio: speed },
-        request: { reqid: `mv-${Date.now()}`, text, operation: 'query' },
-      };
-      break;
-    }
-    case 'cosyvoice': {
-      // 通义 CosyVoice（参照 createVideo/scripts）：POST /services/audio/tts/SpeechSynthesizer
-      headers.Authorization = `Bearer ${cfg.apiKey}`;
-      body = {
-        model: cfg.model || 'cosyvoice-v3-flash',
-        input: { text, voice: cfg.voice },
-        parameters: { format: 'mp3', sample_rate: 24000 },
-      };
-      url += '/services/audio/tts/SpeechSynthesizer';
-      break;
-    }
-    case 'qwen-tts': {
-      // Qwen-TTS 非实时合成：POST /services/aigc/multimodal-generation/generation
-      // 模型名与音色与 CosyVoice 不通用（qwen3-tts-flash + Cherry 那套），互串就是上游 400
-      headers.Authorization = `Bearer ${cfg.apiKey}`;
-      body = {
-        model: cfg.model || 'qwen3-tts-flash',
-        input: { text, voice: cfg.voice || 'Cherry' },
-      };
-      url += '/services/aigc/multimodal-generation/generation';
-      break;
-    }
-    case 'openai-speech': {
-      headers.Authorization = `Bearer ${cfg.apiKey}`;
-      body = { model: cfg.model, voice: cfg.voice, input: text, speed, response_format: 'mp3' };
-      url += '/audio/speech';
-      break;
-    }
-    default: {
-      if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
-      body = { text, voice: cfg.voice, speed, model: cfg.model };
-    }
-  }
-  let extra = {};
-  if (cfg.extra) { try { extra = JSON.parse(cfg.extra); } catch { /* ignore */ } }
-  body = { ...body, ...extra };
-
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`上游 HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const ctype = res.headers.get('content-type') || '';
-  if (ctype.startsWith('audio/')) return { bytes: new Uint8Array(await res.arrayBuffer()), mime: ctype };
-
-  const data = await res.json().catch(() => null);
-  if (!data) throw new Error('上游响应既不是音频也不是 JSON');
-  const b64 = data?.data?.audio || data?.audio?.data || data?.data || data?.audio || data?.output?.audio?.data;
-  const audioUrl = data?.output?.audio?.url || data?.audio_url || data?.url;
-  if (typeof b64 === 'string' && b64.length > 100 && !/^https?:/i.test(b64)) {
-    return { bytes: Uint8Array.from(Buffer.from(b64, 'base64')), mime: /wav/i.test(ctype) ? 'audio/wav' : 'audio/mpeg' };
-  }
-  if (typeof audioUrl === 'string') {
-    const r2 = await fetch(audioUrl);
-    return { bytes: new Uint8Array(await r2.arrayBuffer()), mime: r2.headers.get('content-type') || 'audio/mpeg' };
-  }
-  if (typeof data?.hex === 'string') {
-    return { bytes: Uint8Array.from(Buffer.from(data.hex, 'hex')), mime: 'audio/mpeg' };
-  }
-  throw new Error('无法从上游响应提取音频（检查协议/extra 参数）');
+  const out = { status: res.status, contentType: ctype };
+  if (ctype.includes('json')) out.json = await res.json().catch(() => undefined);
+  else if (ctype.startsWith('text/') || ctype.includes('xml')) out.text = await res.text().catch(() => undefined);
+  else out.bytes = new Uint8Array(await res.arrayBuffer());
+  return out;
 }
 
 // ---------- IPC ----------
@@ -267,65 +119,27 @@ function registerIpc() {
     return { ok: true };
   });
 
-  // Providers（Key 存本地库）
-  const rowToCfg = (r) => ({
-    id: r.id, kind: r.kind, label: r.label, baseUrl: r.base_url, apiKey: r.api_key,
-    model: r.model, protocol: r.protocol || undefined, voice: r.voice || undefined,
-    speed: r.speed ?? 1, extra: r.extra || undefined, active: r.active === 1,
-  });
-  ipcMain.handle('db:providers:list', () => {
-    return db.prepare('SELECT provider_id AS id, kind, label, base_url, api_key, model, protocol, voice, speed, extra, active, ord AS sort FROM provider ORDER BY ord, kind, label').all().map(rowToCfg);
-  });
-  ipcMain.handle('db:providers:upsert', (_e, cfg) => {
-    db.prepare(`
-      INSERT INTO provider (provider_id, kind, label, base_url, api_key, model, protocol, voice, speed, extra, ord)
-      VALUES (@id, @kind, @label, @baseUrl, @apiKey, @model, @protocol, @voice, @speed, @extra,
-              COALESCE((SELECT ord FROM provider WHERE provider_id = @id), (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider)))
-      ON CONFLICT(provider_id) DO UPDATE SET kind=@kind, label=@label, base_url=@baseUrl, api_key=@apiKey, model=@model,
-        protocol=@protocol, voice=@voice, speed=@speed, extra=@extra
-    `).run({
-      id: String(cfg.id), kind: cfg.kind, label: cfg.label || '', baseUrl: cfg.baseUrl || '',
-      apiKey: cfg.apiKey || '', model: cfg.model || '', protocol: cfg.protocol || null,
-      voice: cfg.voice || '', speed: cfg.speed ?? 1, extra: cfg.extra || null,
-    });
-    return { ok: true };
-  });
-  ipcMain.handle('db:providers:remove', (_e, id) => {
-    db.prepare('DELETE FROM provider WHERE provider_id = ?').run(id);
-    return { ok: true };
-  });
-  ipcMain.handle('db:providers:setActive', (_e, { kind, id }) => {
-    db.prepare('UPDATE provider SET active = 0 WHERE kind = ?').run(kind);
-    if (id) db.prepare('UPDATE provider SET active = 1 WHERE provider_id = ? AND kind = ?').run(id, kind);
-    return { ok: true };
-  });
+  // Providers（Key 存本地库；「怎么发请求」是 provider_endpoint 里的接口模板行）
+  // SQL 全在 db-v2.mjs —— 与项目/素材同一层，才能离线跑迁移回归
+  ipcMain.handle('db:providers:list', () => listProvidersV2(db));
+  ipcMain.handle('db:providers:upsert', (_e, cfg) => { upsertProviderV2(db, cfg); return { ok: true }; });
+  ipcMain.handle('db:providers:remove', (_e, id) => { removeProviderV2(db, id); return { ok: true }; });
+  ipcMain.handle('db:providers:setActive', (_e, { kind, id }) => { setActiveProviderV2(db, kind, id); return { ok: true }; });
 
-  // AI 管道
-  ipcMain.handle('ai:chat', async (_e, { config, system, user }) => {
+  // 网络管道：渲染进程算好请求，主进程只管发与收（无 CORS，Key 不出本机）
+  ipcMain.handle('net:request', async (_e, req) => {
     try {
-      return { content: await forwardChat(config, system, user) };
+      return await httpRequest(req);
     } catch (err) {
       return { error: err?.message || String(err) };
     }
   });
-  ipcMain.handle('ai:tts', async (_e, { config, text }) => {
+  ipcMain.handle('net:fetchUrl', async (_e, url) => {
     try {
-      const { bytes, mime } = await synthAudio(config, String(text || '').slice(0, 5000));
-      return { bytes, mime };
-    } catch (err) {
-      return { error: err?.message || String(err) };
-    }
-  });
-  ipcMain.handle('ai:image', async (_e, { config, prompt }) => {
-    try {
-      return { image: await generateImage(config, String(prompt || '').slice(0, 2000)) };
-    } catch (err) {
-      return { error: err?.message || String(err) };
-    }
-  });
-  ipcMain.handle('ai:voiceClone', async (_e, { config, body }) => {
-    try {
-      return { voiceId: await voiceClone(config, body) };
+      const res = await fetch(String(url));
+      if (!res.ok) return { error: `下载结果失败 HTTP ${res.status}` };
+      const ctype = res.headers.get('content-type') || undefined;
+      return { bytes: new Uint8Array(await res.arrayBuffer()), contentType: ctype };
     } catch (err) {
       return { error: err?.message || String(err) };
     }

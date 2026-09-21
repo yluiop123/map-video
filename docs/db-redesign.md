@@ -3,7 +3,7 @@
 > 规范化关系模型：元素建模、关联多重性、主外键策略与约束补偿。
 
 - **引擎**：SQLite（`node:sqlite`，桌面端）/ Dexie（网页端）
-- **规模**：24 张表 · 3 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
+- **规模**：25 张表 · 4 视图 · 0 触发器（DDL 已实测执行；不使用触发器，见 2.6）
 - **配套**：`docs/db-schema-v2.sql`（DDL 事实源）、`docs/db-tables.md`（表清单与字段字典）、`docs/db-er-diagram.mmd`（E-R 图源）
 
 ## 结论摘要
@@ -119,7 +119,7 @@
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
-### 2.2 实体清单（24 张表，按结构分 11 组）
+### 2.2 实体清单（25 张表，按结构分 11 组）
 
 | 组 | 表 | 说明 |
 |---|---|---|
@@ -133,7 +133,7 @@
 | **7. 疆域类元素** | `element_territory` | type = territory；势力 / 地块 / 兼并事件 JSON 内联 |
 | **8. 贴图类元素** | `element_image` | type = geo_image；地理配准图片（控制点网格 JSON 内联），图片本体走全局素材库 |
 | **9. 叠加层** | `overlay` | 弹窗本体；custom / person 的内容块内联在 `payload_json`（原 overlay_block / person_block 已删除） |
-| **10. 应用配置** | `provider` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证 |
+| **10. 应用配置** | `provider`、`provider_endpoint` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证。**2026-09-21 改版**：`protocol` / `api_key` 列删除，换成 `recipe` + `secrets_json`，并把「每家怎么发请求」下沉成 `provider_endpoint` 的接口模板行（含异步轮询规则）—— 同一事实原先散在 renderer switch、主进程 switch、白名单断言、DDL CHECK 四处，现在只有模板这一处 |
 | **11. 公共图层库** | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image` | 跨项目复用的图层图库：把某个图层连元素**整体复制**为一份独立副本，导入到任意项目。与项目侧同构，但**不属于任何项目** —— 故 `asset_id` 降级为弱引用（建不了外键），代价见 2.6「副本自洽」条 |
 
 ### 2.3 元素建模：按工具栏聚合的 5 张类别宽表

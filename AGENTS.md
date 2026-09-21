@@ -58,6 +58,10 @@ lib/
   military-plots.ts / military-geometry.ts  # 移植自 plot_ol 的军标算法（燕尾/钳形/进攻/集结地）
   regions.ts           # 行政区边界加载与点选/按名查找（默认 johan world.geo.json，可换源）
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
+  request-engine.ts    # ★ 接口模板求值：buildRequest / readPath / applyPick / callEndpoint（异步轮询）/ validateTemplate；不碰网络不碰 DOM
+  recipes.ts           # 内置模板包（11 条 recipe = 一家供应商配齐哪几个 role、各自怎么发）；加供应商只改这里
+  providers.ts         # 供应商调用薄壳：callLLM/callTTS/callImage/cloneVoice → 走引擎；**没有协议分支了**
+  i18n.ts              # 显示文案类型 L = string | {zh,en}（只有 value 进请求体）
   tw-colors.ts         # Tailwind 官方色板（22 族 × 11 阶，ColorPicker 的唯一取色来源，数值由 tailwindcss/colors 导出后落盘；族顺序跟 docs/colors 页一致）
   voices.ts            # 配音音色目录（系统音色名一律抄官方表）+「我的克隆音色」localStorage 账本 + 内置参考音频
 stores/
@@ -82,7 +86,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **PointElement 特有**：shape、emoji、scale(0.3–3 等比缩放点+label)、orientation(faceCam/flat)、rotation(贴地旋转)、iconUrl、label。
 - **★ 字幕 / 配音只在「字幕生成」里编辑**（特效弹窗已无字幕页签，`FxTab` 也去掉了 `'subtitle'`）。入口两处：顶栏「字幕生成」按钮、时间线「🎙 配音」块点击 —— 都走 `editorStore.subtitleOpen`（同一个弹窗实例，`Toolbar.tsx` 里挂载）。弹窗内：逐行字幕（一行 = 一条字幕 + 一段配音），每行 🔊/🔁 生成或**覆盖**配音、▶ 试听、✕ 删除、＋加一行、SRT 导入/导出（标签写全「导入 SRT / 导出 SRT」）、顶部「▶▶ 全部生成配音」（串行、只补没配音的行）。**字幕行的输入框含换行即按行拆成多条字幕**（整篇文案一次贴入的入口，回车同义；首句留在原行以保住它已有的配音）；输入框用 `LineInput` 按 `scrollHeight` 自增高（默认一行，不再固定两行）。步骤①的**参考资料只走文件上传**（没有粘贴框，下面显示已载入的文件名与字数 + ✕ 清除）—— 它只是提示词上下文，不需要用户手改；底部「字幕样式」写 `setNarrationStyle`，**随时生效**（样式是项目级设置，`applyGeneratedProject` 那套强制默认样式的做法早已去掉）。
   **单页布局**（2026-09-20 改版）：需求 + 参考资料在上、字幕行在中、样式在下，一屏到底；**没有步骤①/②，也没有「手动填写文案」与「返回重写」**。文案有三个来源：🤖 AI 生成、📥 粘贴文本（`splitScript` 认 SRT 序号/时间轴/行首编号与引号）、📥 导入 SRT；也可在行内直接贴整篇（含换行即按行拆分）。
-  **配音音色在弹窗内选**（`VoicePicker`，两段式）：上段「配音音色」= 系统音色，按协议分**男声 / 女声两组，默认折叠**（折叠时标题带条数与当前选中的音色名，别改成默认展开 —— 一组就有 19 个色块，展开会把字幕区挤走）；名字全部逐字取自官方音色表（`lib/voices.ts`，改表前先核对官方，别凭印象加）—— CosyVoice 端点是 `long*` 那一套 25 个（含 `qwen-audio-3.0-tts-flash` 这个模型家族，它走同一端点），Qwen-TTS 端点是 `Cherry`/`Serena`/`Ethan`… 那一套 38 个（普通话；官方另有 10 个方言音色未列进来），**两边不通用**。Qwen 侧再按模型收窄：旧模型 `qwen-tts` 只带 4 个系统音色（`legacy: true`），选它时列表自动缩短并给一句说明。下段「克隆音色」= 内置样本格（**男声·内置 / 女声·内置**，对应 `public/voices/male.mp3`/`female.mp3`，即用户提供的历史-男/女）+ ⬆ 上传其它音色；样本格没克隆过时是**虚线**，点它=先克隆再选中，克隆过即与寻常音色无异。**不给「手填音色 ID」输入框**（曾有过，已按用户要求删掉）。voice_id 连模型一起记在 `localStorage` 的 `mapvideo.clonedVoices` 里，同样本同模型直接复用不在服务端反复建音色，且只显示克隆模型 == 当前配音模型的条目（换模型后 voice_id 即失效）。声音克隆只在 CosyVoice 协议下渲染（`voice-enrollment` 是那条端点独有的），其它协议这一区换成一句说明。音色与克隆**只在这里**，设置 ⚙ → 配音服务 只剩 Base URL / Key / 协议 / 模型。
+  **配音音色在弹窗内选**（`VoicePicker`，两段式）：上段「配音音色」= 系统音色，按协议分**男声 / 女声两组，默认折叠**（折叠时标题带条数与当前选中的音色名，别改成默认展开 —— 一组就有 19 个色块，展开会把字幕区挤走）；名字全部逐字取自官方音色表（`lib/voices.ts`，改表前先核对官方，别凭印象加）—— CosyVoice 端点是 `long*` 那一套 25 个（含 `qwen-audio-3.0-tts-flash` 这个模型家族，它走同一端点），Qwen-TTS 端点是 `Cherry`/`Serena`/`Ethan`… 那一套 38 个（普通话；官方另有 10 个方言音色未列进来），**两边不通用**。Qwen 侧再按模型收窄：旧模型 `qwen-tts` 只带 4 个系统音色（`legacy: true`），选它时列表自动缩短并给一句说明。下段「克隆音色」= 内置样本格（**男声·内置 / 女声·内置**，对应 `public/voices/male.mp3`/`female.mp3`，即用户提供的历史-男/女）+ ⬆ 上传其它音色；样本格没克隆过时是**虚线**，点它=先克隆再选中，克隆过即与寻常音色无异。**不给「手填音色 ID」输入框**（曾有过，已按用户要求删掉）。voice_id 连模型一起记在 `localStorage` 的 `mapvideo.clonedVoices` 里，同样本同模型直接复用不在服务端反复建音色，且只显示克隆模型 == 当前配音模型的条目（换模型后 voice_id 即失效）。「克隆音色」区在不在，看**这个供应商有没有配 `tts.clone` 接口**（`supports(tts,'tts.clone')`），不再认协议字符串；Qwen-TTS 的克隆音色必须配 vc 模型（`qwen3-tts-vc-*`），所以点内置样本克隆时会把配音模型一并切过去并在提示里说明。音色与克隆**只在这里**，设置 ⚙ → 配音服务 只剩 Base URL / Key / 协议 / 模型。
   **打开即载入项目现有字幕继续编辑**（不再有 `editOnly` 分支）；「应用字幕与配音」只写 `setNarrationEntries`（字幕比片长久时补一次 `setProjectEndFrame`），**不动元素 / 弹窗 / 特效 / 相机**。
   原「AI 顺带生成地图元素」的整条链路已删除：`lib/generate-elements.ts` / `lib/gazetteer.ts` / `lib/geocode.ts` / `lib/camera-plan.ts` / `projectStore.applyGeneratedProject` / 类型 `GeneratedChapterPlan`·`GeneratedOverlaySpec`，以及弹窗里的地名解析与「待填坐标」区块。
 - **时间线配音块只能整体平移**：`beginBlockDrag` 的 kind 多了一支 `'narration'`，块上只挂 `onPointerDown(mode:'move')`、**不给 `DragHandles`**（所以两端拉不出），拖动写 `setNarrationEntries` 且置 `locked: true`（顺排不再把它拉回）。时长始终由音频/字数估算决定，与其它轨道（fx/弹窗/图层可拉伸）不同。
@@ -115,11 +119,15 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 19. **「动画效果 = 路线移动」必须顺带打开「显示标记」**：那个沿路线走的标记就是这个动画的主体，而形状工具下拉建的「直线」默认 `showIcon: false`。原先写的是 `showIcon ?? true`，false 被原样保留 → 选了动画什么也不动，面板里的「动画开始/结束时间」也成了摆设。规则：**选 move 就 `showIcon = true`**（反向已在「显示标记」开关里：打开时若无动画则补 move）。
 20. **`renderLine` 的 `noAnim`（原名 isShapeLine）只表示「没被显式要求动画的形状线」**：形状线默认「一致显示」（整条一次画完、不看动画起止、不 march / 不 fly），判据是 `shapeCategory ∈ {multi,special}` **且 `animEffect` 为空**；用户显式选了动画，就别再拿「它是形状线」当理由忽略 `moveStartFrame/moveEndFrame`。以后写这类「按默认语义压制用户输入」的门禁，都要给显式值让路。
 21. **`PropertiesPanel.tsx` 曾混着单 `\r` 换行的行**（早年内联脚本改写的残留），git 因此把整个 blob 判成 `-text`：任何一处小改都显示成整文件重写，blame / review 全废（2026-09-19 已统一为 CRLF）。批量改文件时**读也要 `newline=''`**，只在 `open(...,'w')` 加是漏的 —— universal-newlines 会把 `\r` 和 `\r\n` 都吞成 `\n`。改完用 `git ls-files --eol <file>` 确认是 `i/lf w/crlf`。
-22. **TTS 的「协议 ↔ 模型名 ↔ 音色」三者必须成套**（2026-09-19 上游 HTTP 400 `InvalidParameter / Model not exist.` 的成因）：`providers.ts` 里 `case 'qwen-tts'` 实现的其实是 **CosyVoice** 端点（`/services/audio/tts/SpeechSynthesizer`，设置面板下拉一直标着 "DashScope CosyVoice"），而预设往里填的是 Qwen-TTS 的模型名 `qwen3-tts` —— 模型名发错了端点（能报 "Model not exist" 说明 baseUrl 与路径是对的）。现在拆成 `cosyvoice`（音色 `long*`，如 longanyang）与 `qwen-tts`（`/services/aigc/multimodal-generation/generation`，音色 `Cherry` 那套）。合法模型名：CosyVoice 端点 = `cosyvoice-v3-flash` / `v3.5-flash` / `v3-plus` / `v3.5-plus` / `v2`，同端点还承载 `qwen-audio-3.0-tts-flash`（本机 `D:/frontend/qwen/vioce.py` 实测在用）；Qwen-TTS = `qwen3-tts-flash` / `qwen-tts`（**`qwen3-tts` 单独不是合法名**）。音色同理：`long*` 属 CosyVoice、`Cherry` 属 Qwen-TTS，且带 `_v3` 的名字不与 v2 通用 —— 所以 UI 里不给自由输入，只给官方表抄来的下拉列表。声音克隆只走 CosyVoice。改任何一项都要同时核对端点、模型、音色三项。
+22. **TTS 的「协议 ↔ 模型名 ↔ 音色」三者必须成套**（2026-09-19 上游 HTTP 400 `InvalidParameter / Model not exist.` 的成因）：`providers.ts` 里 `case 'qwen-tts'` 实现的其实是 **CosyVoice** 端点（`/services/audio/tts/SpeechSynthesizer`，设置面板下拉一直标着 "DashScope CosyVoice"），而预设往里填的是 Qwen-TTS 的模型名 `qwen3-tts` —— 模型名发错了端点（能报 "Model not exist" 说明 baseUrl 与路径是对的）。现在拆成 `cosyvoice`（音色 `long*`，如 longanyang）与 `qwen-tts`（`/services/aigc/multimodal-generation/generation`，音色 `Cherry` 那套）。合法模型名：CosyVoice 端点 = `cosyvoice-v3-flash` / `v3.5-flash` / `v3-plus` / `v3.5-plus` / `v2`，同端点还承载 `qwen-audio-3.0-tts-flash`（本机 `D:/frontend/qwen/vioce.py` 实测在用）；Qwen-TTS = `qwen3-tts-flash` / `qwen-tts`（**`qwen3-tts` 单独不是合法名**）。音色同理：`long*` 属 CosyVoice、`Cherry` 属 Qwen-TTS，且带 `_v3` 的名字不与 v2 通用 —— 所以 UI 里不给自由输入，只给官方表抄来的下拉列表。声音克隆**两条端点都有、形状不同**（CosyVoice 系：`voice-enrollment` + `action:'create_voice'` + `prefix` → `output.voice_id`；Qwen-TTS：`qwen-voice-enrollment` + `action:'create'` + `preferred_name` + `input.audio.data` → `output.voice`，且合成必须用同款 `target_model`，参考音频要求 ≥24kHz 而 CosyVoice 转 16k）—— 改版后这些差异是 `provider_endpoint` 里的数据，不再是代码分支。改任何一项都要同时核对端点、模型、音色三项。
 23. **弹层的「层」有两个独立陷阱（2026-09-20 字幕生成弹窗两处同报）**：
     - **宿主带 `overflow-y-auto` 时不能用 `absolute` 浮层**：子面板会被宿主裁掉，实测表现为「点了没反应」（`ColorPicker` 的色板当时顶边已经在弹窗之外）。共享原子一律走 `createPortal(…, document.body)` + `position:fixed`，在 `useLayoutEffect` 里按触发块与视口算位置（下方放不下就翻到上方，最后再夹一次 —— 只夹 `top` 不夹 `bottom` 仍会露半截）。面板脱离了 `wrapRef`，所以点击外关闭必须同时放过 `popRef`，否则 mousedown 先把面板卸掉、`click` 再也打不到色块；滚动 / 改窗口尺寸要**重新定位**而不是关闭（早先写成关闭，结果连面板内拖滚动条都把面板关掉 —— 宿主 `overflow-y-auto` 滚动时同理）。
     - **地图舞台内的 `zIndex` 会漏到模态窗之上**：`FxPreviewLayer` 里字幕是 `zIndex: 60`，而 `GenerateDialog` 是 `z-50`，舞台盒子原本没有层叠上下文，60 就跑去和根上下文比大小，于是**预览字幕盖住字幕生成弹窗**。修法是给 `App.tsx` 那个 `absolute` 的 stageBox 加 `isolate`，把地图 / 字幕 / 弹窗卡片 / 屏幕特效压成一个上下文（组内相对顺序不变，MapLibre 图层照旧）。A/B 实测：`isolation:isolate` 时舞台内 z-60 探针的命中区被弹窗夺回，改回 `auto` 即复现遮挡。以后新增「舞台内高 z-index 的预览层」不必再单独跟模态窗比大小。
-24. **新增枚举值必须同步 DDL 的 CHECK 白名单，否则「当场能用、重启就丢」**（2026-09-21 实测：拆出 `cosyvoice` 协议时只改了 `providers.ts` 与主进程 `switch`，`provider.protocol` 的 CHECK 仍是旧五项 → 新建的 CosyVoice 供应商行报 `CHECK constraint failed`）。为什么几乎无人察觉：`providerStore.dbSync()` 只 `console.warn`，而渲染端读的是 zustand 内存态，所以本机一路都好使，直到重启 —— `hydrate()` 用库里的行覆盖状态，那行就没了。修法：`retireProviderIfStale()` 在 `db.exec(ddl)` 前把不认新值的旧表改名让位（`CREATE TABLE IF NOT EXISTS` 不会改已存在的表），新表建好后 `restoreProviderRows()` 按交集列原样搬回再删旧表（**API Key 一并保住，不让用户重填**）；回归 `node --experimental-sqlite tools/verify-provider-protocol.mjs`。凡是 CHECK 白名单 / 枚举取值变化，都要同时改 DDL + `tools/db-field-notes.mjs`，并配一条这种「旧库启动 → 新库结构」的回归。
+24. **枚举白名单不要写进 DDL，接口形状也不要写进 switch**（2026-09-21 两条相关教训，同日已一并解决）：
+    - 起因：`provider.protocol` 的 `CHECK (… IN (五项))` 是「一家供应商怎么发请求」的第四份真相（另三份是 renderer 的 switch、主进程的 switch、`assertTtsPairing`）。拆出 `cosyvoice` 协议时只改了三处，DDL 那份漏了 → 新行插库报 `CHECK constraint failed`；而 `providerStore.dbSync()` 只 `console.warn`，渲染端读的是 zustand 内存态，所以**当场全好、重启即丢**（`hydrate()` 用库里的行覆盖状态）。
+    - 现在的做法：**「模板即数据」重构**（`docs/provider-engine.md`）——`provider` 表删掉 `protocol`/`api_key`，换成 `recipe` + `secrets_json`；每家供应商 = `provider_endpoint` 里的若干条接口模板行（怎么发 / 怎么取回 / 同步还是异步），**role·mode 等枚举一律不加 CHECK**，取值由 TS 联合类型 + 保存前 `validateTemplate()` 管。以后接新供应商不改表、不加 switch。
+    - 旧库的形状漂移仍走启动体检：`retireProviderIfStale()` 认「还带 api_key/protocol」这个**正标志**（不能认「缺了新列」——补列那步 `ensureAllColumns` 会先把新列名塞进旧表，把漂移盖住，实测踩过），改名让位 → DDL 建新表 → `restoreProviderRows()` 搬回行（**API Key 保住**，protocol→recipe 一次性映射）。回归 `node --experimental-sqlite tools/verify-provider-endpoint.mjs`。
+    - 推广开一句：**凡是「用户能改、又能从别处推不出来」的值才入库；同一条事实只允许一处真相，宁可让它是一张表，也不要多处 if**。
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
 
@@ -154,7 +162,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2：桌面端已落地，网页端仍为简化实现）
 
-**规模**：24 张表 / 3 视图 / **0 触发器** / 660 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：25 张表 / 4 视图 / **0 触发器** / 677 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 片长（`project.endFrame`）不入库**（2026-09-19）：`project.end_sec` 列已删——它是纯派生量且**没有任何 UI 能改它**（`setProjectEndFrame` 零调用）。读取端 `getProjectV2` 现按内容实际结束推导：`endFrame = max(60s × fps, 元素/特效/弹窗/机位/字幕/音乐的结束帧)`，与时间线口径一致；空项目从原来的「100 秒幽灵容器」变成 60 秒。新增任何「容器长度」类字段前先问它是不是派生值。
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
@@ -173,7 +181,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   | `element_image` | geo_image（地理配准贴图，控制点网格 JSON 内联） | Image（图片） |
 
 - **★ 不使用触发器（2026-09-12 起全部移除）**：数据库侧只有表 / 索引 / 视图，**没有触发器**。理由：网页端 Dexie（IndexedDB）没有触发器，数据库侧触发器只在桌面端生效 → 同一规则两套真相；且规则藏在表定义外、与写入端重复。
-- **改版的代价 —— 弱引用**：只剩四处，`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries/plots/events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（父子互引，见 §5 底图条），全部由写入端保证。项目侧 `element_marker.asset_id` / `move_icon_asset_id` / 音频列 / `camera_keyframe.follow_route_element_id` 都是**真外键**（SET NULL），删除素材或路线不需要应用层连带清理；动画关键帧内联在 `keyframes_json`，随元素生灭。曾存在的第三类 `element_route.from/to_element_id`（连接线端点）已随「连接线」整条下线（2026-09-19：无工具入口、坐标解析器从未接上，属不可达代码，却给每条写入路径加上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套）。数据库侧只留 `v_check_dangling`（悬空引用）与 `v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）两个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
+- **改版的代价 —— 弱引用**：五处 —— `element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries/plots/events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（父子互引，见 §5 底图条）、`provider_endpoint.poll_json.$.statusRole`（异步接口指向的查询接口，藏在 JSON 里，2026-09-21 加），全部由写入端保证。项目侧 `element_marker.asset_id` / `move_icon_asset_id` / 音频列 / `camera_keyframe.follow_route_element_id` 都是**真外键**（SET NULL），删除素材或路线不需要应用层连带清理；动画关键帧内联在 `keyframes_json`，随元素生灭。曾存在的第三类 `element_route.from/to_element_id`（连接线端点）已随「连接线」整条下线（2026-09-19：无工具入口、坐标解析器从未接上，属不可达代码，却给每条写入路径加上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套）。数据库侧只留 `v_check_dangling`（悬空引用）、`v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）、`v_check_async_pairing`（异步接口有没有配套的查询接口）三个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
 - **★ 素材登记只有 `asset` 表这一本账（2026-09-19）**：桌面端曾另存一份 `userData/media/index.json` 映射，同一条事实两处真相，而 `asset` 表里的行反而是为过外键造的壳。现在 `assets:save/read/remove/list/exists` 全部读写 `asset` 表（`storage='file'` + `rel_path`）；删素材时项目侧靠 FK SET NULL，**公共库副本的引用要手工清**（`assets:remove` 里的 UPDATE）+ 启动 `repairAssetRefs` 兜底。配置 JSON 导入还原素材走 `putAssetBytes`（桌面落盘 / 网页存 Dexie Blob），**任一素材失败就中止整笔导入**，不再静默留下坏引用。
 - **★ 公共图层副本必须自洽（不变量，2026-09-19）**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 是**弱引用**（公共库不属任何项目，建不了外键）。副本引用的素材若已不存在，由启动体检 `repairAssetRefs(db)` 把引用清空（**不再补占位行** —— 造一条 `rel_path=''` 的空壳 asset 只会让素材库多出一排点不开的死条目），元素保留、图不保留；副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归：`node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`。
 - **★ 新增/改动字段的同步清单（漏一步就会设计↔实现漂移）**：
@@ -184,12 +192,13 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   4. `node --experimental-sqlite tools/gen-db-field-dict.mjs` 重跑，把字段字典注入 `docs/db-tables.md`
   4.5 `node tools/comment-ddl.mjs`：把字段中文说明写成 DDL 行尾 `-- 中文`（SQLite 不存储注释，靠 DDL 自文档；幂等，改完字段说明后重跑）
   5. 手工同步文档中**标记外**的部分：表数 / 列数（`db-tables.md`、`db-redesign.md`、`AGENTS.md` 本节的规模行）、`db-tables.md` 第二节字段归属表与第三节逐表速查、`db-redesign.md` 2.2 实体清单与资源层说明、`docs/db-er-diagram.mmd` E-R 图
-  6. 验证（五条全绿才算完）：
+  6. 验证（六条全绿才算完）：
      `node --experimental-sqlite tools/gen-db-field-dict.mjs --check`（结构一致 + 说明全覆盖）·
      `node --experimental-sqlite tools/audit-fk-indexes.mjs`（外键索引缺口）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs`（**存进去 = 取出来**：输入原值逐字往返、falsy 合法值不被 `||` 吞、帧↔秒互逆）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`（公共图层副本）·
-     `node --experimental-sqlite tools/verify-provider-protocol.mjs`（**旧库启动 → 新库结构**：CHECK 白名单变化时按新 DDL 重建并原样搬回行）
+     `node --experimental-sqlite tools/verify-provider-endpoint.mjs`（**旧库启动 → 新库结构**：api_key/protocol 旧形状让位重建并搬回行 + 接口模板读写往返 + 异步配对自检）·
+     `node --experimental-strip-types tools/verify-request-engine.mjs`（模板求值 / 出参解码 / 异步轮询，全离线）
 
 - **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
   - 地形夸张系数可调节、底图可增删改 → 打破了「底图/高程图是代码常量，配置不入库」的前提，2026-09-19 补了 `base_map` / `elevation_map` 两张表（**每项目一份**，内置项在创建项目时作为普通行复制进来，夸张系数直接落在 `elevation_map.exaggeration`）；

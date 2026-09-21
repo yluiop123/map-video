@@ -48,10 +48,13 @@ declare global {
         list: (kindPrefix?: string) => Promise<{ assetId: string; name: string; mime: string }[]>;
         stat: () => Promise<{ count: number; bytes: number; dir: string }>;
       };
-      aiChat: (config: import('../types').ProviderConfig, system: string, user: string) => Promise<{ content?: string; error?: string }>;
-      aiTts: (config: import('../types').ProviderConfig, text: string) => Promise<{ bytes?: Uint8Array; mime?: string; error?: string }>;
-      aiImage: (config: import('../types').ProviderConfig, prompt: string) => Promise<{ image?: string; error?: string }>;
-      aiVoiceClone: (config: import('../types').ProviderConfig, body: unknown) => Promise<{ voiceId?: string; error?: string }>;
+      /** 通用网络：按接口模板算好的请求交给主进程发（协议差异不再进主进程） */
+      net: {
+        request: (req: import('./request-engine').ResolvedRequest) => Promise<{
+          status?: number; contentType?: string; bytes?: ArrayBuffer; json?: unknown; text?: string; error?: string;
+        }>;
+        fetchUrl: (url: string) => Promise<{ bytes?: ArrayBuffer; contentType?: string; error?: string }>;
+      };
       netJson: (url: string) => Promise<{ text?: string; error?: string }>;
       env: () => Promise<{ version: string; electron: string; node: string; userData: string }>;
       openExternal: (url: string) => void;

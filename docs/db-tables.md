@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 24 张表、3 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表（另有 5 张同构的公共元素副本表），从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 25 张表、4 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表（另有 5 张同构的公共元素副本表），从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：24 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 3 个视图 · 0 个触发器 · 647 列（外键全部有索引）
+- **规模**：25 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 4 个视图 · 0 个触发器 · 677 列（外键全部有索引）
 
 **目录**
 
-- 一、24 张表的构成与分流规则
+- 一、25 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、24 张表逐表速查（按 11 组）
+- 三、25 张表逐表速查（按 11 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
-- 附：3 个视图，以及为什么没有触发器
+- 附：4 个视图，以及为什么没有触发器
 
-## 一、24 张表的构成与分流规则
+## 一、25 张表的构成与分流规则
 
-**24 张表不是 24 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**25 张表不是 24 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,7 +28,7 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 24 张表的构成
+#### 一句话理解 25 张表的构成
 
 - **5 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域 · 图片**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
 - **6 张**是「公共图层库」：`public_layer` + 5 张与项目元素表**同构**的公共副本表（把某个图层连元素整体复制一份，供其它项目导入）；
@@ -69,7 +69,7 @@
 > 注：底图 / 高程图**每项目一份**（`base_map` / `elevation_map`）—— 面板支持增删改与调地形夸张，「内置常量不入库」的前提早已不成立。
 > **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、24 张表逐表速查（按 11 组）
+## 三、25 张表逐表速查（按 11 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
@@ -158,11 +158,14 @@
 |---|---|---|---|---|
 | `overlay` | 弹窗本体（10 类：文本/图片/图表/人物/对话…） | `overlay_id` | 图表/时间轴/对话等内容按 P3 留在 `payload_json` | 「弹窗」面板（`FxPanelBody.tsx`）+ 画面渲染 `fx/FxRender.tsx` OverlayContentView |
 
-### 组 10 · 应用配置 1 张
+### 组 10 · 应用配置 2 张
+
+「一家供应商怎么发请求」只有这一处真相（模板即数据，见 `docs/provider-engine.md`）：`provider` 存身份与密钥，`provider_endpoint` 存它的各个接口模板。协议列与代码里的两处 `switch` 一并删掉。
 
 | 表 | 职责 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
-| `provider` | AI 服务商配置：文案生成 / 语音（含克隆）/ 图片生成 | `provider_id` | 与项目内容解耦（Key 只存本机）；`ux_provider_active` 保证每个 kind 至多一条生效 | 顶栏「设置 · AI」弹窗（`SettingsDialog.tsx`）；字幕面板内也可打开（`FxPanelBody.tsx`） |
+| `provider` | AI 服务商配置：文案生成 / 语音（含克隆）/ 图片生成 | `provider_id` | `recipe` 记模板包（内置形态由它定，改 label 不影响）；`secrets_json` 是命名密钥槽 `{apiKey, secret2}`（火山 Access Key / MiniMax group_id 不再拼字符串）；`ux_provider_active` 保证每个 kind 至多一条生效 | 顶栏「设置 · AI」弹窗（`SettingsDialog.tsx`） |
+| `provider_endpoint` | 该供应商配齐的接口模板：每个 role 一行（怎么发 / 怎么取回 / 同步还是异步） | `endpoint_id`（`<provider_id>:<role>`） | `role`·`mode` 等枚举**不写 CHECK**（取值由 TS 类型 + `validateTemplate()` 管，加供应商不改表）；`ux_pe_role` 保证同供应商同 role 唯一；`poll_json.$.statusRole` 是**弱引用** → `v_check_async_pairing` 自检 | 同上 →「接口模板」页签（批次 3） |
 
 ### 组 11 · 公共图层与公共元素（跨项目图库） 6 张
 
@@ -183,7 +186,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **24 张表 / 660 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，660 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **25 张表 / 677 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，677 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -200,7 +203,7 @@
 - **组 7 · 疆域类元素（Terr 工具）**：`element_territory`
 - **组 8 · 贴图类元素（Image 工具）**：`element_image`
 - **组 9 · 叠加层（弹窗）**：`overlay`
-- **组 10 · 应用配置**：`provider`
+- **组 10 · 应用配置**：`provider` · `provider_endpoint`
 - **组 11 · 公共图层与公共元素（跨项目图库）**：`public_layer` · `public_element_marker` · `public_element_route` · `public_element_shape` · `public_element_territory` · `public_element_image`
 
 ### 组 1 · 合集 / 项目 / 图层（含配置）
@@ -845,16 +848,42 @@
 |---|---|---|---|
 | `provider_id` | TEXT | `PK` | 服务商配置 id |
 | `kind` | TEXT | `NOT NULL` | 类别：llm 文案生成 / tts 语音合成（含克隆）/ image 图片生成 · `CHECK (kind IN ('llm','tts','image'))` |
+| `recipe` | TEXT | `NOT NULL` | 模板包 id（决定「内置形态」与铺出哪些接口；改显示名不影响） · 默认 `''` |
 | `label` | TEXT | `NOT NULL` | 显示名 · 默认 `''` |
 | `base_url` | TEXT | `NOT NULL` | 接口基础地址 · 默认 `''` |
-| `api_key` | TEXT | `NOT NULL` | 密钥（只存本机，不入项目文件） · 默认 `''` |
+| `secrets_json` | TEXT | — | 命名密钥槽 JSON：{apiKey, secret2}（火山 Access Key / MiniMax group_id 用 secret2） · `CHECK (secrets_json IS NULL OR json_valid(secrets_json))` |
 | `model` | TEXT | `NOT NULL` | 模型名 / TTS 音色模型 · 默认 `''` |
-| `protocol` | TEXT | — | TTS 协议：openai-speech / minimax-t2a / volc-tts / cosyvoice / qwen-tts / custom · `CHECK (protocol IS NULL OR protocol IN ( 'openai-speech','minimax-t2a','volc-tts','cosyvoice','qwen-tts','custom'))` |
 | `voice` | TEXT | — | 音色 / 说话人 ID |
 | `speed` | REAL | `NOT NULL` | 语速（0.5–2） · 默认 `1` · `CHECK (speed BETWEEN 0.5 AND 2)` |
 | `extra` | TEXT | — | 附加请求参数（JSON，合并进请求体） · `CHECK (extra IS NULL OR json_valid(extra))` |
 | `active` | INTEGER | `NOT NULL` | 是否生效（每个 kind 至多一条为 1） · 默认 `0` · `CHECK (active IN (0,1))` |
 | `ord` | INTEGER | `NOT NULL` | 同类内排序 · 默认 `0` |
+
+#### provider_endpoint
+
+**职责**：接口模板行：一家供应商配齐的每个 role 一条（怎么发、怎么取回、同步还是异步）　**前端**：顶栏「设置 · AI」→ 供应商详情（接口模板页签，批次 3）
+
+17 列 · 主键 `endpoint_id`
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `endpoint_id` | TEXT | `PK` | 接口模板行 id，形如 <provider_id>:<role> |
+| `provider_id` | TEXT | `NOT NULL` `FK → provider CASCADE` | 所属供应商 |
+| `role` | TEXT | `NOT NULL` | 用途：llm.generate / tts.synthesize / tts.clone / tts.query / image.generate / image.query |
+| `ord` | INTEGER | `NOT NULL` | 同一供应商内的展示顺序 · 默认 `0` |
+| `enabled` | INTEGER | `NOT NULL` | 是否启用（关掉即该 role 不可用） · 默认 `1` · `CHECK (enabled IN (0,1))` |
+| `mode` | TEXT | `NOT NULL` | sync 一次到位 / async 提交后轮询 · 默认 `'sync'` |
+| `method` | TEXT | `NOT NULL` | HTTP 方法 · 默认 `'POST'` |
+| `path` | TEXT | `NOT NULL` | 路径模板（支持 {baseUrl} 等占位） · 默认 `''` |
+| `headers_json` | TEXT | — | 请求头模板 JSON · `CHECK (headers_json IS NULL OR json_valid(headers_json))` |
+| `query_json` | TEXT | — | 查询串参数模板 JSON · `CHECK (query_json IS NULL OR json_valid(query_json))` |
+| `body_json` | TEXT | — | 请求体模板 JSON（值是 {var} 占位） · `CHECK (body_json IS NULL OR json_valid(body_json))` |
+| `vars_json` | TEXT | — | 变量声明表 JSON（inject 调用期注入 / param 配置期可填） · `CHECK (vars_json IS NULL OR json_valid(vars_json))` |
+| `overrides_json` | TEXT | — | 用户在配置期给该接口参数填的值 · `CHECK (overrides_json IS NULL OR json_valid(overrides_json))` |
+| `resp_kind` | TEXT | — | 响应类别：auto / audio / json / text |
+| `decode_kind` | TEXT | — | 结果解码：hex / base64 / url（远端产物再下载） |
+| `pick_json` | TEXT | — | 出参登记表 JSON（text/audio/image/voiceId/error… 的取值路径） · `CHECK (pick_json IS NULL OR json_valid(pick_json))` |
+| `poll_json` | TEXT | — | 异步轮询规则 JSON（任务 id 路径、查询 role、完成/失败判定、超时） · `CHECK (poll_json IS NULL OR json_valid(poll_json))` |
 
 ### 组 11 · 公共图层与公共元素（跨项目图库）
 
@@ -1316,11 +1345,11 @@
 
 桌面端（`electron/db-v2.mjs` + `electron/main.mjs` 的 `db:*` IPC）已按本设计的多表结构落地：`ensureV2Schema` 建表、`saveProjectV2` / `getProjectV2` 做多表 ↔ `MapVideoProject` 双向映射、`*PublicLayerV2` 管公共图层库，并带引用完整性（外键默认开启）。网页端仍是 Dexie / localStorage 的简化实现（ IndexedDB 无外键、无触发器，规则由 `src/lib` 应用层保证）。未决问题见 `docs/db-redesign.md` 末节。
 
-## 附：3 个视图，以及为什么没有触发器
+## 附：4 个视图，以及为什么没有触发器
 
 表之外原本还有触发器；本设计**不定义任何触发器**，理由见本节末尾。
 
-### 3 个视图（不存数据，只是固化查询）
+### 4 个视图（不存数据，只是固化查询）
 
 | 视图 | 类别 | 作用 |
 |---|---|---|
