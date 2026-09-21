@@ -244,14 +244,14 @@ CREATE INDEX IF NOT EXISTS ix_pe_status ON provider_endpoint(status_endpoint_id)
 
 现状（`SettingsDialog` + `FxPanelBody:ProviderSettingsDialog`）：⚙ 设置 · AI → 左侧三类（文案 / 语音 / 图片）→ 右侧上方是厂商芯片 + 供应商行（● 生效 / ✕ 删除），下方是选中项的编辑区。改造保持这个骨架，只把下方编辑区拆成两个页签：
 
-| 页签 | 装什么 | 面向 |
+| 页面 | 装什么 | 面向 |
 |---|---|---|
 | **配置** | 模板包 → 密钥 → Base URL → 模型 → 音色 → 参数表（`kind=param`）→ 每个 role 的**同步 / 异步** | 日常：换 Key、换模型、调参数 |
 | **接口模板** | 每 role 一卡片：URL / Method / Headers / Query / Body 模板 / 出参取法 / 轮询与状态判定 + **试调用** | 专家：接一家没预置的服务、或上游改了字段 |
 
 两条硬性约束：
 
-- **同一份配置只有一处能改**。现在 `FxPanelBody` 的 `inline` 版（配音服务内联弹窗）与 ⚙ 是同一组件的两个入口，属 UI 版「双份真相」→ 内联那份删掉，`VoicePicker` 只留「选音色 + 试听」+ 一句「改服务去 ⚙」。
+- **同一份配置只有一处能改**（已落地）：`FxPanelBody` 的 `inline` 版与 ⚙ 曾是同一组件的两个入口，属 UI 版「双份真相」→ 内联那份已删，`VoicePicker` 只留「选音色 + 试听」。
 - **「内置」的判定换成 `provider.recipe`**。现在靠 `sel.label === preset.label` 反查，用户改个显示名就掉出内置形态（`builtin` 分支失效、裸露出 baseUrl 等）；模板包 id 落在列上，改名无感。
 
 两页签独立滚动容器，不混在一条长流里 —— 混了以后没人敢动 body 模板，也看不清自己改了什么。

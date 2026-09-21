@@ -215,8 +215,8 @@ function walk(node: unknown, s: Scope): unknown {
   return node;
 }
 
-/** `when: "a == b"`：只支持 == / !=，路径从 ctx 取 */
-function whenOk(cond: string | undefined, ctx: ReqCtx): boolean {
+/** `when: "a == b"`：只支持 == / !=，路径从 ctx 取（界面也用它决定某个参数该不该出现） */
+export function whenOk(cond: string | undefined, ctx: ReqCtx): boolean {
   if (!cond) return true;
   const m = /^([\w.]+)\s*(==|!=)\s*(.+)$/.exec(cond.trim());
   if (!m) return true;

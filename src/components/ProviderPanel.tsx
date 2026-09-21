@@ -18,7 +18,7 @@ import { useConfirm } from './ui/ConfirmHost';
 import { endpointsOfRecipe } from '../lib/providers';
 import { pickLabel } from '../lib/i18n';
 import { previewRequest, runRoleDebug } from '../lib/providers';
-import { validateTemplate, type Role, type VarSpec } from '../lib/request-engine';
+import { validateTemplate, whenOk, type Role, type VarSpec } from '../lib/request-engine';
 import { IS_DESKTOP } from '../lib/backend';
 
 type Kind = 'llm' | 'tts' | 'image';
@@ -48,8 +48,10 @@ export function ProviderPanel({ kind }: { kind: Kind }) {
   const activeId = useProviderStore((s) => (kind === 'llm' ? s.activeLlmId : kind === 'tts' ? s.activeTtsId : s.activeImageId));
   const store = useProviderStore.getState();
   const [selId, setSelId] = useState<string | null>(activeId || list[0]?.id || null);
-  const [tab, setTab] = useState<'config' | 'tpl'>('config');
+  // 接口模板是**另一个页面**（不是同一区里的页签）：日常改 Key/模型/参数，改接口形状是偶发的专家动作
+  const [showTpl, setShowTpl] = useState(false);
   const recipes = recipesFor(kind);
+  useEffect(() => { setShowTpl(false); }, [kind, selId]);
   // 切换 kind 时组件不重挂载，selId 会带着上一类的 id 过来；选不中就退到生效项 / 第一项，
   // 否则新建完供应商面板还是空的（要再点一次才显示）
   const sel = list.find((c) => c.id === selId) || list.find((c) => c.id === activeId) || list[0] || null;
@@ -76,7 +78,7 @@ export function ProviderPanel({ kind }: { kind: Kind }) {
         {recipes.map((r) => (
           <button
             key={r.id}
-            onClick={() => { setSelId(store.addFromRecipe(r.id, kind)); setTab('config'); }}
+            onClick={() => { setSelId(store.addFromRecipe(r.id, kind)); setShowTpl(false); }}
             className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-[11px] hover:border-white/25 transition-colors"
             title={pickLabel(r.note, lang)}
           >＋ {pickLabel(r.label, lang)}</button>
@@ -98,24 +100,21 @@ export function ProviderPanel({ kind }: { kind: Kind }) {
         {!list.length && <p className="text-[11px] text-muted-foreground">{t('点上方模板包添加一家服务。', 'Add a provider above.')}</p>}
       </div>
 
-      {sel && (
-        <>
-          <div className="flex gap-1 border-b border-white/10">
-            {(['config', 'tpl'] as const).map((k) => (
+      {sel && (showTpl
+        ? <TemplateTab cfg={sel} recipe={recipeById(sel.recipe)} onBack={() => setShowTpl(false)} />
+        : (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-muted-foreground/70">{t('这一页只放日常项', 'Everyday settings live on this page')}</span>
               <button
-                key={k}
-                onClick={() => setTab(k)}
-                className={`h-8 px-3 text-xs border-b-2 -mb-px transition-colors ${tab === k ? 'border-brand text-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-              >
-                {k === 'config' ? t('配置', 'Config') : t('接口模板', 'Endpoints')}
-              </button>
-            ))}
-          </div>
-          {tab === 'config'
-            ? <ConfigTab kind={kind} cfg={sel} recipe={recipeById(sel.recipe)} />
-            : <TemplateTab cfg={sel} recipe={recipeById(sel.recipe)} />}
-        </>
-      )}
+                onClick={() => setShowTpl(true)}
+                className="h-7 px-2.5 rounded-md border border-white/15 bg-white/[0.045] text-[11px] hover:bg-white/10"
+                title={t('编辑 provider_endpoint 表里的接口模板', 'Edit the provider_endpoint templates')}
+              >{t('接口模板', 'Endpoints')} · {sel.endpoints.length} →</button>
+            </div>
+            <ConfigTab kind={kind} cfg={sel} recipe={recipeById(sel.recipe)} />
+          </>
+        ))}
     </div>
   );
 }
@@ -169,9 +168,19 @@ function ConfigTab({ kind, cfg, recipe }: { kind: Kind; cfg: ProviderConfig; rec
             <span className="text-[10px] text-muted-foreground/70 font-mono">{e.role}</span>
           </div>
           <ModeRow cfg={cfg} ep={e} />
-          {(e.vars ?? []).filter((v) => v.kind === 'param').map((v) => (
+          {/* 参数直接来自该行 provider_endpoint.vars_json（kind=param），并按 when 门控隐藏；
+              存回该行 overrides_json —— 页面上不该出现表里没有的控件 */}
+          {(e.vars ?? []).filter((v) => v.kind === 'param' && whenOk(v.when, { mode: e.mode })).map((v) => (
             <VarControl key={v.name} v={v} value={(e.overrides ?? {})[v.name]} onChange={(val) => writeOverride(cfg, e.role, v.name, val)} />
           ))}
+          {(e.vars ?? []).some((v) => v.kind === 'inject') && (
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-[10px] text-muted-foreground/60">{t('调用时传入', 'At call time')}</span>
+              {(e.vars ?? []).filter((v) => v.kind === 'inject').map((v) => (
+                <span key={v.name} className="h-5 px-1.5 rounded bg-white/[0.05] text-[10px] font-mono text-muted-foreground" title={t('由程序在调用时填入，这里不能设', 'Filled in by the caller; not editable')}>{v.name}</span>
+              ))}
+            </div>
+          )}
           {!hasParams(e) && <p className="text-[10px] text-muted-foreground/60">{t('该接口没有可配置参数', 'No configurable parameters')}</p>}
         </div>
       ))}
@@ -359,7 +368,7 @@ function ListEditor({ v, value, onChange }: { v: VarSpec; value: unknown[]; onCh
 
 // ========== 接口模板页 ==========
 
-function TemplateTab({ cfg, recipe }: { cfg: ProviderConfig; recipe?: Recipe }) {
+function TemplateTab({ cfg, recipe, onBack }: { cfg: ProviderConfig; recipe?: Recipe; onBack: () => void }) {
   const t = useT();
   const confirm = useConfirm();
   const setEndpoints = (endpoints: ProviderEndpoint[]) => useProviderStore.getState().update(cfg.id, { endpoints });
@@ -375,8 +384,13 @@ function TemplateTab({ cfg, recipe }: { cfg: ProviderConfig; recipe?: Recipe }) 
   };
   return (
     <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10">← {t('返回配置', 'Back')}</button>
+        <span className="text-[11px] font-medium truncate">{cfg.label} · {t('接口模板', 'Endpoints')}</span>
+        <span className="text-[10px] font-mono text-muted-foreground/60 truncate">{cfg.recipe}</span>
+      </div>
       <p className="text-[11px] text-muted-foreground">
-        {t('改的是「这家怎么发请求」。占位符：{name} 取变量（标量保留类型），{@name} 在数组里展开成多个元素。', 'Edit how requests are built. {name} = a variable (type kept), {@name} splices array elements.')}
+        {t('改的是「这家怎么发请求」（存 provider_endpoint 表）。占位符：{name} 取变量（标量保留类型），{@name} 在数组里展开成多个元素。', 'Edits what gets sent (stored in provider_endpoint). {name} = variable, {@name} splices array elements.')}
       </p>
       {cfg.endpoints.map((e) => (
         <EndpointCard key={e.role} cfg={cfg} ep={e} onDelete={() => void drop(e.role)}
