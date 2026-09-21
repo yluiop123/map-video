@@ -1088,8 +1088,8 @@ CREATE TABLE IF NOT EXISTS provider (  -- 应用配置：AI 文案 / 配音 / �
   base_url   TEXT NOT NULL DEFAULT '',  -- 接口基础地址
   api_key    TEXT NOT NULL DEFAULT '',  -- 密钥（只存本机，不入项目文件）
   model      TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型
-  protocol   TEXT CHECK (protocol IS NULL OR protocol IN (  -- TTS 协议：openai-speech / minimax-t2a / volc-tts / qwen-tts / custom
-               'openai-speech','minimax-t2a','volc-tts','qwen-tts','custom')),
+  protocol   TEXT CHECK (protocol IS NULL OR protocol IN (  -- TTS 协议：openai-speech / minimax-t2a / volc-tts / cosyvoice / qwen-tts / custom
+               'openai-speech','minimax-t2a','volc-tts','cosyvoice','qwen-tts','custom')),
   voice      TEXT,  -- 音色 / 说话人 ID
   speed      REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
   extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),  -- 附加请求参数（JSON，合并进请求体）

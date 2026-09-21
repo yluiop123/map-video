@@ -849,7 +849,7 @@
 | `base_url` | TEXT | `NOT NULL` | 接口基础地址 · 默认 `''` |
 | `api_key` | TEXT | `NOT NULL` | 密钥（只存本机，不入项目文件） · 默认 `''` |
 | `model` | TEXT | `NOT NULL` | 模型名 / TTS 音色模型 · 默认 `''` |
-| `protocol` | TEXT | — | TTS 协议：openai-speech / minimax-t2a / volc-tts / qwen-tts / custom · `CHECK (protocol IS NULL OR protocol IN ( 'openai-speech','minimax-t2a','volc-tts','qwen-tts','custom'))` |
+| `protocol` | TEXT | — | TTS 协议：openai-speech / minimax-t2a / volc-tts / cosyvoice / qwen-tts / custom · `CHECK (protocol IS NULL OR protocol IN ( 'openai-speech','minimax-t2a','volc-tts','cosyvoice','qwen-tts','custom'))` |
 | `voice` | TEXT | — | 音色 / 说话人 ID |
 | `speed` | REAL | `NOT NULL` | 语速（0.5–2） · 默认 `1` · `CHECK (speed BETWEEN 0.5 AND 2)` |
 | `extra` | TEXT | — | 附加请求参数（JSON，合并进请求体） · `CHECK (extra IS NULL OR json_valid(extra))` |

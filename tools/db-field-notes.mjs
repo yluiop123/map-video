@@ -470,7 +470,7 @@ const NOTES = {
     "base_url": "接口基础地址",
     "api_key": "密钥（只存本机，不入项目文件）",
     "model": "模型名 / TTS 音色模型",
-    "protocol": "TTS 协议：openai-speech / minimax-t2a / volc-tts / qwen-tts / custom",
+    "protocol": "TTS 协议：openai-speech / minimax-t2a / volc-tts / cosyvoice / qwen-tts / custom",
     "voice": "音色 / 说话人 ID",
     "speed": "语速（0.5–2）",
     "extra": "附加请求参数（JSON，合并进请求体）",

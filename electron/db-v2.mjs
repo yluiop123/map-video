@@ -63,7 +63,10 @@ export function ensureV2Schema(db) {
     ensureAllColumns(db, ddl);
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
     db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref;');
+    // CHECK 白名单变过（旧 provider 表不认 'cosyvoice'）→ 旧表让位，DDL 建新表后把行搬回
+    const staleProvider = retireProviderIfStale(db);
     db.exec(ddl);
+    if (staleProvider) restoreProviderRows(db, staleProvider);
     repairAssetRefs(db);
     return true;
   } catch (e) {
@@ -803,6 +806,34 @@ const ASSET_REFS = [
  * 素材是全局资源，删掉它时 assets:remove 会一并清空副本引用；但老库里可能还留着
  * 指向空壳 asset 行的引用 —— 那种行不澄清、留着就是「素材库里有 ID、读出来什么都没有」。
  */
+/**
+ * provider.protocol 的 CHECK 是**白名单**：旧库那一版不认 'cosyvoice'（把 TTS 拆成
+ * CosyVoice / Qwen-TTS 两条端点时才补进来），后果是新建的 CosyVoice 供应商行当场能用、
+ * 重启就丢（hydrate 用库里的行覆盖）。CREATE TABLE IF NOT EXISTS 不会改已存在的表，
+ * 所以这里让旧表改名让位给新 DDL，建好后再把行原样搬回（已填的 Key 与其它配置一律不动）。
+ * 返回让位的旧表名；不需要处理时 null。
+ */
+export function retireProviderIfStale(db) {
+  const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'provider'").get();
+  if (!t || /'cosyvoice'/.test(String(t.sql))) return null;
+  db.exec('ALTER TABLE provider RENAME TO provider__stale');
+  return 'provider__stale';
+}
+
+/** 把让位出去的旧 provider 行搬回新表（按两表同名交集列复制，成功后删掉旧表） */
+export function restoreProviderRows(db, staleTable) {
+  try {
+    const staleCols = columnsOf(db, staleTable);
+    const shared = columnsOf(db, 'provider').filter((c) => staleCols.includes(c));
+    const r = db.prepare(`INSERT INTO provider (${shared.join(',')})
+      SELECT ${shared.map((c) => `"${c}"`).join(',')} FROM ${staleTable}`).run();
+    db.exec(`DROP TABLE ${staleTable}`);
+    console.log(`[db-v2] provider 表已按新 DDL 重建，搬回 ${Number(r.changes || 0)} 行`);
+  } catch (e) {
+    console.error('[db-v2] provider 搬回失败（旧行留在 provider__stale，未删除）:', e?.message || e);
+  }
+}
+
 export function repairAssetRefs(db) {
   let cleared = 0;
   for (const [t, col] of ASSET_REFS) {

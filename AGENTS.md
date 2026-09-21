@@ -119,6 +119,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 23. **弹层的「层」有两个独立陷阱（2026-09-20 字幕生成弹窗两处同报）**：
     - **宿主带 `overflow-y-auto` 时不能用 `absolute` 浮层**：子面板会被宿主裁掉，实测表现为「点了没反应」（`ColorPicker` 的色板当时顶边已经在弹窗之外）。共享原子一律走 `createPortal(…, document.body)` + `position:fixed`，在 `useLayoutEffect` 里按触发块与视口算位置（下方放不下就翻到上方，最后再夹一次 —— 只夹 `top` 不夹 `bottom` 仍会露半截）。面板脱离了 `wrapRef`，所以点击外关闭必须同时放过 `popRef`，否则 mousedown 先把面板卸掉、`click` 再也打不到色块；滚动 / 改窗口尺寸要**重新定位**而不是关闭（早先写成关闭，结果连面板内拖滚动条都把面板关掉 —— 宿主 `overflow-y-auto` 滚动时同理）。
     - **地图舞台内的 `zIndex` 会漏到模态窗之上**：`FxPreviewLayer` 里字幕是 `zIndex: 60`，而 `GenerateDialog` 是 `z-50`，舞台盒子原本没有层叠上下文，60 就跑去和根上下文比大小，于是**预览字幕盖住字幕生成弹窗**。修法是给 `App.tsx` 那个 `absolute` 的 stageBox 加 `isolate`，把地图 / 字幕 / 弹窗卡片 / 屏幕特效压成一个上下文（组内相对顺序不变，MapLibre 图层照旧）。A/B 实测：`isolation:isolate` 时舞台内 z-60 探针的命中区被弹窗夺回，改回 `auto` 即复现遮挡。以后新增「舞台内高 z-index 的预览层」不必再单独跟模态窗比大小。
+24. **新增枚举值必须同步 DDL 的 CHECK 白名单，否则「当场能用、重启就丢」**（2026-09-21 实测：拆出 `cosyvoice` 协议时只改了 `providers.ts` 与主进程 `switch`，`provider.protocol` 的 CHECK 仍是旧五项 → 新建的 CosyVoice 供应商行报 `CHECK constraint failed`）。为什么几乎无人察觉：`providerStore.dbSync()` 只 `console.warn`，而渲染端读的是 zustand 内存态，所以本机一路都好使，直到重启 —— `hydrate()` 用库里的行覆盖状态，那行就没了。修法：`retireProviderIfStale()` 在 `db.exec(ddl)` 前把不认新值的旧表改名让位（`CREATE TABLE IF NOT EXISTS` 不会改已存在的表），新表建好后 `restoreProviderRows()` 按交集列原样搬回再删旧表（**API Key 一并保住，不让用户重填**）；回归 `node --experimental-sqlite tools/verify-provider-protocol.mjs`。凡是 CHECK 白名单 / 枚举取值变化，都要同时改 DDL + `tools/db-field-notes.mjs`，并配一条这种「旧库启动 → 新库结构」的回归。
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
 
@@ -183,11 +184,12 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   4. `node --experimental-sqlite tools/gen-db-field-dict.mjs` 重跑，把字段字典注入 `docs/db-tables.md`
   4.5 `node tools/comment-ddl.mjs`：把字段中文说明写成 DDL 行尾 `-- 中文`（SQLite 不存储注释，靠 DDL 自文档；幂等，改完字段说明后重跑）
   5. 手工同步文档中**标记外**的部分：表数 / 列数（`db-tables.md`、`db-redesign.md`、`AGENTS.md` 本节的规模行）、`db-tables.md` 第二节字段归属表与第三节逐表速查、`db-redesign.md` 2.2 实体清单与资源层说明、`docs/db-er-diagram.mmd` E-R 图
-  6. 验证（四条全绿才算完）：
+  6. 验证（五条全绿才算完）：
      `node --experimental-sqlite tools/gen-db-field-dict.mjs --check`（结构一致 + 说明全覆盖）·
      `node --experimental-sqlite tools/audit-fk-indexes.mjs`（外键索引缺口）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs`（**存进去 = 取出来**：输入原值逐字往返、falsy 合法值不被 `||` 吞、帧↔秒互逆）·
-     `node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`（公共图层副本）
+     `node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`（公共图层副本）·
+     `node --experimental-sqlite tools/verify-provider-protocol.mjs`（**旧库启动 → 新库结构**：CHECK 白名单变化时按新 DDL 重建并原样搬回行）
 
 - **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
   - 地形夸张系数可调节、底图可增删改 → 打破了「底图/高程图是代码常量，配置不入库」的前提，2026-09-19 补了 `base_map` / `elevation_map` 两张表（**每项目一份**，内置项在创建项目时作为普通行复制进来，夸张系数直接落在 `elevation_map.exaggeration`）；
