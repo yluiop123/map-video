@@ -1,100 +1,112 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { ProviderConfig, ProviderEndpoint } from '../types';
-import { configFromRecipe, endpointsOfRecipe } from '../lib/providers';
+import type { ProviderConfig } from '../types';
+import { SEED_GROUPS, cloneRow, seedRow } from '../lib/template-seed';
+import type { Mode, ProviderKind, Role, TemplateGroup, TemplateRow } from '../lib/request-engine';
 import { IS_DESKTOP } from '../lib/backend';
 
-type ProviderKind = 'llm' | 'tts' | 'image';
+type NewGroup = Omit<TemplateGroup, 'rows'> & { rows: TemplateRow[] };
 
 interface ProviderState {
+  /** 接口模板组（共享数据：一个功能有哪几条接口、各自怎么发怎么取回） */
+  groups: TemplateGroup[];
   llm: ProviderConfig[];
   tts: ProviderConfig[];
   image: ProviderConfig[];
   activeLlmId: string | null;
   activeTtsId: string | null;
   activeImageId: string | null;
-  /** 按模板包新建（模板包 = 一家供应商配齐哪几个接口、各自怎么发） */
-  addFromRecipe: (recipeId: string, kind: ProviderKind) => string;
+  /** 新建一个能力实例（预填这组模板建议的 baseUrl / 模型 / 音色） */
+  addFromGroup: (tplGroup: string, kind: ProviderKind) => string;
   addCustom: (kind: ProviderKind) => string;
   update: (id: string, patch: Partial<ProviderConfig>) => void;
-  /** 覆写某个接口的模板（「接口模板」页保存 / 恢复模板包默认） */
-  updateEndpoint: (id: string, role: string, patch: Partial<ProviderEndpoint>) => void;
   remove: (id: string) => void;
   setActive: (kind: ProviderKind, id: string | null) => void;
+  /** 模板组：整组保存 / 删除 / 恢复 seed 默认 */
+  saveGroup: (g: TemplateGroup) => void;
+  addGroup: (g: NewGroup) => string;
+  removeGroup: (tplGroup: string) => void;
+  restoreGroup: (tplGroup: string) => void;
+  /** 组内接口行 */
+  addRow: (tplGroup: string, role: Role, mode?: Mode) => void;
+  removeRow: (tplGroup: string, role: Role, mode: Mode) => void;
+  updateRow: (tplGroup: string, role: Role, mode: Mode, patch: Partial<TemplateRow>) => void;
   hydrate: () => Promise<void>;
-}
-
-function ensureActive(cfgs: ProviderConfig[], activeId: string | null): string | null {
-  if (activeId && cfgs.some((c) => c.id === activeId)) return activeId;
-  return cfgs[0]?.id ?? null;
-}
-
-/** 桌面端写穿 SQLite（web 模式 persist 到 localStorage，无需写库） */
-function dbSync(action: () => Promise<unknown>): void {
-  if (!IS_DESKTOP) return;
-  action().catch((e) => console.warn('[providers] SQLite 同步失败:', e));
 }
 
 const LIST_OF: Record<ProviderKind, 'llm' | 'tts' | 'image'> = { llm: 'llm', tts: 'tts', image: 'image' };
 const ACTIVE_OF: Record<ProviderKind, 'activeLlmId' | 'activeTtsId' | 'activeImageId'> = {
   llm: 'activeLlmId', tts: 'activeTtsId', image: 'activeImageId',
 };
-const CUSTOM_RECIPE: Record<ProviderKind, string> = { llm: 'custom-llm', tts: 'custom-tts', image: 'custom-image' };
-const CUSTOM_LABEL: Record<ProviderKind, string> = { llm: '自定义文案 AI', tts: '自定义语音', image: '自定义图片 AI' };
+const CUSTOM_GROUP: Record<ProviderKind, string> = { llm: 'custom-llm', tts: 'custom-tts', image: 'custom-image' };
 
-/** 库里的配置可能还没有接口模板行（旧结构只有一个 protocol 字符串）—— 按模板包铺出来 */
-function withEndpoints(cfg: ProviderConfig): ProviderConfig {
+function ensureActive(cfgs: ProviderConfig[], activeId: string | null): string | null {
+  if (activeId && cfgs.some((c) => c.id === activeId)) return activeId;
+  return cfgs[0]?.id ?? null;
+}
+
+/** 桌面端写穿 SQLite（web 模式由 persist 落 localStorage） */
+function saveGroupDb(g: TemplateGroup): void {
+  if (!IS_DESKTOP) return;
+  window.mapvideo!.templates.save(g).catch((e) => console.warn('[templates] SQLite 同步失败:', e));
+}
+function removeGroupDb(tplGroup: string): void {
+  if (!IS_DESKTOP) return;
+  window.mapvideo!.templates.remove(tplGroup).catch((e) => console.warn('[templates] 删除失败:', e));
+}
+
+function newConfig(g: TemplateGroup | undefined, kind: ProviderKind, label?: string): ProviderConfig {
   return {
-    ...cfg,
-    endpoints: cfg.endpoints?.length ? cfg.endpoints : endpointsOfRecipe(cfg.recipe),
-    secrets: { ...(cfg.secrets ?? {}), apiKey: cfg.secrets?.apiKey ?? '' },
+    id: `${kind}-${Math.random().toString(36).slice(2, 8)}`,
+    kind,
+    label: label ?? (g ? (typeof g.label === 'string' ? g.label : g.label.zh) : kind),
+    tplGroup: g?.tplGroup ?? CUSTOM_GROUP[kind],
+    baseUrl: g?.baseUrl ?? '',
+    apiKey: '',
+    mode: 'sync',
+    model: g?.defaultModel ?? '',
+    voice: g?.defaultVoice,
+    speed: 1,
+    params: {},
+    maxConcurrency: 1,
+    retryTimes: 2,
   };
 }
 
-/** 新增一条供应商后的 state patch（三种 kind 走同一段逻辑，不再复制三遍） */
-function appended(s: ProviderState, kind: ProviderKind, cfg: ProviderConfig): Partial<ProviderState> {
-  const list = (s[LIST_OF[kind]] as ProviderConfig[]).concat(cfg);
-  return { [LIST_OF[kind]]: list, [ACTIVE_OF[kind]]: ensureActive(list, s[ACTIVE_OF[kind]]) } as Partial<ProviderState>;
+/** seed 深拷贝（界面编辑绝不能改到常量本身） */
+function seedCopy(): TemplateGroup[] {
+  return JSON.parse(JSON.stringify(SEED_GROUPS)) as TemplateGroup[];
 }
-
-const mapAll = (s: ProviderState, fn: (c: ProviderConfig) => ProviderConfig) => ({
-  llm: s.llm.map(fn),
-  tts: s.tts.map(fn),
-  image: s.image.map(fn),
-});
 
 export const useProviderStore = create<ProviderState>()(
   persist(
     (set, get) => ({
+      groups: seedCopy(),
       llm: [],
       tts: [],
       image: [],
       activeLlmId: null,
       activeTtsId: null,
       activeImageId: null,
-      addFromRecipe: (recipeId, kind) => {
-        const cfg = configFromRecipe(recipeId, kind);
-        set((s) => appended(s, kind, cfg));
-        dbSync(() => window.mapvideo!.providers.upsert(cfg));
+
+      addFromGroup: (tplGroup, kind) => {
+        const cfg = newConfig(get().groups.find((g) => g.tplGroup === tplGroup), kind);
+        set((s) => {
+          const list = s[LIST_OF[kind]].concat(cfg);
+          return { [LIST_OF[kind]]: list, [ACTIVE_OF[kind]]: ensureActive(list, s[ACTIVE_OF[kind]]) } as Partial<ProviderState>;
+        });
+        get().update(cfg.id, {});
         return cfg.id;
       },
-      addCustom: (kind) => {
-        const cfg = { ...configFromRecipe(CUSTOM_RECIPE[kind], kind), label: CUSTOM_LABEL[kind] };
-        set((s) => appended(s, kind, cfg));
-        dbSync(() => window.mapvideo!.providers.upsert(cfg));
-        return cfg.id;
-      },
+      addCustom: (kind) => get().addFromGroup(CUSTOM_GROUP[kind], kind),
       update: (id, patch) => {
-        set((s) => mapAll(s, (c) => (c.id === id ? { ...c, ...patch } : c)));
+        set((s) => ({
+          llm: s.llm.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+          tts: s.tts.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+          image: s.image.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+        }));
         const cfg = [...get().llm, ...get().tts, ...get().image].find((c) => c.id === id);
-        if (cfg) dbSync(() => window.mapvideo!.providers.upsert(cfg));
-      },
-      updateEndpoint: (id, role, patch) => {
-        set((s) => mapAll(s, (c) => (c.id === id
-          ? { ...c, endpoints: (c.endpoints ?? []).map((e) => (e.role === role ? { ...e, ...patch } : e)) }
-          : c)));
-        const cfg = [...get().llm, ...get().tts, ...get().image].find((c) => c.id === id);
-        if (cfg) dbSync(() => window.mapvideo!.providers.upsert(cfg));
+        if (cfg && IS_DESKTOP) window.mapvideo!.providers.upsert(cfg).catch((e) => console.warn('[providers] SQLite 同步失败:', e));
       },
       remove: (id) => {
         set((s) => {
@@ -102,58 +114,93 @@ export const useProviderStore = create<ProviderState>()(
           const tts = s.tts.filter((c) => c.id !== id);
           const image = s.image.filter((c) => c.id !== id);
           return {
-            llm,
-            tts,
-            image,
+            llm, tts, image,
             activeLlmId: ensureActive(llm, s.activeLlmId),
             activeTtsId: ensureActive(tts, s.activeTtsId),
             activeImageId: ensureActive(image, s.activeImageId),
           };
         });
-        dbSync(() => window.mapvideo!.providers.remove(id));
+        if (IS_DESKTOP) window.mapvideo!.providers.remove(id).catch((e) => console.warn('[providers] 删除失败:', e));
       },
       setActive: (kind, id) => {
         set(kind === 'llm' ? { activeLlmId: id } : kind === 'tts' ? { activeTtsId: id } : { activeImageId: id });
-        dbSync(() => window.mapvideo!.providers.setActive(kind, id));
+        if (IS_DESKTOP) window.mapvideo!.providers.setActive(kind, id).catch((e) => console.warn('[providers] 设为生效失败:', e));
       },
-      /** 桌面端启动时从 SQLite 加载 */
+
+      saveGroup: (g) => {
+        set((s) => ({
+          groups: s.groups.some((x) => x.tplGroup === g.tplGroup)
+            ? s.groups.map((x) => (x.tplGroup === g.tplGroup ? g : x))
+            : [...s.groups, g],
+        }));
+        saveGroupDb(g);
+      },
+      addGroup: (g) => {
+        const id = g.tplGroup || `custom-${Math.random().toString(36).slice(2, 7)}`;
+        get().saveGroup({ ...g, tplGroup: id });
+        return id;
+      },
+      removeGroup: (tplGroup) => {
+        set((s) => ({ groups: s.groups.filter((g) => g.tplGroup !== tplGroup) }));
+        removeGroupDb(tplGroup);
+      },
+      restoreGroup: (tplGroup) => {
+        const seed = SEED_GROUPS.find((g) => g.tplGroup === tplGroup);
+        if (seed) get().saveGroup(JSON.parse(JSON.stringify(seed)) as TemplateGroup);
+      },
+      addRow: (tplGroup, role, mode = 'sync') => {
+        const g = get().groups.find((x) => x.tplGroup === tplGroup);
+        if (!g || g.rows.some((r) => r.role === role && r.mode === mode)) return;
+        get().saveGroup({ ...g, rows: [...g.rows, seedRow(g.kind, role, mode)] });
+      },
+      removeRow: (tplGroup, role, mode) => {
+        const g = get().groups.find((x) => x.tplGroup === tplGroup);
+        if (!g) return;
+        get().saveGroup({ ...g, rows: g.rows.filter((r) => !(r.role === role && r.mode === mode)) });
+      },
+      updateRow: (tplGroup, role, mode, patch) => {
+        const g = get().groups.find((x) => x.tplGroup === tplGroup);
+        if (!g) return;
+        get().saveGroup({
+          ...g,
+          rows: g.rows.map((r) => (r.role === role && r.mode === mode ? { ...r, ...patch } : r)),
+        });
+      },
+
+      /** 桌面端启动时从 SQLite 加载；库里没有模板行时按 seed 铺一次表 */
       hydrate: async () => {
         if (!IS_DESKTOP) return;
         try {
-          const raw = await window.mapvideo!.providers.list();
-          const list = raw.map(withEndpoints);
+          let rawGroups = await window.mapvideo!.templates.list();
+          if (!rawGroups.length) {
+            for (const g of seedCopy()) await window.mapvideo!.templates.save(g);
+            rawGroups = await window.mapvideo!.templates.list();
+            console.log(`[templates] 已按内置 seed 铺出 ${rawGroups.length} 组接口模板`);
+          }
+          // 旧形状（provider_endpoint 副本）在这一步搬回 —— 必须等模板组就位，provider.tpl_group 是真外键
+          await window.mapvideo!.providers.migrate();
+          const rawProviders = await window.mapvideo!.providers.list();
+          const groups = rawGroups;
+          const list = rawProviders.map((c) => ({ ...c, params: c.params ?? {} }));
           const byKind = (kind: ProviderKind) => list.filter((c) => c.kind === kind);
-          const llm = byKind('llm');
-          const tts = byKind('tts');
-          const image = byKind('image');
           const activeOf = (kind: ProviderKind, arr: ProviderConfig[]) =>
             list.find((c) => c.kind === kind && (c as ProviderConfig & { active?: boolean }).active === true)?.id
             ?? ensureActive(arr, null);
           set({
-            llm,
-            tts,
-            image,
-            activeLlmId: activeOf('llm', llm),
-            activeTtsId: activeOf('tts', tts),
-            activeImageId: activeOf('image', image),
+            groups,
+            llm: byKind('llm'), tts: byKind('tts'), image: byKind('image'),
+            activeLlmId: activeOf('llm', byKind('llm')),
+            activeTtsId: activeOf('tts', byKind('tts')),
+            activeImageId: activeOf('image', byKind('image')),
           });
-          // 旧库第一次跑：接口模板刚铺出来，写回去，下次启动不必再补。
-          // 这里必须 await —— 早先是 fire-and-forget 的 dbSync，写失败只留一条 console.warn，
-          // 实测桌面端启动后 provider_endpoint 仍是 0 行且无人发现（与 AGENTS §6.24 同一类「当场能用、重启就丢」）。
-          const missing = raw.filter((r) => !r.endpoints?.length);
-          for (const c of missing) {
-            const filled = withEndpoints(c as ProviderConfig);
-            await window.mapvideo!.providers.upsert(filled);
-          }
-          if (missing.length) console.log(`[providers] 已按模板包补齐 ${missing.length} 家供应商的接口模板`);
         } catch (e) {
           console.warn('[providers] SQLite 加载失败:', e);
         }
       },
     }),
     {
-      // 换成接口模板结构后旧本地存储作废（按「不为兼容牺牲设计」直接换 key，不写迁移分支）
-      name: 'mapvideo-providers.v2',
+      // 换成「模板组 + 实例」两份数据后旧本地存储作废（按「不为兼容牺牲设计」直接换 key）
+      name: 'mapvideo-providers.v3',
       storage: {
         getItem: (name) => {
           if (IS_DESKTOP) return null;
@@ -176,8 +223,9 @@ export const useProviderStore = create<ProviderState>()(
 /** 取当前生效的配置（无配置返回 null）。桌面/本地网页均可编辑多个，取激活项。 */
 export function activeProvider(kind: ProviderKind): ProviderConfig | null {
   const s = useProviderStore.getState();
-  const list = kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image;
-  const activeId = kind === 'llm' ? s.activeLlmId : kind === 'tts' ? s.activeTtsId : s.activeImageId;
-  const cfg = list.find((c) => c.id === activeId) || list[0];
-  return cfg ? withEndpoints(cfg) : null;
+  const list = s[LIST_OF[kind]];
+  const activeId = s[ACTIVE_OF[kind]];
+  return list.find((c) => c.id === activeId) || list[0] || null;
 }
+
+export { cloneRow };

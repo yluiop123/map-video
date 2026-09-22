@@ -1,42 +1,39 @@
 /**
- * request-engine.ts — 「模板即数据」的请求引擎（纯函数 + 可注入传输，离线可单测）
+ * request-engine.ts — 模板求值引擎（纯函数 + 可注入传输，离线可单测）
  *
- * 为什么要它：同一条「某家怎么发请求」的事实，原先散在 renderer 的 switch、主进程的 switch、
- * assertTtsPairing 白名单、DDL 的 CHECK 四处（AGENTS §6.22 / §6.24 两次事故都是这么来的）。
- * 这里把它收成一份数据：EndpointTemplate = 怎么发 + 怎么取回 + 同步还是异步。
+ * 一份数据描述「一个接口怎么发、返回从哪取」，双端共用，代码里没有协议分支。
+ * 设计见 docs/provider-engine.md；本文件不碰网络、不碰 DOM、不 import store。
  *
- * 求值规则刻意做小（见 docs/provider-engine.md 第四节）：
- *   {name}    独占一个标量 → 整段替换、**保留原类型**；在字符串内部 → 插值成字符串
- *   {@name}   只能在数组里，整段展开为该 list 变量的元素序列
+ * 求值规则刻意做小：
+ *   {name}   独占一个标量 → 整段替换、保留原类型；在字符串内部 → 插值
+ *   {@name}  只能独占一个值位 → 整段展开（数组/对象/数字类型全保留）
  * 没有循环、没有表达式语言，只有 `when: "a == b"` 等值门控与 omitIfEmpty ——
- * 模板里一旦能写程序，出错时看模板就看不出实际发了什么。
- *
- * 本文件**不碰网络、不碰 DOM、不 import store**：真实收发由调用端注入 deps.send。
+ * 模板里一旦能写程序，出错时看模板就看不出实际发了什么，「试调用」也就失去意义。
  */
 import type { L } from './i18n';
 
+/** 引擎不依赖界面层：自检信息一律取中文那一份（L = string | {zh,en}） */
+const zh = (l: L | undefined): string => (l == null ? '' : typeof l === 'string' ? l : l.zh);
+
 // ========== 类型 ==========
 
-export type Role =
-  | 'llm.generate'
-  | 'tts.synthesize'
-  | 'tts.clone'
-  | 'tts.query'
-  | 'image.generate'
-  | 'image.query';
-
-export type VarType = 'string' | 'number' | 'bool' | 'json' | 'list';
+export type ProviderKind = 'llm' | 'tts' | 'image';
+/** 组内用途；kind 已在组上，所以这里不带前缀 */
+export type Role = 'generate' | 'synthesize' | 'query' | 'clone';
+export type Mode = 'sync' | 'async';
+export type VarType = 'int' | 'string' | 'bool' | 'list' | 'json';
+/** instance = 建实例时填（进实例页参数表）；call = 调用时传（界面只读展示） */
+export type VarStage = 'instance' | 'call';
 
 export interface VarOption {
   value: string | number | boolean;
-  /** 省略则直接显示 value；只有 value 会进请求体 */
+  /** 省略则显示 value；只有 value 会进请求体 */
   label?: L;
 }
 
 export interface VarSpec {
   name: string;
-  /** inject = 调用端传（UI 只读）；param = 配置期可填（渲染成控件） */
-  kind: 'inject' | 'param';
+  stage: VarStage;
   type?: VarType;
   label?: L;
   default?: string | number | boolean;
@@ -52,54 +49,96 @@ export interface VarSpec {
   item?: { body: unknown; fields?: VarSpec[] };
 }
 
-export interface PollSpec {
-  /** 从提交响应里记任务 id 的路径（第四节的「需要记录的返回参数」） */
-  taskId: string;
-  /** 查询接口的 role；同步接口不会出现在这里 */
-  statusRole: Role;
-  intervalMs?: number;
-  timeoutMs?: number;
-  done: { path: string; equals?: string; in?: string[] };
-  fail?: { path: string; in?: string[] };
-  /** 任务完成后再从查询响应里取值 */
-  then?: Record<string, string>;
+/** 出参固定槽位：界面按 role+mode 只渲染该填的那几格 */
+export interface RespSlots {
+  content?: string;
+  image?: string;
+  audio?: string;
+  voiceId?: string;
+  taskId?: string;
+  status?: string;
+  success?: string[];
+  fail?: string[];
+  pending?: string[];
+  errorCode?: string;
+  error?: string;
 }
 
-export interface RespSpec {
-  /** auto = 按 Content-Type 判音频/JSON */
-  kind?: 'auto' | 'audio' | 'json' | 'text';
-  /** 取到的是 hex / base64 / 远端 URL 时怎么还原成字节 */
-  decode?: 'hex' | 'base64' | 'url';
-  /** 字段登记：text / audio / image / voiceId / taskId / errorCode / error … */
-  pick?: Record<string, string>;
-}
-
-export interface EndpointTemplate {
+export interface TemplateRow {
+  tplId?: string;
   role: Role;
+  /** 这条变体服务哪种方式；query / clone 恒 sync */
+  mode: Mode;
+  ord?: number;
   label?: L;
   method?: string;
-  /** 相对 baseUrl 或完整 URL；两者都支持 {var} */
-  path: string;
+  /** 完整地址模板，{baseUrl} 出现在哪由它自己决定 */
+  url: string;
   headers?: Record<string, unknown>;
   query?: Record<string, unknown>;
   body?: unknown;
   vars?: VarSpec[];
-  resp?: RespSpec;
-  mode: 'sync' | 'async';
-  poll?: PollSpec;
+  resp?: RespSlots;
+  /** 产物怎么还原成字节：hex（MiniMax）/ base64 / url（远端链接，当场下载） */
+  decode?: 'hex' | 'base64' | 'url';
+  /** 下载产物时附带的请求头；空 = 裸 GET 签名链接 */
+  fetchHeaders?: Record<string, unknown>;
+  pollIntervalMs?: number;
+  pollTimeoutMs?: number;
+  /** clone 行：参考音频要求采样率（CosyVoice 16k、Qwen-TTS ≥24k，写死过一次就出事） */
+  refSampleRateHz?: number;
 }
 
-// ========== 变量池 ==========
+export interface TemplateGroup {
+  tplGroup: string;
+  kind: ProviderKind;
+  label: L;
+  note?: L;
+  ord?: number;
+  /** 新建实例时的预填建议 */
+  baseUrl?: string;
+  models?: string[];
+  defaultModel?: string;
+  defaultVoice?: string;
+  rows: TemplateRow[];
+}
+
+/** 每个 kind 至少要有的 role，缺了这家不可用 */
+export const REQUIRED_ROLE: Record<ProviderKind, Role> = { llm: 'generate', tts: 'synthesize', image: 'generate' };
+
+/** 各类功能可能出现的 role（模板页据此列出还能补哪条接口） */
+export const ROLES_BY_KIND: Record<ProviderKind, Role[]> = {
+  llm: ['generate'],
+  tts: ['synthesize', 'query', 'clone'],
+  image: ['generate', 'query'],
+};
+
+/** 界面标题：role + mode */
+export const ROLE_LABEL: Record<Role, L> = {
+  generate: { zh: '生成', en: 'Generate' },
+  synthesize: { zh: '语音合成', en: 'Synthesize' },
+  query: { zh: '状态查询', en: 'Status query' },
+  clone: { zh: '音色克隆', en: 'Voice clone' },
+};
+
+// ========== 求值上下文 ==========
 
 export interface ReqCtx {
   baseUrl?: string;
+  apiKey?: string;
+  apiKey2?: string;
   model?: string;
   voice?: string;
   speed?: number;
-  mode?: string;
-  secrets?: Record<string, string>;
+  /** 实例选的同步 / 异步 */
+  mode?: Mode;
+  /** 实例期参数（stage=instance） */
+  params?: Record<string, unknown>;
   [k: string]: unknown;
 }
+
+/** 不必声明的保留占位符 */
+export const RESERVED = ['baseUrl', 'apiKey', 'apiKey2', 'model', 'voice', 'speed', 'mode', 'taskId', 'params'];
 
 const WHOLE = /^\{([A-Za-z_][A-Za-z0-9_.]*)\}$/;
 const SPLICE = /^\{@([A-Za-z_][A-Za-z0-9_.]*)\}$/;
@@ -109,9 +148,14 @@ export class EngineError extends Error {}
 
 const isPlain = (v: unknown) => v !== undefined && v !== null && v !== '';
 
+/** 路径支持 `a.b[0].c` 与 `a.b.0.c` 两种写法；界面与文档统一用前者 */
+export function normalizePath(path: string): string {
+  return path.replace(/\[(\d+)\]/g, '.$1');
+}
+
 export function readPath(obj: unknown, path: string): unknown {
   let cur: unknown = obj;
-  for (const seg of path.split('.')) {
+  for (const seg of normalizePath(path).split('.')) {
     if (cur == null) return undefined;
     if (Array.isArray(cur)) {
       const i = Number(seg);
@@ -127,21 +171,18 @@ export function readPath(obj: unknown, path: string): unknown {
 }
 
 function lookup(ctx: ReqCtx, name: string): unknown {
-  if (name.startsWith('secrets.')) return ctx.secrets?.[name.slice('secrets.'.length)];
   const direct = name.split('.').reduce<unknown>((acc, seg) => {
-    if (acc == null) return undefined;
-    if (typeof acc !== 'object') return undefined;
+    if (acc == null || typeof acc !== 'object') return undefined;
     return (acc as Record<string, unknown>)[seg];
   }, ctx);
   if (direct !== undefined) return direct;
-  // model / voice 这类既可能在顶层也可能在 params 里，统一兜到 params
+  // model / voice 这类既可能在顶层也可能在实例参数里，统一兜到 params
   return readPath(ctx.params ?? {}, name);
 }
 
-/** 变量声明表（name → spec），用于 default / omitIfEmpty / 类型 */
 type VarMap = Map<string, VarSpec>;
 
-/** 求值作用域：gated = 声明了但被 when 关掉的变量，引用到就当作「不给值、连键删掉」 */
+/** gated = 声明了但被 when 关掉的变量，引用到就当作「不给值、连键删掉」 */
 interface Scope {
   ctx: ReqCtx;
   vars: VarMap;
@@ -152,14 +193,12 @@ function resolveValue(name: string, s: Scope): { present: boolean; value: unknow
   if (s.gated.has(name)) return { present: false, value: undefined };
   const spec = s.vars.get(name);
   let v = lookup(s.ctx, name);
-  if (v === undefined && spec?.kind === 'param' && spec.default !== undefined) v = spec.default;
+  if (v === undefined && spec?.stage === 'instance' && spec.default !== undefined) v = spec.default;
   if (v === undefined) {
     if (spec?.omitIfEmpty) return { present: false, value: undefined };
     throw new EngineError(`缺少变量「${name}」（模板没它发不出请求）`);
   }
-  if (v === null || v === '') {
-    if (spec?.omitIfEmpty) return { present: false, value: undefined };
-  }
+  if ((v === null || v === '') && spec?.omitIfEmpty) return { present: false, value: undefined };
   return { present: true, value: v };
 }
 
@@ -240,29 +279,28 @@ function joinUrl(base: string, path: string): string {
   return `${b}${p}`;
 }
 
-export function buildRequest(tpl: EndpointTemplate, ctx: ReqCtx): ResolvedRequest {
-  const scope: ReqCtx = { mode: tpl.mode, ...ctx };
+export function buildRequest(row: TemplateRow, ctx: ReqCtx): ResolvedRequest {
   const vars: VarMap = new Map();
   const gated = new Set<string>();
-  for (const v of tpl.vars ?? []) {
-    if (whenOk(v.when, scope)) vars.set(v.name, v);
+  for (const v of row.vars ?? []) {
+    if (whenOk(v.when, ctx)) vars.set(v.name, v);
     else gated.add(v.name);
   }
-  const s: Scope = { ctx: scope, vars, gated };
+  const s: Scope = { ctx, vars, gated };
   const headers: Record<string, string> = {};
-  for (const [k, v] of Object.entries(tpl.headers ?? {})) {
+  for (const [k, v] of Object.entries(row.headers ?? {})) {
     const rv = walk(v, s);
     if (rv !== undefined) headers[k] = String(rv);
   }
   const query: Record<string, string> = {};
-  for (const [k, v] of Object.entries(tpl.query ?? {})) {
+  for (const [k, v] of Object.entries(row.query ?? {})) {
     const rv = walk(v, s);
     if (rv !== undefined) query[k] = String(rv);
   }
-  const body = tpl.body === undefined ? undefined : walk(tpl.body, s);
+  const body = row.body === undefined ? undefined : walk(row.body, s);
   return {
-    url: joinUrl(ctx.baseUrl || '', walk(tpl.path, s) as string),
-    method: (tpl.method || 'POST').toUpperCase(),
+    url: joinUrl(ctx.baseUrl || '', walk(row.url, s) as string),
+    method: (row.method || 'POST').toUpperCase(),
     headers,
     query,
     body,
@@ -271,7 +309,7 @@ export function buildRequest(tpl: EndpointTemplate, ctx: ReqCtx): ResolvedReques
 
 /** 打码：试调用与日志里绝不让密钥原文出现 */
 export function redact(req: ResolvedRequest, ctx: ReqCtx): ResolvedRequest {
-  const secrets = Object.values(ctx.secrets ?? {}).filter((s) => s && s.length >= 6);
+  const secrets = [ctx.apiKey, ctx.apiKey2].filter((s) => !!s && s.length >= 6) as string[];
   const mask = (s: string) => {
     let out = s;
     for (const v of secrets) out = out.split(v).join(`${v.slice(0, 4)}****（长度 ${v.length}）`);
@@ -296,7 +334,7 @@ export interface SendResult {
 }
 
 export interface CallResult {
-  /** pick 登记出来的字段（text / audio / image / voiceId / errorCode …） */
+  /** 按槽位取出的值（content / image / audio / voiceId / taskId / status / errorCode …） */
   values: Record<string, unknown>;
   /** 解出来的音频 / 图片字节 */
   bytes?: Uint8Array;
@@ -308,7 +346,7 @@ export interface CallResult {
 export interface Deps {
   send: (req: ResolvedRequest) => Promise<SendResult>;
   /** decode:'url' 时下载远端结果 */
-  fetchBytes?: (url: string) => Promise<{ bytes: Uint8Array; mime?: string }>;
+  fetchBytes?: (url: string, headers?: Record<string, string>) => Promise<{ bytes: Uint8Array; mime?: string }>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }
@@ -321,7 +359,7 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64.trim());
+  const bin = atob(b64.replace(/^data:[^,]*,/, '').trim());
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
@@ -340,12 +378,14 @@ function looksLikeMedia(res: SendResult): boolean {
   return !!res.bytes && (ct.startsWith('audio/') || ct.startsWith('image/') || ct.startsWith('video/') || ct === 'application/octet-stream');
 }
 
-/** 按 resp.pick 从一份 JSON 里取登记字段 */
-export function applyPick(json: unknown, pick?: Record<string, string>): Record<string, unknown> {
+/** 按槽位从一份 JSON 里取值（三枚举与空串不参与取值） */
+export function applySlots(json: unknown, resp?: RespSlots): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, path] of Object.entries(pick ?? {})) {
+  for (const key of ['content', 'image', 'audio', 'voiceId', 'taskId', 'status', 'errorCode', 'error'] as const) {
+    const path = resp?.[key];
+    if (!path) continue;
     const v = readPath(json, path);
-    if (v !== undefined) out[k] = v;
+    if (v !== undefined) out[key] = v;
   }
   return out;
 }
@@ -358,106 +398,112 @@ function errOf(values: Record<string, unknown>, res: SendResult): string | null 
   return res.status >= 400 ? `HTTP ${res.status}` : null;
 }
 
-async function finish(
-  tpl: EndpointTemplate,
+/** 第④⑤步：取产物 + 还原成字节（响应体即产物 / 槽位里是 hex·base64·链接） */
+async function extract(
+  row: TemplateRow,
   json: unknown,
   res: SendResult,
   deps: Deps,
+  ctx: ReqCtx,
 ): Promise<Pick<CallResult, 'values' | 'bytes' | 'mime'>> {
-  const spec = tpl.resp ?? {};
-  let values = applyPick(json, spec.pick);
+  let values = applySlots(json, row.resp);
   const e = errOf(values, res);
   if (e) throw new EngineError(e);
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
-  if (spec.kind === 'audio' || (spec.kind !== 'json' && spec.kind !== 'text' && looksLikeMedia(res))) {
+  const raw = (values.audio ?? values.image ?? '') as unknown;
+  if (looksLikeMedia(res) && typeof raw !== 'string') {
     bytes = res.bytes;
     mime = res.contentType;
-  } else {
-    const raw = values.audio ?? values.image ?? (typeof values.text === 'string' && spec.decode ? values.text : undefined);
-    if (typeof raw === 'string') {
-      if (spec.decode === 'hex') bytes = hexToBytes(raw);
-      else if (spec.decode === 'base64') bytes = b64ToBytes(raw);
-      else if (spec.decode === 'url' || /^https?:/i.test(raw)) {
-        if (!deps.fetchBytes) throw new EngineError(`结果是远端 URL，但没注入 fetchBytes：${raw}`);
-        const got = await deps.fetchBytes(raw);
-        bytes = got.bytes;
-        mime = got.mime;
-      }
-      if (bytes) values = { ...values, audioBytes: `${bytes.length} 字节` };
-    }
+  } else if (typeof raw === 'string' && raw) {
+    if (raw.startsWith('data:')) bytes = b64ToBytes(raw);
+    else if (row.decode === 'hex') bytes = hexToBytes(raw);
+    else if (row.decode === 'base64') bytes = b64ToBytes(raw);
+    else if (row.decode === 'url' || /^https?:/i.test(raw)) {
+      if (!deps.fetchBytes) throw new EngineError(`产物是远端 URL，但没注入 fetchBytes：${raw}`);
+      const hdr = buildRequest({ ...row, url: '', body: undefined, headers: row.fetchHeaders, query: {} }, ctx);
+      const got = await deps.fetchBytes(raw, hdr.headers);
+      bytes = got.bytes;
+      mime = got.mime;
+    } else bytes = b64ToBytes(raw);
+    if (bytes) values = { ...values, productBytes: `${bytes.length} 字节` };
+  } else if (res.bytes) {
+    bytes = res.bytes;
+    mime = res.contentType;
   }
   return { values, bytes, mime };
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** 组内取行：先按 role + 实例 mode 配，配不到再退到同 role 的任意一条 */
+export function pickRow(group: TemplateGroup, role: Role, mode?: Mode): TemplateRow | undefined {
+  const rows = group.rows.filter((r) => r.role === role);
+  return (mode ? rows.find((r) => r.mode === mode) : undefined) ?? rows[0];
+}
+
 /**
- * 执行一个模板：同步一次到位；异步 = 提交 → 记 taskId → 轮询状态 → 完成后再取值。
- * statusTemplates 由调用端按 role 提供（同一供应商下配对的那些行）。
+ * 跑一个功能：同步一次到位；异步 = 提交 → 记 taskId → 同组 query 行轮询 → 完成后取产物并下载。
+ * 组装键是 (tpl_group, role='query')，没有可填错的指针列。
  */
-export async function callEndpoint(
-  tpl: EndpointTemplate,
+export async function callRole(
+  group: TemplateGroup,
   ctx: ReqCtx,
+  role: Role,
+  inputs: Record<string, unknown>,
   deps: Deps,
-  statusTemplates: Partial<Record<Role, EndpointTemplate>> = {},
 ): Promise<CallResult> {
+  const submit = pickRow(group, role, ctx.mode);
+  if (!submit) throw new EngineError(`模板组「${group.tplGroup}」没配 ${role} 接口`);
+  const full: ReqCtx = { ...ctx, ...inputs };
   const steps: CallResult['steps'] = [];
-  const req = buildRequest(tpl, ctx);
+  const req = buildRequest(submit, full);
   const first = await deps.send(req);
   const firstJson = jsonOf(first);
-  const values = applyPick(firstJson, tpl.resp?.pick);
-  steps.push({ label: `${tpl.role} 提交`, url: redact(req, ctx).url, status: first.status, values });
-  const firstErr = errOf(values, first);
-  if (tpl.mode !== 'async') {
+  steps.push({ label: `${role} 提交`, url: redact(req, full).url, status: first.status, values: applySlots(firstJson, submit.resp) });
+  const firstErr = errOf(steps[0].values, first);
+
+  if (submit.mode !== 'async') {
     if (firstErr) throw new EngineError(firstErr);
-    const tail = await finish(tpl, firstJson, first, deps);
-    return { values: tail.values, bytes: tail.bytes, mime: tail.mime, steps };
+    const tail = await extract(submit, firstJson, first, deps, full);
+    return { ...tail, steps };
   }
-  const poll = tpl.poll;
-  if (!poll) throw new EngineError(`${tpl.role} 标成异步却没配轮询规则`);
-  const statusTpl = statusTemplates[poll.statusRole];
-  if (!statusTpl) throw new EngineError(`异步需要查询接口 ${poll.statusRole}，这个供应商没配`);
-  const taskId = readPath(firstJson, poll.taskId);
-  if (!isPlain(taskId)) throw new EngineError(`提交响应里没找到任务 id（${poll.taskId}）`);
+
+  const query = pickRow(group, 'query');
+  if (!query) throw new EngineError('异步需要「状态查询」接口，这组模板里没有（去接口模板点「＋ 查询接口」）');
+  const taskId = readPath(firstJson, submit.resp?.taskId ?? '');
+  if (!isPlain(taskId)) throw new EngineError(`提交响应里没找到任务 id（槽位 taskId = ${submit.resp?.taskId || '未填'}）${firstErr ? ` · ${firstErr}` : ''}`);
+
   const sleep = deps.sleep ?? wait;
-  const started = (deps.now?.() ?? Date.now());
-  const interval = poll.intervalMs ?? 1500;
-  const timeout = poll.timeoutMs ?? 120_000;
+  const started = deps.now?.() ?? Date.now();
+  const interval = query.pollIntervalMs ?? 1500;
+  const timeout = query.pollTimeoutMs ?? 120_000;
+  const done = (query.resp?.success ?? []).map(String);
+  const bad = (query.resp?.fail ?? []).map(String);
   for (;;) {
     if ((deps.now?.() ?? Date.now()) - started > timeout) throw new EngineError(`任务 ${taskId} 轮询超时（${timeout}ms）`);
     await sleep(interval);
-    const sreq = buildRequest(statusTpl, { ...ctx, taskId });
-    const sres = await deps.send(sreq);
-    const sjson = jsonOf(sres);
-    const sValues = applyPick(sjson, { status: poll.done.path, ...(poll.then ?? {}) });
-    steps.push({ label: `查询 ${poll.statusRole}`, url: redact(sreq, ctx).url, status: sres.status, values: sValues });
-    const st = String(readPath(sjson, poll.done.path) ?? '');
-    if (poll.fail && (poll.fail.in ?? []).includes(st)) throw new EngineError(`任务失败：${st}`);
-    if (st === String(poll.done.equals ?? '') || (poll.done.in ?? []).includes(st)) {
-      const merged = { ...applyPick(sjson, poll.then), taskId } as Record<string, unknown>;
-      // 完成后的值走同一套「取回」逻辑（异步任务的产物通常是远端 URL）
-      const doneTpl: EndpointTemplate = {
-        ...tpl,
-        mode: 'sync',
-        resp: {
-          ...tpl.resp,
-          decode: tpl.resp?.decode ?? 'url',
-          pick: Object.fromEntries(Object.keys(merged).map((k) => [k, `picked.${k}`])),
-        },
-        poll: undefined,
-      };
-      const tail = await finish(doneTpl, { picked: merged }, sres, deps);
+    const qreq = buildRequest(query, { ...full, taskId });
+    const qres = await deps.send(qreq);
+    const qjson = jsonOf(qres);
+    const qValues = applySlots(qjson, query.resp);
+    steps.push({ label: '查询状态', url: redact(qreq, full).url, status: qres.status, values: qValues });
+    const st = String(qValues.status ?? '');
+    if (bad.includes(st)) throw new EngineError(`任务失败：${st}${qValues.error ? ` · ${String(qValues.error)}` : ''}`);
+    if (done.includes(st)) {
+      const tail = await extract(query, qjson, qres, deps, full);
       return { values: { ...tail.values, taskId }, bytes: tail.bytes, mime: tail.mime, steps };
     }
-    const e = errOf(sValues, sres);
+    const e = errOf(qValues, qres);
     if (e) throw new EngineError(e);
+    const pending = (query.resp?.pending ?? []).map(String);
+    if (pending.length && !pending.includes(st)) throw new EngineError(`未识别的任务状态「${st}」——请在查询接口的「在途状态」里补上它`);
   }
 }
 
 // ========== 模板自检（保存前跑，别把问题留到运行时） ==========
 
-export function referencedVars(tpl: EndpointTemplate): string[] {
+export function referencedVars(row: TemplateRow): string[] {
   const names = new Set<string>();
   const scan = (node: unknown) => {
     if (typeof node === 'string') {
@@ -469,31 +515,71 @@ export function referencedVars(tpl: EndpointTemplate): string[] {
     if (Array.isArray(node)) node.forEach(scan);
     else if (node && typeof node === 'object') Object.values(node).forEach(scan);
   };
-  scan([tpl.path, tpl.headers, tpl.query, tpl.body]);
+  scan([row.url, row.headers, row.query, row.body]);
   return [...names];
 }
 
-/** 返回问题清单；空数组 = 模板可用 */
-export function validateTemplate(tpl: EndpointTemplate): string[] {
+/** 该行的产物槽：llm 取文本、语音取音频、图片取图片 */
+function productSlotOf(row: TemplateRow, kind: ProviderKind): 'content' | 'audio' | 'image' {
+  if (kind === 'llm') return 'content';
+  return row.role === 'synthesize' ? 'audio' : 'image';
+}
+
+/** 单条接口行的问题清单；空数组 = 可用 */
+export function validateRow(row: TemplateRow, kind: ProviderKind): string[] {
   const problems: string[] = [];
-  const declared = new Set((tpl.vars ?? []).map((v) => v.name));
-  for (const n of referencedVars(tpl)) {
-    if (n.startsWith('secrets.') || ['baseUrl', 'model', 'voice', 'speed', 'mode', 'taskId', 'params'].includes(n)) continue;
+  const declared = new Set((row.vars ?? []).map((v) => v.name));
+  for (const n of referencedVars(row)) {
+    if (RESERVED.includes(n)) continue;
     if (!declared.has(n)) problems.push(`模板引用了未声明的变量「${n}」`);
   }
-  for (const v of tpl.vars ?? []) {
+  for (const v of row.vars ?? []) {
     if (v.type === 'list' && !v.item) problems.push(`变量「${v.name}」是 list 但没给元素子模板`);
     if (v.type === 'bool' && v.options) problems.push(`变量「${v.name}」是 bool，两个选项已隐含，不必写 options`);
   }
-  if (tpl.mode === 'async') {
-    if (!tpl.poll) problems.push('标成异步却没配查询规则（同步接口才不需要）');
-    else {
-      if (!tpl.poll.taskId) problems.push('异步必须登记任务 id 的取值路径');
-      if (!tpl.poll.statusRole) problems.push('异步必须指定查询接口');
-      if (!tpl.poll.done?.path) problems.push('异步必须定义「完成」怎么判定');
+  const resp = row.resp ?? {};
+  const product = productSlotOf(row, kind);
+  if (row.role === 'query') {
+    if (!resp.status) problems.push('必须登记「任务状态」的取值路径');
+    if (!resp.success?.length) problems.push('必须定义「成功」的状态值');
+    if (!resp.image && !resp.audio) problems.push('必须登记产物路径（完成后可从这里取图 / 音频）');
+    if (resp.taskId) problems.push('任务 id 由生成接口登记，查询接口不用填');
+  } else if (row.role === 'clone') {
+    if (!resp.voiceId) problems.push('必须登记「音色 ID」的取值路径');
+    if (row.decode) problems.push('克隆接口只返回 json，不需要解码方式');
+  } else if (row.mode === 'async') {
+    if (!resp.taskId) problems.push('标成异步就必须登记「任务 id」的取值路径');
+    if (resp.status || resp.success?.length || resp[product]) problems.push('产物与状态都由查询接口登记，生成行不要再填');
+  } else {
+    // 音频允许登记成「空」：CosyVoice / OpenAI speech 的响应体本身就是音频
+    if (product === 'audio' ? resp.audio === undefined : !resp[product]) {
+      problems.push(product === 'audio'
+        ? '必须登记音频路径（响应体本身就是音频时，路径留空即可）'
+        : `必须登记${product === 'content' ? '返回内容' : '图片'}的取值路径`);
     }
-  } else if (tpl.poll) {
-    problems.push('同步接口不该配查询规则');
+    if (resp.status || resp.taskId) problems.push('同步接口不该配任务 id / 状态判定');
+  }
+  if (row.decode === 'url' && !resp.image && !resp.audio) problems.push('解码方式是「远端链接」，但没登记产物路径');
+  return problems;
+}
+
+/** 整组 + 实例的成对校验：缺 role、异步没配查询、同步配了查询都在这一步点名 */
+export function validateGroup(group: TemplateGroup, mode: Mode = 'sync'): string[] {
+  const problems: string[] = group.rows.flatMap((r) => validateRow(r, group.kind).map((p) => `${rowTitle(r)}：${p}`));
+  const need = REQUIRED_ROLE[group.kind];
+  if (!group.rows.some((r) => r.role === need)) problems.push(`缺少必需的「${zh(ROLE_LABEL[need])}」接口`);
+  if (mode === 'async') {
+    const submit = group.rows.find((r) => r.role === need && r.mode === 'async');
+    if (!submit) problems.push('这个实例选了异步，但这组模板没有异步的生成接口');
+    else if (!group.rows.some((r) => r.role === 'query')) problems.push('异步需要「状态查询」接口，点「＋ 查询接口」补');
+  } else if (group.rows.some((r) => r.role === 'query') && !group.rows.some((r) => r.mode === 'async')) {
+    problems.push('配了查询接口却没有异步生成接口（本实例走同步，它不会被用到）');
   }
   return problems;
+}
+
+/** 界面用的行标题：音色克隆 / 语音合成·异步 / 状态查询 */
+export function rowTitle(row: TemplateRow): string {
+  const name = zh(ROLE_LABEL[row.role]);
+  return row.mode === 'async' ? `${name}·异步` : name;
 }

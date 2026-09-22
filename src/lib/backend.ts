@@ -33,11 +33,19 @@ declare global {
         }>;
         remove: (id: string) => Promise<{ ok: boolean }>;
       };
+      /** 接口模板组（一组 = 一个功能要哪几条接口；整组读写） */
+      templates: {
+        list: () => Promise<import('./request-engine').TemplateGroup[]>;
+        save: (g: import('./request-engine').TemplateGroup) => Promise<{ ok: boolean }>;
+        remove: (tplGroup: string) => Promise<{ ok: boolean }>;
+      };
       providers: {
         list: () => Promise<import('../types').ProviderConfig[]>;
         upsert: (cfg: import('../types').ProviderConfig) => Promise<{ ok: boolean }>;
         remove: (id: string) => Promise<{ ok: boolean }>;
         setActive: (kind: 'llm' | 'tts' | 'image', id: string | null) => Promise<{ ok: boolean }>;
+        /** 旧形状（provider_endpoint 那套副本）让位后的一次性搬回，须在模板组铺好后调用 */
+        migrate: () => Promise<{ moved: number }>;
       };
       /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId 随机；登记在 asset 表） */
       assets: {
@@ -53,7 +61,7 @@ declare global {
         request: (req: import('./request-engine').ResolvedRequest) => Promise<{
           status?: number; contentType?: string; bytes?: ArrayBuffer; json?: unknown; text?: string; error?: string;
         }>;
-        fetchUrl: (url: string) => Promise<{ bytes?: ArrayBuffer; contentType?: string; error?: string }>;
+        fetchUrl: (url: string, headers?: Record<string, string>) => Promise<{ bytes?: ArrayBuffer; contentType?: string; error?: string }>;
       };
       netJson: (url: string) => Promise<{ text?: string; error?: string }>;
       env: () => Promise<{ version: string; electron: string; node: string; userData: string }>;

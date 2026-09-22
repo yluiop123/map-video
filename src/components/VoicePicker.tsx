@@ -9,7 +9,7 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
 import { activeProvider, useProviderStore } from '../stores/providerStore';
-import { callTTS, cloneVoice, recipeOf, supports } from '../lib/providers';
+import { callTTS, cloneVoice, groupOf, supports } from '../lib/providers';
 import {
   CLIP_PRESETS, findCloned, forgetClonedVoice, fetchClipBytes, listClonedVoices,
   rememberClonedVoice, systemVoicesFor, type ClonedVoice, type VoiceGender,
@@ -32,17 +32,17 @@ export function VoicePicker() {
 
   const model = tts?.model || '';
   const current = tts?.voice || '';
-  const recipe = recipeOf(tts);
-  const system = systemVoicesFor(recipe?.id, model);
+  const group = groupOf(tts);
+  const system = systemVoicesFor(group?.tplGroup, model);
   /** 能不能克隆 = 这个供应商有没有配 tts.clone 接口（早先是硬编 protocol === 'cosyvoice'） */
-  const canClone = supports(tts, 'tts.clone');
+  const canClone = supports(tts, 'clone');
   /**
    * 克隆出的音色绑在「克隆时用的模型」上，合成时 model 必须一模一样。
    * Qwen-TTS 的系统模型（qwen3-tts-flash）不吃克隆音色，只有 vc 那条吃 —— 所以克隆时顺带切过去，
    * 并在提示里说明（不静默改：这一改会让上面的系统音色列表换成空）。
    */
-  const vcModel = (recipe?.models ?? []).find((m) => m.includes('-vc')) || '';
-  const bindModel = recipe?.id === 'dashscope-qwen-tts' && vcModel && !model.includes('-vc') ? vcModel : model;
+  const vcModel = (group?.models ?? []).find((m) => m.includes('-vc')) || '';
+  const bindModel = group?.tplGroup === 'dashscope-qwen-tts' && vcModel && !model.includes('-vc') ? vcModel : model;
 
   const pick = (voiceId: string) => {
     if (!tts) return;
@@ -229,7 +229,7 @@ export function VoicePicker() {
           <span className="text-[10px] text-muted-foreground/70 truncate" title={current}>
             {t('音色写回当前配音供应商', 'Voice is saved on the active TTS provider')}
             {current ? ` · ${current}` : ''}
-            {recipe?.id === 'dashscope-qwen-tts' && model === 'qwen-tts'
+            {group?.tplGroup === 'dashscope-qwen-tts' && model === 'qwen-tts'
               ? t(' · 旧模型 qwen-tts 只带 4 个系统音色，改用 qwen3-tts-flash 可选全部', ' · the legacy model qwen-tts ships 4 voices only; use qwen3-tts-flash for the full list')
               : ''}
             {msg ? ` · ${msg}` : ''}

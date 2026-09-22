@@ -1,47 +1,45 @@
 /**
- * ProviderPanel — ⚙ 设置 · AI 的右侧面板（**只管实例设置**：选哪家、填 Key、选模型、调参数）
+ * ProviderPanel.tsx — ⚙ 设置 · AI 的「实例设置」页
  *
- * 接口模板不在这里 —— 它是另一个页面（`EndpointTemplatesPage.tsx`，整屏），本页只留一个跳转按钮。
- * 理由：一个是日常操作、一个是改请求形状的专家操作，放同一个页面（哪怕分页签）互相干扰。
+ * 只管一个能力实例：用哪组模板、Base URL、Key、走同步还是异步、模板要求实例填的参数、并发与重试。
+ * 「一家怎么发请求」不在这页 —— 那是左侧单独的「接口模板」入口（TemplatesPane）。
  */
 import { useEffect, useState } from 'react';
-import { JsonField, NumberInput, OptionBlocks, useT } from './ui/primitives';
+import { NumberInput, OptionBlocks, useT } from './ui/primitives';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
-import type { ProviderConfig, ProviderEndpoint } from '../types';
-import { REQUIRED_ROLES, ROLES_BY_KIND, recipeById, recipesFor, seedTemplate, type Recipe } from '../lib/recipes';
+import type { ProviderConfig } from '../types';
+import { needsSecret2 } from '../lib/template-seed';
+import { validateGroup, type Mode, type ProviderKind, type TemplateGroup, type VarSpec } from '../lib/request-engine';
+import { groupOf, instanceVars, modelsOf } from '../lib/providers';
 import { pickLabel } from '../lib/i18n';
-import { whenOk, type Role, type VarSpec } from '../lib/request-engine';
 import { IS_DESKTOP } from '../lib/backend';
 
-type Kind = 'llm' | 'tts' | 'image';
-
-const KIND_TITLE: Record<Kind, { zh: string; en: string }> = {
+const KIND_TITLE: Record<ProviderKind, { zh: string; en: string }> = {
   llm: { zh: '🤖 文案生成 AI', en: '🤖 Text AI' },
   tts: { zh: '🔊 配音 / 声音克隆', en: '🔊 Voice (TTS / clone)' },
   image: { zh: '🖼 图片生成 AI', en: '🖼 Image AI' },
 };
-/** 需要第二个密钥槽的两家（早先把两个值拼进 apiKey 字符串，现在各占一格） */
-const NEEDS_SECRET2 = ['volc-tts', 'minimax-t2a'];
-const DEFAULT_RECIPE: Record<Kind, string> = { llm: 'openai-chat', tts: 'dashscope-cosyvoice', image: 'dashscope-image' };
 
-export function ProviderPanel({ kind, onOpenTemplates }: { kind: Kind; onOpenTemplates: (providerId: string) => void }) {
+export function ProviderPanel({ kind }: { kind: ProviderKind }) {
   const t = useT();
   const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
   const list = useProviderStore((s) => (kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image));
+  const groups = useProviderStore((s) => s.groups);
   const activeId = useProviderStore((s) => (kind === 'llm' ? s.activeLlmId : kind === 'tts' ? s.activeTtsId : s.activeImageId));
   const store = useProviderStore.getState();
   const [selId, setSelId] = useState<string | null>(activeId || list[0]?.id || null);
-  const recipes = recipesFor(kind);
-  // 切换 kind 时组件不重挂载，selId 会带着上一类的 id 过来；选不中就退到生效项 / 第一项，
-  // 否则新建完供应商面板还是空的（要再点一次才显示）
+  // 切换 kind 时组件不重挂载，selId 会带着上一类的 id 过来；选不中就退到生效项 / 第一项
   const sel = list.find((c) => c.id === selId) || list.find((c) => c.id === activeId) || list[0] || null;
+  const kindGroups = groups.filter((g) => g.kind === kind);
 
   // 首次进入且一个都没有时预置一家，用户只填 Key
   useEffect(() => {
     const st = useProviderStore.getState();
-    if ((kind === 'llm' ? st.llm : kind === 'tts' ? st.tts : st.image).length === 0) {
-      setSelId(st.addFromRecipe(DEFAULT_RECIPE[kind], kind));
+    const empty = (kind === 'llm' ? st.llm : kind === 'tts' ? st.tts : st.image).length === 0;
+    if (empty) {
+      const first = st.groups.find((g) => g.kind === kind && !g.tplGroup.startsWith('custom-')) ?? st.groups.find((g) => g.kind === kind);
+      if (first) setSelId(st.addFromGroup(first.tplGroup, kind));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind]);
@@ -51,18 +49,17 @@ export function ProviderPanel({ kind, onOpenTemplates }: { kind: Kind; onOpenTem
       <h3 className="text-sm font-semibold">{pickLabel(KIND_TITLE[kind], lang)}</h3>
       <p className="text-[11px] text-muted-foreground">
         {IS_DESKTOP
-          ? t('配置与接口模板存本机 SQLite；请求经主进程转发（无 CORS）。Key 不出本机。', 'Config & templates live in local SQLite; requests go through the main process. Keys never leave this machine.')
+          ? t('一个能力 = 一份 Base URL + 一个 Key；配置存本机 SQLite，请求经主进程转发（无 CORS）。Key 不出本机。', 'One capability = one base URL + key. Stored in local SQLite; requests go through the main process.')
           : t('网页开发模式：浏览器直连可能被 CORS 拦截；正式使用请走桌面版。', 'Web dev mode: direct calls may hit CORS; use the desktop app.')}
       </p>
 
       <div className="flex flex-wrap gap-1.5">
-        {recipes.map((r) => (
-          <button
-            key={r.id}
-            onClick={() => setSelId(store.addFromRecipe(r.id, kind))}
+        {kindGroups.map((g) => (
+          <button key={g.tplGroup} onClick={() => setSelId(store.addFromGroup(g.tplGroup, kind))}
             className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-[11px] hover:border-white/25 transition-colors"
-            title={pickLabel(r.note, lang)}
-          >＋ {pickLabel(r.label, lang)}</button>
+            title={pickLabel(g.note ?? '', lang) || g.tplGroup}>
+            ＋ {pickLabel(g.label, lang)}
+          </button>
         ))}
       </div>
 
@@ -72,201 +69,106 @@ export function ProviderPanel({ kind, onOpenTemplates }: { kind: Kind; onOpenTem
             <button onClick={() => { store.setActive(kind, c.id); setSelId(c.id); }} className={`h-7 px-2 text-[11px] hover:bg-white/10 ${c.id === selId ? 'bg-white/10' : ''}`}>
               {c.id === activeId ? '● ' : ''}{c.label}
             </button>
-            <button
-              onClick={() => { store.remove(c.id); if (selId === c.id) setSelId(null); }}
-              className="h-7 px-1.5 text-[11px] text-red-400/80 hover:bg-red-500/10" title={t('删除', 'Delete')}
-            >✕</button>
+            <button onClick={() => { store.remove(c.id); if (selId === c.id) setSelId(null); }}
+              className="h-7 px-1.5 text-[11px] text-red-400/80 hover:bg-red-500/10" title={t('删除', 'Delete')}>✕</button>
           </div>
         ))}
-        {!list.length && <p className="text-[11px] text-muted-foreground">{t('点上方模板包添加一家服务。', 'Add a provider above.')}</p>}
+        {!list.length && <p className="text-[11px] text-muted-foreground">{t('点上方模板组添加一个能力配置。', 'Add a capability above.')}</p>}
       </div>
 
-      {sel && (
-        <>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground/70">{t('这一页只管实例设置', 'This page is about this provider only')}</span>
-            <button
-              onClick={() => onOpenTemplates(sel.id)}
-              className="h-7 px-2.5 rounded-md border border-white/15 bg-white/[0.045] text-[11px] hover:bg-white/10"
-              title={t('打开独立的接口模板页面（编辑 provider_endpoint 表）', 'Open the standalone endpoint-template page (provider_endpoint)')}
-            >{t('接口模板', 'Endpoints')} · {sel.endpoints.length} →</button>
-          </div>
-          <ConfigTab kind={kind} cfg={sel} recipe={recipeById(sel.recipe)} />
-        </>
-      )}
+      {sel && <InstanceEditor key={sel.id} cfg={sel} groups={kindGroups} />}
     </div>
   );
 }
 
-// ========== 配置页 ==========
-
-function ConfigTab({ kind, cfg, recipe }: { kind: Kind; cfg: ProviderConfig; recipe?: Recipe }) {
+function InstanceEditor({ cfg, groups }: { cfg: ProviderConfig; groups: TemplateGroup[] }) {
   const t = useT();
-  const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
   const store = useProviderStore.getState();
-  const builtin = !!recipe && !recipe.id.startsWith('custom');
   const patch = (p: Partial<ProviderConfig>) => store.update(cfg.id, p);
-  const missing = REQUIRED_ROLES[kind].filter((r) => !cfg.endpoints.some((e) => e.role === r));
+  const group = groupOf(cfg);
+  const problems = group ? validateGroup(group, cfg.mode) : [`没找到模板组「${cfg.tplGroup}」`];
+  const canAsync = !!group?.rows.some((r) => r.mode === 'async');
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-2">
-        {!builtin && <input value={cfg.label} onChange={(e) => patch({ label: e.target.value })} className="input h-7 text-xs flex-1 min-w-28" placeholder={t('名称', 'Label')} />}
-        {!builtin && <input value={cfg.baseUrl} onChange={(e) => patch({ baseUrl: e.target.value })} className="input h-7 text-xs flex-1 min-w-40" placeholder="https://…/v1" />}
-        <ModelField cfg={cfg} recipe={recipe} onPatch={patch} />
+    <div className="space-y-2 border-t border-white/10 pt-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={cfg.label} onChange={(e) => patch({ label: e.target.value })} className="input h-7 text-xs w-32" placeholder={t('名称', 'Label')} />
+        <select value={cfg.tplGroup} onChange={(e) => patch({ tplGroup: e.target.value, model: groups.find((g) => g.tplGroup === e.target.value)?.defaultModel ?? cfg.model })}
+          className="input h-7 text-xs flex-1 min-w-32">
+          {groups.map((g) => <option key={g.tplGroup} value={g.tplGroup}>{g.tplGroup}</option>)}
+        </select>
       </div>
 
-      <input
-        value={cfg.secrets.apiKey} type="password"
-        onChange={(e) => patch({ secrets: { ...cfg.secrets, apiKey: e.target.value } })}
-        className="input h-7 text-xs w-full" placeholder={t('API Key', 'API Key')}
-      />
-      {NEEDS_SECRET2.includes(cfg.recipe) && (
-        <input
-          value={cfg.secrets.secret2 || ''} type="password"
-          onChange={(e) => patch({ secrets: { ...cfg.secrets, secret2: e.target.value } })}
-          className="input h-7 text-xs w-full"
-          placeholder={t('第二个密钥：火山 Access Key / MiniMax group_id', 'Second secret: Volc access key / MiniMax group_id')}
-        />
+      <input value={cfg.baseUrl} onChange={(e) => patch({ baseUrl: e.target.value })} className="input h-7 text-xs w-full font-mono" placeholder="https://…/v1" />
+      <input value={cfg.apiKey} type="password" onChange={(e) => patch({ apiKey: e.target.value })} className="input h-7 text-xs w-full" placeholder="API Key" />
+      {needsSecret2(group) && (
+        <input value={cfg.apiKey2 ?? ''} type="password" onChange={(e) => patch({ apiKey2: e.target.value })} className="input h-7 text-xs w-full"
+          placeholder={t('第二凭证（这组模板的某个 header 要用它）', 'Second credential (a header needs it)')} />
       )}
 
-      {missing.length > 0 && (
-        <p className="text-[11px] text-red-400">
-          {t(`缺少必需接口：${missing.join(' / ')} —— 这家供应商不可用（去「接口模板」补，或换模板包）`, `Missing required endpoint(s): ${missing.join(' / ')}`)}
-        </p>
-      )}
-
-      {kind === 'tts' && (
-        <p className="text-[10px] text-muted-foreground/80">{t('音色与声音克隆在顶栏「字幕生成」里做', 'Voice picking & cloning live in the Subtitle studio')}</p>
-      )}
-
-      {cfg.endpoints.map((e) => (
-        <div key={e.role} className="border border-white/10 rounded-lg p-2 space-y-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] font-medium">{pickLabel(e.label, lang) || e.role}</span>
-            <span className="text-[10px] text-muted-foreground/70 font-mono">{e.role}</span>
-          </div>
-          <ModeRow cfg={cfg} ep={e} />
-          {/* 参数直接来自该行 provider_endpoint.vars_json（kind=param），并按 when 门控隐藏；
-              存回该行 overrides_json —— 页面上不该出现表里没有的控件 */}
-          {(e.vars ?? []).filter((v) => v.kind === 'param' && whenOk(v.when, { mode: e.mode })).map((v) => (
-            <VarControl key={v.name} v={v} value={(e.overrides ?? {})[v.name]} onChange={(val) => writeOverride(cfg, e.role, v.name, val)} />
-          ))}
-          {(e.vars ?? []).some((v) => v.kind === 'inject') && (
-            <div className="flex flex-wrap items-center gap-1">
-              <span className="text-[10px] text-muted-foreground/60">{t('调用时传入', 'At call time')}</span>
-              {(e.vars ?? []).filter((v) => v.kind === 'inject').map((v) => (
-                <span key={v.name} className="h-5 px-1.5 rounded bg-white/[0.05] text-[10px] font-mono text-muted-foreground" title={t('由程序在调用时填入，这里不能设', 'Filled in by the caller; not editable')}>{v.name}</span>
-              ))}
-            </div>
-          )}
-          {!hasParams(e) && <p className="text-[10px] text-muted-foreground/60">{t('该接口没有可配置参数', 'No configurable parameters')}</p>}
+      {canAsync && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] text-muted-foreground">{t('请求方式', 'Mode')}</span>
+          <OptionBlocks<string>
+            value={cfg.mode}
+            options={[{ value: 'sync', label: t('同步', 'Sync') }, { value: 'async', label: t('异步任务', 'Async task') }]}
+            onChange={(v) => patch({ mode: v as Mode })}
+          />
+          <span className="text-[10px] text-muted-foreground/60">{t('异步 = 提交后轮询查询接口，产物当场下载', 'Async = submit, poll, download on the spot')}</span>
         </div>
+      )}
+
+      <ModelField cfg={cfg} />
+
+      {instanceVars(cfg).map((v) => (
+        <VarControl key={v.name} v={v} value={cfg.params?.[v.name]} onChange={(val) => {
+          const next = { ...(cfg.params ?? {}) };
+          if (val === undefined || val === null || val === '') delete next[v.name];
+          else next[v.name] = val;
+          patch({ params: next });
+        }} />
       ))}
 
-      <input
-        value={cfg.extra || ''} onChange={(e) => patch({ extra: e.target.value })}
-        className="input h-7 text-xs w-full" placeholder={t('附加 JSON 参数（兜底，深合并进请求体）', 'Extra JSON (deep-merged into body)')}
-      />
-      <p className="text-[10px] text-muted-foreground">
-        {pickLabel(recipe?.note, lang)}
-        {cfg.endpoints.length > 0 && ` · ${t('接口', 'Endpoints')}: ${cfg.endpoints.map((e) => e.role).join(' / ')}`}
-      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1 text-[10px] text-muted-foreground">{t('并发数', 'Concurrency')}
+          <NumberInput className="input h-7 w-16 text-xs" value={cfg.maxConcurrency ?? 1} step={1} min={1} max={8} onCommit={(n) => patch({ maxConcurrency: Math.max(1, Math.round(n)) })} />
+        </label>
+        <label className="flex items-center gap-1 text-[10px] text-muted-foreground">{t('失败重试', 'Retries')}
+          <NumberInput className="input h-7 w-16 text-xs" value={cfg.retryTimes ?? 2} step={1} min={0} max={5} onCommit={(n) => patch({ retryTimes: Math.max(0, Math.round(n)) })} />
+        </label>
+        <span className="text-[10px] text-muted-foreground/60">{t('批量配音 / 出图时用；只重试限流与网络错', 'Used for batch calls; only rate-limit / network errors retry')}</span>
+      </div>
+
+      <input value={cfg.extra ?? ''} onChange={(e) => patch({ extra: e.target.value })} className="input h-7 text-xs w-full font-mono"
+        placeholder={t('附加 JSON 参数（兜底，深合并进请求体）', 'Extra JSON (deep-merged into body)')} />
+
+      {problems.length > 0 ? (
+        <p className="text-[10px] text-red-400 whitespace-pre-line">
+          {problems.join('\n')}
+        </p>
+      ) : (
+        <p className="text-[10px] text-muted-foreground">{pickLabel(group?.note ?? '', 'zh') || t('接口形状齐备', 'Endpoints look complete')}</p>
+      )}
     </div>
   );
 }
 
-const hasParams = (e: ProviderEndpoint) => (e.vars ?? []).some((v) => v.kind === 'param');
-
-/** 写参数覆盖值；空值 = 删掉这个键（模板里的 omitIfEmpty 才有意义） */
-function writeOverride(cfg: ProviderConfig, role: Role, name: string, val: unknown) {
-  const endpoints = (cfg.endpoints ?? []).map((e) => {
-    if (e.role !== role) return e;
-    const next: Record<string, string | number | boolean> = { ...(e.overrides ?? {}) };
-    if (val === undefined || val === null || val === '') delete next[name];
-    else next[name] = val as string | number | boolean;
-    return { ...e, overrides: next };
-  });
-  useProviderStore.getState().update(cfg.id, { endpoints });
-}
-
-function ModelField({ cfg, recipe, onPatch }: { cfg: ProviderConfig; recipe?: Recipe; onPatch: (p: Partial<ProviderConfig>) => void }) {
+function ModelField({ cfg }: { cfg: ProviderConfig }) {
   const t = useT();
-  const ms = recipe?.models ?? [];
+  const store = useProviderStore.getState();
+  const ms = modelsOf(cfg);
   if (!ms.length) {
-    return <input value={cfg.model} onChange={(e) => onPatch({ model: e.target.value })} className="input h-7 text-xs w-40" placeholder={t('模型', 'Model')} />;
+    return <input value={cfg.model} onChange={(e) => store.update(cfg.id, { model: e.target.value })} className="input h-7 text-xs w-44" placeholder={t('模型', 'Model')} />;
   }
   const opts = cfg.model && !ms.includes(cfg.model) ? [cfg.model, ...ms] : ms;
   return (
-    <select value={cfg.model} onChange={(e) => onPatch({ model: e.target.value })} className="input h-7 text-xs w-44">
+    <select value={cfg.model} onChange={(e) => store.update(cfg.id, { model: e.target.value })} className="input h-7 text-xs w-44">
       {opts.map((m) => <option key={m} value={m}>{m}</option>)}
     </select>
   );
 }
 
-/** 同步 / 异步：归属在接口模板上，但日常最常在这里改（同一能力常有两种接法） */
-function ModeRow({ cfg, ep }: { cfg: ProviderConfig; ep: ProviderEndpoint }) {
-  const t = useT();
-  const patch = (p: Partial<ProviderEndpoint>) => {
-    const endpoints = (cfg.endpoints ?? []).map((e) => (e.role === ep.role ? { ...e, ...p } : e));
-    useProviderStore.getState().update(cfg.id, { endpoints });
-  };
-  // 这一类接口压根没有「查询任务状态」这种 role（LLM 就是纯同步）→ 整行不出现，别留噪音
-  const queryRole = `${ep.role.split('.')[0]}.query` as Role;
-  if (!ROLES_BY_KIND[cfg.kind].includes(queryRole)) return null;
-  const queries = cfg.endpoints.filter((e) => e.role.endsWith('.query'));
-  const canAsync = queries.length > 0;
-  const poll = ep.poll ?? null;
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <OptionBlocks<string>
-        value={ep.mode}
-        options={[
-          { value: 'sync', label: t('同步', 'Sync') },
-          { value: 'async', label: t('异步任务', 'Async task') },
-        ]}
-        onChange={(v) => {
-          // 退回同步必须把 poll 一起清掉，否则残留的轮询规则会在接口模板页被判「同步接口不该配查询规则」
-          if (v !== 'async') { patch({ mode: 'sync', poll: undefined }); return; }
-          // 切异步就得有地方查状态：没有查询接口就当场补一条（同类模板包里通常有现成形状），
-          // 而不是让状态下拉里只有它自己 —— 那等于自己指向自己，调用了才报错
-          const seed = queries.some((q) => q.role === queryRole) ? null : { ...seedTemplate(cfg.kind, queryRole), enabled: true, overrides: {} };
-          const endpoints = (cfg.endpoints ?? []).map((e) => (e.role === ep.role
-            ? { ...e, mode: 'async' as const, poll: e.poll ?? { taskId: '', statusRole: queryRole, intervalMs: 1500, timeoutMs: 120000, done: { path: '', equals: 'SUCCEEDED' } } }
-            : e));
-          useProviderStore.getState().update(cfg.id, { endpoints: seed ? [...endpoints, seed] : endpoints });
-        }}
-      />
-      {!canAsync && ep.mode !== 'async' && (
-        <span className="text-[10px] text-muted-foreground/60">
-          {t(`选异步会自动补一条 ${queryRole} 接口`, `Choosing async adds a ${queryRole} endpoint`)}
-        </span>
-      )}
-      {ep.mode === 'async' && poll && (
-        <>
-          <select
-            value={poll.statusRole}
-            onChange={(e) => patch({ poll: { ...poll, statusRole: e.target.value as Role } })}
-            className="input h-7 text-xs w-32"
-            title={t('轮询用哪个接口查任务状态', 'Which endpoint reports task status')}
-          >
-            {cfg.endpoints.filter((q) => q.role.endsWith('.query')).map((q) => <option key={q.role} value={q.role}>{q.role}</option>)}
-          </select>
-          <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            {t('间隔 ms', 'interval ms')}
-            <NumberInput className="input h-7 w-20 text-xs" value={poll.intervalMs ?? 1500} step={100} min={200} onCommit={(v) => patch({ poll: { ...poll, intervalMs: v } })} />
-          </label>
-          <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            {t('超时 ms', 'timeout ms')}
-            <NumberInput className="input h-7 w-24 text-xs" value={poll.timeoutMs ?? 120000} step={1000} min={1000} onCommit={(v) => patch({ poll: { ...poll, timeoutMs: v } })} />
-          </label>
-        </>
-      )}
-    </div>
-  );
-}
-
-/** 参数控件：type 定存储类型，options 定控件（有候选值就用 OptionBlocks，不写原生 select） */
+/** 参数控件：type 定存储类型，options 定控件（有候选值就用选项块，不写原生 select） */
 function VarControl({ v, value, onChange }: { v: VarSpec; value: unknown; onChange: (val: unknown) => void }) {
   const t = useT();
   const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
@@ -279,7 +181,7 @@ function VarControl({ v, value, onChange }: { v: VarSpec; value: unknown; onChan
     </div>
   );
 
-  if (v.type === 'bool' || opts.length === 2 && opts.every((o) => typeof o.value === 'boolean')) {
+  if (v.type === 'bool') {
     return wrap(
       <OptionBlocks<string>
         value={value === undefined ? String(v.default ?? false) : String(value)}
@@ -297,35 +199,25 @@ function VarControl({ v, value, onChange }: { v: VarSpec; value: unknown; onChan
           onChange={(val) => onChange(cast(v.type, val))}
         />
         {v.allowCustom && (
-          <input
-            value={String(value ?? '')} onChange={(e) => onChange(v.allowCustom ? cast(v.type, e.target.value) : e.target.value)}
-            className="input h-6 w-24 text-[11px]" placeholder={t('其它值', 'other')}
-          />
+          <input value={String(value ?? '')} onChange={(e) => onChange(cast(v.type, e.target.value))} className="input h-6 w-24 text-[11px]" placeholder={t('其它值', 'other')} />
         )}
       </div>
     );
   }
-  if (v.type === 'number') {
+  if (v.type === 'int') {
     // 未设 = 空串，绝不能显示成 0：0 是合法值（会被当真值发出去），两者必须分得开
     const raw = value ?? v.default;
     return wrap(
-      <NumberInput
-        className="input h-7 w-24 text-xs"
-        value={raw === undefined || raw === '' ? '' : Number(raw)}
-        step={1}
-        onCommit={(n) => onChange(Number.isNaN(n) ? '' : n)}
-      />
+      <NumberInput className="input h-7 w-24 text-xs" value={raw === undefined || raw === '' ? '' : Number(raw)} step={1}
+        onCommit={(n) => onChange(Number.isNaN(n) ? '' : n)} />
     );
-  }
-  if (v.type === 'json') {
-    return wrap(<JsonField label={t('JSON', 'JSON')} value={value ?? {}} onCommit={(o) => onChange(o)} />);
   }
   if (v.type === 'list') return wrap(<ListEditor v={v} value={Array.isArray(value) ? (value as unknown[]) : []} onChange={onChange} />);
   return wrap(<input value={String(value ?? v.default ?? '')} onChange={(e) => onChange(e.target.value)} className="input h-7 w-40 text-xs" />);
 }
 
 function cast(type: VarSpec['type'], s: string): string | number | boolean {
-  if (type === 'number') return s === '' ? '' : Number(s);
+  if (type === 'int') return s === '' ? '' : Number(s);
   if (type === 'bool') return s === 'true';
   return s;
 }
@@ -334,7 +226,7 @@ function cast(type: VarSpec['type'], s: string): string | number | boolean {
 function ListEditor({ v, value, onChange }: { v: VarSpec; value: unknown[]; onChange: (val: unknown) => void }) {
   const t = useT();
   const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
-  const fields = v.item?.fields ?? [{ name: 'value', type: 'string' } as VarSpec];
+  const fields = v.item?.fields ?? [{ name: 'value', stage: 'instance', type: 'string' } as VarSpec];
   const get = (row: unknown, name: string) => String((row as Record<string, unknown> | undefined)?.[name] ?? '');
   const write = (i: number, name: string, val: string) => {
     onChange(value.map((row, j) => (i === j ? { ...(row as object), [name]: val } : row)));
@@ -363,4 +255,3 @@ function ListEditor({ v, value, onChange }: { v: VarSpec; value: unknown[]; onCh
     </div>
   );
 }
-

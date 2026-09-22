@@ -7,7 +7,6 @@ import { TimelineEditor } from './components/TimelineEditor';
 import { PropertiesPanel } from './components/PropertiesPanel';
 import { ExportDialog } from './components/ExportDialog';
 import { SettingsDialog } from './components/SettingsDialog';
-import { EndpointTemplatesPage } from './components/EndpointTemplatesPage';
 import { ProjectManager } from './components/ProjectManager';
 import { KeyframePanel } from './components/KeyframePanel';
 import { MapStyleChip } from './components/MapStyleChip';
@@ -51,8 +50,6 @@ export default function App() {
 
   const [exportOpen, setExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // 接口模板是独立整屏页面（不进 ⚙），非空即打开这家供应商的模板页
-  const [tplProviderId, setTplProviderId] = useState<string | null>(null);
   // 画幅：地图舞台按项目画幅等比居中（黑边 letterbox），预览即导出取景
   const stageRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -254,15 +251,7 @@ export default function App() {
       )}
 
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
-      {settingsOpen && (
-        <SettingsDialog
-          onClose={() => setSettingsOpen(false)}
-          onOpenTemplates={(id) => { setSettingsOpen(false); setTplProviderId(id); }}
-        />
-      )}
-      {tplProviderId && (
-        <EndpointTemplatesPage providerId={tplProviderId} onClose={() => { setTplProviderId(null); setSettingsOpen(true); }} />
-      )}
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       <ConfirmHost />
     </div>
   );

@@ -1,4 +1,4 @@
-import type { EndpointTemplate } from '../lib/request-engine';
+import type { Mode, ProviderKind } from '../lib/request-engine';
 
 // ========== 项目类型 ==========
 
@@ -912,40 +912,38 @@ export interface MusicTrack {
 }
 
 /**
- * AI / 配音服务配置（密钥只存本机，不入项目文件）
+ * AI 服务的一个「能力实例」（密钥只存本机，不入项目文件）
  *
- * 「怎么发请求」不再由 protocol 字符串 + 两处 switch 决定，而是 `recipe` 铺出的一组接口模板
- * （`endpoints`）——见 docs/provider-engine.md。protocol 列与 assertTtsPairing 一并删掉。
+ * 一个能力 = 一行实例 = 一份 base_url + 一个 Key；「怎么发请求」在它引用的模板组里
+ * （`provider_template_group` + `provider_template`，见 docs/provider-engine.md）。
  */
 export interface ProviderConfig {
   id: string;
   /** llm=文案生成 / tts=语音（含克隆）/ image=图片生成 */
-  kind: 'llm' | 'tts' | 'image';
-  /** 模板包 id（lib/recipes.ts）；「内置形态」由它决定，改 label 不影响 */
-  recipe: string;
+  kind: ProviderKind;
   label: string;
+  /** 引用哪一组模板 */
+  tplGroup: string;
   baseUrl: string;
-  /** 命名密钥槽：apiKey 必填；secret2 给火山 Access Key / MiniMax group_id */
-  secrets: { apiKey: string; secret2?: string };
+  apiKey: string;
+  /** 第二凭证：只有组里有行引用 {apiKey2} 时才出现（火山 Access Key） */
+  apiKey2?: string;
+  /** 这个账号走同步还是异步 —— 决定用组里哪条生成变体、要不要查询接口 */
+  mode: Mode;
   /** LLM 模型名 / TTS 音色模型 / 图片模型 */
   model: string;
   /** TTS 音色 / 说话人 ID */
   voice?: string;
   /** 语速 0.5–2 */
   speed?: number;
-  /** 该供应商配齐的接口模板（每个 role 一条；空 = 按 recipe 现场铺开） */
-  endpoints: ProviderEndpoint[];
+  /** 实例期参数：模板里 stage=instance 的变量取值（size / format / sampleRate…） */
+  params: Record<string, unknown>;
   /** 附加 JSON 参数（深合并进请求体的兜底口） */
   extra?: string;
-  /** true=走 MapVideo 后端代理（Key 在服务端）；false/缺省=本机直连或主进程转发 */
-  viaBackend?: boolean;
-}
-
-/** 一条接口模板 + 配置期给它的参数覆盖值 */
-export interface ProviderEndpoint extends EndpointTemplate {
-  /** 用户在「配置」页给该接口的 param 定的值（var name → value） */
-  overrides?: Record<string, string | number | boolean>;
-  enabled?: boolean;
+  /** 批量时的并发上限，1 = 串行 */
+  maxConcurrency?: number;
+  /** 限流 / 网络错的退避重试次数 */
+  retryTimes?: number;
 }
 
 /** 无音频时按字数估算字幕时长：0.28s/字 + 0.3s 尾巴 */
