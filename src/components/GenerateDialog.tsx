@@ -11,6 +11,7 @@ import { useProjectStore } from '../stores/projectStore';
 import { useProviderStore, activeProvider } from '../stores/providerStore';
 import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
 import { callLLM, callTTS, parseSrt, srtTime } from '../lib/providers';
+import { runBatch } from '../lib/provider-queue';
 import { VoicePicker } from './VoicePicker';
 import { estimateTextDurationFrames, generateId, defaultNarrationStyle, type NarrationEntry } from '../types';
 
@@ -143,12 +144,10 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const addRow = () => setRows((rs) => [...rs, mkRow('')]);
   const delRow = (id: string) => setRows((rs) => resequenceRows(rs.filter((r) => r.id !== id)));
 
-  /** 单行生成配音（已有音频即覆盖） */
-  const genRow = async (idx: number) => {
+  /** 合成一行并写回；抛错交给调度层判要不要重试 */
+  const synthesizeInto = async (idx: number) => {
     const r = rows[idx];
-    if (!r || !r.text.trim()) { setError(t('请先填写字幕文本', 'Fill in this line first')); return; }
-    if (!tts?.baseUrl) { setError(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS provider configured')); return; }
-    setGenIdx(idx); setError(null);
+    if (!r?.text.trim() || !tts) return;
     setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'pending' } : x)));
     try {
       const { dataUrl, durationSec } = await callTTS(tts, r.text);
@@ -157,19 +156,46 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const }
           : x
       ))));
-    } catch (err) {
+    } catch (e) {
       setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'error' as const } : x)));
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setGenIdx(null);
+      throw e;
     }
   };
 
-  /** 全部生成：串行避免限流；只补没有配音的行 */
+  /** 单行生成配音（已有音频即覆盖） */
+  const genRow = async (idx: number) => {
+    if (!rows[idx]?.text.trim()) { setError(t('请先填写字幕文本', 'Fill in this line first')); return; }
+    if (!tts?.baseUrl) { setError(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS provider configured')); return; }
+    setGenIdx(idx); setError(null);
+    try { await synthesizeInto(idx); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setGenIdx(null); }
+  };
+
+  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null);
+  const cancelBatch = useRef(false);
+
+  /**
+   * 全部生成：只补没有配音的行，走队列（并发上限与重试次数来自这个语音实例）。
+   * 每行成功即刻写回，中途取消或失败都不影响已完成的行 —— 下次点它天然只补剩下的。
+   */
   const genAllMissing = async () => {
-    for (let i = 0; i < rows.length; i++) {
-      if (!rows[i].text.trim() || rows[i].audioUrl) continue;
-      await genRow(i);
+    if (!tts?.baseUrl) { setError(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS provider configured')); return; }
+    const todo = rows.map((_, i) => i).filter((i) => rows[i].text.trim() && !rows[i].audioUrl);
+    if (!todo.length) return;
+    cancelBatch.current = false;
+    setBatch({ done: 0, total: todo.length });
+    setError(null);
+    const res = await runBatch(todo.map((i) => () => synthesizeInto(i)), {
+      concurrency: tts.maxConcurrency ?? 1,
+      retries: tts.retryTimes ?? 0,
+      isCancelled: () => cancelBatch.current,
+      onProgress: (done, total) => setBatch({ done, total }),
+    });
+    setBatch(null);
+    if (res.failed.length) {
+      const head = res.failed.slice(0, 3).map((f) => `#${f.index + 1} ${f.error}`).join(' · ');
+      setError(`${res.failed.length} ${t('行失败', 'line(s) failed')}: ${head}`);
     }
   };
 
@@ -351,6 +377,18 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           >
             ▶▶ {t('全部生成配音', 'Generate all voice')}
           </button>
+          {batch && (
+            <>
+              <span className="h-7 px-2 inline-flex items-center rounded-md border border-white/10 text-[11px] font-mono text-sky-200">
+                {batch.done}/{batch.total}
+              </span>
+              <button
+                onClick={() => { cancelBatch.current = true; }}
+                className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10"
+                title={t('不再开始新的行（在途的那条会跑完）', 'Stop starting new lines; the in-flight one finishes')}
+              >✕ {t('取消', 'Cancel')}</button>
+            </>
+          )}
         </div>
 
         {pasteOpen && (

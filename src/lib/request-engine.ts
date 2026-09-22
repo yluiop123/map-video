@@ -144,7 +144,14 @@ const WHOLE = /^\{([A-Za-z_][A-Za-z0-9_.]*)\}$/;
 const SPLICE = /^\{@([A-Za-z_][A-Za-z0-9_.]*)\}$/;
 const EMBED = /\{([A-Za-z_][A-Za-z0-9_.]*)\}/g;
 
-export class EngineError extends Error {}
+export class EngineError extends Error {
+  /** 带上游状态码，调度层才知道这条能不能重试（429 / 5xx 才重试） */
+  status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 const isPlain = (v: unknown) => v !== undefined && v !== null && v !== '';
 
@@ -408,7 +415,7 @@ async function extract(
 ): Promise<Pick<CallResult, 'values' | 'bytes' | 'mime'>> {
   let values = applySlots(json, row.resp);
   const e = errOf(values, res);
-  if (e) throw new EngineError(e);
+  if (e) throw new EngineError(e, res.status);
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
   const raw = (values.audio ?? values.image ?? '') as unknown;
@@ -464,7 +471,7 @@ export async function callRole(
   const firstErr = errOf(steps[0].values, first);
 
   if (submit.mode !== 'async') {
-    if (firstErr) throw new EngineError(firstErr);
+    if (firstErr) throw new EngineError(firstErr, first.status);
     const tail = await extract(submit, firstJson, first, deps, full);
     return { ...tail, steps };
   }
@@ -489,13 +496,13 @@ export async function callRole(
     const qValues = applySlots(qjson, query.resp);
     steps.push({ label: '查询状态', url: redact(qreq, full).url, status: qres.status, values: qValues });
     const st = String(qValues.status ?? '');
-    if (bad.includes(st)) throw new EngineError(`任务失败：${st}${qValues.error ? ` · ${String(qValues.error)}` : ''}`);
+    if (bad.includes(st)) throw new EngineError(`任务失败：${st}${qValues.error ? ` · ${String(qValues.error)}` : ''}`, qres.status);
     if (done.includes(st)) {
       const tail = await extract(query, qjson, qres, deps, full);
       return { values: { ...tail.values, taskId }, bytes: tail.bytes, mime: tail.mime, steps };
     }
     const e = errOf(qValues, qres);
-    if (e) throw new EngineError(e);
+    if (e) throw new EngineError(e, qres.status);
     const pending = (query.resp?.pending ?? []).map(String);
     if (pending.length && !pending.includes(st)) throw new EngineError(`未识别的任务状态「${st}」——请在查询接口的「在途状态」里补上它`);
   }
