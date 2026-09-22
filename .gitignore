@@ -8,3 +8,6 @@ test001-config.json
 release/
 *.log
 flyarch-config.json
+
+# 真实调用回归的产物（不入库）
+tools/.tmp-real/
