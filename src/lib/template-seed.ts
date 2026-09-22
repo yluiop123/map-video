@@ -73,7 +73,9 @@ const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', { zh: '通义语�
   note: { zh: '走 SpeechSynthesizer；音色是 long* 那一套，也承载 qwen-audio-3.0-tts-flash', en: 'SpeechSynthesizer endpoint; long* voices' },
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
   models: ['cosyvoice-v3-flash', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v2', 'qwen-audio-3.0-tts-flash'],
-  defaultModel: 'cosyvoice-v3.5-flash',
+  // 实测：v3.5-flash 不认系统音色 longanyang（418），它承载的是克隆音色；
+  // v3-flash + longanyang 是可用组合，所以默认落在 v3-flash
+  defaultModel: 'cosyvoice-v3-flash',
   defaultVoice: 'longanyang',
   rows: [
     row('synthesize', 'sync', {
@@ -93,8 +95,9 @@ const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', { zh: '通义语�
         }),
         v('instruction', 'instance', { default: '', omitIfEmpty: true, label: { zh: '情感指令（部分音色支持）', en: 'Instruction (some voices)' } }),
       ],
-      // 音频路径留空 = 响应体本身就是音频字节
-      resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
+      // 实测（2026-09-22）：这个端点回的是 JSON，output.audio.url 是带时效的 OSS 链接 → 当场下载
+      resp: { audio: 'output.audio.url', errorCode: 'code', error: 'message' } as RespSlots,
+      decode: 'url',
     }),
     cosyClone,
   ],
@@ -219,7 +222,7 @@ const imageVars: VarSpec[] = [
  * 异步 = 提交 + 任务查询（**未实测**，照官方「提交 + tasks/{id} 轮询」文档写，接入时先用试调用确认）。
  */
 const dashscopeImage = group('dashscope-image', 'image', { zh: '通义图片生成', en: 'DashScope image' }, {
-  note: { zh: '同步走 multimodal-generation（z-image-turbo / qwen-image）；异步走 text2image + 任务查询，未实测', en: 'sync multimodal-generation; async text2image + task query (unverified)' },
+  note: { zh: '同步 multimodal-generation（z-image-turbo / qwen-image）；异步 image-generation + /tasks/{id} 轮询（只认万相模型，z-image-turbo 走它会给一句误导性的 url error）', en: 'sync multimodal-generation; async image-generation + /tasks/{id} polling (wan models only)' },
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
   models: ['z-image-turbo', 'qwen-image', 'wan2.6-t2i'],
   defaultModel: 'z-image-turbo',
@@ -236,21 +239,28 @@ const dashscopeImage = group('dashscope-image', 'image', { zh: '通义图片生�
       resp: { image: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' } as RespSlots,
       decode: 'url',
     }),
+    // 实测（2026-09-22）：异步走 image-generation/generation + 异步头，请求体仍是 messages 骨架（与同步同形）
     row('generate', 'async', {
       label: { zh: '文生图（异步提交）', en: 'Text to image (submit)' },
-      url: '{baseUrl}/services/aigc/text2image/image-synthesis',
+      url: '{baseUrl}/services/aigc/image-generation/generation',
       headers: { ...AUTH, 'X-DashScope-Async': 'enable' },
-      body: { model: '{model}', input: { prompt: '{prompt}' }, parameters: { size: '{size}', n: '{count}' } },
+      body: {
+        model: '{model}',
+        input: { messages: [{ role: 'user', content: [{ text: '{prompt}' }] }] },
+        parameters: { size: '{size}', n: '{count}', watermark: '{watermark}' },
+      },
       vars: [...imageVars, v('count', 'instance', { type: 'int', default: 1, label: { zh: '张数', en: 'Count' } })],
       resp: { taskId: 'output.task_id', errorCode: 'code', error: 'message' } as RespSlots,
     }),
     row('query', 'sync', {
       label: { zh: '任务状态查询', en: 'Task status' },
       method: 'GET',
-      url: '{baseUrl}/api/v1/tasks/{taskId}',
+      // baseUrl 已经带 /api/v1，这里不能再写一遍（实测写过就是 404）
+      url: '{baseUrl}/tasks/{taskId}',
       headers: { Authorization: 'Bearer {apiKey}' },
       resp: {
-        image: 'output.results[0].url',
+        // 实测：产物在 output.choices[0].message.content[0].image（带时效的签名链接）
+        image: 'output.choices[0].message.content[0].image',
         status: 'output.task_status',
         success: ['SUCCEEDED'],
         pending: ['PENDING', 'RUNNING'],

@@ -421,7 +421,12 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 | `openai-image` | image | `generate·sync` + `generate·async` + `query` |
 | `custom-*` | 三类各一 | 单条空白 `generate`，供手工接一家没预置的服务 |
 
-> 表中标注的上游形状（Qwen 克隆、异步图片、MiniMax hex）以「试调用」按真实响应确认后再定稿；未确认前不作为已验证事实。
+> **实测状态（2026-09-22，`tools/try-real-calls.mjs`，走的就是引擎这份代码）**：
+> 语音合成 CosyVoice（`cosyvoice-v3-flash` + `longanyang`）、语音合成 Qwen-TTS（产物是带时效链接 → 当场下载）、
+> 图片同步（`z-image-turbo`）、图片异步（`wan2.6-t2i`：提交 → 轮询 → 取产物 → 下载）四条真实调用全通过。
+> 实测改掉的三处形状：CosyVoice 回的是 JSON（音频在 `output.audio.url`，不是响应体字节）、
+> 异步出图走 `image-generation/generation` 且只认万相模型、查询地址是 `{baseUrl}/tasks/{id}`（baseUrl 已含 `/api/v1`）。
+> **仍未实测**：声音克隆（会在账号下建音色资源）、MiniMax hex、火山、OpenAI 两家。
 
 ## 十二、实现落点
 

@@ -124,7 +124,8 @@ const actx = { ...ctx, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', mode: '
 c = mk(
   { status: 200, contentType: 'application/json', json: { output: { task_id: 'T9' } } },
   { status: 200, contentType: 'application/json', json: { output: { task_status: 'RUNNING' } } },
-  { status: 200, contentType: 'application/json', json: { output: { task_status: 'SUCCEEDED', results: [{ url: 'https://x/r.png' }] } } },
+  // 产物形状照 2026-09-22 实测的异步查询响应（choices[…].content[…].image，不是 results）
+  { status: 200, contentType: 'application/json', json: { output: { task_status: 'SUCCEEDED', choices: [{ message: { content: [{ image: 'https://x/r.png' }] } }] } } },
 );
 out = await callRole(imgAsync, actx, 'generate', { prompt: '猫' }, c);
 check('5.1 异步产物来自 query 行', out.bytes?.length === 3, out.values);
@@ -178,7 +179,8 @@ for (const g of SEED_GROUPS) {
 check('7.4 火山要第二凭证', needsSecret2(groupOf('volc-tts')));
 check('7.5 通义语音不要第二凭证', !needsSecret2(groupOf('dashscope-cosyvoice')));
 check('7.6 新建行种子带齐槽位', !!seedRow('image', 'query').resp?.status && Array.isArray(seedRow('image', 'query').resp?.success));
-check('7.7 pickRow 按实例 mode 选变体', pickRow(groupOf('dashscope-image'), 'generate', 'async')?.url.includes('image-synthesis'));
+check('7.7 pickRow 按实例 mode 选变体', pickRow(groupOf('dashscope-image'), 'generate', 'async')?.url.includes('image-generation'));
+check('7.11 查询行的地址不重复带 /api/v1（实测踩过 404）', !groupOf('dashscope-image').rows.find((r) => r.role === 'query').url.includes('/api/v1/api/v1'));
 eq('7.8 没填的槽不参与取值', applySlots(DOC, { image: '', audio: undefined, status: 'output.results[0].url' }), { status: 'r' });
 check('7.9 只有同步变体的组：选异步会被点名', validateGroup(groupOf('dashscope-cosyvoice'), 'async').some((p) => p.includes('没有异步')));
 check('7.10 音频槽留空 → 取值表里没有 audio 键', Object.keys(applySlots({ x: 1 }, { audio: '' })).length === 0);
