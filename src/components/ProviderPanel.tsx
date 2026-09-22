@@ -226,7 +226,7 @@ function cast(type: VarSpec['type'], s: string): string | number | boolean {
 function ListEditor({ v, value, onChange }: { v: VarSpec; value: unknown[]; onChange: (val: unknown) => void }) {
   const t = useT();
   const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
-  const fields = v.item?.fields ?? [{ name: 'value', stage: 'instance', type: 'string' } as VarSpec];
+  const fields = v.item?.fields ?? [{ name: 'value', type: 'string' } as VarSpec];
   const get = (row: unknown, name: string) => String((row as Record<string, unknown> | undefined)?.[name] ?? '');
   const write = (i: number, name: string, val: string) => {
     onChange(value.map((row, j) => (i === j ? { ...(row as object), [name]: val } : row)));

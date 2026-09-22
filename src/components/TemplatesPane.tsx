@@ -12,7 +12,7 @@ import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import { pickLabel, type L } from '../lib/i18n';
 import {
-  validateGroup, validateRow,
+  callVarsOf, validateGroup, validateRow,
   type Mode, type ProviderKind, type RespSlots, type Role, type TemplateGroup, type TemplateRow, type VarSpec,
 } from '../lib/request-engine';
 import { previewRequest, runRoleDebug } from '../lib/providers';
@@ -177,7 +177,7 @@ function RowEditor({ group, row, instance, lang }: { group: TemplateGroup; row: 
   };
   const problems = validateRow(row, group.kind);
   const ownsProduct = row.role === 'query' || (row.role !== 'clone' && row.mode === 'sync');
-  const injects = (row.vars ?? []).filter((v) => v.stage === 'call').map((v) => v.name);
+  const injects = callVarsOf(row);
   const title = pickLabel(ROLE_LABEL[row.role], lang);
 
   const dropRow = async () => {
@@ -311,18 +311,17 @@ const DEFAULT_INPUT: Record<string, string> = {
   prefix: 'mv',
 };
 
-/** 试调用输入：只填 stage=call 的变量，没填的走默认值 */
+/** 试调用输入：只给「调用端要填的」占位符长输入框，没填的走默认值 */
 function filledInputs(row: TemplateRow, inputs: Record<string, string>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const v of row.vars ?? []) {
-    if (v.stage !== 'call') continue;
-    const val = inputs[v.name] ?? DEFAULT_INPUT[v.name];
-    if (val !== undefined) out[v.name] = val;
+  for (const name of callVarsOf(row)) {
+    const val = inputs[name] ?? DEFAULT_INPUT[name];
+    if (val !== undefined) out[name] = val;
   }
   return out;
 }
 
-/** 入参声明表：名字 / 期 / 类型 / 默认 / 说明 / 候选值 */
+/** 入参声明表：只放实例期要人配的参数 —— 名字 / 类型 / 默认 / 说明 / 候选值 */
 function VarsEditor({ row, onCommit, lang }: { row: TemplateRow; onCommit: (vars: VarSpec[]) => void; lang: 'zh' | 'en' }) {
   const t = useT();
   const vars = row.vars ?? [];
@@ -338,16 +337,11 @@ function VarsEditor({ row, onCommit, lang }: { row: TemplateRow; onCommit: (vars
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
         <span>{t('入参声明', 'Variables')}</span>
-        <span className="text-muted-foreground/60">{t('占位符：{name} 取标量（保留类型），{@name} 在数组里展开', '{name} = scalar, {@name} splices into an array')}</span>
+        <span className="text-muted-foreground/60">{t('只声明「建实例时要配的参数」；{text} {prompt} 这类调用正文由程序传，不必声明。占位符 {name} 取标量（保留类型），{@name} 在数组里展开', 'Declare only the parameters an instance configures; {text}/{prompt} come from the caller. {name} = scalar, {@name} splices') }</span>
       </div>
       {vars.map((v, i) => (
         <div key={i} className="flex flex-wrap items-center gap-1">
           <input value={v.name} onChange={(e) => at(i, { name: e.target.value })} className="input h-6 w-24 text-[10px] font-mono" placeholder="name" />
-          <OptionBlocks<string>
-            value={v.stage}
-            options={[{ value: 'instance', label: t('实例填', 'Instance') }, { value: 'call', label: t('调用传', 'Call') }]}
-            onChange={(s) => at(i, { stage: s as VarSpec['stage'] })}
-          />
           <OptionBlocks<string> value={v.type ?? 'string'} options={['string', 'int', 'bool', 'list', 'json'].map((m) => ({ value: m, label: m }))} onChange={(s) => at(i, { type: s as VarSpec['type'] })} />
           <input value={String(v.default ?? '')} onChange={(e) => at(i, { default: e.target.value })} className="input h-6 w-16 text-[10px]" placeholder={t('默认', 'default')} />
           <input value={pickLabel(v.label, lang) ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="input h-6 w-24 text-[10px]" placeholder={t('说明', 'label')} />
@@ -355,7 +349,7 @@ function VarsEditor({ row, onCommit, lang }: { row: TemplateRow; onCommit: (vars
           <button onClick={() => write(vars.filter((_, j) => j !== i))} className="h-6 w-6 rounded text-[10px] text-muted-foreground hover:text-red-400 hover:bg-white/10">✕</button>
         </div>
       ))}
-      <button onClick={() => write([...vars, { name: '', stage: 'instance', type: 'string' }])} className="h-6 px-2 rounded-md border border-white/15 text-[10px] hover:bg-white/10">＋ {t('入参', 'variable')}</button>
+      <button onClick={() => write([...vars, { name: '', type: 'string' }])} className="h-6 px-2 rounded-md border border-white/15 text-[10px] hover:bg-white/10">＋ {t('入参', 'variable')}</button>
     </div>
   );
 }

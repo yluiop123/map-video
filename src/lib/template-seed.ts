@@ -13,10 +13,7 @@ import type { Mode, ProviderKind, RespSlots, Role, TemplateGroup, TemplateRow, V
 
 const AUTH = { 'Content-Type': 'application/json', Authorization: 'Bearer {apiKey}' };
 
-const v = (name: string, stage: VarSpec['stage'], extra: Partial<VarSpec> = {}): VarSpec => ({ name, stage, type: 'string', ...extra });
-
-/** 调用端注入的正文类变量（界面只读展示为「调用时传入」） */
-const inj = (name: string, type: VarSpec['type'] = 'string') => v(name, 'call', { type });
+const v = (name: string, extra: Partial<VarSpec> = {}): VarSpec => ({ name, type: 'string', ...extra });
 
 function row(role: Role, mode: Mode, o: Partial<TemplateRow> & { url: string }): TemplateRow {
   return { role, mode, method: 'POST', headers: AUTH, vars: [], resp: {}, ...o } as TemplateRow;
@@ -42,10 +39,8 @@ const openaiChatRows: TemplateRow[] = [
       max_tokens: '{maxTokens}',
     },
     vars: [
-      inj('systemPrompt'),
-      inj('userPrompt'),
-      v('temperature', 'instance', { type: 'int', default: 7, label: { zh: '温度（×10）', en: 'Temperature ×10' } }),
-      v('maxTokens', 'instance', { type: 'int', default: '', omitIfEmpty: true, label: { zh: '最大输出 token', en: 'Max tokens' } }),
+      v('temperature', { type: 'int', default: 7, label: { zh: '温度（×10）', en: 'Temperature ×10' } }),
+      v('maxTokens', { type: 'int', default: '', omitIfEmpty: true, label: { zh: '最大输出 token', en: 'Max tokens' } }),
     ],
     resp: { content: 'choices[0].message.content', errorCode: 'error.code', error: 'error.message' } as RespSlots,
   }),
@@ -61,13 +56,13 @@ const cosyClone = row('clone', 'sync', {
     model: 'voice-enrollment',
     input: { action: 'create_voice', target_model: '{model}', prefix: '{prefix}', url: 'data:audio/wav;base64,{wavB64}' },
   },
-  vars: [inj('wavB64'), v('prefix', 'instance', { default: 'mv', label: { zh: '音色名前缀', en: 'Voice prefix' } })],
+  vars: [v('prefix', { default: 'mv', label: { zh: '音色名前缀', en: 'Voice prefix' } })],
   resp: { voiceId: 'output.voice_id', errorCode: 'code', error: 'message' } as RespSlots,
   refSampleRateHz: 16000,
 });
 
 const formatVar = (opts: (string | { value: string; label?: L })[]) =>
-  v('format', 'instance', { default: 'mp3', label: { zh: '音频格式', en: 'Audio format' }, options: opts });
+  v('format', { default: 'mp3', label: { zh: '音频格式', en: 'Audio format' }, options: opts });
 
 const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', { zh: '通义语音（CosyVoice）', en: 'DashScope CosyVoice' }, {
   note: { zh: '走 SpeechSynthesizer；音色是 long* 那一套，也承载 qwen-audio-3.0-tts-flash', en: 'SpeechSynthesizer endpoint; long* voices' },
@@ -87,13 +82,12 @@ const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', { zh: '通义语�
         parameters: { format: '{format}', sample_rate: '{sampleRate}', instruction: '{instruction}' },
       },
       vars: [
-        inj('text'),
         formatVar(['mp3', 'wav', 'pcm']),
-        v('sampleRate', 'instance', {
+        v('sampleRate', {
           type: 'int', default: 24000, label: { zh: '采样率', en: 'Sample rate' },
           options: [16000, 24000, 48000],
         }),
-        v('instruction', 'instance', { default: '', omitIfEmpty: true, label: { zh: '情感指令（部分音色支持）', en: 'Instruction (some voices)' } }),
+        v('instruction', { default: '', omitIfEmpty: true, label: { zh: '情感指令（部分音色支持）', en: 'Instruction (some voices)' } }),
       ],
       // 实测（2026-09-22）：这个端点回的是 JSON，output.audio.url 是带时效的 OSS 链接 → 当场下载
       resp: { audio: 'output.audio.url', errorCode: 'code', error: 'message' } as RespSlots,
@@ -114,7 +108,7 @@ const dashscopeQwenTts = group('dashscope-qwen-tts', 'tts', { zh: '通义语音�
       label: { zh: '语音合成', en: 'Synthesize' },
       url: '{baseUrl}/services/aigc/multimodal-generation/generation',
       body: { model: '{model}', input: { text: '{text}', voice: '{voice}' } },
-      vars: [inj('text')],
+      vars: [],
       // 这一族的响应给的是远端音频 URL（带时效）→ 当场下载
       resp: { audio: 'output.audio.url', errorCode: 'code', error: 'message' } as RespSlots,
       decode: 'url',
@@ -132,7 +126,7 @@ const dashscopeQwenTts = group('dashscope-qwen-tts', 'tts', { zh: '通义语音�
           audio: { data: 'data:audio/wav;base64,{wavB64}' },
         },
       },
-      vars: [inj('wavB64'), v('preferredName', 'instance', { default: 'mapvideo', label: { zh: '音色名', en: 'Voice name' } })],
+      vars: [v('preferredName', { default: 'mapvideo', label: { zh: '音色名', en: 'Voice name' } })],
       resp: { voiceId: 'output.voice', errorCode: 'code', error: 'message' } as RespSlots,
       refSampleRateHz: 24000,
     }),
@@ -145,7 +139,7 @@ const openaiSpeech = group('openai-speech', 'tts', { zh: 'OpenAI /audio/speech',
     label: { zh: '语音合成', en: 'Synthesize' },
     url: '{baseUrl}/audio/speech',
     body: { model: '{model}', voice: '{voice}', input: '{text}', speed: '{speed}', response_format: '{format}' },
-    vars: [inj('text'), formatVar(['mp3', 'wav', 'flac', 'pcm'])],
+    vars: [formatVar(['mp3', 'wav', 'flac', 'pcm'])],
     resp: { audio: '', errorCode: 'error.code', error: 'error.message' } as RespSlots,
   })],
 });
@@ -164,8 +158,7 @@ const minimaxT2a = group('minimax-t2a', 'tts', 'MiniMax t2a_v2', {
       audio_setting: { format: '{format}' },
     },
     vars: [
-      inj('text'),
-      v('groupId', 'instance', { label: 'group_id', default: '' }),
+      v('groupId', { label: 'group_id', default: '' }),
       formatVar(['mp3', 'wav', 'pcm', 'flac']),
     ],
     resp: { audio: 'data.audio', errorCode: 'status_code', error: 'status_msg' } as RespSlots,
@@ -190,7 +183,7 @@ const volcTts = group('volc-tts', 'tts', { zh: '火山 TTS', en: 'Volcengine TTS
       audio: { voice_type: '{voice}', encoding: 'mp3', speed_ratio: '{speed}' },
       request: { reqid: '{reqId}', text: '{text}', operation: 'query' },
     },
-    vars: [inj('text'), inj('reqId')],
+    vars: [],
     resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
   })],
 });
@@ -200,7 +193,7 @@ const customTts = group('custom-tts', 'tts', { zh: '自定义语音', en: 'Custo
     label: { zh: '语音合成', en: 'Synthesize' },
     url: '{baseUrl}',
     body: { model: '{model}', voice: '{voice}', text: '{text}', speed: '{speed}' },
-    vars: [inj('text')],
+    vars: [],
     resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
   })],
 });
@@ -208,13 +201,12 @@ const customTts = group('custom-tts', 'tts', { zh: '自定义语音', en: 'Custo
 // ========== 图片 ==========
 
 const imageVars: VarSpec[] = [
-  inj('prompt'),
-  v('size', 'instance', {
+  v('size', {
     default: '2048*1152', allowCustom: true, label: { zh: '出图尺寸', en: 'Size' },
     options: ['1024*1024', '2048*1152', '2688*1536'],
   }),
-  v('promptExtend', 'instance', { type: 'bool', default: false, label: { zh: '提示词改写', en: 'Prompt extend' } }),
-  v('watermark', 'instance', { type: 'bool', default: false, label: { zh: '水印', en: 'Watermark' } }),
+  v('promptExtend', { type: 'bool', default: false, label: { zh: '提示词改写', en: 'Prompt extend' } }),
+  v('watermark', { type: 'bool', default: false, label: { zh: '水印', en: 'Watermark' } }),
 ];
 
 /**
@@ -249,7 +241,7 @@ const dashscopeImage = group('dashscope-image', 'image', { zh: '通义图片生�
         input: { messages: [{ role: 'user', content: [{ text: '{prompt}' }] }] },
         parameters: { size: '{size}', n: '{count}', watermark: '{watermark}' },
       },
-      vars: [...imageVars, v('count', 'instance', { type: 'int', default: 1, label: { zh: '张数', en: 'Count' } })],
+      vars: [...imageVars, v('count', { type: 'int', default: 1, label: { zh: '张数', en: 'Count' } })],
       resp: { taskId: 'output.task_id', errorCode: 'code', error: 'message' } as RespSlots,
     }),
     row('query', 'sync', {
@@ -281,8 +273,7 @@ const customImage = group('custom-image', 'image', { zh: '自定义图片', en: 
     url: '{baseUrl}',
     body: { model: '{model}', prompt: '{prompt}', size: '{size}' },
     vars: [
-      inj('prompt'),
-      v('size', 'instance', { default: '1024*1024', allowCustom: true, label: { zh: '出图尺寸', en: 'Size' }, options: ['1024*1024', '2048*1152'] }),
+      v('size', { default: '1024*1024', allowCustom: true, label: { zh: '出图尺寸', en: 'Size' }, options: ['1024*1024', '2048*1152'] }),
     ],
     resp: { image: 'data[0].url', errorCode: 'code', error: 'message' } as RespSlots,
     decode: 'url',

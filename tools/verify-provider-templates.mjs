@@ -47,7 +47,7 @@ const GROUP = {
       role: 'synthesize', mode: 'sync', method: 'POST', url: '{baseUrl}/services/audio/tts/SpeechSynthesizer',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer {apiKey}' }, query: {},
       body: { model: '{model}', input: { text: '{text}', voice: '{voice}' }, parameters: { format: '{format}' } },
-      vars: [{ name: 'text', stage: 'call', type: 'string' }, { name: 'format', stage: 'instance', type: 'string', default: 'mp3', options: ['mp3', 'wav'] }],
+      vars: [{ name: 'text', type: 'string' }, { name: 'format', type: 'string', default: 'mp3', options: ['mp3', 'wav'] }],
       resp: { audio: '', errorCode: 'code', error: 'message' },
     },
     {
@@ -59,7 +59,7 @@ const GROUP = {
     {
       role: 'clone', mode: 'sync', method: 'POST', url: '{baseUrl}/services/audio/tts/customization',
       body: { model: 'voice-enrollment', input: { action: 'create_voice', target_model: '{model}', prefix: '{prefix}', url: 'data:audio/wav;base64,{wavB64}' } },
-      vars: [{ name: 'wavB64', stage: 'call', type: 'string' }],
+      vars: [{ name: 'wavB64', type: 'string' }],
       resp: { voiceId: 'output.voice_id' }, refSampleRateHz: 16000,
     },
   ],

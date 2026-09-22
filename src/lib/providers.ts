@@ -43,11 +43,11 @@ export function needsSecret2(cfg: ProviderConfig | null | undefined): boolean {
   return JSON.stringify(groupOf(cfg)?.rows ?? []).includes('{apiKey2}');
 }
 
-/** 实例页要渲染的参数：该组所有行里 stage=instance 的变量（同名合并成一个控件） */
+/** 实例页要渲染的参数：该组各接口声明表里的入参（同名合并成一个控件） */
 export function instanceVars(cfg: ProviderConfig | null | undefined) {
   const seen = new Map<string, NonNullable<TemplateRow['vars']>[number]>();
   for (const r of groupOf(cfg)?.rows ?? []) {
-    for (const v of r.vars ?? []) if (v.stage === 'instance' && !seen.has(v.name)) seen.set(v.name, v);
+    for (const v of r.vars ?? []) if (!seen.has(v.name)) seen.set(v.name, v);
   }
   return [...seen.values()];
 }

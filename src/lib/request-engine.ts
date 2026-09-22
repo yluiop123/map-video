@@ -22,8 +22,6 @@ export type ProviderKind = 'llm' | 'tts' | 'image';
 export type Role = 'generate' | 'synthesize' | 'query' | 'clone';
 export type Mode = 'sync' | 'async';
 export type VarType = 'int' | 'string' | 'bool' | 'list' | 'json';
-/** instance = 建实例时填（进实例页参数表）；call = 调用时传（界面只读展示） */
-export type VarStage = 'instance' | 'call';
 
 export interface VarOption {
   value: string | number | boolean;
@@ -31,9 +29,12 @@ export interface VarOption {
   label?: L;
 }
 
+/**
+ * 入参声明表里的一行 = **实例期要人配的参数**（size / format / sampleRate / temperature…）。
+ * 调用期的正文（prompt / text / wavB64…）不在这里 —— 那是每次调用由程序给的，见 CALL_VARS。
+ */
 export interface VarSpec {
   name: string;
-  stage: VarStage;
   type?: VarType;
   label?: L;
   default?: string | number | boolean;
@@ -132,13 +133,15 @@ export interface ReqCtx {
   speed?: number;
   /** 实例选的同步 / 异步 */
   mode?: Mode;
-  /** 实例期参数（stage=instance） */
+  /** 实例期参数（模板声明表里那些入参的取值） */
   params?: Record<string, unknown>;
   [k: string]: unknown;
 }
 
-/** 不必声明的保留占位符 */
-export const RESERVED = ['baseUrl', 'apiKey', 'apiKey2', 'model', 'voice', 'speed', 'mode', 'taskId', 'params'];
+/** 不必声明的保留占位符：实例侧（配置里就有值） */
+export const RESERVED = ['baseUrl', 'apiKey', 'apiKey2', 'model', 'voice', 'speed', 'mode', 'params'];
+/** 也不必声明，但值来自调用端（{taskId} 由引擎在②之后注入）；试调用面板按「行内引用了它们」长输入框 */
+export const CALL_VARS = ['text', 'prompt', 'systemPrompt', 'userPrompt', 'history', 'wavB64', 'refAudioUrl', 'reqId', 'taskId'];
 
 const WHOLE = /^\{([A-Za-z_][A-Za-z0-9_.]*)\}$/;
 const SPLICE = /^\{@([A-Za-z_][A-Za-z0-9_.]*)\}$/;
@@ -200,7 +203,7 @@ function resolveValue(name: string, s: Scope): { present: boolean; value: unknow
   if (s.gated.has(name)) return { present: false, value: undefined };
   const spec = s.vars.get(name);
   let v = lookup(s.ctx, name);
-  if (v === undefined && spec?.stage === 'instance' && spec.default !== undefined) v = spec.default;
+  if (v === undefined && spec?.default !== undefined) v = spec.default;
   if (v === undefined) {
     if (spec?.omitIfEmpty) return { present: false, value: undefined };
     throw new EngineError(`缺少变量「${name}」（模板没它发不出请求）`);
@@ -537,7 +540,7 @@ export function validateRow(row: TemplateRow, kind: ProviderKind): string[] {
   const problems: string[] = [];
   const declared = new Set((row.vars ?? []).map((v) => v.name));
   for (const n of referencedVars(row)) {
-    if (RESERVED.includes(n)) continue;
+    if (RESERVED.includes(n) || CALL_VARS.includes(n)) continue;
     if (!declared.has(n)) problems.push(`模板引用了未声明的变量「${n}」`);
   }
   for (const v of row.vars ?? []) {
@@ -568,6 +571,12 @@ export function validateRow(row: TemplateRow, kind: ProviderKind): string[] {
   }
   if (row.decode === 'url' && !resp.image && !resp.audio) problems.push('解码方式是「远端链接」，但没登记产物路径');
   return problems;
+}
+
+/** 这一行要调用端给值的占位符：引用了、又不在声明表里（试调用面板据此长输入框） */
+export function callVarsOf(row: TemplateRow): string[] {
+  const declared = new Set((row.vars ?? []).map((v) => v.name));
+  return referencedVars(row).filter((n) => !declared.has(n) && !RESERVED.includes(n));
 }
 
 /** 整组 + 实例的成对校验：缺 role、异步没配查询、同步配了查询都在这一步点名 */

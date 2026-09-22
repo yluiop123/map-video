@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS provider (
   model       TEXT NOT NULL DEFAULT '',
   voice       TEXT,
   speed       REAL NOT NULL DEFAULT 1,
-  params_json TEXT,                              -- 只存 stage=instance 的参数值
+  params_json TEXT,                              -- 只存模板声明的那些入参的取值
   max_concurrency INTEGER NOT NULL DEFAULT 1,    -- 批量并发上限（1 = 串行）
   retry_times     INTEGER NOT NULL DEFAULT 2,    -- 限流/网络错的退避重试次数
   extra       TEXT,                              -- 兜底：深合并进 body 的附加 JSON
@@ -81,26 +81,25 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 ```
 
 - **两个密钥就是两个具名列**（`api_key` / `api_key2`），不用 JSON 槽位表：槽数固定，拆列之后界面一格对一列、读写两端少一次序列化，`json_valid` 检查也不必了。两列都是 `type=password` 输入框，**永不回显原文**，预览里只显 `Bearer sk-****（长度 35）`。
-- **只装凭证**：MiniMax 的 `group_id` 是 query 串上的账号标识（`POST {base}?group_id=…`），由模板声明成普通 `stage=instance` 参数、存 `params_json`、界面正常显示 —— 借住在密钥列会让"这列都是敏感值"的语义失效，将来做导出脱敏时说不清。
+- **只装凭证**：MiniMax 的 `group_id` 是 query 串上的账号标识（`POST {base}?group_id=…`），由模板声明成普通入参、存 `params_json`、界面正常显示 —— 借住在密钥列会让"这列都是敏感值"的语义失效，将来做导出脱敏时说不清。
 - **`mode` 在实例上**：选完就决定用组里哪条 `generate` 变体、要不要 `query`。该组没有 async 变体时界面上不给这个选项（**显式不可用，不做隐式降级**）。
 - `max_concurrency` / `retry_times` 是账号/上游限额属性（同一家不同账号额度不同），所以属实例层。
-- `params_json` 的键 = 该组各接口 `stage=instance` 变量名的并集；同名跨接口共用一个值（`synthesize` 与 `clone` 天然共用 `model`，这就是「克隆产出的音色绑同款 target_model」的落法）。
+- `params_json` 的键 = 该组各接口声明表里入参名的并集；同名跨接口共用一个值（`synthesize` 与 `clone` 天然共用 `model`，这就是「克隆产出的音色绑同款 target_model」的落法）。
 - 取值优先级：**调用端显式传入 > 实例 `params_json` > 模板 `default`**。
 - **凭证按能力各配一份**：llm / tts / image 三处各自填 `base_url` + `api_key`，**不抽公共凭证表**。一次配置只管一个能力，删改互不影响，界面也不必多一层「账号」概念。代价是同一家厂商（如通义一个 Key 打通三类）的 Key 要填三遍 —— 这个代价明确接受。
 
 ## 四、入参声明 `vars_json`
 
 ```jsonc
-[ { "name": "size", "stage": "instance", "type": "string",
+[ { "name": "size", "type": "string",
     "label": { "zh": "出图尺寸", "en": "Size" }, "default": "1024*1024",
     "options": [ { "value": "1024*1024", "label": { "zh": "方图", "en": "Square" } },
-                 { "value": "2048*1152", "label": "2048×1152" } ], "allowCustom": true },
-  { "name": "prompt", "stage": "call", "type": "string" } ]
+                 { "value": "2048*1152", "label": "2048×1152" } ], "allowCustom": true } ]
 ```
 
 | 字段 | 含义 |
 |---|---|
-| `stage` | `instance`（建实例时填）｜`call`（调用时传） |
+| `name` | 占位符名（body / url / headers 里写 `{name}`）；**声明表里只放实例期要人配的参数** |
 | `type` | `int`｜`string`｜`bool`｜`list`｜`json` |
 | `label` | `L = string \| {zh,en}`，纯显示；**只有 `value` 进请求体** |
 | `default` | 模板给的默认值（实例没填就用它） |
@@ -113,7 +112,8 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 - 控件由 `options` 决定、与 `type` 正交；`bool` 隐含开/关两个选项。
 - 保留占位符不必声明，由实例行直接提供：`{baseUrl}` `{apiKey}` `{apiKey2}` `{model}` `{voice}` `{speed}` `{mode}` `{taskId}`。其中 `voice` 默认取实例列、调用端可逐行覆盖。
 - 候选值由模板写死，**不运行时从上游拉**（各家没有统一 list 接口，顺序/文案不可控）。
-- 界面规则：实例页只渲染 `stage=instance` 且 `when` 成立的变量；`stage=call` 的只读展示（标「调用时传入」）。
+- **调用期的正文不进声明表**：`{text}`（待合成文本）`{prompt}`（出图描述）`{systemPrompt}` / `{userPrompt}`（对话）`{wavB64}`（参考音频）`{taskId}`（②之后引擎自注）这些是**每次调用由程序给的保留占位符**，声明它们只会让模板页出现一排没人能配的灰字。校验时「引用了、又不在声明表里」的名字就按调用期占位符放行；试调用面板反过来按它们长输入框（`callVarsOf`）。
+- 界面规则：实例页渲染该组各接口声明表里的全部参数（`when` 不成立的隐藏）；模板页的「入参声明」表也只有这些。
 
 ## 五、返回槽位 `resp_json`
 
@@ -218,7 +218,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 | 页面 | 装什么 |
 |---|---|
-| **⚙ 实例设置**（`ProviderPanel`） | 模板组下拉（查组表，按 kind 过滤）→ Base URL / API Key / 第二凭证 → **同步 / 异步** → 该组 `stage=instance` 参数表 → 并发数 / 重试次数 → 底部「接口模板 · N →」 |
+| **⚙ 实例设置**（`ProviderPanel`） | 模板组下拉（查组表，按 kind 过滤）→ Base URL / API Key / 第二凭证 → **同步 / 异步** → 该组入参的参数表 → 并发数 / 重试次数 → 底部「接口模板 · N →」 |
 | **接口模板页**（`EndpointTemplatesPage`，整屏） | 左侧模板组列表（含「N 个实例在用」）→ 右侧**每个 role 一张接口卡片**：url / method / headers / body / **入参声明表** / **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用；底部一排「＋」补接口 |
 
 ### 查询接口与音色克隆在哪配
@@ -261,13 +261,11 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
                         { "role":"user",   "content":"{userPrompt}" } ],
            "temperature":"{temperature}", "max_tokens":"{max_tokens}",
            "enable_thinking":"{enable_thinking}" },
-  "vars":[ { "name":"systemPrompt", "stage":"call", "type":"string" },
-           { "name":"userPrompt",   "stage":"call", "type":"string" },
-           { "name":"temperature",  "stage":"instance", "type":"int", "default":7,
+  "vars":[ { "name":"temperature",  "type":"int", "default":7,
              "label":{"zh":"温度（×10）","en":"Temperature ×10"}, "omitIfEmpty":true },
-           { "name":"max_tokens",   "stage":"instance", "type":"int", "default":2048,
+           { "name":"max_tokens",   "type":"int", "default":2048,
              "label":{"zh":"最大输出 token","en":"Max tokens"}, "omitIfEmpty":true },
-           { "name":"enable_thinking","stage":"instance","type":"bool","default":false,
+           { "name":"enable_thinking","type":"bool","default":false,
              "label":{"zh":"思考模式","en":"Thinking"} } ],
   "resp":{ "content":"choices[0].message.content", "errorCode":"error.code", "error":"error.message" } }
 
@@ -291,10 +289,9 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}" },
   "body":{ "model":"{model}",
            "input":{ "text":"{text}", "voice":"{voice}", "format":"{format}", "sample_rate":"{sample_rate}" } },
-  "vars":[ { "name":"text","stage":"call","type":"string" },
-           { "name":"format","stage":"instance","type":"string","default":"mp3",
+  "vars":[ { "name":"format","type":"string","default":"mp3",
              "label":{"zh":"音频格式","en":"Format"},"options":["mp3","wav","pcm"] },
-           { "name":"sample_rate","stage":"instance","type":"int","default":24000,
+           { "name":"sample_rate","type":"int","default":24000,
              "label":{"zh":"采样率","en":"Sample rate"},
              "options":[ {"value":16000,"label":{"zh":"16k · 通用","en":"16k · general"}},
                          {"value":24000,"label":{"zh":"24k · 克隆要求","en":"24k · clone required"}},
@@ -308,8 +305,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "body":{ "model":"voice-enrollment",
            "input":{ "action":"create_voice", "target_model":"{model}", "prefix":"{prefix}",
                      "url":"data:audio/wav;base64,{wavB64}" } },
-  "vars":[ { "name":"wavB64","stage":"call","type":"string" },
-           { "name":"prefix","stage":"instance","type":"string","default":"mv",
+  "vars":[ { "name":"prefix","type":"string","default":"mv",
              "label":{"zh":"音色名前缀","en":"Voice name prefix"} } ],
   "resp":{ "voiceId":"output.voice_id", "errorCode":"code", "error":"message" } }
 
@@ -329,7 +325,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "url":"{baseUrl}/…/tts/submit",
   "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}", "X-Async":"enable" },
   "body":{ "model":"{model}", "input":{ "text":"{text}", "voice":"{voice}" } },
-  "vars":[ { "name":"text","stage":"call","type":"string" } ],
+  "vars":[ ],
   "resp":{ "taskId":"output.task_id", "errorCode":"code", "error":"message" } }
 
 // ② query·sync —— 轮询 + 产物 + 下载全在这一行
@@ -357,12 +353,11 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "body":{ "model":"{model}", "input":{ "messages":[ { "role":"user",
                      "content":[ { "text":"{prompt}" } ] } ] },
            "parameters":{ "size":"{size}", "n":"{n}", "watermark":"{watermark}" } },
-  "vars":[ { "name":"prompt","stage":"call","type":"string" },
-           { "name":"size","stage":"instance","type":"string","default":"1024*1024",
+  "vars":[ { "name":"size","type":"string","default":"1024*1024",
              "label":{"zh":"出图尺寸","en":"Size"},
              "options":["1024*1024","2048*1152","2688*1536"],"allowCustom":true },
-           { "name":"n","stage":"instance","type":"int","default":1,"label":{"zh":"张数","en":"Count"} },
-           { "name":"watermark","stage":"instance","type":"bool","default":false,"label":{"zh":"水印","en":"Watermark"} } ],
+           { "name":"n","type":"int","default":1,"label":{"zh":"张数","en":"Count"} },
+           { "name":"watermark","type":"bool","default":false,"label":{"zh":"水印","en":"Watermark"} } ],
   "decode":"url",
   "resp":{ "image":"output.choices[0].message.content[0].image", "errorCode":"code", "error":"message" } }
 
@@ -415,7 +410,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 | `dashscope-cosyvoice` | tts | `synthesize·sync` + `clone` |
 | `dashscope-qwen-tts` | tts | `synthesize·sync`（产物是链接）+ `clone`（`qwen-voice-enrollment` / `action:'create'` / `output.voice`） |
 | `openai-speech` | tts | `synthesize·sync`（响应体即音频；无 `clone` → 界面显式提示不支持克隆） |
-| `minimax-t2a` | tts | `synthesize·sync`（`data.audio` 是 **hex**；`group_id` 是 `stage=instance` 参数，进 query 串） |
+| `minimax-t2a` | tts | `synthesize·sync`（`data.audio` 是 **hex**；`group_id` 是普通入参，进 query 串） |
 | `volc-tts` | tts | `synthesize·sync`（headers 三个 `X-Api-*`；`api_key2` 填 Access Key） |
 | `dashscope-image` | image | `generate·sync` + `generate·async` + `query` |
 | `openai-image` | image | `generate·sync` + `generate·async` + `query` |
