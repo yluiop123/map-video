@@ -1,6 +1,6 @@
 # 供应商配置设计：模板表 + 实例表 + 调度层
 
-> 状态：**v2 设计稿（2026-09-22）**，第十二节 6 条待拍板；确认后按第十一节批次 A 开工。
+> 状态：**v2 设计稿（2026-09-22）**，第十二节 7 条待拍板；确认后按第十一节批次 A 开工。
 > v1（批次 1–3，**已实现并本地提交**）：`src/lib/request-engine.ts`（模板求值 / 解码 / 轮询 / 校验，55 项离线回归）+ `src/lib/recipes.ts`（11 个模板包）+ `provider_endpoint` 建表与双端持久化 + ⚙ 实例设置页与整屏接口模板页 `EndpointTemplatesPage.tsx`。
 > **v2 改的是四件事**：模板放在哪（代码 → 表）、参数分几期（同一行混存 → 声明分期）、返回怎么取（自由 map → 固定槽位）、批量怎么调度（`for` 里 await → 队列）。求值规则、双语约定、两页 UI 骨架沿用 v1。
 > 本文写的是「将要改成什么样」；当前实现的权威事实仍是 `AGENTS.md` §4/§7/§10 与 `docs/db-tables.md`，批次 D 才回头同步它们。
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS provider_template (
   url         TEXT NOT NULL DEFAULT '',               -- 地址模板，含 {baseUrl} {apiKey} {model} … 占位符
   headers_json TEXT,  query_json TEXT,  body_json TEXT,  vars_json TEXT,  resp_json TEXT,  -- 均 JSON，建表统一 json_valid 检查
   decode      TEXT,                                   -- 产物解码：NULL / hex / base64 / url
+  fetch_headers_json TEXT,                             -- ★ 「下载产物」这一步附带的请求头（NULL = 裸 GET 签名链接）
   poll_interval_ms INTEGER NOT NULL DEFAULT 1500,     -- 离散步长类参数，存原值（AGENTS §10 例外②）
   poll_timeout_ms  INTEGER NOT NULL DEFAULT 120000,
   note        TEXT,                                   -- 组/接口说明（L 的 JSON）
@@ -97,15 +98,27 @@ CREATE INDEX IF NOT EXISTS ix_tpl_kind  ON provider_template(kind, tpl_group);
   "errorCode":"code", "error":"message" }
 ```
 
-| 功能 | 组内接口（role·mode） | 必填槽位 |
-|---|---|---|
-| 文案生成 | `generate·sync` | `content` |
-| 图片生成·同步 | `generate·sync` | `image` |
-| 图片生成·异步 | `generate·async` + `query·sync` | generate：`taskId`；query：`image` + `status` + `success[]`/`fail[]`/`pending[]` |
-| 语音生成·同步 | `synthesize·sync` | `audio` |
-| 语音生成·异步 | `synthesize·async` + `query·sync` | `taskId` / `audio` + `status` + 三枚举 |
-| 声音克隆 | `clone·sync` | `voiceId` |
+| 功能 | 组内接口（role·mode） | 必填槽位 | 取回步骤 |
+|---|---|---|---|
+| 文案生成 | `generate·sync` | `content` | ① |
+| 图片生成·同步 | `generate·sync` | `image` | ①→④（产物是链接时） |
+| 图片生成·异步 | `generate·async` + `query·sync` | generate：`taskId`；query：`image` + `status` + `success[]`/`fail[]`/`pending[]` | ①→②→③→④ |
+| 语音生成·同步 | `synthesize·sync` | `audio` | ①（响应体即字节）或 ①→④ |
+| 语音生成·异步 | `synthesize·async` + `query·sync` | `taskId` / `audio` + `status` + 三枚举 | ①→②→③→④ |
+| 声音克隆（tts 组内的第三条接口） | `clone·sync` | `voiceId` | ①（返回 json，不产字节） |
 
+**tts 一组最多三条接口**：`synthesize`（合成）+ `query`（仅异步要）+ `clone`（音色克隆）。三者同属一个 `tpl_group`、共用实例的 `model` / `voice` / 密钥 —— 克隆产出的 voice 绑的就是同一个 `target_model`，这就是「关联请求成对配置」的落法。`clone` 与同步/异步**无关**（建音色这一步各家都是同步的），所以它恒 `mode=sync`。
+
+### 产物取回管线（引擎固定四步，模板只给每步的参数）
+
+| 步 | 做什么 | 由哪些列决定 |
+|---|---|---|
+| ① **提交** | 按 `generate`/`synthesize` 行发请求 | `url` / `method` / `headers_json` / `body_json` / `vars_json` |
+| ② **取任务 id** | 从①的响应里读 `taskId` | `resp.taskId` |
+| ③ **轮询状态** | 用 `query` 行反复查，直到命中三枚举之一 | `query` 行的 `url`（含 `{taskId}` 占位）+ `resp.status` / `success[]` / `fail[]` / `pending[]` + `poll_interval_ms` / `poll_timeout_ms` |
+| ④ **下载产物** | 产物若是**链接**（`decode='url'`）就当场 GET 成字节，立刻落 `asset` | `fetch_headers_json`（默认 NULL = 裸 GET 签名链接；私有桶要带 `Authorization` 才填这里） |
+
+- ④ 不建第三条「下载 role」：下载没有业务语义、没有出参槽位，建成接口行会让人以为要配两个查询接口；它只是 `decode='url'` 的**执行方式**。但**能不能带鉴权头必须可配**（各家 CDN 行为不一），所以给 `fetch_headers_json` 一列。
 - 路径写法仍是**点号 + 数字下标**（`output.choices.0.message.content`、`audios.0.url`），不引 JSONPath。所以上游是 batch 接口（一个请求回多条）时，取回侧不用新机制。
 - `decode`：`hex`（MiniMax 音频）｜`base64`｜`url`（产物是远端链接）｜NULL（响应体本身即字节 / JSON）。
 - **`decode:'url'` 的语义是「当场下载」**：异步查询返回的链接带时效，必须立刻取字节并落成 `asset`，**绝不能把这个 URL 存进项目数据** —— 否则第二天导出是一片空图。这条把「批次 6：音频/图片落 asset」从待办顶成 v2 的前置依赖。
@@ -143,13 +156,21 @@ CREATE TABLE IF NOT EXISTS provider (
 
 ## 六、配对与保存前校验
 
-1. 实例 `mode=async` → 组内必须有 `generate·async`（`taskId` 非空）**和** `query`（产物路径 + `status` + `success` 非空）；缺哪个点名哪个。
-2. 实例 `mode=sync` → `generate·sync` 的产物路径非空，且**不允许**出现 `status` / 三枚举 / 轮询列。
-3. 配音要能克隆 → `tts` 组内必须有 `clone` + `voiceId`；缺 `clone` 时 `VoicePicker` 的「克隆音色」区显示一句「该供应商不支持克隆」（不是摆一排死按钮）。
-4. 缺必填 role → 实例行标红不可用。
-5. `url` / `headers` / `body` 引用的占位符必须都在 `vars_json` 声明（或属保留占位符）—— v1 的 `validateTemplate` 已实现，沿用。
-6. 自检视图三条：`v_check_async_pairing`（异步实例有没有对应 query 模板）、`v_check_tpl_group`（组内 kind/label 一致）、`v_check_dangling`（`provider.tpl_group` 指向不存在的组）。三条都只体检不拦写入。
-7. 模板行被实例引用时**允许改**（模板是共享数据，这是设计意图），但界面顶部要显式提示「N 个实例正在使用这组模板」，并给「另存为副本」。
+1. **组内 role 齐备性**（seed 铺组时就按这张表检查，缺哪条点名哪条）：
+
+   | kind | 必填 | 条件必填 | 可选 |
+   |---|---|---|---|
+   | `llm` | `generate·sync` | — | — |
+   | `image` | `generate`（sync 或 async 至少一条） | 实例选 async → `generate·async` + `query` | — |
+   | `tts` | `synthesize`（sync 或 async 至少一条） | 实例选 async → `synthesize·async` + `query` | `clone`（没有则「克隆音色」区显示「该供应商不支持克隆」，不是摆一排死按钮） |
+
+2. 实例 `mode=async` → `generate·async` 的 `taskId` 非空，且 `query` 的产物路径 + `status` + `success` 非空。
+3. 实例 `mode=sync` → `generate·sync` 的产物路径非空，且**不允许**出现 `status` / 三枚举 / 轮询列。
+4. `decode='url'` 的行必须有产物路径（`image` / `audio`）—— 否则第④步「下载产物」没有可下载的东西；`fetch_headers_json` 留空即裸 GET。
+5. 缺必填 role → 实例行标红不可用。
+6. `url` / `headers` / `body` 引用的占位符必须都在 `vars_json` 声明（或属保留占位符）—— v1 的 `validateTemplate` 已实现，沿用。`query` 行的 `{taskId}` 由引擎在②之后注入，属保留占位符。
+7. 自检视图三条：`v_check_async_pairing`（异步实例有没有对应 query 模板）、`v_check_tpl_group`（组内 kind/label 一致）、`v_check_dangling`（`provider.tpl_group` 指向不存在的组）。三条都只体检不拦写入。
+8. 模板行被实例引用时**允许改**（模板是共享数据，这是设计意图），但界面顶部要显式提示「N 个实例正在使用这组模板」，并给「另存为副本」。
 
 ## 七、调度层（`src/lib/provider-queue.ts`，内存，不是表）
 
@@ -185,7 +206,7 @@ CREATE TABLE IF NOT EXISTS provider (
 | 页面 | v2 装什么 | 相对 v1 的变化 |
 |---|---|---|
 | **⚙ 实例设置**（`ProviderPanel`） | 模板组下拉（按 kind 过滤）→ Base URL / API Key（+ 第二密钥槽）→ **同步 / 异步** → 该组 `stage=instance` 参数表 → 并发数 / 重试次数 | `mode` 从每接口一行**上移成实例一格**；参数表读写 `provider.params_json`（不再 per-endpoint overrides）；新增并发 / 重试两格 |
-| **接口模板页**（`EndpointTemplatesPage`） | 左侧模板组列表（含「N 个实例在用」）→ 右侧组内接口卡片：url / method / headers / body / **入参声明表**（名字·stage·type·候选值·默认·说明）/ **返回槽位表单** / 解码 / 轮询节奏 + 预览请求 · 试调用 | 编辑对象从「这个实例的副本」变成**共享模板行**；出参从两个 JSON 框变成按 role+mode 渲染的**带标签输入框 + 枚举标签编辑器**；加「另存为副本」「恢复默认」 |
+| **接口模板页**（`EndpointTemplatesPage`） | 左侧模板组列表（含「N 个实例在用」）→ 右侧组内接口卡片（tts 一组最多三条：合成 / 查询 / 克隆）：url / method / headers / body / **入参声明表**（名字·stage·type·候选值·默认·说明）/ **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用 | 编辑对象从「这个实例的副本」变成**共享模板行**；出参从两个 JSON 框变成按 role+mode 渲染的**带标签输入框 + 枚举标签编辑器**；加「另存为副本」「恢复默认」 |
 
 不变的两条硬约束：**同一份配置只有一处能改**（⚙ 是唯一入口，`VoicePicker` 只留选音色 + 试听）；**两页不混在同一屏**（整屏页 + 「← 返回实例设置」）。
 
@@ -222,6 +243,7 @@ CREATE TABLE IF NOT EXISTS provider (
 4. `list` 参数保留 `item.fields` 行编辑器（多轮 `history`、参考图列表要用），不只支持标量数组 —— 建议：**保留**。
 5. 密钥固定两格（`apiKey` + 第二密钥，火山 appid/token、MiniMax group_id 用），不做「模板声明密钥变量」—— 建议：**固定两格**。
 6. 旧数据：`provider_endpoint` 整张作废、seed 重铺；实例行 `base_url` / `secrets_json` / `model` 原样留着（**你的 Key 不用重填**），只把散在各接口行的 `overrides_json` 汇总进 `params_json`。这不算兼容层，是新表恰好接得住 —— 建议：**这么做**。
+7. 「查询完成后下载」做成**引擎管线的第④步 + 一列 `fetch_headers_json`**，不建 `download` role（下载没有业务语义也没有出参槽位，做成接口行会让人以为要配两条查询接口）—— 建议：**这么做**。若你希望它在模板页里看得见、可单独试调用，就改成一个可选的 `download·sync` 行（`url` 默认 `{resultUrl}`），代价是多一行没填也能跑。
 
 ## 附：现有各家请求形状对照（seed 与 fixture 的依据）
 
