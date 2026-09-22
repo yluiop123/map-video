@@ -1,24 +1,17 @@
 /**
- * ProviderPanel — ⚙ 设置 · AI 的右侧面板（供应商列表 + 两页签）
+ * ProviderPanel — ⚙ 设置 · AI 的右侧面板（**只管实例设置**：选哪家、填 Key、选模型、调参数）
  *
- * 页签拆分的理由是**心智不同**：「配置」= 换 Key / 换模型 / 调参数（日常）；
- * 「接口模板」= 改这家怎么发请求（专家，接新服务或上游改了字段才动）。
- * 两者混在一条滚动长流里，结果是没人敢动模板，也看不清自己改了什么。
- *
- * 模板页每个接口都带「预览请求」（纯本地、零网络）与「试调用」（真发一次）：
- * 有了可观察的中间层，才不用拿上游一句 `Model not exist.` 反推。
+ * 接口模板不在这里 —— 它是另一个页面（`EndpointTemplatesPage.tsx`，整屏），本页只留一个跳转按钮。
+ * 理由：一个是日常操作、一个是改请求形状的专家操作，放同一个页面（哪怕分页签）互相干扰。
  */
 import { useEffect, useState } from 'react';
-import { OptionBlocks, NumberInput, Toggle, useT } from './ui/primitives';
+import { JsonField, NumberInput, OptionBlocks, useT } from './ui/primitives';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import type { ProviderConfig, ProviderEndpoint } from '../types';
-import { recipesFor, recipeById, REQUIRED_ROLES, ROLES_BY_KIND, seedTemplate, type Recipe } from '../lib/recipes';
-import { useConfirm } from './ui/ConfirmHost';
-import { endpointsOfRecipe } from '../lib/providers';
+import { REQUIRED_ROLES, ROLES_BY_KIND, recipeById, recipesFor, seedTemplate, type Recipe } from '../lib/recipes';
 import { pickLabel } from '../lib/i18n';
-import { previewRequest, runRoleDebug } from '../lib/providers';
-import { validateTemplate, whenOk, type Role, type VarSpec } from '../lib/request-engine';
+import { whenOk, type Role, type VarSpec } from '../lib/request-engine';
 import { IS_DESKTOP } from '../lib/backend';
 
 type Kind = 'llm' | 'tts' | 'image';
@@ -31,27 +24,15 @@ const KIND_TITLE: Record<Kind, { zh: string; en: string }> = {
 /** 需要第二个密钥槽的两家（早先把两个值拼进 apiKey 字符串，现在各占一格） */
 const NEEDS_SECRET2 = ['volc-tts', 'minimax-t2a'];
 const DEFAULT_RECIPE: Record<Kind, string> = { llm: 'openai-chat', tts: 'dashscope-cosyvoice', image: 'dashscope-image' };
-/** 试调用的默认输入（够跑通连通性，不必每次手打） */
-const TRIAL_DEFAULT: Record<string, string> = {
-  text: '这段旁白用来试听音色。',
-  systemPrompt: '你是连通性测试助手。',
-  userPrompt: '只回复两个字：正常',
-  prompt: '一只戴宇航员头盔的橘猫，赛博朋克风格',
-  preferredName: 'mapvideo',
-  prefix: 'mv',
-};
 
-export function ProviderPanel({ kind }: { kind: Kind }) {
+export function ProviderPanel({ kind, onOpenTemplates }: { kind: Kind; onOpenTemplates: (providerId: string) => void }) {
   const t = useT();
   const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
   const list = useProviderStore((s) => (kind === 'llm' ? s.llm : kind === 'tts' ? s.tts : s.image));
   const activeId = useProviderStore((s) => (kind === 'llm' ? s.activeLlmId : kind === 'tts' ? s.activeTtsId : s.activeImageId));
   const store = useProviderStore.getState();
   const [selId, setSelId] = useState<string | null>(activeId || list[0]?.id || null);
-  // 接口模板是**另一个页面**（不是同一区里的页签）：日常改 Key/模型/参数，改接口形状是偶发的专家动作
-  const [showTpl, setShowTpl] = useState(false);
   const recipes = recipesFor(kind);
-  useEffect(() => { setShowTpl(false); }, [kind, selId]);
   // 切换 kind 时组件不重挂载，selId 会带着上一类的 id 过来；选不中就退到生效项 / 第一项，
   // 否则新建完供应商面板还是空的（要再点一次才显示）
   const sel = list.find((c) => c.id === selId) || list.find((c) => c.id === activeId) || list[0] || null;
@@ -78,7 +59,7 @@ export function ProviderPanel({ kind }: { kind: Kind }) {
         {recipes.map((r) => (
           <button
             key={r.id}
-            onClick={() => { setSelId(store.addFromRecipe(r.id, kind)); setShowTpl(false); }}
+            onClick={() => setSelId(store.addFromRecipe(r.id, kind))}
             className="h-7 px-2 rounded-md border border-white/10 bg-white/[0.045] text-[11px] hover:border-white/25 transition-colors"
             title={pickLabel(r.note, lang)}
           >＋ {pickLabel(r.label, lang)}</button>
@@ -100,21 +81,19 @@ export function ProviderPanel({ kind }: { kind: Kind }) {
         {!list.length && <p className="text-[11px] text-muted-foreground">{t('点上方模板包添加一家服务。', 'Add a provider above.')}</p>}
       </div>
 
-      {sel && (showTpl
-        ? <TemplateTab cfg={sel} recipe={recipeById(sel.recipe)} onBack={() => setShowTpl(false)} />
-        : (
-          <>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-muted-foreground/70">{t('这一页只放日常项', 'Everyday settings live on this page')}</span>
-              <button
-                onClick={() => setShowTpl(true)}
-                className="h-7 px-2.5 rounded-md border border-white/15 bg-white/[0.045] text-[11px] hover:bg-white/10"
-                title={t('编辑 provider_endpoint 表里的接口模板', 'Edit the provider_endpoint templates')}
-              >{t('接口模板', 'Endpoints')} · {sel.endpoints.length} →</button>
-            </div>
-            <ConfigTab kind={kind} cfg={sel} recipe={recipeById(sel.recipe)} />
-          </>
-        ))}
+      {sel && (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-muted-foreground/70">{t('这一页只管实例设置', 'This page is about this provider only')}</span>
+            <button
+              onClick={() => onOpenTemplates(sel.id)}
+              className="h-7 px-2.5 rounded-md border border-white/15 bg-white/[0.045] text-[11px] hover:bg-white/10"
+              title={t('打开独立的接口模板页面（编辑 provider_endpoint 表）', 'Open the standalone endpoint-template page (provider_endpoint)')}
+            >{t('接口模板', 'Endpoints')} · {sel.endpoints.length} →</button>
+          </div>
+          <ConfigTab kind={kind} cfg={sel} recipe={recipeById(sel.recipe)} />
+        </>
+      )}
     </div>
   );
 }
@@ -247,7 +226,8 @@ function ModeRow({ cfg, ep }: { cfg: ProviderConfig; ep: ProviderEndpoint }) {
           { value: 'async', label: t('异步任务', 'Async task') },
         ]}
         onChange={(v) => {
-          if (v !== 'async') { patch({ mode: 'sync' }); return; }
+          // 退回同步必须把 poll 一起清掉，否则残留的轮询规则会在接口模板页被判「同步接口不该配查询规则」
+          if (v !== 'async') { patch({ mode: 'sync', poll: undefined }); return; }
           // 切异步就得有地方查状态：没有查询接口就当场补一条（同类模板包里通常有现成形状），
           // 而不是让状态下拉里只有它自己 —— 那等于自己指向自己，调用了才报错
           const seed = queries.some((q) => q.role === queryRole) ? null : { ...seedTemplate(cfg.kind, queryRole), enabled: true, overrides: {} };
@@ -384,206 +364,3 @@ function ListEditor({ v, value, onChange }: { v: VarSpec; value: unknown[]; onCh
   );
 }
 
-// ========== 接口模板页 ==========
-
-function TemplateTab({ cfg, recipe, onBack }: { cfg: ProviderConfig; recipe?: Recipe; onBack: () => void }) {
-  const t = useT();
-  const confirm = useConfirm();
-  const setEndpoints = (endpoints: ProviderEndpoint[]) => useProviderStore.getState().update(cfg.id, { endpoints });
-  const missing = ROLES_BY_KIND[cfg.kind].filter((r) => !cfg.endpoints.some((e) => e.role === r));
-  const addRole = (role: Role) => {
-    const seed = seedTemplate(cfg.kind, role);
-    setEndpoints([...cfg.endpoints, { ...seed, enabled: true, overrides: {} }]);
-  };
-  const drop = async (role: Role) => {
-    if (await confirm({ message: t(`从这家供应商移除接口「${role}」？模板包的默认形状不受影响，可再点「＋」加回来（你在模板里改过的内容会丢）`, `Remove endpoint ${role}? Re-adding it from the recipe loses your edits.`), danger: true })) {
-      setEndpoints(cfg.endpoints.filter((e) => e.role !== role));
-    }
-  };
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <button onClick={onBack} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10">← {t('返回配置', 'Back')}</button>
-        <span className="text-[11px] font-medium truncate">{cfg.label} · {t('接口模板', 'Endpoints')}</span>
-        <span className="text-[10px] font-mono text-muted-foreground/60 truncate">{cfg.recipe}</span>
-      </div>
-      <p className="text-[11px] text-muted-foreground">
-        {t('改的是「这家怎么发请求」（存 provider_endpoint 表）。占位符：{name} 取变量（标量保留类型），{@name} 在数组里展开成多个元素。', 'Edits what gets sent (stored in provider_endpoint). {name} = variable, {@name} splices array elements.')}
-      </p>
-      {cfg.endpoints.map((e) => (
-        <EndpointCard key={e.role} cfg={cfg} ep={e} onDelete={() => void drop(e.role)}
-          defaults={recipe ? endpointsOfRecipe(recipe.id).find((d) => d.role === e.role) : undefined} />
-      ))}
-      {missing.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-muted-foreground/70">{t('可添加的接口', 'Add endpoint')}</span>
-          {missing.map((r) => (
-            <button key={r} onClick={() => addRole(r)} className="h-6 px-2 rounded-md border border-white/15 text-[10px] font-mono hover:bg-white/10">＋ {r}</button>
-          ))}
-        </div>
-      )}
-      <p className="text-[10px] text-muted-foreground/70">{t('改完自动存本机库；「预览请求」不联网，「试调用」会真发一次请求。', 'Saved locally; Preview never touches the network, Test does.')}</p>
-    </div>
-  );
-}
-
-function EndpointCard({ cfg, ep, defaults, onDelete }: { cfg: ProviderConfig; ep: ProviderEndpoint; defaults?: ProviderEndpoint; onDelete: () => void }) {
-  const t = useT();
-  const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
-  const [inputs, setInputs] = useState<Record<string, string>>({});
-  const [preview, setPreview] = useState<string>('');
-  const [run, setRun] = useState<{ s: 'idle' | 'run' | 'ok' | 'err'; text?: string; audio?: string }>({ s: 'idle' });
-  const patch = (p: Partial<ProviderEndpoint>) => {
-    const endpoints = (cfg.endpoints ?? []).map((e) => (e.role === ep.role ? { ...e, ...p } : e));
-    useProviderStore.getState().update(cfg.id, { endpoints });
-    setPreview('');
-  };
-  const problems = validateTemplate(ep);
-  const injects = (ep.vars ?? []).filter((v) => v.kind === 'inject').map((v) => v.name);
-
-  const doPreview = () => {
-    try {
-      const r = previewRequest({ ...cfg, endpoints: (cfg.endpoints ?? []).map((e) => (e.role === ep.role ? ep : e)) }, ep.role, filledInputs(ep, inputs));
-      setPreview(`${r.method} ${r.url}\nheaders: ${JSON.stringify(r.headers)}\nquery: ${JSON.stringify(r.query)}\nbody: ${JSON.stringify(r.body, null, 1)}`);
-    } catch (e) { setPreview(`✕ ${e instanceof Error ? e.message : String(e)}`); }
-  };
-  const doRun = async () => {
-    setRun({ s: 'run' });
-    try {
-      const r = await runRoleDebug({ ...cfg, endpoints: (cfg.endpoints ?? []).map((e) => (e.role === ep.role ? ep : e)) }, ep.role, filledInputs(ep, inputs));
-      const shown = r.steps.map((s) => `${s.label} HTTP ${s.status} ${JSON.stringify(s.values)}`).join('\n');
-      setRun({ s: 'ok', text: `${shown}${r.bytes ? `\n→ 音频/图片 ${r.bytes.length} 字节（${r.mime || '未知类型'}）` : ''}`, audio: undefined });
-    } catch (e) { setRun({ s: 'err', text: e instanceof Error ? e.message : String(e) }); }
-  };
-
-  return (
-    <div className="border border-white/10 rounded-lg p-2 space-y-1.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] font-medium flex-1 truncate">{pickLabel(ep.label, lang) || ep.role}</span>
-        <span className="text-[10px] font-mono text-muted-foreground/70">{ep.role}</span>
-        <Toggle checked={ep.enabled !== false} label={t('启用', 'Enabled')} onChange={(v) => patch({ enabled: v })} />
-        <button
-          onClick={onDelete}
-          className="h-6 px-1.5 rounded-md border border-white/15 text-[10px] text-red-400/80 hover:bg-red-500/10" title={t('移除这个接口（模板包里的形状没丢，随时可再加回来）', 'Remove this endpoint')}
-        >✕</button>
-        {defaults && (
-          <button
-            onClick={() => patch({ ...defaults, overrides: ep.overrides })}
-            className="h-6 px-2 rounded-md border border-white/15 text-[10px] hover:bg-white/10" title={t('丢弃本地改动，取模板包这一条', 'Restore this endpoint from the recipe')}
-          >{t('恢复默认', 'Restore')}</button>
-        )}
-      </div>
-
-      {problems.length > 0 && <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <OptionBlocks<string>
-          value={ep.method || 'POST'}
-          options={(['GET', 'POST', 'PUT', 'DELETE'] as string[]).map((m) => ({ value: m, label: m }))}
-          onChange={(v) => patch({ method: v })}
-        />
-        <input value={ep.path} onChange={(e) => patch({ path: e.target.value })} className="input h-7 flex-1 min-w-40 text-[11px] font-mono" placeholder="{baseUrl}/…" />
-      </div>
-
-      <JsonField label="Headers" value={ep.headers} onCommit={(v) => patch({ headers: v as Record<string, unknown> })} />
-      <JsonField label="Query" value={ep.query} onCommit={(v) => patch({ query: v as Record<string, unknown> })} />
-      <JsonField label="Body" value={ep.body} onCommit={(v) => patch({ body: v })} />
-      <div className="flex flex-wrap gap-2">
-        <JsonField label={t('出参取法', 'Pick')} value={ep.resp?.pick} onCommit={(v) => patch({ resp: { ...(ep.resp ?? {}), pick: v as Record<string, string> } })} />
-        <JsonField label={t('异步规则', 'Poll')} value={ep.poll} onCommit={(v) => patch({ poll: v as typeof ep.poll })} />
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-        <span>{t('响应', 'resp')}</span>
-        <OptionBlocks<string>
-          value={ep.resp?.kind ?? 'auto'}
-          options={(['auto', 'audio', 'json', 'text'] as string[]).map((m) => ({ value: m, label: m }))}
-          onChange={(v) => patch({ resp: { ...(ep.resp ?? {}), kind: v as 'auto' } })}
-        />
-        <OptionBlocks<string>
-          value={ep.resp?.decode ?? '-'}
-          options={(['-', 'hex', 'base64', 'url'] as string[]).map((m) => ({ value: m, label: m }))}
-          onChange={(v) => patch({ resp: { ...(ep.resp ?? {}), decode: v === '-' ? undefined : v as 'hex' } })}
-        />
-      </div>
-      <div className="flex flex-wrap gap-1">
-        {(ep.vars ?? []).map((v) => (
-          <span key={v.name} className="h-5 px-1.5 rounded bg-white/[0.06] text-[10px] font-mono text-muted-foreground" title={v.kind === 'inject' ? t('调用端注入', 'injected at call time') : t('配置期可填', 'set in Config')}>
-            {v.kind === 'inject' ? '{' : '['}{v.name}{v.kind === 'inject' ? '}' : ']'}
-          </span>
-        ))}
-      </div>
-
-      <div className="border-t border-white/[0.06] pt-1.5 space-y-1">
-        <div className="flex flex-wrap items-end gap-1.5">
-          {injects.filter((n) => n !== 'wavB64').map((n) => (
-            <label key={n} className="flex flex-col text-[10px] text-muted-foreground">
-              {n}
-              <input value={inputs[n] ?? TRIAL_DEFAULT[n] ?? ''} onChange={(e) => setInputs((s) => ({ ...s, [n]: e.target.value }))} className="input h-6 w-32 text-[11px]" />
-            </label>
-          ))}
-          {injects.includes('wavB64') && (
-            <label className="h-6 px-2 inline-flex items-center rounded-md border border-white/15 text-[10px] hover:bg-white/10 cursor-pointer">
-              ⬆ {t('参考音频', 'reference audio')}
-              <input
-                type="file" accept="audio/*" className="hidden"
-                onChange={async (e) => {
-                  const f = e.target.files?.[0];
-                  if (f) {
-                    const buf = await f.arrayBuffer();
-                    let bin = ''; const b = new Uint8Array(buf);
-                    for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...b.subarray(i, i + 0x8000));
-                    setInputs((s) => ({ ...s, wavB64: btoa(bin) }));
-                  }
-                  e.target.value = '';
-                }}
-              />
-            </label>
-          )}
-          <button onClick={doPreview} className="h-7 px-2.5 rounded-md border border-white/15 text-[11px] hover:bg-white/10">{t('预览请求', 'Preview request')}</button>
-          <button onClick={doRun} disabled={run.s === 'run'} className="h-7 px-2.5 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-50">
-            {run.s === 'run' ? t('调用中…', 'Calling…') : t('试调用', 'Test call')}
-          </button>
-        </div>
-        {preview && <pre className="max-h-40 overflow-auto text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all">{preview}</pre>}
-        {run.s !== 'idle' && run.s !== 'run' && (
-          <pre className={`max-h-40 overflow-auto text-[10px] font-mono whitespace-pre-wrap break-all ${run.s === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>{run.text}</pre>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** 试调用输入：没填的走默认值（免得每次手打） */
-function filledInputs(ep: ProviderEndpoint, inputs: Record<string, string>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const v of ep.vars ?? []) {
-    if (v.kind !== 'inject') continue;
-    const val = inputs[v.name] ?? TRIAL_DEFAULT[v.name];
-    if (val !== undefined) out[v.name] = val;
-  }
-  return out;
-}
-
-/** JSON 字段：编辑期本地文本，失焦/回车才解析并写回（非法只红字提示，不吞内容） */
-function JsonField({ label, value, onCommit }: { label: string; value: unknown; onCommit: (v: unknown) => void }) {
-  const [txt, setTxt] = useState(() => JSON.stringify(value ?? {}, null, 1));
-  const [err, setErr] = useState('');
-  useEffect(() => { setTxt(JSON.stringify(value ?? {}, null, 1)); setErr(''); }, [label, JSON.stringify(value)]);
-  const commit = () => {
-    try { const parsed = JSON.parse(txt); setErr(''); onCommit(parsed); }
-    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
-  };
-  return (
-    <div className="flex-1 min-w-40">
-      <div className="flex items-center gap-1">
-        <span className="text-[10px] text-muted-foreground">{label}</span>
-        {err && <span className="text-[10px] text-red-400 truncate" title={err}>✕ {err}</span>}
-      </div>
-      <textarea
-        value={txt} rows={Math.min(8, txt.split('\n').length)} onChange={(e) => setTxt(e.target.value)}
-        onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } }}
-        className="input w-full text-[10px] font-mono resize-y leading-snug"
-      />
-    </div>
-  );
-}

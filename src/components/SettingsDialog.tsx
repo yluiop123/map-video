@@ -4,12 +4,14 @@ import { ProviderPanel } from './ProviderPanel';
 
 interface SettingsDialogProps {
   onClose: () => void;
+  /** 跳到「接口模板」那个独立页面（模板编辑不混进本弹窗） */
+  onOpenTemplates: (providerId: string) => void;
 }
 
 type AiKind = 'llm' | 'tts' | 'image';
 
 /** 设置：AI 能力配置（文案生成 / 语音克隆 / 图片生成），左侧切换、右侧配置 */
-export function SettingsDialog({ onClose }: SettingsDialogProps) {
+export function SettingsDialog({ onClose, onOpenTemplates }: SettingsDialogProps) {
   const [kind, setKind] = useState<AiKind>('llm');
 
   const TABS: { id: AiKind; label: string; icon: React.ReactNode }[] = [
@@ -46,7 +48,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             ))}
           </aside>
           <main className="flex-1 min-w-0 overflow-y-auto p-4">
-            <ProviderPanel kind={kind} />
+            <ProviderPanel kind={kind} onOpenTemplates={onOpenTemplates} />
           </main>
         </div>
       </div>

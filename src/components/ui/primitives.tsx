@@ -352,3 +352,27 @@ export function NumberInput({ value, onCommit, className, step, min, max, title,
     />
   );
 }
+
+/** JSON 字段：编辑期本地文本，失焦/回车才解析并写回（非法只红字提示，不吞内容） */
+export function JsonField({ label, value, onCommit }: { label: string; value: unknown; onCommit: (v: unknown) => void }) {
+  const [txt, setTxt] = useState(() => JSON.stringify(value ?? {}, null, 1));
+  const [err, setErr] = useState('');
+  useEffect(() => { setTxt(JSON.stringify(value ?? {}, null, 1)); setErr(''); }, [label, JSON.stringify(value)]);
+  const commit = () => {
+    try { const parsed = JSON.parse(txt); setErr(''); onCommit(parsed); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+  };
+  return (
+    <div className="flex-1 min-w-40">
+      <div className="flex items-center gap-1">
+        <span className="text-[10px] text-muted-foreground">{label}</span>
+        {err && <span className="text-[10px] text-red-400 truncate" title={err}>✕ {err}</span>}
+      </div>
+      <textarea
+        value={txt} rows={Math.min(8, txt.split('\n').length)} onChange={(e) => setTxt(e.target.value)}
+        onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } }}
+        className="input w-full text-[10px] font-mono resize-y leading-snug"
+      />
+    </div>
+  );
+}

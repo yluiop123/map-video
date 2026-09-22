@@ -885,7 +885,8 @@ const rowToEndpoint = (e) => ({
   resp: e.respKind || e.decodeKind || e.pickJson
     ? { kind: e.respKind || undefined, decode: e.decodeKind || undefined, pick: parseCol(e.pickJson, {}) }
     : undefined,
-  poll: parseCol(e.pollJson, null) ?? undefined,
+  // 空对象 = 没配轮询：JSON 列留 '{}' 会让同步接口被 validateTemplate 判成「配了查询规则」
+  poll: (() => { const p = parseCol(e.pollJson, null); return p && Object.keys(p).length ? p : undefined; })(),
   enabled: e.enabled === 1,
 });
 

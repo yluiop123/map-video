@@ -1,6 +1,6 @@
 # 供应商请求引擎设计（模板即数据）
 
-> 状态：**8 条拍板已按建议值确认；批次 1–3 已实现** —— 批次 1：`src/lib/request-engine.ts`（引擎纯函数）+ `src/lib/recipes.ts`（11 个模板包）+ `src/lib/i18n.ts`（`L` + `pickLabel`），`tools/verify-request-engine.mjs` 55 项离线回归全绿；批次 2：`provider_endpoint` 建表 + 旧库搬迁 + 双端持久化，`main.mjs` 的两处协议 switch 与 4 个 AI 通道全部删除，换成通用 `net:request` / `net:fetchUrl`，`tools/verify-provider-endpoint.mjs` 18 项全绿；批次 3：`src/components/ProviderPanel.tsx` 两个页面（供应商配置 ↔ `provider_endpoint` 接口模板，可增删接口）+ 每接口「预览请求」「试调用」，⚙ 成为唯一入口（内联那份删了）。
+> 状态：**8 条拍板已按建议值确认；批次 1–3 已实现** —— 批次 1：`src/lib/request-engine.ts`（引擎纯函数）+ `src/lib/recipes.ts`（11 个模板包）+ `src/lib/i18n.ts`（`L` + `pickLabel`），`tools/verify-request-engine.mjs` 55 项离线回归全绿；批次 2：`provider_endpoint` 建表 + 旧库搬迁 + 双端持久化，`main.mjs` 的两处协议 switch 与 4 个 AI 通道全部删除，换成通用 `net:request` / `net:fetchUrl`，`tools/verify-provider-endpoint.mjs` 18 项全绿；批次 3：⚙ 成为唯一入口（内联那份删了），供应商配置页 + 每接口「预览请求」「试调用」；接口模板**另起一个整屏页面** `src/components/EndpointTemplatesPage.tsx`（不与实例设置同屏，见 8.1），逐 role 卡片可增删接口。
 > 第 2 批才动 DDL 与调用链：`provider.protocol` 一删，主进程 switch 与 upsert SQL 同时失效，所以「建表 + 持久化 + 切引擎」必须同批，否则中间态会打断配音与导出。
 > 目标：把「某家供应商怎么发请求」从散落 4 处的代码，收敛成一份可配置、可自检、双端共用的数据。
 
@@ -240,14 +240,14 @@ CREATE INDEX IF NOT EXISTS ix_pe_status ON provider_endpoint(status_endpoint_id)
 
 ## 八、UI：页面分工与参数归属
 
-### 8.1 不新增顶级入口，⚙ 里分两层、两个页面
+### 8.1 不新增顶级入口，但实例设置与接口模板**不在同一屏**
 
-现状（`SettingsDialog` + `FxPanelBody:ProviderSettingsDialog`）：⚙ 设置 · AI → 左侧三类（文案 / 语音 / 图片）→ 右侧上方是厂商芯片 + 供应商行（● 生效 / ✕ 删除），下方是选中项的编辑区。骨架不变，但把它拆成**两个页面**：`接口模板 · N →` 进入、「← 返回配置」退出；换供应商或换类别自动退回配置页（否则会停在一张已被删掉的模板卡上）：
+现状（`SettingsDialog` + `FxPanelBody:ProviderSettingsDialog`）：⚙ 设置 · AI → 左侧三类（文案 / 语音 / 图片）→ 右侧上方是厂商芯片 + 供应商行（● 生效 / ✕ 删除），下方是选中项的编辑区。弹窗骨架不变，但接口模板**另起一个整屏页面**（`EndpointTemplatesPage`，`App` 里的 `tplProviderId` 状态驱动）：⚙ 底部 `接口模板 · N →` 进（同时关掉 ⚙，两屏不叠在一起）、「← 返回实例设置」出（回到 ⚙）。页内顶部一排同类供应商芯片直接互切，不必回 ⚙ 换一家再进来：
 
 | 页面 | 装什么 | 面向 |
 |---|---|---|
-| **配置** | 模板包 → 密钥 → Base URL → 模型 → 音色 → 参数表（`kind=param`）→ 每个 role 的**同步 / 异步** | 日常：换 Key、换模型、调参数 |
-| **接口模板** | 每 role 一卡片：URL / Method / Headers / Query / Body 模板 / 出参取法 / 轮询与状态判定 + **试调用** | 专家：接一家没预置的服务、或上游改了字段 |
+| **⚙ 实例设置**（`ProviderPanel`） | 模板包 → 密钥 → Base URL → 模型 → 音色 → 参数表（`kind=param`）→ 每个 role 的**同步 / 异步** | 日常：换 Key、换模型、调参数 |
+| **接口模板**（`EndpointTemplatesPage`） | 每 role 一卡片：URL / Method / Headers / Query / Body 模板 / 出参取法 / 轮询与状态判定 + **试调用** | 专家：接一家没预置的服务、或上游改了字段 |
 
 两条硬性约束：
 
@@ -259,12 +259,12 @@ CREATE INDEX IF NOT EXISTS ix_pe_status ON provider_endpoint(status_endpoint_id)
 
 ### 8.2 同步 / 异步归属
 
-`mode` 存在 **`provider_endpoint`**（它是接口形状的一部分），但**在「配置」页就能改**，改的是该 role 那一行：
+`mode` 存在 **`provider_endpoint`**（它是接口形状的一部分），但**在「⚙ 实例设置」页该 role 的卡片里就能改**：
 
-- 选异步 → 配置页当场长出四行：状态接口（下拉，来自本供应商 role 为 `*.query` 的 endpoint）、`poll.taskId` 路径、轮询间隔 / 超时、done/fail 判定；默认值由模板包带来，一般不用动。
-- 选同步 → 这四行整块消失，接口模板页的对应区块同样隐藏（同步接口**不给**配查询）。
+- 选异步 → 长出三格：状态接口（下拉，候选 = 本供应商 role 以 `.query` 结尾的行）、轮询间隔 / 超时；`poll.taskId` 路径与 done/fail 判定是**形状**不是偏好，留在接口模板页的「异步规则」里改。这一类 role 压根没有查询接口时（LLM 就是纯同步）整行不出现，不留噪音；切异步会自动补一条 `seedTemplate(kind, '<前缀>.query')`，而不是让状态下拉里只有它自己（自指等于调用时才报错）。
+- 选同步 → 这三格整块消失，接口模板页的「异步规则」区块同样不该出现（`validateTemplate` 会红字点名「同步接口不该配查询规则」）。
 - 粒度是**每个 role 一个**，不做供应商级全局开关 —— `tts` 同步 + `image` 异步是常见组合。
-- 保存前校验：`mode=async` 却挑不到 `*.query` 模板 → 红字点名并禁保存，不留到运行时才发现（第 6/7 条要求的「成对」在这里落地）。
+- 缺项不挡保存，但**当场点名**：`validateTemplate` 在模板卡片顶部列全（异步缺 `poll` / `taskId` / `statusRole` / `done.path`、模板引用了未声明的变量…），⚙ 顶部另有一行红字点名缺 role（`REQUIRED_ROLES`）—— 不留到运行时才发现（第 6/7 条要求的「成对」在这里落地）。
 
 ### 8.3 三个阶段：装配期 / 配置期 / 调用期
 
