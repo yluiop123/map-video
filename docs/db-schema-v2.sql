@@ -1084,7 +1084,7 @@ CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
 CREATE TABLE IF NOT EXISTS provider_template_group (  -- 接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口（共享数据，实例只引用）
   tpl_group TEXT PRIMARY KEY,  -- 模板组 id（一个功能一条）：openai-chat / dashscope-image / custom-tts-1 …
   kind       TEXT NOT NULL,  -- 组所属能力：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK）
-  label      TEXT NOT NULL DEFAULT '',  -- 组显示名（L 的 JSON 或纯文本）
+  label      TEXT NOT NULL DEFAULT '',  -- 组显示名（用户自定义的单个字符串，不做中英两份）
   note       TEXT,  -- 组说明（接谁家的哪套端点、有什么坑）
   base_url   TEXT NOT NULL DEFAULT '',  -- 新建实例时预填的建议 Base URL
   models_json TEXT CHECK (models_json IS NULL OR json_valid(models_json)),  -- 候选模型列表 JSON（实例页下拉用）
@@ -1102,13 +1102,13 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板行：一条接�
   role       TEXT NOT NULL,  -- 组内用途：generate / synthesize / query / clone（不写 CHECK）
   mode       TEXT NOT NULL DEFAULT 'sync',  -- 这条变体服务哪种方式：sync / async（query·clone 恒 sync）
   ord        INTEGER NOT NULL DEFAULT 0,  -- 组内展示顺序
-  label      TEXT,  -- 接口显示名（L 的 JSON）
   method     TEXT NOT NULL DEFAULT 'POST',  -- HTTP 方法
   url        TEXT NOT NULL DEFAULT '',  -- 地址模板，{baseUrl} 出现在哪由占位符决定
   headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 请求头模板 JSON
   query_json TEXT CHECK (query_json IS NULL OR json_valid(query_json)),  -- 查询串参数模板 JSON
   body_json  TEXT CHECK (body_json IS NULL OR json_valid(body_json)),  -- 请求体模板 JSON（值是 {name} 占位）
-  vars_json  TEXT CHECK (vars_json IS NULL OR json_valid(vars_json)),  -- 入参声明表 JSON（stage=instance 实例填 / call 调用时传）
+  inst_params_json TEXT CHECK (inst_params_json IS NULL OR json_valid(inst_params_json)),  -- 实例参数声明表 JSON（建实例时在 ⚙ 配：名字 / 类型 / 默认 / 候选值）
+  req_params_json TEXT CHECK (req_params_json IS NULL OR json_valid(req_params_json)),  -- 请求参数声明表 JSON（每次调用由程序给：text / prompt / wavB64…）
   resp_json  TEXT CHECK (resp_json IS NULL OR json_valid(resp_json)),  -- 返回槽位 JSON（content/image/audio/voiceId/taskId/status/success/fail/pending/errorCode/error）
   decode_kind TEXT,  -- 产物解码：NULL 响应体即产物 / hex / base64 / url 远端链接
   fetch_headers_json TEXT CHECK (fetch_headers_json IS NULL OR json_valid(fetch_headers_json)),  -- 下载产物时附带的请求头（空 = 裸 GET 签名链接）
@@ -1116,8 +1116,7 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板行：一条接�
   poll_timeout_ms  INTEGER NOT NULL DEFAULT 120000,  -- 异步轮询超时（ms；只有 query 行读）
   ref_sample_rate INTEGER,  -- 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k）
   created_at INTEGER,  -- 创建时间（epoch ms，审计用）
-  updated_at INTEGER,  -- 最后修改时间（epoch ms，审计用）
-  CHECK (headers_json IS NULL OR json_valid(headers_json))
+  updated_at INTEGER  -- 最后修改时间（epoch ms，审计用）
 );
 -- 一个组里同一个 role+mode 只能有一条（异步配对与「查询接口唯一」都由这条索引保证）
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tpl_role ON provider_template(tpl_group, role, mode);
@@ -1135,7 +1134,7 @@ CREATE TABLE IF NOT EXISTS provider (  -- 能力实例：用哪组模板 + 这�
   model      TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型（合成与克隆共用同一个值）
   voice      TEXT,  -- 音色 / 说话人 ID
   speed      REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
-  params_json TEXT CHECK (params_json IS NULL OR json_valid(params_json)),  -- 实例期参数值 JSON（模板里 stage=instance 的变量）
+  params_json TEXT CHECK (params_json IS NULL OR json_valid(params_json)),  -- 实例参数取值 JSON（对模板 inst_params_json 声明的那些名字）
   max_concurrency INTEGER NOT NULL DEFAULT 1,  -- 批量并发上限（1 = 串行；账号限额，属实例不属模板）
   retry_times     INTEGER NOT NULL DEFAULT 2,  -- 限流 / 网络错的退避重试次数（业务错不重试）
   extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),  -- 附加请求参数（JSON，深合并进请求体的兜底口）

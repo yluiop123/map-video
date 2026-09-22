@@ -3,7 +3,8 @@
  *
  * 覆盖：全新库建表、模板组逐字往返、整组覆写不残留、实例读写与生效唯一、
  *       真外键（删被引用的组要拦住 / 删组级联删接口行）、异步配对自检视图，
- *       以及旧库（provider_endpoint 副本 + secrets_json）启动 → 让位 → 铺 seed → 搬回 Key。
+ *       旧库（provider_endpoint 副本 + secrets_json）启动 → 让位 → 铺 seed → 搬回 Key，
+ *       以及模板表自身的形状漂移（vars_json 一列 → inst/req 两列）让位重铺后外键与索引不坏。
  * 运行：node --experimental-sqlite tools/verify-provider-templates.mjs
  * 退出码非 0 表示有失败项。
  */
@@ -38,8 +39,8 @@ const fresh = () => {
 
 /** 一组三条接口（语音：合成 + 查询 + 克隆），字段故意给满，用来验逐字往返 */
 const GROUP = {
-  tplGroup: 'verify-tts', kind: 'tts', label: { zh: '校验用语音', en: 'Verify voice' },
-  note: { zh: '只给回归用', en: 'regression only' },
+  tplGroup: 'verify-tts', kind: 'tts', label: '校验用语音',
+  note: '只给回归用',
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1', models: ['cosyvoice-v3.5-flash', 'qwen3-tts-flash'],
   defaultModel: 'cosyvoice-v3.5-flash', defaultVoice: 'longanyang',
   rows: [
@@ -47,7 +48,8 @@ const GROUP = {
       role: 'synthesize', mode: 'sync', method: 'POST', url: '{baseUrl}/services/audio/tts/SpeechSynthesizer',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer {apiKey}' }, query: {},
       body: { model: '{model}', input: { text: '{text}', voice: '{voice}' }, parameters: { format: '{format}' } },
-      vars: [{ name: 'text', type: 'string' }, { name: 'format', type: 'string', default: 'mp3', options: ['mp3', 'wav'] }],
+      reqParams: [{ name: 'text', type: 'string' }],
+      instParams: [{ name: 'format', type: 'string', default: 'mp3', options: ['mp3', 'wav'] }],
       resp: { audio: '', errorCode: 'code', error: 'message' },
     },
     {
@@ -59,7 +61,7 @@ const GROUP = {
     {
       role: 'clone', mode: 'sync', method: 'POST', url: '{baseUrl}/services/audio/tts/customization',
       body: { model: 'voice-enrollment', input: { action: 'create_voice', target_model: '{model}', prefix: '{prefix}', url: 'data:audio/wav;base64,{wavB64}' } },
-      vars: [{ name: 'wavB64', type: 'string' }],
+      reqParams: [{ name: 'wavB64', type: 'string' }],
       resp: { voiceId: 'output.voice_id' }, refSampleRateHz: 16000,
     },
   ],
@@ -75,12 +77,12 @@ console.log('\n[1] 模板组与接口行');
 
   upsertTemplateGroupV2(db, GROUP);
   const got = listTemplateGroupsV2(db).find((g) => g.tplGroup === 'verify-tts');
-  eq('1.4 组头逐字往返（label/note 双语、models、默认值）',
+  eq('1.4 组头逐字往返（label/note 是单个字符串、models、默认值）',
     { label: got.label, note: got.note, baseUrl: got.baseUrl, models: got.models, defaultModel: got.defaultModel, defaultVoice: got.defaultVoice },
     { label: GROUP.label, note: GROUP.note, baseUrl: GROUP.baseUrl, models: GROUP.models, defaultModel: GROUP.defaultModel, defaultVoice: GROUP.defaultVoice });
   eq('1.5 三条接口行逐字往返', got.rows, GROUP.rows.map((r, i) => ({
     ...r, ord: i, tplId: `verify-tts:${r.role}:${r.mode}`,
-    query: r.query ?? {}, headers: r.headers ?? {}, vars: r.vars ?? [],
+    query: r.query ?? {}, headers: r.headers ?? {}, instParams: r.instParams ?? [], reqParams: r.reqParams ?? [],
     pollIntervalMs: r.role === 'query' ? 900 : 1500, pollTimeoutMs: r.role === 'query' ? 45000 : 120000,
   })));
   check('1.6 方括号下标原样存回', got.rows[1].resp.audio === 'output.results[0].url', got.rows[1].resp);
@@ -186,8 +188,8 @@ console.log('\n[4] 旧形状（provider_endpoint 副本 + secrets_json）搬迁'
     migrateProvidersFromStale(db) === 0 && !!db.prepare("SELECT name FROM sqlite_master WHERE name='provider__stale'").get());
 
   db.exec('PRAGMA foreign_keys = ON');
-  upsertTemplateGroupV2(db, { tplGroup: 'openai-chat', kind: 'llm', label: 'OpenAI 兼容对话', rows: [{ role: 'generate', mode: 'sync', url: '{baseUrl}/chat/completions', vars: [], resp: { content: 'choices[0].message.content' } }] });
-  upsertTemplateGroupV2(db, { tplGroup: 'dashscope-image', kind: 'image', label: '通义图片', rows: [{ role: 'generate', mode: 'async', url: '{baseUrl}/submit', vars: [{ name: 'size', stage: 'instance' }], resp: { taskId: 'output.task_id' } }] });
+  upsertTemplateGroupV2(db, { tplGroup: 'openai-chat', kind: 'llm', label: 'OpenAI 兼容对话', rows: [{ role: 'generate', mode: 'sync', url: '{baseUrl}/chat/completions', instParams: [], reqParams: [], resp: { content: 'choices[0].message.content' } }] });
+  upsertTemplateGroupV2(db, { tplGroup: 'dashscope-image', kind: 'image', label: '通义图片', rows: [{ role: 'generate', mode: 'async', url: '{baseUrl}/submit', instParams: [{ name: 'size' }], reqParams: [], resp: { taskId: 'output.task_id' } }] });
   const moved = migrateProvidersFromStale(db);
   eq('4.5 两行都搬回', moved, 2);
   const list = listProvidersV2(db);
@@ -199,6 +201,73 @@ console.log('\n[4] 旧形状（provider_endpoint 副本 + secrets_json）搬迁'
   check('4.10 旧接口行有 async → 实例 mode 变异步', byId['img-1'].mode === 'async');
   check('4.11 搬完不留 stale 表', !db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%__stale'").get());
   check('4.12 幂等：再跑一次不重复搬', migrateProvidersFromStale(db) === 0 && listProvidersV2(db).length === 2);
+  db.close();
+}
+
+// ---------- 5. 模板表形状漂移：vars_json 一列（带 stage）→ inst/req 两列 ----------
+console.log('\n[5] 旧模板表（vars_json / 行级 label）让位重铺');
+{
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE provider_template_group (tpl_group TEXT PRIMARY KEY, kind TEXT NOT NULL,
+      label TEXT NOT NULL DEFAULT '', note TEXT, base_url TEXT NOT NULL DEFAULT '', models_json TEXT,
+      default_model TEXT NOT NULL DEFAULT '', default_voice TEXT, ord INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE provider_template (tpl_id TEXT PRIMARY KEY,
+      tpl_group TEXT NOT NULL REFERENCES provider_template_group(tpl_group) ON DELETE CASCADE,
+      role TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'sync', ord INTEGER NOT NULL DEFAULT 0,
+      label TEXT, method TEXT NOT NULL DEFAULT 'POST', url TEXT NOT NULL DEFAULT '',
+      headers_json TEXT, query_json TEXT, body_json TEXT, vars_json TEXT, resp_json TEXT,
+      decode_kind TEXT, fetch_headers_json TEXT, poll_interval_ms INTEGER NOT NULL DEFAULT 1500,
+      poll_timeout_ms INTEGER NOT NULL DEFAULT 120000, ref_sample_rate INTEGER);
+    CREATE UNIQUE INDEX ux_tpl_role ON provider_template(tpl_group, role, mode);
+    CREATE INDEX ix_tpl_group ON provider_template(tpl_group, ord);
+    CREATE TABLE provider (provider_id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
+      tpl_group TEXT NOT NULL REFERENCES provider_template_group(tpl_group),
+      base_url TEXT NOT NULL DEFAULT '', api_key TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'sync',
+      model TEXT NOT NULL DEFAULT '', params_json TEXT, max_concurrency INTEGER NOT NULL DEFAULT 1,
+      retry_times INTEGER NOT NULL DEFAULT 2, active INTEGER NOT NULL DEFAULT 0, ord INTEGER NOT NULL DEFAULT 0);
+    CREATE UNIQUE INDEX ux_provider_active ON provider(kind) WHERE active = 1;`);
+  db.prepare(`INSERT INTO provider_template_group (tpl_group, kind, label) VALUES ('openai-chat','llm','我改过的组名')`).run();
+  db.prepare(`INSERT INTO provider_template (tpl_id, tpl_group, role, mode, url, vars_json)
+    VALUES ('openai-chat:generate:sync','openai-chat','generate','sync','{baseUrl}/chat/completions',
+            '[{"name":"temperature","stage":"instance","label":{"zh":"温度","en":"Temp"}}]')`).run();
+  db.prepare(`INSERT INTO provider (provider_id, kind, label, tpl_group, api_key, model, active)
+    VALUES ('llm-1','llm','DeepSeek','openai-chat','sk-不得丢','deepseek-chat',1)`).run();
+
+  check('5.1 ensureV2Schema 成功', ensureV2Schema(db) === true);
+  const staleCols = db.prepare('PRAGMA table_info(provider_template__stale)').all().map((c) => c.name);
+  check('5.2 旧模板两表让位但没删（用户改过的模板要留档）',
+    staleCols.includes('vars_json') && !!db.prepare("SELECT 1 FROM provider_template__stale LIMIT 1").get()
+    && !!db.prepare("SELECT label FROM provider_template_group__stale WHERE tpl_group='openai-chat'").get());
+  const tc = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
+  check('5.3 新表按新形状建好（inst/req 两列、无行级 label）',
+    tc.includes('inst_params_json') && tc.includes('req_params_json') && !tc.includes('vars_json') && !tc.includes('label'), tc);
+  const fkSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='provider'").get().sql;
+  check('5.4 改名没把实例的外键写成死表（让位改名要先关 foreign_keys）',
+    !fkSql.includes('__stale'), fkSql);
+  const idx = (t) => db.prepare(`PRAGMA index_list(${t})`).all().map((i) => i.name);
+  check('5.5 索引没跟着旧表跑掉（新表上唯一约束还在）',
+    idx('provider_template').includes('ux_tpl_role') && idx('provider_template').includes('ix_tpl_group')
+    && idx('provider').includes('ux_provider_active'), { t: idx('provider_template'), p: idx('provider') });
+
+  db.exec('PRAGMA foreign_keys = ON');
+  check('5.6 让位后模板表是空的（hydrate 的 seed-if-empty 会重铺）',
+    db.prepare('SELECT COUNT(*) c FROM provider_template').get().c === 0);
+  upsertTemplateGroupV2(db, { tplGroup: 'openai-chat', kind: 'llm', label: 'OpenAI 兼容对话',
+    rows: [{ role: 'generate', mode: 'sync', url: '{baseUrl}/chat/completions',
+      instParams: [{ name: 'temperature', type: 'int', default: 7, label: '温度（×10）' }],
+      reqParams: [{ name: 'userPrompt', type: 'string' }], resp: { content: 'choices[0].message.content' } }] });
+  const p = listProvidersV2(db).find((c) => c.id === 'llm-1');
+  check('5.7 实例照读、Key 保住、引用的组重铺后仍然对得上',
+    p && p.apiKey === 'sk-不得丢' && p.tplGroup === 'openai-chat' && p.active === true, p);
+  const g = listTemplateGroupsV2(db).find((x) => x.tplGroup === 'openai-chat');
+  eq('5.8 新形状的入参读写往返', { label: g.label, inst: g.rows[0].instParams, req: g.rows[0].reqParams },
+    { label: 'OpenAI 兼容对话',
+      inst: [{ name: 'temperature', type: 'int', default: 7, label: '温度（×10）' }],
+      req: [{ name: 'userPrompt', type: 'string' }] });
+  const staleCount = () => db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='table' AND name LIKE '%__stale'").get().c;
+  check('5.9 幂等：再启动一次不再让位（stale 表不叠加、重铺的行还在）',
+    ensureV2Schema(db) === true && staleCount() === 2 && db.prepare('SELECT COUNT(*) c FROM provider_template').get().c === 1);
   db.close();
 }
 

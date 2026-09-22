@@ -813,13 +813,49 @@ const ASSET_REFS = [
  */
 export function retireProviderIfStale(db) {
   const has = (t) => !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t);
+  /**
+   * 让位改名。**父表**改名时必须关 legacy_alter_table —— 默认（3.25+）SQLite 会把子表
+   * 引用一起改写（provider.tpl_group 就会永远指向 …__stale 那份死表），这正是我们不想要的。
+   */
+  /**
+   * 让位改名。**外键条款的改写是跟着 `PRAGMA foreign_keys` 走的**（开着才会把引用一起改掉），
+   * 所以改名前必须临时关掉：否则父表（provider_template_group / provider）一让位，
+   * 子表引用就被写成 `…__stale` 那份死表，之后一切写入都对着archives校验。
+   */
+  const retire = (...tables) => {
+    const fkWasOn = !!db.prepare('PRAGMA foreign_keys').get().foreign_keys;
+    db.exec('PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;');
+    try {
+      for (const t of tables) {
+        if (!has(t) || has(`${t}__stale`)) continue;
+        // 索引跟着表走、且名字不变 → 新建的同名表会被 DDL 的 CREATE INDEX IF NOT EXISTS 静默跳过
+        // （丢掉 ux_provider_active 这种唯一约束）。所以改名前先把命名索引摘掉。
+        for (const ix of db.prepare(`PRAGMA index_list(${t})`).all()) {
+          if (ix.origin === 'pk' || String(ix.name).startsWith('sqlite_autoindex_')) continue;
+          db.exec(`DROP INDEX IF EXISTS ${ix.name}`);
+        }
+        db.exec(`ALTER TABLE ${t} RENAME TO ${t}__stale`);
+      }
+    } finally {
+      db.exec(`PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ${fkWasOn ? 'ON' : 'OFF'};`);
+    }
+  };
+  // 接口模板两张表的形状漂移：入参声明原来是 `vars_json` 一列带 stage 判别，现在拆成
+  // inst_params_json + req_params_json 两列，行级 label 也删了（标题由 role+mode 给）。
+  // 认「还带 vars_json / 还带行级 label」这个正标志（不能认「缺了新列」——
+  // ensureAllColumns 会先把新列名塞进旧表，把漂移盖住）。
+  // 让位后表空了，渲染端 hydrate 的 seed-if-empty 会按新形状重铺；旧行留在 __stale 里不删。
+  if (has('provider_template')) {
+    const tc = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
+    if (tc.includes('vars_json') || tc.includes('label'))
+      retire('provider_template', 'provider_template_group');
+  }
   if (!has('provider')) return false;
   const cols = db.prepare('PRAGMA table_info(provider)').all().map((c) => c.name);
   // 正标志：还带 recipe / secrets_json / protocol，或还有 provider_endpoint 那张表 —— 都是旧形状
   const stale = has('provider_endpoint') || cols.includes('recipe') || cols.includes('secrets_json') || cols.includes('protocol');
   if (!stale) return false;
-  db.exec('ALTER TABLE provider RENAME TO provider__stale');
-  if (has('provider_endpoint')) db.exec('ALTER TABLE provider_endpoint RENAME TO provider_endpoint__stale');
+  retire('provider', 'provider_endpoint');
   return true;
 }
 
@@ -879,16 +915,11 @@ export function migrateProvidersFromStale(db) {
 
 // ========== 接口模板（组 + 行；共享数据，实例只引用） ==========
 
-const TPL_COLS = `tpl_id AS tplId, tpl_group AS tplGroup, role, mode, ord, label, method, url,
-  headers_json AS headersJson, query_json AS queryJson, body_json AS bodyJson, vars_json AS varsJson,
+const TPL_COLS = `tpl_id AS tplId, tpl_group AS tplGroup, role, mode, ord, method, url,
+  headers_json AS headersJson, query_json AS queryJson, body_json AS bodyJson,
+  inst_params_json AS instParamsJson, req_params_json AS reqParamsJson,
   resp_json AS respJson, decode_kind AS decodeKind, fetch_headers_json AS fetchHeadersJson,
   poll_interval_ms AS pollIntervalMs, poll_timeout_ms AS pollTimeoutMs, ref_sample_rate AS refSampleRateHz`;
-
-const textOrJson = (raw, fallback) => {
-  if (raw == null || raw === '') return fallback;
-  const parsed = parseCol(raw, null);
-  return parsed ?? raw;
-};
 
 /** 列出全部模板组（含各自的接口行） */
 export function listTemplateGroupsV2(db) {
@@ -900,10 +931,10 @@ export function listTemplateGroupsV2(db) {
     if (!byGroup.has(e.tplGroup)) byGroup.set(e.tplGroup, []);
     byGroup.get(e.tplGroup).push({
       tplId: e.tplId, role: e.role, mode: e.mode, ord: e.ord,
-      label: textOrJson(e.label, undefined),
       method: e.method, url: e.url,
       headers: parseCol(e.headersJson, {}) ?? {}, query: parseCol(e.queryJson, {}) ?? {},
-      body: parseCol(e.bodyJson, undefined), vars: parseCol(e.varsJson, []) ?? [],
+      body: parseCol(e.bodyJson, undefined),
+      instParams: parseCol(e.instParamsJson, []) ?? [], reqParams: parseCol(e.reqParamsJson, []) ?? [],
       resp: blank(parseCol(e.respJson, null)) ? undefined : parseCol(e.respJson, {}),
       decode: e.decodeKind || undefined,
       fetchHeaders: blank(parseCol(e.fetchHeadersJson, null)) ? undefined : parseCol(e.fetchHeadersJson, {}),
@@ -913,8 +944,8 @@ export function listTemplateGroupsV2(db) {
   }
   return gs.map((g) => ({
     tplGroup: g.tplGroup, kind: g.kind,
-    label: textOrJson(g.label, ''),
-    note: textOrJson(g.note, undefined),
+    label: g.label ?? '',
+    note: g.note || undefined,
     baseUrl: g.baseUrl, models: parseCol(g.modelsJson, []) ?? [],
     defaultModel: g.defaultModel || undefined, defaultVoice: g.defaultVoice || undefined,
     ord: g.ord, rows: byGroup.get(g.tplGroup) ?? [],
@@ -937,22 +968,20 @@ export function upsertTemplateGroupV2(db, g) {
         models_json=@models, default_model=@defaultModel, default_voice=@defaultVoice, updated_at=@now
     `).run({
       tplGroup: String(g.tplGroup), kind: g.kind,
-      label: typeof g.label === 'string' ? g.label : jsonCol(g.label ?? ''),
-      note: typeof g.note === 'string' ? g.note : jsonCol(g.note ?? null),
+      label: String(g.label ?? ''), note: g.note ?? null,
       baseUrl: g.baseUrl ?? '', models: jsonCol(g.models ?? []),
       defaultModel: g.defaultModel ?? '', defaultVoice: g.defaultVoice ?? null, now: Date.now(),
     });
     db.prepare('DELETE FROM provider_template WHERE tpl_group = ?').run(String(g.tplGroup));
     const ins = db.prepare(`
-      INSERT INTO provider_template (tpl_id, tpl_group, role, mode, ord, label, method, url,
-        headers_json, query_json, body_json, vars_json, resp_json, decode_kind, fetch_headers_json,
+      INSERT INTO provider_template (tpl_id, tpl_group, role, mode, ord, method, url,
+        headers_json, query_json, body_json, inst_params_json, req_params_json, resp_json, decode_kind, fetch_headers_json,
         poll_interval_ms, poll_timeout_ms, ref_sample_rate, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     (g.rows ?? []).forEach((e, i) => ins.run(
       `${g.tplGroup}:${e.role}:${e.mode || 'sync'}`, String(g.tplGroup), e.role, e.mode || 'sync', i,
-      typeof e.label === 'string' ? e.label : jsonCol(e.label ?? null),
       String(e.method || 'POST').toUpperCase(), e.url || '',
-      jsonCol(e.headers), jsonCol(e.query), jsonCol(e.body), jsonCol(e.vars),
+      jsonCol(e.headers), jsonCol(e.query), jsonCol(e.body), jsonCol(e.instParams), jsonCol(e.reqParams),
       jsonCol(e.resp), e.decode ?? null, jsonCol(e.fetchHeaders),
       e.pollIntervalMs ?? 1500, e.pollTimeoutMs ?? 120000, e.refSampleRateHz ?? null, Date.now(),
     ));

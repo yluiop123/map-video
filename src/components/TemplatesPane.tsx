@@ -66,7 +66,7 @@ export function TemplatesPane() {
     const id = `custom-${kind}-${Math.random().toString(36).slice(2, 6)}`;
     useProviderStore.getState().addGroup({
       tplGroup: id, kind, rows: [],
-      label: { zh: `自定义${pickLabel(KIND_LABEL[kind], lang)}`, en: `Custom ${kind}` },
+      label: `自定义${pickLabel(KIND_LABEL[kind], lang)}-${Math.random().toString(36).slice(2, 4)}`,
     });
     setSel(id);
   };
@@ -74,7 +74,7 @@ export function TemplatesPane() {
     if (!group) return;
     const used = listOf.filter((c) => c.tplGroup === group.tplGroup).length;
     const ok = await confirm({
-      message: t(`删除模板组「${pickLabel(group.label, lang)}」？${used ? `还有 ${used} 个实例在用它，删掉后这些实例不可用。` : ''}`, `Delete this group? ${used ? `${used} instance(s) use it.` : ''}`),
+      message: t(`删除模板组「${group.label}」？${used ? `还有 ${used} 个实例在用它，删掉后这些实例不可用。` : ''}`, `Delete this group? ${used ? `${used} instance(s) use it.` : ''}`),
       danger: true,
     });
     if (!ok) return;
@@ -101,7 +101,7 @@ export function TemplatesPane() {
           return (
             <button key={g.tplGroup} onClick={() => setSel(g.tplGroup)} title={g.tplGroup}
               className={`h-7 px-2 rounded-md border text-[11px] ${g.tplGroup === group?.tplGroup ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
-              {pickLabel(g.label, lang)}{used ? ` · ${used}` : ''}
+              {g.label}{used ? ` · ${used}` : ''}
             </button>
           );
         })}
@@ -125,7 +125,7 @@ function GroupEditor({ group, instances, onDelete }: { group: TemplateGroup; ins
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <input value={pickLabel(group.label, lang)} onChange={(e) => patch({ ...group, label: e.target.value })} className="input h-7 text-xs w-40" placeholder={t('组名称', 'Group name')} />
+        <input value={group.label} onChange={(e) => patch({ ...group, label: e.target.value })} className="input h-7 text-xs w-40" placeholder={t('组名称', 'Group name')} />
         <input value={group.baseUrl ?? ''} onChange={(e) => patch({ ...group, baseUrl: e.target.value })} className="input h-7 text-xs flex-1 min-w-40 font-mono" placeholder="https://…/api/v1" />
         <button
           onClick={() => store.restoreGroup(group.tplGroup)}
@@ -142,7 +142,7 @@ function GroupEditor({ group, instances, onDelete }: { group: TemplateGroup; ins
           className="input h-6 flex-1 min-w-40 text-[10px] font-mono"
         />
       </div>
-      {!!group.note && <p className="text-[10px] text-muted-foreground/80">{pickLabel(group.note, lang)}</p>}
+      {!!group.note && <p className="text-[10px] text-muted-foreground/80">{group.note}</p>}
       {problems.length > 0 && <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>}
 
       {group.rows.map((row) => (
@@ -236,7 +236,12 @@ function RowEditor({ group, row, instance, lang }: { group: TemplateGroup; row: 
       <JsonField label="Query" value={row.query} onCommit={(v) => patch({ query: v as Record<string, unknown> })} />
       <JsonField label="Body" value={row.body} onCommit={(v) => patch({ body: v })} />
 
-      <VarsEditor row={row} onCommit={(vars) => patch({ vars })} lang={lang} />
+      <div className="grid gap-1.5">
+        <ParamList title={t('实例参数', 'Instance params')} hint={t('建实例时在 ⚙ 里配的值', 'Configured per instance')}
+          vars={row.instParams ?? []} onCommit={(vars) => patch({ instParams: vars })} />
+        <ParamList title={t('请求参数', 'Request params')} hint={t('每次调用由程序传进来的值', 'Filled by the caller each request')}
+          vars={row.reqParams ?? []} onCommit={(vars) => patch({ reqParams: vars })} />
+      </div>
       <RespEditor row={row} kind={group.kind} onCommit={(resp) => patch({ resp })} />
 
       {ownsProduct && (
@@ -321,35 +326,38 @@ function filledInputs(row: TemplateRow, inputs: Record<string, string>): Record<
   return out;
 }
 
-/** 入参声明表：只放实例期要人配的参数 —— 名字 / 类型 / 默认 / 说明 / 候选值 */
-function VarsEditor({ row, onCommit, lang }: { row: TemplateRow; onCommit: (vars: VarSpec[]) => void; lang: 'zh' | 'en' }) {
+/** 参数声明表：名字 / 类型（下拉）/ 默认 / 说明 / 候选值 */
+function ParamList({ title, hint, vars, onCommit }: {
+  title: string; hint: string; vars: VarSpec[]; onCommit: (vars: VarSpec[]) => void;
+}) {
   const t = useT();
-  const vars = row.vars ?? [];
   const write = (next: VarSpec[]) => onCommit(next);
   const at = (i: number, p: Partial<VarSpec>) => write(vars.map((v, j) => (i === j ? { ...v, ...p } : v)));
   const optText = (v: VarSpec) => (v.options ?? []).map((o) => {
     const obj = typeof o === 'object' && o !== null;
-    const val = obj ? String((o as { value: unknown }).value) : String(o);
-    const lab = obj && (o as { label?: L }).label ? `=${pickLabel((o as { label: L }).label, lang)}` : '';
-    return `${val}${lab}`;
+    const value = obj ? String((o as { value: unknown }).value) : String(o);
+    const label = obj && (o as { label?: string }).label ? `=${(o as { label: string }).label}` : '';
+    return `${value}${label}`;
   }).join(', ');
   return (
     <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-        <span>{t('入参声明', 'Variables')}</span>
-        <span className="text-muted-foreground/60">{t('只声明「建实例时要配的参数」；{text} {prompt} 这类调用正文由程序传，不必声明。占位符 {name} 取标量（保留类型），{@name} 在数组里展开', 'Declare only the parameters an instance configures; {text}/{prompt} come from the caller. {name} = scalar, {@name} splices') }</span>
+      <div className="flex flex-wrap items-center gap-2 text-[10px]">
+        <span className="text-muted-foreground font-medium">{title}</span>
+        <span className="text-muted-foreground/60">{hint} · {t('占位符 {name} 取标量（保留类型），{@name} 在数组里展开', '{name} = scalar, {@name} splices')}</span>
       </div>
       {vars.map((v, i) => (
         <div key={i} className="flex flex-wrap items-center gap-1">
           <input value={v.name} onChange={(e) => at(i, { name: e.target.value })} className="input h-6 w-24 text-[10px] font-mono" placeholder="name" />
-          <OptionBlocks<string> value={v.type ?? 'string'} options={['string', 'int', 'bool', 'list', 'json'].map((m) => ({ value: m, label: m }))} onChange={(s) => at(i, { type: s as VarSpec['type'] })} />
+          <select value={v.type ?? 'string'} onChange={(e) => at(i, { type: e.target.value as VarSpec['type'] })} className="input h-6 w-20 text-[10px]">
+            {['string', 'int', 'bool', 'list', 'json'].map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
           <input value={String(v.default ?? '')} onChange={(e) => at(i, { default: e.target.value })} className="input h-6 w-16 text-[10px]" placeholder={t('默认', 'default')} />
-          <input value={pickLabel(v.label, lang) ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="input h-6 w-24 text-[10px]" placeholder={t('说明', 'label')} />
+          <input value={v.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="input h-6 w-28 text-[10px]" placeholder={t('说明', 'label')} />
           <input value={optText(v)} onChange={(e) => at(i, { options: parseOptions(e.target.value) })} className="input h-6 flex-1 min-w-28 text-[10px] font-mono" placeholder={t('候选值：16000=16k, 24000=24k', 'options: 16000=16k, 24000=24k')} />
           <button onClick={() => write(vars.filter((_, j) => j !== i))} className="h-6 w-6 rounded text-[10px] text-muted-foreground hover:text-red-400 hover:bg-white/10">✕</button>
         </div>
       ))}
-      <button onClick={() => write([...vars, { name: '', type: 'string' }])} className="h-6 px-2 rounded-md border border-white/15 text-[10px] hover:bg-white/10">＋ {t('入参', 'variable')}</button>
+      <button onClick={() => write([...vars, { name: '', type: 'string' }])} className="h-6 px-2 rounded-md border border-white/15 text-[10px] hover:bg-white/10">＋ {t('参数', 'param')}</button>
     </div>
   );
 }

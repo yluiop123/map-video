@@ -5,21 +5,30 @@
  * 「恢复默认」= 用本文件的对应组覆盖回去。加一家新供应商 = 在这里加一条，不改 DDL、不加 switch。
  *
  * 每行的字段都照实际能跑的形状搬：
- *   文案 / 语音 / 图片的同步形状 = 本机 `D:\createVideo\scripts` 里在用的 qwen 脚本（gen_images / gen_tts_qwen / clone_qwen_voice）
- *   带 note「未实测」的 = 照官方文档写，接入时要用「试调用」确认
+ *   文案 / 语音 / 图片的形状 = 2026-09-22 用 `tools/try-real-calls.mjs` 真实调用确认过的响应
+ *
+ * 参数分两份存：`instParams`（建实例时配：size / format / sampleRate…）与
+ * `reqParams`（每次调用由程序给：text / prompt / systemPrompt / wavB64…）。名字与说明都是单个字符串。
  */
-import type { L } from './i18n';
 import type { Mode, ProviderKind, RespSlots, Role, TemplateGroup, TemplateRow, VarSpec } from './request-engine';
 
 const AUTH = { 'Content-Type': 'application/json', Authorization: 'Bearer {apiKey}' };
 
-const v = (name: string, extra: Partial<VarSpec> = {}): VarSpec => ({ name, type: 'string', ...extra });
-
-function row(role: Role, mode: Mode, o: Partial<TemplateRow> & { url: string }): TemplateRow {
-  return { role, mode, method: 'POST', headers: AUTH, vars: [], resp: {}, ...o } as TemplateRow;
+/** 实例参数（会出现在 ⚙ 实例页的参数表里） */
+function ip(name: string, extra: Partial<VarSpec> = {}): VarSpec {
+  return { name, type: 'string', ...extra };
 }
 
-function group(tplGroup: string, kind: ProviderKind, label: L, o: Partial<TemplateGroup> & { rows: TemplateRow[] }): TemplateGroup {
+/** 请求参数（值由调用点给，模板页在「请求参数」区里声明） */
+function rp(name: string, type: VarSpec['type'] = 'string'): VarSpec {
+  return { name, type };
+}
+
+function row(role: Role, mode: Mode, o: Partial<TemplateRow> & { url: string }): TemplateRow {
+  return { role, mode, method: 'POST', headers: AUTH, instParams: [], reqParams: [], resp: {}, ...o } as TemplateRow;
+}
+
+function group(tplGroup: string, kind: ProviderKind, label: string, o: Partial<TemplateGroup> & { rows: TemplateRow[] }): TemplateGroup {
   return { tplGroup, kind, label, ord: 0, ...o };
 }
 
@@ -27,7 +36,6 @@ function group(tplGroup: string, kind: ProviderKind, label: L, o: Partial<Templa
 
 const openaiChatRows: TemplateRow[] = [
   row('generate', 'sync', {
-    label: { zh: '文案生成', en: 'Generate' },
     url: '{baseUrl}/chat/completions',
     body: {
       model: '{model}',
@@ -38,9 +46,10 @@ const openaiChatRows: TemplateRow[] = [
       temperature: '{temperature}',
       max_tokens: '{maxTokens}',
     },
-    vars: [
-      v('temperature', { type: 'int', default: 7, label: { zh: '温度（×10）', en: 'Temperature ×10' } }),
-      v('maxTokens', { type: 'int', default: '', omitIfEmpty: true, label: { zh: '最大输出 token', en: 'Max tokens' } }),
+    reqParams: [rp('systemPrompt'), rp('userPrompt')],
+    instParams: [
+      ip('temperature', { type: 'int', default: 7, label: '温度（×10）' }),
+      ip('maxTokens', { type: 'int', default: '', omitIfEmpty: true, label: '最大输出 token' }),
     ],
     resp: { content: 'choices[0].message.content', errorCode: 'error.code', error: 'error.message' } as RespSlots,
   }),
@@ -50,44 +59,37 @@ const openaiChatRows: TemplateRow[] = [
 
 /** CosyVoice 系克隆：voice-enrollment + action=create_voice + prefix → output.voice_id */
 const cosyClone = row('clone', 'sync', {
-  label: { zh: '音色克隆', en: 'Voice clone' },
   url: '{baseUrl}/services/audio/tts/customization',
   body: {
     model: 'voice-enrollment',
     input: { action: 'create_voice', target_model: '{model}', prefix: '{prefix}', url: 'data:audio/wav;base64,{wavB64}' },
   },
-  vars: [v('prefix', { default: 'mv', label: { zh: '音色名前缀', en: 'Voice prefix' } })],
+  reqParams: [rp('wavB64')],
+  instParams: [ip('prefix', { default: 'mv', label: '音色名前缀' })],
   resp: { voiceId: 'output.voice_id', errorCode: 'code', error: 'message' } as RespSlots,
   refSampleRateHz: 16000,
 });
 
-const formatVar = (opts: (string | { value: string; label?: L })[]) =>
-  v('format', { default: 'mp3', label: { zh: '音频格式', en: 'Audio format' }, options: opts });
+const formatParam = (opts: (string | { value: string; label?: string })[]) =>
+  ip('format', { default: 'mp3', label: '音频格式', options: opts });
 
-const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', { zh: '通义语音（CosyVoice）', en: 'DashScope CosyVoice' }, {
-  note: { zh: '走 SpeechSynthesizer；音色是 long* 那一套，也承载 qwen-audio-3.0-tts-flash', en: 'SpeechSynthesizer endpoint; long* voices' },
+const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', '通义语音（CosyVoice）', {
+  note: '走 SpeechSynthesizer；音色是 long* 那一套，也承载 qwen-audio-3.0-tts-flash',
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
   models: ['cosyvoice-v3-flash', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v2', 'qwen-audio-3.0-tts-flash'],
-  // 实测：v3.5-flash 不认系统音色 longanyang（418），它承载的是克隆音色；
-  // v3-flash + longanyang 是可用组合，所以默认落在 v3-flash
   defaultModel: 'cosyvoice-v3-flash',
   defaultVoice: 'longanyang',
   rows: [
     row('synthesize', 'sync', {
-      label: { zh: '语音合成', en: 'Synthesize' },
       url: '{baseUrl}/services/audio/tts/SpeechSynthesizer',
       body: {
         model: '{model}',
-        input: { text: '{text}', voice: '{voice}' },
-        parameters: { format: '{format}', sample_rate: '{sampleRate}', instruction: '{instruction}' },
+        input: { text: '{text}', voice: '{voice}', format: '{format}', sample_rate: '{sampleRate}' },
       },
-      vars: [
-        formatVar(['mp3', 'wav', 'pcm']),
-        v('sampleRate', {
-          type: 'int', default: 24000, label: { zh: '采样率', en: 'Sample rate' },
-          options: [16000, 24000, 48000],
-        }),
-        v('instruction', { default: '', omitIfEmpty: true, label: { zh: '情感指令（部分音色支持）', en: 'Instruction (some voices)' } }),
+      reqParams: [rp('text')],
+      instParams: [
+        formatParam(['mp3', 'wav', 'pcm']),
+        ip('sampleRate', { type: 'int', default: 24000, label: '采样率', options: [16000, 24000, 48000] }),
       ],
       // 实测（2026-09-22）：这个端点回的是 JSON，output.audio.url 是带时效的 OSS 链接 → 当场下载
       resp: { audio: 'output.audio.url', errorCode: 'code', error: 'message' } as RespSlots,
@@ -97,24 +99,22 @@ const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', { zh: '通义语�
   ],
 });
 
-const dashscopeQwenTts = group('dashscope-qwen-tts', 'tts', { zh: '通义语音（Qwen-TTS）', en: 'DashScope Qwen-TTS' }, {
-  note: { zh: '走 multimodal-generation；音色是 Cherry / Ethan 那一套，与 long* 不通用', en: 'multimodal-generation; Cherry/Ethan voices' },
+const dashscopeQwenTts = group('dashscope-qwen-tts', 'tts', '通义语音（Qwen-TTS）', {
+  note: '走 multimodal-generation；音色是 Cherry / Ethan 那一套，与 long* 不通用',
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
   models: ['qwen3-tts-flash', 'qwen3-tts-vc-2026-01-22', 'qwen-tts'],
   defaultModel: 'qwen3-tts-flash',
   defaultVoice: 'Cherry',
   rows: [
     row('synthesize', 'sync', {
-      label: { zh: '语音合成', en: 'Synthesize' },
       url: '{baseUrl}/services/aigc/multimodal-generation/generation',
       body: { model: '{model}', input: { text: '{text}', voice: '{voice}' } },
-      vars: [],
-      // 这一族的响应给的是远端音频 URL（带时效）→ 当场下载
+      reqParams: [rp('text')],
+      // 实测：这一族的响应给的是远端音频 URL（带时效）→ 当场下载
       resp: { audio: 'output.audio.url', errorCode: 'code', error: 'message' } as RespSlots,
       decode: 'url',
     }),
     row('clone', 'sync', {
-      label: { zh: '音色克隆', en: 'Voice clone' },
       url: '{baseUrl}/services/audio/tts/customization',
       // 与 CosyVoice 同一端点、不同形状：action=create / preferred_name / audio.data → output.voice
       body: {
@@ -126,29 +126,30 @@ const dashscopeQwenTts = group('dashscope-qwen-tts', 'tts', { zh: '通义语音�
           audio: { data: 'data:audio/wav;base64,{wavB64}' },
         },
       },
-      vars: [v('preferredName', { default: 'mapvideo', label: { zh: '音色名', en: 'Voice name' } })],
+      reqParams: [rp('wavB64')],
+      instParams: [ip('preferredName', { default: 'mapvideo', label: '音色名' })],
       resp: { voiceId: 'output.voice', errorCode: 'code', error: 'message' } as RespSlots,
       refSampleRateHz: 24000,
     }),
   ],
 });
 
-const openaiSpeech = group('openai-speech', 'tts', { zh: 'OpenAI /audio/speech', en: 'OpenAI /audio/speech' }, {
+const openaiSpeech = group('openai-speech', 'tts', 'OpenAI /audio/speech', {
   baseUrl: 'https://api.openai.com/v1',
   rows: [row('synthesize', 'sync', {
-    label: { zh: '语音合成', en: 'Synthesize' },
     url: '{baseUrl}/audio/speech',
     body: { model: '{model}', voice: '{voice}', input: '{text}', speed: '{speed}', response_format: '{format}' },
-    vars: [formatVar(['mp3', 'wav', 'flac', 'pcm'])],
+    reqParams: [rp('text')],
+    instParams: [formatParam(['mp3', 'wav', 'flac', 'pcm'])],
+    // 这一家响应体本身就是音频，所以音频路径留空
     resp: { audio: '', errorCode: 'error.code', error: 'error.message' } as RespSlots,
   })],
 });
 
 const minimaxT2a = group('minimax-t2a', 'tts', 'MiniMax t2a_v2', {
-  note: { zh: 'group_id 走 query（实例期参数）；响应里的音频是 hex 字符串', en: 'group_id via query; audio comes back as hex' },
+  note: 'group_id 走 query（实例参数）；响应里的音频是 hex 字符串',
   baseUrl: 'https://api.minimax.chat/v1/t2a_v2',
   rows: [row('synthesize', 'sync', {
-    label: { zh: '语音合成', en: 'Synthesize' },
     url: '{baseUrl}',
     query: { group_id: '{groupId}' },
     body: {
@@ -157,20 +158,17 @@ const minimaxT2a = group('minimax-t2a', 'tts', 'MiniMax t2a_v2', {
       voice_setting: { voice_id: '{voice}', speed: '{speed}', vol: 1, format: '{format}' },
       audio_setting: { format: '{format}' },
     },
-    vars: [
-      v('groupId', { label: 'group_id', default: '' }),
-      formatVar(['mp3', 'wav', 'pcm', 'flac']),
-    ],
+    reqParams: [rp('text')],
+    instParams: [ip('groupId', { label: 'group_id', default: '' }), formatParam(['mp3', 'wav', 'pcm', 'flac'])],
     resp: { audio: 'data.audio', errorCode: 'status_code', error: 'status_msg' } as RespSlots,
     decode: 'hex',
   })],
 });
 
-const volcTts = group('volc-tts', 'tts', { zh: '火山 TTS', en: 'Volcengine TTS' }, {
-  note: { zh: '鉴权两个 header：App Key + Access Key（第二凭证填 Access Key）', en: 'Two header slots: app key + access key' },
+const volcTts = group('volc-tts', 'tts', '火山 TTS', {
+  note: '鉴权两个 header：App Key + Access Key（第二凭证填 Access Key）',
   baseUrl: 'https://openspeech.bytedance.com/api/v1/tts',
   rows: [row('synthesize', 'sync', {
-    label: { zh: '语音合成', en: 'Synthesize' },
     url: '{baseUrl}',
     headers: {
       'Content-Type': 'application/json',
@@ -183,57 +181,51 @@ const volcTts = group('volc-tts', 'tts', { zh: '火山 TTS', en: 'Volcengine TTS
       audio: { voice_type: '{voice}', encoding: 'mp3', speed_ratio: '{speed}' },
       request: { reqid: '{reqId}', text: '{text}', operation: 'query' },
     },
-    vars: [],
+    reqParams: [rp('text'), rp('reqId')],
     resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
   })],
 });
 
-const customTts = group('custom-tts', 'tts', { zh: '自定义语音', en: 'Custom voice' }, {
+const customTts = group('custom-tts', 'tts', '自定义语音', {
   rows: [row('synthesize', 'sync', {
-    label: { zh: '语音合成', en: 'Synthesize' },
     url: '{baseUrl}',
     body: { model: '{model}', voice: '{voice}', text: '{text}', speed: '{speed}' },
-    vars: [],
+    reqParams: [rp('text')],
     resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
   })],
 });
 
 // ========== 图片 ==========
 
-const imageVars: VarSpec[] = [
-  v('size', {
-    default: '2048*1152', allowCustom: true, label: { zh: '出图尺寸', en: 'Size' },
-    options: ['1024*1024', '2048*1152', '2688*1536'],
-  }),
-  v('promptExtend', { type: 'bool', default: false, label: { zh: '提示词改写', en: 'Prompt extend' } }),
-  v('watermark', { type: 'bool', default: false, label: { zh: '水印', en: 'Watermark' } }),
+const imageInstParams: VarSpec[] = [
+  ip('size', { default: '2048*1152', allowCustom: true, label: '出图尺寸', options: ['1024*1024', '2048*1152', '2688*1536'] }),
+  ip('promptExtend', { type: 'bool', default: false, label: '提示词改写' }),
+  ip('watermark', { type: 'bool', default: false, label: '水印' }),
 ];
 
 /**
- * 一组两变体：同步一次到位（形状照本机 gen_images.py 实测在用的那份），
- * 异步 = 提交 + 任务查询（**未实测**，照官方「提交 + tasks/{id} 轮询」文档写，接入时先用试调用确认）。
+ * 一组两变体：同步一次到位（形状照本机 gen_images.py 在用那份，已实测），
+ * 异步 = image-generation 提交 + /tasks/{id} 轮询（实测：只认万相模型，产物在 choices[0]…）。
  */
-const dashscopeImage = group('dashscope-image', 'image', { zh: '通义图片生成', en: 'DashScope image' }, {
-  note: { zh: '同步 multimodal-generation（z-image-turbo / qwen-image）；异步 image-generation + /tasks/{id} 轮询（只认万相模型，z-image-turbo 走它会给一句误导性的 url error）', en: 'sync multimodal-generation; async image-generation + /tasks/{id} polling (wan models only)' },
+const dashscopeImage = group('dashscope-image', 'image', '通义图片生成', {
+  note: '同步 multimodal-generation（z-image-turbo / qwen-image）；异步 image-generation + /tasks/{id} 轮询，只认万相模型',
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
   models: ['z-image-turbo', 'qwen-image', 'wan2.6-t2i'],
   defaultModel: 'z-image-turbo',
   rows: [
     row('generate', 'sync', {
-      label: { zh: '文生图（同步）', en: 'Text to image (sync)' },
       url: '{baseUrl}/services/aigc/multimodal-generation/generation',
       body: {
         model: '{model}',
         input: { messages: [{ role: 'user', content: [{ text: '{prompt}' }] }] },
         parameters: { size: '{size}', prompt_extend: '{promptExtend}', watermark: '{watermark}' },
       },
-      vars: imageVars,
+      reqParams: [rp('prompt')],
+      instParams: imageInstParams,
       resp: { image: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' } as RespSlots,
       decode: 'url',
     }),
-    // 实测（2026-09-22）：异步走 image-generation/generation + 异步头，请求体仍是 messages 骨架（与同步同形）
     row('generate', 'async', {
-      label: { zh: '文生图（异步提交）', en: 'Text to image (submit)' },
       url: '{baseUrl}/services/aigc/image-generation/generation',
       headers: { ...AUTH, 'X-DashScope-Async': 'enable' },
       body: {
@@ -241,14 +233,14 @@ const dashscopeImage = group('dashscope-image', 'image', { zh: '通义图片生�
         input: { messages: [{ role: 'user', content: [{ text: '{prompt}' }] }] },
         parameters: { size: '{size}', n: '{count}', watermark: '{watermark}' },
       },
-      vars: [...imageVars, v('count', { type: 'int', default: 1, label: { zh: '张数', en: 'Count' } })],
+      reqParams: [rp('prompt')],
+      instParams: [...imageInstParams, ip('count', { type: 'int', default: 1, label: '张数' })],
       resp: { taskId: 'output.task_id', errorCode: 'code', error: 'message' } as RespSlots,
     }),
     row('query', 'sync', {
-      label: { zh: '任务状态查询', en: 'Task status' },
-      method: 'GET',
       // baseUrl 已经带 /api/v1，这里不能再写一遍（实测写过就是 404）
       url: '{baseUrl}/tasks/{taskId}',
+      method: 'GET',
       headers: { Authorization: 'Bearer {apiKey}' },
       resp: {
         // 实测：产物在 output.choices[0].message.content[0].image（带时效的签名链接）
@@ -267,28 +259,26 @@ const dashscopeImage = group('dashscope-image', 'image', { zh: '通义图片生�
   ],
 });
 
-const customImage = group('custom-image', 'image', { zh: '自定义图片', en: 'Custom image' }, {
+const customImage = group('custom-image', 'image', '自定义图片', {
   rows: [row('generate', 'sync', {
-    label: { zh: '文生图', en: 'Text to image' },
     url: '{baseUrl}',
     body: { model: '{model}', prompt: '{prompt}', size: '{size}' },
-    vars: [
-      v('size', { default: '1024*1024', allowCustom: true, label: { zh: '出图尺寸', en: 'Size' }, options: ['1024*1024', '2048*1152'] }),
-    ],
+    reqParams: [rp('prompt')],
+    instParams: [ip('size', { default: '1024*1024', allowCustom: true, label: '出图尺寸', options: ['1024*1024', '2048*1152'] })],
     resp: { image: 'data[0].url', errorCode: 'code', error: 'message' } as RespSlots,
     decode: 'url',
   })],
 });
 
 export const SEED_GROUPS: TemplateGroup[] = [
-  group('openai-chat', 'llm', { zh: 'OpenAI 兼容对话', en: 'OpenAI-compatible chat' }, {
-    note: { zh: 'DeepSeek / 通义 / Kimi 等一切 /chat/completions 兼容服务', en: 'Any /chat/completions-compatible service' },
+  group('openai-chat', 'llm', 'OpenAI 兼容对话', {
+    note: 'DeepSeek / 通义 / Kimi 等一切 /chat/completions 兼容服务',
     baseUrl: 'https://api.deepseek.com',
     models: ['deepseek-chat', 'deepseek-v4-pro'],
     defaultModel: 'deepseek-chat',
     rows: openaiChatRows,
   }),
-  group('custom-llm', 'llm', { zh: '自定义（对话形状）', en: 'Custom (chat shape)' }, { rows: openaiChatRows }),
+  group('custom-llm', 'llm', '自定义（对话形状）', { rows: openaiChatRows }),
   dashscopeCosyvoice, dashscopeQwenTts, openaiSpeech, minimaxT2a, volcTts, customTts,
   dashscopeImage, customImage,
 ];

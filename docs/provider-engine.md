@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS provider_template (
   ord         INTEGER NOT NULL DEFAULT 0,           -- 组内展示顺序
   method      TEXT NOT NULL DEFAULT 'POST',
   url         TEXT NOT NULL DEFAULT '',             -- 地址模板，占位符决定 {baseUrl} 出现在哪
-  headers_json TEXT,  query_json TEXT,  body_json TEXT,  vars_json TEXT,  resp_json TEXT,
+  headers_json TEXT,  query_json TEXT,  body_json TEXT,  resp_json TEXT,
+  inst_params_json TEXT,  req_params_json TEXT,
   decode      TEXT,                                 -- 产物解码：NULL / hex / base64 / url
   fetch_headers_json TEXT,                          -- 下载产物时附带的请求头（NULL = 裸 GET 签名链接）
   poll_interval_ms INTEGER NOT NULL DEFAULT 1500,   -- 离散步长类参数，存原值
@@ -88,20 +89,32 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 - 取值优先级：**调用端显式传入 > 实例 `params_json` > 模板 `default`**。
 - **凭证按能力各配一份**：llm / tts / image 三处各自填 `base_url` + `api_key`，**不抽公共凭证表**。一次配置只管一个能力，删改互不影响，界面也不必多一层「账号」概念。代价是同一家厂商（如通义一个 Key 打通三类）的 Key 要填三遍 —— 这个代价明确接受。
 
-## 四、入参声明 `vars_json`
+## 四、入参声明：`inst_params_json` 与 `req_params_json`
+
+两类参数**各存一个 JSON 列**，界面上也是两块独立的表（不再用一个 `stage` 判别字段区分）：
+
+- **实例参数**（`inst_params_json`）：建实例时在 ⚙ 配的值 —— `size` / `format` / `sampleRate` / `temperature`…
+- **请求参数**（`req_params_json`）：每次调用由程序传进来的值 —— `text` / `prompt` / `systemPrompt` / `userPrompt` / `wavB64`…
+
+两份结构完全相同（下面的字段表），只是归属不同：实例页只渲染前者，试调用面板只给后者长输入框。
+**名字与说明都是用户自己填的单个字符串，不做中英两份**（自定义的东西没法自动翻译）。
 
 ```jsonc
+// inst_params_json —— 实例页渲染成控件
 [ { "name": "size", "type": "string",
-    "label": { "zh": "出图尺寸", "en": "Size" }, "default": "1024*1024",
-    "options": [ { "value": "1024*1024", "label": { "zh": "方图", "en": "Square" } },
+    "label": "出图尺寸", "default": "1024*1024",
+    "options": [ { "value": "1024*1024", "label": "方图" },
                  { "value": "2048*1152", "label": "2048×1152" } ], "allowCustom": true } ]
+
+// req_params_json —— 实例页不出现，只在试调用面板长输入框
+[ { "name": "prompt", "type": "string" } ]
 ```
 
 | 字段 | 含义 |
 |---|---|
-| `name` | 占位符名（body / url / headers 里写 `{name}`）；**声明表里只放实例期要人配的参数** |
-| `type` | `int`｜`string`｜`bool`｜`list`｜`json` |
-| `label` | `L = string \| {zh,en}`，纯显示；**只有 `value` 进请求体** |
+| `name` | 占位符名（body / url / headers 里写 `{name}`） |
+| `type` | `int`｜`string`｜`bool`｜`list`｜`json`（模板页是**下拉框**，不给自由输入） |
+| `label` | 显示名，**单个字符串**（纯显示，不进请求体） |
 | `default` | 模板给的默认值（实例没填就用它） |
 | `options` | 候选值：裸值或 `{value,label}`；有候选 → `OptionBlocks`，不写原生 `<select>` |
 | `allowCustom` | 才给「其它值」输入框；默认只能选 |
@@ -112,8 +125,8 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 - 控件由 `options` 决定、与 `type` 正交；`bool` 隐含开/关两个选项。
 - 保留占位符不必声明，由实例行直接提供：`{baseUrl}` `{apiKey}` `{apiKey2}` `{model}` `{voice}` `{speed}` `{mode}` `{taskId}`。其中 `voice` 默认取实例列、调用端可逐行覆盖。
 - 候选值由模板写死，**不运行时从上游拉**（各家没有统一 list 接口，顺序/文案不可控）。
-- **调用期的正文不进声明表**：`{text}`（待合成文本）`{prompt}`（出图描述）`{systemPrompt}` / `{userPrompt}`（对话）`{wavB64}`（参考音频）`{taskId}`（②之后引擎自注）这些是**每次调用由程序给的保留占位符**，声明它们只会让模板页出现一排没人能配的灰字。校验时「引用了、又不在声明表里」的名字就按调用期占位符放行；试调用面板反过来按它们长输入框（`callVarsOf`）。
-- 界面规则：实例页渲染该组各接口声明表里的全部参数（`when` 不成立的隐藏）；模板页的「入参声明」表也只有这些。
+- **调用期的正文为什么要声明出来**：`{text}`（待合成文本）`{prompt}`（出图描述）`{systemPrompt}` / `{userPrompt}`（对话）`{wavB64}`（参考音频）这些值每次调用由程序给，声明它们不是为了让人配，而是为了：① 试调用面板知道该长几个输入框（`callVarsOf`）；② 校验时能区分「声明过的调用期参数」和「打错字的占位符」。它们**放在 `req_params_json`**，实例页因此一个都不会渲染出来 —— 早先那种「一整排没人能配的灰字」就是这么来的。`{taskId}` 是例外：②之后由引擎自注，不声明。
+- 界面规则：实例页只渲染该组各接口 `inst_params_json` 里 `when` 成立的参数（写回 `provider.params_json`）；模板页两张表都在，`req_params_json` 那张标「每次调用由程序传进来」。
 
 ## 五、返回槽位 `resp_json`
 
@@ -145,7 +158,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 | 步 | 做什么 | 由哪些列决定 |
 |---|---|---|
-| ① **提交** | 按 `generate` / `synthesize` 行发请求 | `url` / `method` / `headers_json` / `body_json` / `vars_json` |
+| ① **提交** | 按 `generate` / `synthesize` 行发请求 | `url` / `method` / `headers_json` / `body_json` / 两份参数声明 |
 | ② **取任务 id** | 从 ① 的响应读 `taskId`（仅异步） | `generate·async` 行的 `resp.taskId` |
 | ③ **轮询状态** | 用 `query` 行反复查，直到命中三枚举之一 | `query` 行的 `url`（含 `{taskId}`）+ `resp.status` + 三枚举 + `poll_interval_ms` / `poll_timeout_ms` |
 | ④ **取产物** | 按产物槽取值；槽为空则整个响应体即产物 | `query`（异步）或 `generate`（同步）行的 `resp.image` / `resp.audio` |
@@ -194,7 +207,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 1. 实例 `mode=sync` → 该 `generate` 行**不允许**出现 `taskId` / `status` / 三枚举；组里若有 `query` 行也不参与求值（界面提示「本实例走同步，查询接口未使用」）。
 2. `decode='url'` 的行必须有产物槽位（`image` / `audio`），否则第⑤步没有可下载的东西。
-3. `url` / `headers` / `body` 引用的占位符必须都在 `vars_json` 声明，或属保留占位符（`query` 行的 `{taskId}` 由引擎在②之后注入）。
+3. `url` / `headers` / `body` 引用的占位符必须**在两份声明表之一里**，或属保留占位符（`{baseUrl}` `{apiKey}` `{model}` `{voice}` `{speed}` `{taskId}` 由实例或引擎给，不必声明）。
 4. `list` 变量必须给 `item`；`bool` 变量不必给 `options`（给了即报错）。
 5. 缺必填 role → 实例行标红不可用；缺项**当场点名**，不留到运行时。
 6. 引用完整性由**真外键**保证：`provider.tpl_group` → 组表（删组会拦住或级联，按外键策略定），`provider_template.tpl_group` → 组表 `ON DELETE CASCADE`（删组连带删接口行）。只有 `poll` 关系（generate ↔ query）是隐式的，不需要自检视图。
@@ -218,8 +231,8 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 | 页面 | 装什么 |
 |---|---|
-| **⚙ 实例设置**（`ProviderPanel`） | 模板组下拉（查组表，按 kind 过滤）→ Base URL / API Key / 第二凭证 → **同步 / 异步** → 该组入参的参数表 → 并发数 / 重试次数 → 底部「接口模板 · N →」 |
-| **接口模板页**（`EndpointTemplatesPage`，整屏） | 左侧模板组列表（含「N 个实例在用」）→ 右侧**每个 role 一张接口卡片**：url / method / headers / body / **入参声明表** / **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用；底部一排「＋」补接口 |
+| **⚙ 实例设置**（`ProviderPanel`） | 模板组下拉（查组表，按 kind 过滤）→ Base URL / API Key / 第二凭证 → **同步 / 异步** → 该组的**实例参数**表 → 并发数 / 重试次数 |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧第 4 个独立入口） | 模板组列表（含「N 个实例在用」）→ **每个 role 一张接口卡片**：url / method / headers / body / **实例参数**表 / **请求参数**表（名字 · 类型下拉 · 默认 · 说明 · 候选值）/ **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用；底部一排「＋」补接口 |
 
 ### 查询接口与音色克隆在哪配
 
@@ -246,11 +259,17 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 ## 十、内容示例
 
+> 权威副本是 `src/lib/template-seed.ts`（seed 就是这些行）；这里挑三组说明读法。
+> 名字与说明都是**单个字符串**；`reqParams` = 每次调用由程序给，`instParams` = 建实例时在 ⚙ 配。
+
 ### 10.1 文案生成 · `openai-chat`（一组一行）
 
 ```jsonc
 // provider_template_group
-{ "tpl_group":"openai-chat", "kind":"llm", "label":{"zh":"OpenAI 兼容对话","en":"OpenAI-compatible"} }
+{ "tpl_group":"openai-chat", "kind":"llm", "label":"OpenAI 兼容对话",
+  "note":"DeepSeek / 通义 / Kimi 等一切 /chat/completions 兼容服务",
+  "base_url":"https://api.deepseek.com", "models":["deepseek-chat","deepseek-v4-pro"],
+  "default_model":"deepseek-chat" }
 
 // provider_template
 { "tpl_group":"openai-chat", "role":"generate", "mode":"sync", "method":"POST",
@@ -259,131 +278,97 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "body":{ "model":"{model}",
            "messages":[ { "role":"system", "content":"{systemPrompt}" },
                         { "role":"user",   "content":"{userPrompt}" } ],
-           "temperature":"{temperature}", "max_tokens":"{max_tokens}",
-           "enable_thinking":"{enable_thinking}" },
-  "vars":[ { "name":"temperature",  "type":"int", "default":7,
-             "label":{"zh":"温度（×10）","en":"Temperature ×10"}, "omitIfEmpty":true },
-           { "name":"max_tokens",   "type":"int", "default":2048,
-             "label":{"zh":"最大输出 token","en":"Max tokens"}, "omitIfEmpty":true },
-           { "name":"enable_thinking","type":"bool","default":false,
-             "label":{"zh":"思考模式","en":"Thinking"} } ],
+           "temperature":"{temperature}", "max_tokens":"{maxTokens}" },
+  "req_params":[ { "name":"systemPrompt", "type":"string" },
+                 { "name":"userPrompt",   "type":"string" } ],
+  "inst_params":[ { "name":"temperature", "type":"int", "default":7, "label":"温度（×10）" },
+                  { "name":"maxTokens",   "type":"int", "default":"", "omitIfEmpty":true, "label":"最大输出 token" } ],
   "resp":{ "content":"choices[0].message.content", "errorCode":"error.code", "error":"error.message" } }
 
 // provider（实例）
 { "kind":"llm", "label":"DeepSeek", "tpl_group":"openai-chat",
-  "base_url":"https://api.deepseek.com/v1", "api_key":"sk-…", "api_key2":null,
-  "mode":"sync", "model":"deepseek-chat",
-  "params":{ "temperature":7, "max_tokens":2048, "enable_thinking":false },
+  "base_url":"https://api.deepseek.com", "api_key":"sk-…", "mode":"sync",
+  "model":"deepseek-chat", "params":{ "temperature":7, "maxTokens":2048 },
   "max_concurrency":1, "retry_times":2 }
 ```
 
-### 10.2 语音 · `dashscope-cosyvoice`（合成同步 + 克隆，没有查询接口）
+### 10.2 语音 · `dashscope-cosyvoice`（合成 + 克隆，没有查询接口）
 
 ```jsonc
-// provider_template_group
-{ "tpl_group":"dashscope-cosyvoice", "kind":"tts", "label":{"zh":"通义语音（CosyVoice）","en":"DashScope CosyVoice"} }
-
-// ① synthesize·sync —— 响应体本身就是音频字节，所以 audio 槽留空
+// ① synthesize·sync —— 实测：回的是 JSON，音频在 output.audio.url（带时效）→ 当场下载
 { "tpl_group":"dashscope-cosyvoice", "role":"synthesize", "mode":"sync", "method":"POST",
-  "url":"{baseUrl}/api/v1/services/audio/tts/SpeechSynthesizer",
+  "url":"{baseUrl}/services/audio/tts/SpeechSynthesizer",
   "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}" },
   "body":{ "model":"{model}",
-           "input":{ "text":"{text}", "voice":"{voice}", "format":"{format}", "sample_rate":"{sample_rate}" } },
-  "vars":[ { "name":"format","type":"string","default":"mp3",
-             "label":{"zh":"音频格式","en":"Format"},"options":["mp3","wav","pcm"] },
-           { "name":"sample_rate","type":"int","default":24000,
-             "label":{"zh":"采样率","en":"Sample rate"},
-             "options":[ {"value":16000,"label":{"zh":"16k · 通用","en":"16k · general"}},
-                         {"value":24000,"label":{"zh":"24k · 克隆要求","en":"24k · clone required"}},
-                         {"value":48000,"label":"48k"} ] } ],
-  "resp":{ "audio":"", "errorCode":"code", "error":"message" } }        // audio 留空 = 响应体即音频
+           "input":{ "text":"{text}", "voice":"{voice}", "format":"{format}", "sample_rate":"{sampleRate}" } },
+  "req_params":[ { "name":"text", "type":"string" } ],
+  "inst_params":[ { "name":"format","type":"string","default":"mp3","label":"音频格式","options":["mp3","wav","pcm"] },
+                  { "name":"sampleRate","type":"int","default":24000,"label":"采样率","options":[16000,24000,48000] } ],
+  "resp":{ "audio":"output.audio.url", "errorCode":"code", "error":"message" },
+  "decode":"url" }
 
 // ② clone·sync —— 建音色各家都是同步，恒 mode=sync；与 synthesize 共用实例的 model
 { "tpl_group":"dashscope-cosyvoice", "role":"clone", "mode":"sync", "method":"POST",
-  "url":"{baseUrl}/api/v1/services/audio/tts/customization",
-  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}" },
+  "url":"{baseUrl}/services/audio/tts/customization",
   "body":{ "model":"voice-enrollment",
            "input":{ "action":"create_voice", "target_model":"{model}", "prefix":"{prefix}",
                      "url":"data:audio/wav;base64,{wavB64}" } },
-  "vars":[ { "name":"prefix","type":"string","default":"mv",
-             "label":{"zh":"音色名前缀","en":"Voice name prefix"} } ],
-  "resp":{ "voiceId":"output.voice_id", "errorCode":"code", "error":"message" } }
+  "req_params":[ { "name":"wavB64", "type":"string" } ],
+  "inst_params":[ { "name":"prefix", "type":"string", "default":"mv", "label":"音色名前缀" } ],
+  "resp":{ "voiceId":"output.voice_id", "errorCode":"code", "error":"message" },
+  "ref_sample_rate":16000 }
 
 // provider（实例）—— 合成与克隆共用这一份 base_url + Key + model
 { "kind":"tts", "label":"通义配音", "tpl_group":"dashscope-cosyvoice",
-  "base_url":"https://dashscope.aliyuncs.com", "api_key":"sk-…", "api_key2":null,
-  "mode":"sync", "model":"cosyvoice-v3.5-flash", "voice":"longanyang", "speed":1,
-  "params":{ "format":"mp3", "sample_rate":24000, "prefix":"mv" },
-  "max_concurrency":1, "retry_times":2 }
+  "base_url":"https://dashscope.aliyuncs.com/api/v1", "api_key":"sk-…", "mode":"sync",
+  "model":"cosyvoice-v3-flash", "voice":"longanyang", "speed":1,
+  "params":{ "format":"mp3", "sampleRate":24000, "prefix":"mv" } }
 ```
 
-### 10.3 语音 · 异步形状（合成异步 + 查询 + 克隆，三条一组）
+响应体本身就是音频的（OpenAI /audio/speech、火山），把 `audio` 槽**留空串**即可 —— 引擎按 `Content-Type` 判定，`resp.audio === ''` 就是"整个响应体是产物"。
+
+### 10.3 图片 · `dashscope-image`（同步与异步两种变体并存，实例选一种）
 
 ```jsonc
-// ① synthesize·async —— 只负责提交，交出 taskId
-{ "tpl_group":"example-tts-async", "role":"synthesize", "mode":"async", "method":"POST",
-  "url":"{baseUrl}/…/tts/submit",
-  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}", "X-Async":"enable" },
-  "body":{ "model":"{model}", "input":{ "text":"{text}", "voice":"{voice}" } },
-  "vars":[ ],
-  "resp":{ "taskId":"output.task_id", "errorCode":"code", "error":"message" } }
+{ "tpl_group":"dashscope-image", "kind":"image", "label":"通义图片生成",
+  "base_url":"https://dashscope.aliyuncs.com/api/v1",
+  "models":["z-image-turbo","qwen-image","wan2.6-t2i"], "default_model":"z-image-turbo" }
 
-// ② query·sync —— 轮询 + 产物 + 下载全在这一行
-{ "tpl_group":"example-tts-async", "role":"query", "mode":"sync", "method":"GET",
-  "url":"{baseUrl}/api/v1/tasks/{taskId}",
-  "headers":{ "Authorization":"Bearer {apiKey}" }, "vars":[],
-  "decode":"url", "poll_interval_ms":1500, "poll_timeout_ms":120000,
-  "resp":{ "audio":"output.results[0].url", "status":"output.task_status",
-           "success":["SUCCEEDED"], "pending":["PENDING","RUNNING"],
-           "fail":["FAILED","CANCELED","UNKNOWN"], "errorCode":"code", "error":"message" } }
+// ① generate·sync —— 实测形状（照本机 gen_images.py 在用那份）
+{ "role":"generate", "mode":"sync", "method":"POST",
+  "url":"{baseUrl}/services/aigc/multimodal-generation/generation",
+  "body":{ "model":"{model}", "input":{ "messages":[ { "role":"user", "content":[ { "text":"{prompt}" } ] } ] },
+           "parameters":{ "size":"{size}", "prompt_extend":"{promptExtend}", "watermark":"{watermark}" } },
+  "req_params":[ { "name":"prompt", "type":"string" } ],
+  "inst_params":[ { "name":"size","type":"string","default":"2048*1152","allowCustom":true,"label":"出图尺寸",
+                    "options":["1024*1024","2048*1152","2688*1536"] },
+                  { "name":"promptExtend","type":"bool","default":false,"label":"提示词改写" },
+                  { "name":"watermark","type":"bool","default":false,"label":"水印" } ],
+  "resp":{ "image":"output.choices[0].message.content[0].image", "errorCode":"code", "error":"message" },
+  "decode":"url" }
 
-// ③ clone·sync —— 同 10.2
-```
-
-### 10.4 图片 · `dashscope-image`（同步与异步两种变体并存，实例选一种）
-
-```jsonc
-// provider_template_group
-{ "tpl_group":"dashscope-image", "kind":"image", "label":{"zh":"通义图片生成","en":"DashScope Image"} }
-
-// ① generate·sync —— 一次到位，产物仍是链接 → 第⑤步下载
-{ "tpl_group":"dashscope-image", "role":"generate", "mode":"sync", "method":"POST",
-  "url":"{baseUrl}/api/v1/services/aigc/multimodal-generation/generation",
-  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}" },
-  "body":{ "model":"{model}", "input":{ "messages":[ { "role":"user",
-                     "content":[ { "text":"{prompt}" } ] } ] },
-           "parameters":{ "size":"{size}", "n":"{n}", "watermark":"{watermark}" } },
-  "vars":[ { "name":"size","type":"string","default":"1024*1024",
-             "label":{"zh":"出图尺寸","en":"Size"},
-             "options":["1024*1024","2048*1152","2688*1536"],"allowCustom":true },
-           { "name":"n","type":"int","default":1,"label":{"zh":"张数","en":"Count"} },
-           { "name":"watermark","type":"bool","default":false,"label":{"zh":"水印","en":"Watermark"} } ],
-  "decode":"url",
-  "resp":{ "image":"output.choices[0].message.content[0].image", "errorCode":"code", "error":"message" } }
-
-// ② generate·async —— 多一个异步头，只登记 taskId；vars 与 ① 同
-{ "tpl_group":"dashscope-image", "role":"generate", "mode":"async", "method":"POST",
-  "url":"{baseUrl}/api/v1/services/aigc/text2image/image-synthesis",
-  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}",
-              "X-DashScope-Async":"enable" },
-  "body":{ "model":"{model}", "input":{ "prompt":"{prompt}" },
-           "parameters":{ "size":"{size}", "n":"{n}" } },
+// ② generate·async —— 多一个异步头，只登记 taskId；参数与 ① 同（多个 count 张数）
+{ "role":"generate", "mode":"async", "method":"POST",
+  "url":"{baseUrl}/services/aigc/image-generation/generation",
+  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}", "X-DashScope-Async":"enable" },
+  "body":{ "model":"{model}", "input":{ "messages":[ { "role":"user", "content":[ { "text":"{prompt}" } ] } ] },
+           "parameters":{ "size":"{size}", "n":"{count}", "watermark":"{watermark}" } },
   "resp":{ "taskId":"output.task_id", "errorCode":"code", "error":"message" } }
 
 // ③ query·sync —— 轮询节奏 / 产物 / 下载都在这条行上
-{ "tpl_group":"dashscope-image", "role":"query", "mode":"sync", "method":"GET",
-  "url":"{baseUrl}/api/v1/tasks/{taskId}",
-  "headers":{ "Authorization":"Bearer {apiKey}" }, "vars":[],
-  "decode":"url", "poll_interval_ms":1500, "poll_timeout_ms":180000,
-  "resp":{ "image":"output.results[0].url", "status":"output.task_status",
+{ "role":"query", "mode":"sync", "method":"GET",
+  "url":"{baseUrl}/tasks/{taskId}",              // baseUrl 已含 /api/v1，不能再写一遍（实测 404）
+  "headers":{ "Authorization":"Bearer {apiKey}" },
+  "resp":{ "image":"output.choices[0].message.content[0].image", "status":"output.task_status",
            "success":["SUCCEEDED"], "pending":["PENDING","RUNNING"],
-           "fail":["FAILED","CANCELED","UNKNOWN"], "errorCode":"code", "error":"message" } }
+           "fail":["FAILED","CANCELED","UNKNOWN"], "errorCode":"code", "error":"message" },
+  "decode":"url", "poll_interval_ms":1500, "poll_timeout_ms":180000 }
 
 // provider（实例，选异步）—— 三条接口共用这一份 base_url + Key
 { "kind":"image", "label":"通义出图", "tpl_group":"dashscope-image",
-  "base_url":"https://dashscope.aliyuncs.com", "api_key":"sk-…", "api_key2":null,
-  "mode":"async", "model":"wan2.2-t2i-flash",
-  "params":{ "size":"1024*1024", "n":1, "watermark":false },
+  "base_url":"https://dashscope.aliyuncs.com/api/v1", "api_key":"sk-…",
+  "mode":"async", "model":"wan2.6-t2i",
+  "params":{ "size":"1024*1024", "count":1, "watermark":false },
   "max_concurrency":2, "retry_times":3 }
 ```
 
@@ -391,10 +376,10 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 ```
 ① 提交   取 generate·async 行
-         POST https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis
+         POST https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/generation
          headers Authorization: Bearer sk-****（长度 35） / X-DashScope-Async: enable
-         body   {"model":"wan2.2-t2i-flash","input":{"prompt":"一只戴宇航员头盔的橘猫"},
-                 "parameters":{"size":"1024*1024","n":1}}
+         body   {"model":"wan2.6-t2i","input":{"messages":[{"role":"user","content":[{"text":"一只戴宇航员头盔的橘猫"}]}]},
+                 "parameters":{"size":"1024*1024","n":1,"watermark":false}}
 ② 取 id  resp.taskId = "output.task_id" → 8c1b…      （注入 {taskId}）
 ③ 轮询   取 query 行  GET …/api/v1/tasks/8c1b…  → "RUNNING"(pending) …1.5s… → "SUCCEEDED"(success)
 ④ 取产物 query 行 resp.image → https://…-signed-expires-in-24h.png

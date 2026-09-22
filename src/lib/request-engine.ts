@@ -26,17 +26,17 @@ export type VarType = 'int' | 'string' | 'bool' | 'list' | 'json';
 export interface VarOption {
   value: string | number | boolean;
   /** 省略则显示 value；只有 value 会进请求体 */
-  label?: L;
+  label?: string;
 }
 
 /**
- * 入参声明表里的一行 = **实例期要人配的参数**（size / format / sampleRate / temperature…）。
- * 调用期的正文（prompt / text / wavB64…）不在这里 —— 那是每次调用由程序给的，见 CALL_VARS。
+ * 一条入参声明。名字与说明都是**用户自己填的单个字符串**（不双语 —— 自定义的东西没法自动翻）。
+ * 实例参数与请求参数**各存各的字段**（`TemplateRow.instParams` / `reqParams`），不再用一个 stage 区分。
  */
 export interface VarSpec {
   name: string;
   type?: VarType;
-  label?: L;
+  label?: string;
   default?: string | number | boolean;
   /** 有 options 就用选项块；bool 隐含两个选项，不必写 */
   options?: (VarOption | string | number | boolean)[];
@@ -71,14 +71,16 @@ export interface TemplateRow {
   /** 这条变体服务哪种方式；query / clone 恒 sync */
   mode: Mode;
   ord?: number;
-  label?: L;
   method?: string;
   /** 完整地址模板，{baseUrl} 出现在哪由它自己决定 */
   url: string;
   headers?: Record<string, unknown>;
   query?: Record<string, unknown>;
   body?: unknown;
-  vars?: VarSpec[];
+  /** 实例参数：建实例时在 ⚙ 里配的值（size / format / sampleRate / temperature…） */
+  instParams?: VarSpec[];
+  /** 请求参数：每次调用由程序给的值（text / prompt / systemPrompt / wavB64…） */
+  reqParams?: VarSpec[];
   resp?: RespSlots;
   /** 产物怎么还原成字节：hex（MiniMax）/ base64 / url（远端链接，当场下载） */
   decode?: 'hex' | 'base64' | 'url';
@@ -93,8 +95,9 @@ export interface TemplateRow {
 export interface TemplateGroup {
   tplGroup: string;
   kind: ProviderKind;
-  label: L;
-  note?: L;
+  /** 用户自定义名称，单个字符串（不做中英两份） */
+  label: string;
+  note?: string;
   ord?: number;
   /** 新建实例时的预填建议 */
   baseUrl?: string;
@@ -138,10 +141,11 @@ export interface ReqCtx {
   [k: string]: unknown;
 }
 
-/** 不必声明的保留占位符：实例侧（配置里就有值） */
-export const RESERVED = ['baseUrl', 'apiKey', 'apiKey2', 'model', 'voice', 'speed', 'mode', 'params'];
-/** 也不必声明，但值来自调用端（{taskId} 由引擎在②之后注入）；试调用面板按「行内引用了它们」长输入框 */
-export const CALL_VARS = ['text', 'prompt', 'systemPrompt', 'userPrompt', 'history', 'wavB64', 'refAudioUrl', 'reqId', 'taskId'];
+/** 不必声明的保留占位符：配置里就有值的那些（{taskId} 由引擎在②之后注入，也不用声明） */
+export const RESERVED = ['baseUrl', 'apiKey', 'apiKey2', 'model', 'voice', 'speed', 'mode', 'params', 'taskId'];
+
+/** 一行里两类参数的合并视图（求值与校验都按它） */
+export const allParams = (row: TemplateRow): VarSpec[] => [...(row.instParams ?? []), ...(row.reqParams ?? [])];
 
 const WHOLE = /^\{([A-Za-z_][A-Za-z0-9_.]*)\}$/;
 const SPLICE = /^\{@([A-Za-z_][A-Za-z0-9_.]*)\}$/;
@@ -292,7 +296,7 @@ function joinUrl(base: string, path: string): string {
 export function buildRequest(row: TemplateRow, ctx: ReqCtx): ResolvedRequest {
   const vars: VarMap = new Map();
   const gated = new Set<string>();
-  for (const v of row.vars ?? []) {
+  for (const v of allParams(row)) {
     if (whenOk(v.when, ctx)) vars.set(v.name, v);
     else gated.add(v.name);
   }
@@ -538,12 +542,12 @@ function productSlotOf(row: TemplateRow, kind: ProviderKind): 'content' | 'audio
 /** 单条接口行的问题清单；空数组 = 可用 */
 export function validateRow(row: TemplateRow, kind: ProviderKind): string[] {
   const problems: string[] = [];
-  const declared = new Set((row.vars ?? []).map((v) => v.name));
+  const declared = new Set(allParams(row).map((v) => v.name));
   for (const n of referencedVars(row)) {
-    if (RESERVED.includes(n) || CALL_VARS.includes(n)) continue;
+    if (RESERVED.includes(n)) continue;
     if (!declared.has(n)) problems.push(`模板引用了未声明的变量「${n}」`);
   }
-  for (const v of row.vars ?? []) {
+  for (const v of allParams(row)) {
     if (v.type === 'list' && !v.item) problems.push(`变量「${v.name}」是 list 但没给元素子模板`);
     if (v.type === 'bool' && v.options) problems.push(`变量「${v.name}」是 bool，两个选项已隐含，不必写 options`);
   }
@@ -573,10 +577,10 @@ export function validateRow(row: TemplateRow, kind: ProviderKind): string[] {
   return problems;
 }
 
-/** 这一行要调用端给值的占位符：引用了、又不在声明表里（试调用面板据此长输入框） */
+/** 这一行要调用端给值的占位符 = 请求参数里真被引用到的那些（试调用面板据此长输入框） */
 export function callVarsOf(row: TemplateRow): string[] {
-  const declared = new Set((row.vars ?? []).map((v) => v.name));
-  return referencedVars(row).filter((n) => !declared.has(n) && !RESERVED.includes(n));
+  const used = new Set(referencedVars(row));
+  return (row.reqParams ?? []).map((v) => v.name).filter((n) => used.has(n));
 }
 
 /** 整组 + 实例的成对校验：缺 role、异步没配查询、同步配了查询都在这一步点名 */

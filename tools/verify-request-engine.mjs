@@ -59,7 +59,7 @@ check('2.9 空 parameters 不会被误删（模板写死的键留着）', !!imgR
 const spliceRow = {
   role: 'generate', mode: 'sync', method: 'POST', url: '{baseUrl}/x',
   body: { model: '{model}', messages: [{ role: 'user', content: '{text}' }, '{@history}'] },
-  vars: [
+  reqParams: [
     { name: 'text', type: 'string' },
     { name: 'history', type: 'list', omitIfEmpty: true, item: { body: { role: '{role}', content: '{content}' }, fields: [] } },
   ],
@@ -70,7 +70,7 @@ eq('2.11 {@name} 整段展开且保留对象类型', spliced.body.messages[1], {
 const gatedRow = {
   role: 'generate', mode: 'sync', url: '{baseUrl}/g',
   body: { a: '{a}', b: '{b}' },
-  vars: [{ name: 'a', when: 'mode == async' }, { name: 'b' }],
+  instParams: [{ name: 'a', when: 'mode == async' }, { name: 'b' }],
 };
 eq('2.12 when 不成立的变量连父键一起消失', buildRequest(gatedRow, { ...ctx, params: { b: 2 } }).body, { b: 2 });
 eq('2.13 实例 mode 决定 when 是否成立', buildRequest(gatedRow, { ...ctx, mode: 'async', params: { a: 1, b: 2 } }).body, { a: 1, b: 2 });
@@ -162,7 +162,7 @@ check('6.1 异步生成行缺 taskId 会点名', validateRow({ ...rowOf('dashsco
 check('6.2 同步行配了状态会点名', validateRow({ ...rowOf('dashscope-image', 'generate'), resp: { image: 'a', status: 'b' } }, 'image').some((p) => p.includes('同步接口不该配')));
 check('6.3 查询行缺成功枚举会点名', validateRow({ ...qrow, resp: { ...qrow.resp, success: [] } }, 'image').some((p) => p.includes('成功')));
 check('6.4 未声明的占位符会点名', validateRow({ ...chat, body: { x: '{nope}' } }, 'llm').some((p) => p.includes('nope')));
-check('6.5 list 变量缺 item 会点名', validateRow({ ...chat, vars: [{ name: 'l', type: 'list' }] }, 'llm').some((p) => p.includes('元素子模板')));
+check('6.5 list 变量缺 item 会点名', validateRow({ ...chat, instParams: [{ name: 'l', type: 'list' }] }, 'llm').some((p) => p.includes('元素子模板')));
 check('6.6 音频槽留空是合法的（响应体即音频）', validateRow(rowOf('dashscope-cosyvoice', 'synthesize'), 'tts').length === 0);
 check('6.7 异步实例缺查询接口 → 组级点名', validateGroup(noQuery, 'async').some((p) => p.includes('查询接口')));
 check('6.8 缺必需 role → 组级点名', validateGroup({ ...cosy, rows: [] }, 'sync').some((p) => p.includes('必需')));

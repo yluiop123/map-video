@@ -62,7 +62,7 @@ function newConfig(g: TemplateGroup | undefined, kind: ProviderKind, label?: str
   return {
     id: `${kind}-${Math.random().toString(36).slice(2, 8)}`,
     kind,
-    label: label ?? (g ? (typeof g.label === 'string' ? g.label : g.label.zh) : kind),
+    label: label ?? (g ? g.label : kind),
     tplGroup: g?.tplGroup ?? CUSTOM_GROUP[kind],
     baseUrl: g?.baseUrl ?? '',
     apiKey: '',
@@ -188,6 +188,17 @@ export const useProviderStore = create<ProviderState>()(
           const rawProviders = await window.mapvideo!.providers.list();
           const groups = rawGroups;
           const list = rawProviders.map((c) => ({ ...c, params: c.params ?? {} }));
+          // 实例引用的模板组不在了（模板表形状漂移让位重铺、或那组被删过）—— `tpl_group` 是真外键，
+          // 挂着不修的话这一行既显示不出模板、也写不回库。回落到同 kind 的自定义组。
+          const known = new Set(groups.map((g) => g.tplGroup));
+          for (const c of list) {
+            if (known.has(c.tplGroup)) continue;
+            const to = known.has(CUSTOM_GROUP[c.kind]) ? CUSTOM_GROUP[c.kind] : groups.find((g) => g.kind === c.kind)?.tplGroup;
+            if (!to) continue;
+            c.tplGroup = to;
+            await window.mapvideo!.providers.upsert(c);
+            console.log(`[providers] 「${c.label || c.id}」引用的模板组已不存在，回落到 ${to}`);
+          }
           const byKind = (kind: ProviderKind) => list.filter((c) => c.kind === kind);
           const activeOf = (kind: ProviderKind, arr: ProviderConfig[]) =>
             list.find((c) => c.kind === kind && (c as ProviderConfig & { active?: boolean }).active === true)?.id

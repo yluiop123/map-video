@@ -848,7 +848,7 @@
 |---|---|---|---|
 | `tpl_group` | TEXT | `PK` | 模板组 id（一个功能一条）：openai-chat / dashscope-image / custom-tts-1 … |
 | `kind` | TEXT | `NOT NULL` | 组所属能力：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK） |
-| `label` | TEXT | `NOT NULL` | 组显示名（L 的 JSON 或纯文本） · 默认 `''` |
+| `label` | TEXT | `NOT NULL` | 组显示名（用户自定义的单个字符串，不做中英两份） · 默认 `''` |
 | `note` | TEXT | — | 组说明（接谁家的哪套端点、有什么坑） |
 | `base_url` | TEXT | `NOT NULL` | 新建实例时预填的建议 Base URL · 默认 `''` |
 | `models_json` | TEXT | — | 候选模型列表 JSON（实例页下拉用） · `CHECK (models_json IS NULL OR json_valid(models_json))` |
@@ -871,13 +871,13 @@
 | `role` | TEXT | `NOT NULL` | 组内用途：generate / synthesize / query / clone（不写 CHECK） |
 | `mode` | TEXT | `NOT NULL` | 这条变体服务哪种方式：sync / async（query·clone 恒 sync） · 默认 `'sync'` |
 | `ord` | INTEGER | `NOT NULL` | 组内展示顺序 · 默认 `0` |
-| `label` | TEXT | — | 接口显示名（L 的 JSON） |
 | `method` | TEXT | `NOT NULL` | HTTP 方法 · 默认 `'POST'` |
 | `url` | TEXT | `NOT NULL` | 地址模板，{baseUrl} 出现在哪由占位符决定 · 默认 `''` |
 | `headers_json` | TEXT | — | 请求头模板 JSON · `CHECK (headers_json IS NULL OR json_valid(headers_json))` |
 | `query_json` | TEXT | — | 查询串参数模板 JSON · `CHECK (query_json IS NULL OR json_valid(query_json))` |
 | `body_json` | TEXT | — | 请求体模板 JSON（值是 {name} 占位） · `CHECK (body_json IS NULL OR json_valid(body_json))` |
-| `vars_json` | TEXT | — | 入参声明表 JSON（stage=instance 实例填 / call 调用时传） · `CHECK (vars_json IS NULL OR json_valid(vars_json))` |
+| `inst_params_json` | TEXT | — | 实例参数声明表 JSON（建实例时在 ⚙ 配：名字 / 类型 / 默认 / 候选值） · `CHECK (inst_params_json IS NULL OR json_valid(inst_params_json))` |
+| `req_params_json` | TEXT | — | 请求参数声明表 JSON（每次调用由程序给：text / prompt / wavB64…） · `CHECK (req_params_json IS NULL OR json_valid(req_params_json))` |
 | `resp_json` | TEXT | — | 返回槽位 JSON（content/image/audio/voiceId/taskId/status/success/fail/pending/errorCode/error） · `CHECK (resp_json IS NULL OR json_valid(resp_json))` |
 | `decode_kind` | TEXT | — | 产物解码：NULL 响应体即产物 / hex / base64 / url 远端链接 |
 | `fetch_headers_json` | TEXT | — | 下载产物时附带的请求头（空 = 裸 GET 签名链接） · `CHECK (fetch_headers_json IS NULL OR json_valid(fetch_headers_json))` |
@@ -886,10 +886,6 @@
 | `ref_sample_rate` | INTEGER | — | 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k） |
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
-
-**表级约束**
-
-- `CHECK (headers_json IS NULL OR json_valid(headers_json))`（最后修改时间（epoch ms，审计用））
 
 #### provider — 能力实例：用哪组模板 + 这个账号的 Base URL / Key / 同步异步 / 参数（Key 只存本机）
 
@@ -910,7 +906,7 @@
 | `model` | TEXT | `NOT NULL` | 模型名 / TTS 音色模型（合成与克隆共用同一个值） · 默认 `''` |
 | `voice` | TEXT | — | 音色 / 说话人 ID |
 | `speed` | REAL | `NOT NULL` | 语速（0.5–2） · 默认 `1` · `CHECK (speed BETWEEN 0.5 AND 2)` |
-| `params_json` | TEXT | — | 实例期参数值 JSON（模板里 stage=instance 的变量） · `CHECK (params_json IS NULL OR json_valid(params_json))` |
+| `params_json` | TEXT | — | 实例参数取值 JSON（对模板 inst_params_json 声明的那些名字） · `CHECK (params_json IS NULL OR json_valid(params_json))` |
 | `max_concurrency` | INTEGER | `NOT NULL` | 批量并发上限（1 = 串行；账号限额，属实例不属模板） · 默认 `1` |
 | `retry_times` | INTEGER | `NOT NULL` | 限流 / 网络错的退避重试次数（业务错不重试） · 默认 `2` |
 | `extra` | TEXT | — | 附加请求参数（JSON，深合并进请求体的兜底口） · `CHECK (extra IS NULL OR json_valid(extra))` |
