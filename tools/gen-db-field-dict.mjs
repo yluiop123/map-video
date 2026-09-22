@@ -42,7 +42,7 @@ const GROUPS = [
   ['组 7 · 疆域类元素（Terr 工具）', ['element_territory']],
   ['组 8 · 贴图类元素（Image 工具）', ['element_image']],
   ['组 9 · 叠加层（弹窗）', ['overlay']],
-  ['组 10 · 应用配置', ['provider', 'provider_endpoint']],
+  ['组 10 · 应用配置', ['provider_template_group', 'provider_template', 'provider']],
   ['组 11 · 公共图层与公共元素（跨项目图库）', ['public_layer', 'public_element_marker', 'public_element_route', 'public_element_shape', 'public_element_territory', 'public_element_image']],
 ];
 
@@ -83,8 +83,9 @@ const TABLE_FRONTEND = {
   overlay: { role: '弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）', fe: '右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView' },
   overlay_block: { role: 'custom 类弹窗的内容块序列（逐块排序）', fe: '弹窗面板「自定义」类型的块编辑（FxPanelBody.tsx）' },
   person_block: { role: '人物卡片内容块（头像 / 姓名 / 简介 / 引言 / 对白 5 种）', fe: '弹窗面板「人物」类型的块编辑（FxPanelBody.tsx）' },
-  provider: { role: 'AI 服务商配置：文案生成 / 语音（含克隆）/ 图片生成（Key 只存本机，与项目内容解耦）', fe: '顶栏「设置 · AI」弹窗（SettingsDialog.tsx，左侧切换三类能力）' },
-  provider_endpoint: { role: '接口模板行：一家供应商配齐的每个 role 一条（怎么发、怎么取回、同步还是异步）', fe: '顶栏「设置 · AI」→ 供应商详情（接口模板页签，批次 3）' },
+  provider_template_group: { role: '接口模板组：一个功能要哪几条接口（组头：kind / 显示名 / 候选模型 / 建议 Base URL）', fe: '⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx）' },
+  provider_template: { role: '接口模板行：一条接口怎么发、返回从哪取（含异步查询与音色克隆）', fe: '⚙ 设置 · AI → 左侧「接口模板」→ 组内接口卡片' },
+  provider: { role: '能力实例：用哪组模板 + 账号（Base URL / 两把 Key / 同步异步 / 参数 / 并发重试）', fe: '⚙ 设置 · AI → 左侧文案 / 语音 / 图片（ProviderPanel.tsx）' },
   public_layer: { role: '公共图层：跨项目图库的图层（把项目图层连元素整体复制过来）', fe: '左侧「图层」浮层「加入公共图层 / 导入公共图层」' },
   public_element_marker: { role: '公共标记元素（public_layer 内副本，与 element_marker 同构）', fe: '同上' },
   public_element_route: { role: '公共路线元素（public_layer 内副本，与 element_route 同构）', fe: '同上' },

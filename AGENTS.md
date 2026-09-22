@@ -42,8 +42,8 @@ components/
   ShortcutsDialog.tsx  # 快捷键速查弹窗（时间线「快捷键」按钮触发）；改键盘绑定需同步此文件内容
   MapSearchBox.tsx     # 地名/坐标搜索，内嵌顶栏（项目芯片右侧）；地图实例经 lib/shared-map.ts 共享，EditableMap load/unload 时 set
   FxPanelBody.tsx      # 特效面板主体：天气/画面/弹窗/音乐 四页签（**无字幕页签**，字幕已迁到 GenerateDialog）；服务配置弹窗已搬去 ProviderPanel
-  ProviderPanel.tsx    # ⚙ 设置 · AI 的右侧面板：**只管实例设置**（模板包 / 密钥 / Base URL / 模型 / 参数表 / 每接口同步异步），底部一个「接口模板 · N →」跳到独立页
-  EndpointTemplatesPage.tsx # 接口模板（provider_endpoint 表）的**整屏页面**：同类供应商芯片切换 + 逐 role 卡片（method·path·headers·query·body·出参取法·轮询）+ 每接口「预览请求（零网络）」「试调用（真发一次）」
+  ProviderPanel.tsx    # ⚙ 设置 · AI 的「实例设置」页：模板组下拉 / Base URL / 两把 Key / 同步异步 / 实例期参数 / 并发与重试
+  TemplatesPane.tsx    # ⚙ 左侧独立的「接口模板」入口：模板组列表 → 每 role 一张接口卡片（url·method·headers·query·body·入参声明表·返回槽位·解码·轮询/下载头）+「＋ 查询接口」「＋ 音色克隆」+ 每接口「预览请求（零网络）」「试调用（真发一次）」
   SettingsDialog.tsx   # ⚙ 设置 · AI 外壳：左侧文案 / 语音 / 图片三类，右侧嵌 ProviderPanel（唯一入口，内联那份已删）
   VoicePicker.tsx      # 字幕生成里的音色区：上「配音音色」（系统音色，男/女两组默认折叠）＋ 下「克隆音色」（内置男声/女声样本格 + ⬆上传其它音色）+ 试听
   GenerateDialog.tsx   # 顶栏「字幕生成」：需求 → LLM 整片脚本 → **逐行字幕 + 逐行配音（可覆盖）+ SRT 导入导出 + 字幕样式**；也是字幕条目与样式的唯一编辑处
@@ -62,7 +62,7 @@ lib/
   regions.ts           # 行政区边界加载与点选/按名查找（默认 johan world.geo.json，可换源）
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
   request-engine.ts    # ★ 接口模板求值：buildRequest / readPath / applyPick / callEndpoint（异步轮询）/ validateTemplate；不碰网络不碰 DOM
-  recipes.ts           # 内置模板包（11 条 recipe = 一家供应商配齐哪几个 role、各自怎么发）；加供应商只改这里
+  template-seed.ts     # 内置模板组 seed（10 组 = 一个功能要哪几条接口、各自怎么发）；首次建库铺成表行，之后是普通可编辑数据；加供应商只改这里
   providers.ts         # 供应商调用薄壳：callLLM/callTTS/callImage/cloneVoice → 走引擎；**没有协议分支了**
   i18n.ts              # 显示文案类型 L = string | {zh,en}（只有 value 进请求体）
   tw-colors.ts         # Tailwind 官方色板（22 族 × 11 阶，ColorPicker 的唯一取色来源，数值由 tailwindcss/colors 导出后落盘；族顺序跟 docs/colors 页一致）
@@ -122,14 +122,14 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 19. **「动画效果 = 路线移动」必须顺带打开「显示标记」**：那个沿路线走的标记就是这个动画的主体，而形状工具下拉建的「直线」默认 `showIcon: false`。原先写的是 `showIcon ?? true`，false 被原样保留 → 选了动画什么也不动，面板里的「动画开始/结束时间」也成了摆设。规则：**选 move 就 `showIcon = true`**（反向已在「显示标记」开关里：打开时若无动画则补 move）。
 20. **`renderLine` 的 `noAnim`（原名 isShapeLine）只表示「没被显式要求动画的形状线」**：形状线默认「一致显示」（整条一次画完、不看动画起止、不 march / 不 fly），判据是 `shapeCategory ∈ {multi,special}` **且 `animEffect` 为空**；用户显式选了动画，就别再拿「它是形状线」当理由忽略 `moveStartFrame/moveEndFrame`。以后写这类「按默认语义压制用户输入」的门禁，都要给显式值让路。
 21. **`PropertiesPanel.tsx` 曾混着单 `\r` 换行的行**（早年内联脚本改写的残留），git 因此把整个 blob 判成 `-text`：任何一处小改都显示成整文件重写，blame / review 全废（2026-09-19 已统一为 CRLF）。批量改文件时**读也要 `newline=''`**，只在 `open(...,'w')` 加是漏的 —— universal-newlines 会把 `\r` 和 `\r\n` 都吞成 `\n`。改完用 `git ls-files --eol <file>` 确认是 `i/lf w/crlf`。
-22. **TTS 的「协议 ↔ 模型名 ↔ 音色」三者必须成套**（2026-09-19 上游 HTTP 400 `InvalidParameter / Model not exist.` 的成因）：`providers.ts` 里 `case 'qwen-tts'` 实现的其实是 **CosyVoice** 端点（`/services/audio/tts/SpeechSynthesizer`，设置面板下拉一直标着 "DashScope CosyVoice"），而预设往里填的是 Qwen-TTS 的模型名 `qwen3-tts` —— 模型名发错了端点（能报 "Model not exist" 说明 baseUrl 与路径是对的）。现在拆成 `cosyvoice`（音色 `long*`，如 longanyang）与 `qwen-tts`（`/services/aigc/multimodal-generation/generation`，音色 `Cherry` 那套）。合法模型名：CosyVoice 端点 = `cosyvoice-v3-flash` / `v3.5-flash` / `v3-plus` / `v3.5-plus` / `v2`，同端点还承载 `qwen-audio-3.0-tts-flash`（本机 `D:/frontend/qwen/vioce.py` 实测在用）；Qwen-TTS = `qwen3-tts-flash` / `qwen-tts`（**`qwen3-tts` 单独不是合法名**）。音色同理：`long*` 属 CosyVoice、`Cherry` 属 Qwen-TTS，且带 `_v3` 的名字不与 v2 通用 —— 所以 UI 里不给自由输入，只给官方表抄来的下拉列表。声音克隆**两条端点都有、形状不同**（CosyVoice 系：`voice-enrollment` + `action:'create_voice'` + `prefix` → `output.voice_id`；Qwen-TTS：`qwen-voice-enrollment` + `action:'create'` + `preferred_name` + `input.audio.data` → `output.voice`，且合成必须用同款 `target_model`，参考音频要求 ≥24kHz 而 CosyVoice 转 16k）—— 改版后这些差异是 `provider_endpoint` 里的数据，不再是代码分支。改任何一项都要同时核对端点、模型、音色三项。
+22. **TTS 的「协议 ↔ 模型名 ↔ 音色」三者必须成套**（2026-09-19 上游 HTTP 400 `InvalidParameter / Model not exist.` 的成因）：`providers.ts` 里 `case 'qwen-tts'` 实现的其实是 **CosyVoice** 端点（`/services/audio/tts/SpeechSynthesizer`，设置面板下拉一直标着 "DashScope CosyVoice"），而预设往里填的是 Qwen-TTS 的模型名 `qwen3-tts` —— 模型名发错了端点（能报 "Model not exist" 说明 baseUrl 与路径是对的）。现在拆成 `cosyvoice`（音色 `long*`，如 longanyang）与 `qwen-tts`（`/services/aigc/multimodal-generation/generation`，音色 `Cherry` 那套）。合法模型名：CosyVoice 端点 = `cosyvoice-v3-flash` / `v3.5-flash` / `v3-plus` / `v3.5-plus` / `v2`，同端点还承载 `qwen-audio-3.0-tts-flash`（本机 `D:/frontend/qwen/vioce.py` 实测在用）；Qwen-TTS = `qwen3-tts-flash` / `qwen-tts`（**`qwen3-tts` 单独不是合法名**）。音色同理：`long*` 属 CosyVoice、`Cherry` 属 Qwen-TTS，且带 `_v3` 的名字不与 v2 通用 —— 所以 UI 里不给自由输入，只给官方表抄来的下拉列表。声音克隆**两条端点都有、形状不同**（CosyVoice 系：`voice-enrollment` + `action:'create_voice'` + `prefix` → `output.voice_id`；Qwen-TTS：`qwen-voice-enrollment` + `action:'create'` + `preferred_name` + `input.audio.data` → `output.voice`，且合成必须用同款 `target_model`，参考音频要求 ≥24kHz 而 CosyVoice 转 16k）—— 这些差异现在是 `provider_template` 里的数据（seed 组 `dashscope-cosyvoice` / `dashscope-qwen-tts`），不再是代码分支。改任何一项都要同时核对端点、模型、音色三项。**2026-09-22 真实调用实测**：`SpeechSynthesizer` 回的是 JSON、音频在 `output.audio.url`（不是响应体字节）；系统音色 `longanyang` 只认 `cosyvoice-v3-flash`，`v3.5-flash` 承载克隆音色（418 就是拿系统音色去喂它）。
 23. **弹层的「层」有两个独立陷阱（2026-09-20 字幕生成弹窗两处同报）**：
     - **宿主带 `overflow-y-auto` 时不能用 `absolute` 浮层**：子面板会被宿主裁掉，实测表现为「点了没反应」（`ColorPicker` 的色板当时顶边已经在弹窗之外）。共享原子一律走 `createPortal(…, document.body)` + `position:fixed`，在 `useLayoutEffect` 里按触发块与视口算位置（下方放不下就翻到上方，最后再夹一次 —— 只夹 `top` 不夹 `bottom` 仍会露半截）。面板脱离了 `wrapRef`，所以点击外关闭必须同时放过 `popRef`，否则 mousedown 先把面板卸掉、`click` 再也打不到色块；滚动 / 改窗口尺寸要**重新定位**而不是关闭（早先写成关闭，结果连面板内拖滚动条都把面板关掉 —— 宿主 `overflow-y-auto` 滚动时同理）。
     - **地图舞台内的 `zIndex` 会漏到模态窗之上**：`FxPreviewLayer` 里字幕是 `zIndex: 60`，而 `GenerateDialog` 是 `z-50`，舞台盒子原本没有层叠上下文，60 就跑去和根上下文比大小，于是**预览字幕盖住字幕生成弹窗**。修法是给 `App.tsx` 那个 `absolute` 的 stageBox 加 `isolate`，把地图 / 字幕 / 弹窗卡片 / 屏幕特效压成一个上下文（组内相对顺序不变，MapLibre 图层照旧）。A/B 实测：`isolation:isolate` 时舞台内 z-60 探针的命中区被弹窗夺回，改回 `auto` 即复现遮挡。以后新增「舞台内高 z-index 的预览层」不必再单独跟模态窗比大小。
 24. **枚举白名单不要写进 DDL，接口形状也不要写进 switch**（2026-09-21 两条相关教训，同日已一并解决）：
     - 起因：`provider.protocol` 的 `CHECK (… IN (五项))` 是「一家供应商怎么发请求」的第四份真相（另三份是 renderer 的 switch、主进程的 switch、`assertTtsPairing`）。拆出 `cosyvoice` 协议时只改了三处，DDL 那份漏了 → 新行插库报 `CHECK constraint failed`；而 `providerStore.dbSync()` 只 `console.warn`，渲染端读的是 zustand 内存态，所以**当场全好、重启即丢**（`hydrate()` 用库里的行覆盖状态）。
-    - 现在的做法：**「模板即数据」重构**（`docs/provider-engine.md`）——`provider` 表删掉 `protocol`/`api_key`，换成 `recipe` + `secrets_json`；每家供应商 = `provider_endpoint` 里的若干条接口模板行（怎么发 / 怎么取回 / 同步还是异步），**role·mode 等枚举一律不加 CHECK**，取值由 TS 联合类型 + 保存前 `validateTemplate()` 管。以后接新供应商不改表、不加 switch。
-    - 旧库的形状漂移仍走启动体检：`retireProviderIfStale()` 认「还带 api_key/protocol」这个**正标志**（不能认「缺了新列」——补列那步 `ensureAllColumns` 会先把新列名塞进旧表，把漂移盖住，实测踩过），改名让位 → DDL 建新表 → `restoreProviderRows()` 搬回行（**API Key 保住**，protocol→recipe 一次性映射）。回归 `node --experimental-sqlite tools/verify-provider-endpoint.mjs`。
+    - 现在的做法（2026-09-22 定稿）：**「模板组 + 接口行 + 能力实例」三张表**（`docs/provider-engine.md`）——`provider_template_group`（一个功能要哪几条接口：kind / 显示名 / 候选模型 / 建议 Base URL）+ `provider_template`（一条接口怎么发、返回从哪取：url / headers / body / `vars_json` 入参声明分 `stage=instance|call` / `resp_json` **固定槽位** / decode / 轮询）+ `provider`（实例 = 选哪组模板 + `base_url` + `api_key`/`api_key2` + `mode` + `params_json` + 并发重试）。**role·mode·kind 一律不加 CHECK**，取值由 TS 联合类型 + 保存前 `validateRow/validateGroup` 管。以后接新供应商不改表、不加 switch，也不改代码（模板行就是数据）。
+    - 旧库的形状漂移仍走启动体检：`retireProviderIfStale()` 认「还有 `provider_endpoint` 表 / 带 recipe·secrets_json·protocol」这些**正标志**（不能认「缺了新列」——补列那步 `ensureAllColumns` 会先把新列名塞进旧表，把漂移盖住，实测踩过），改名让位（**stale 表不删**）→ DDL 建新表 → 渲染端先按 seed 铺模板组、再调 `providers.migrate()` 搬回行（**Key 保住**；`overrides_json` 汇总成 `params_json`；有 async 行则实例 `mode=async`；搬不动的行留在 stale 表等下次）。回归 `node --experimental-sqlite tools/verify-provider-templates.mjs`。
     - 推广开一句：**凡是「用户能改、又能从别处推不出来」的值才入库；同一条事实只允许一处真相，宁可让它是一张表，也不要多处 if**。
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
@@ -142,7 +142,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
 - 右侧浮层显示条件：element 模式需有选中元素；keyframe 模式始终显示（editorStore.panelMode 三态）。
 - 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（色板 = Tailwind 官方表 `lib/tw-colors.ts`，**族顺序跟 docs/colors 页一致**：先 red→rose 彩色再 slate→stone 中性，v4 独有的 taupe/mauve/mist/olive 因项目锁在 3.4 不收；默认只铺**每族 500 那一列** 24 格 + 「展开全色阶」看 22 族 × 11 阶，底部是 `input[type=color]` + **`#RRGGBB` 文本框**（认 `#abc` 缩写，回车/失焦生效，非法就退回原值不吞输入）；不要再写裸 `input[type=color]`，也不要再维护第四份色值表）；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
-- **供应商配置只在 ⚙ 一处改**（`ProviderPanel`），且**实例设置与接口模板是两个页面，不混在同一屏**（不是同一区的两个页签 —— 日常项与专家项混在一起，结果是没人敢动模板也看不清自己改了什么）：⚙ 里 = 密钥 / 模型 / 参数表 / 每个接口的同步异步，底部「接口模板 · N →」跳出去；`EndpointTemplatesPage` = **整屏独立页面**，逐 role 的模板（path·headers·body·出参取法·轮询），可 `＋` 加接口、`✕` 删接口（确认走 ConfirmHost），页内顶部用同类供应商芯片互切、「← 返回实例设置」回到 ⚙。
+- **供应商配置只在 ⚙ 一处改**，且**实例设置与接口模板是左侧两个独立入口**（不混在同一屏，也不是同一区的页签 —— 日常项与专家项混在一起，结果是没人敢动模板也看不清自己改了什么）：`ProviderPanel`（文案 / 语音 / 图片三类）= 模板组下拉 + Base URL + 两把 Key + 同步异步 + 实例期参数 + 并发/重试；`TemplatesPane`（左侧第 4 项「接口模板」）= 模板组列表 + 每 role 一张接口卡片，可 `＋ 查询接口` / `＋ 音色克隆` 加行、`✕` 删行（确认走 ConfirmHost）、「恢复默认」用 seed 覆盖。**异步的配对靠「同组 + role=query」，不是指针列**；`query` 行是独立卡片，卡片顶部与 `generate·async` 卡片互相点名。
   **配置页的每个控件都必须对得上库里的列**：参数来自该行 `vars_json` 里 `kind=param` 且 `when` 成立的变量，写回 `overrides_json`；`inject` 变量在页面上只做**只读展示**（标「调用时传入」），因为它是程序给的，不该让人当设置改。
   参数控件一律按 `type` + `options` 走（有候选值 → OptionBlocks；bool → 开/关；list → 行编辑器），**不写原生 `<select>`**；显示文案统一 `L = string | {zh,en}`，**只有 value 进请求体**。
   原来的「测试连通性」按钮被每接口的「试调用」取代（后者顺带给出打码后的请求预览），⚙ 里也不再保留 `inline` 的第二入口。
@@ -169,7 +169,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2：桌面端已落地，网页端仍为简化实现）
 
-**规模**：25 张表 / 4 视图 / **0 触发器** / 677 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：26 张表 / 4 视图 / **0 触发器** / 698 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 片长（`project.endFrame`）不入库**（2026-09-19）：`project.end_sec` 列已删——它是纯派生量且**没有任何 UI 能改它**（`setProjectEndFrame` 零调用）。读取端 `getProjectV2` 现按内容实际结束推导：`endFrame = max(60s × fps, 元素/特效/弹窗/机位/字幕/音乐的结束帧)`，与时间线口径一致；空项目从原来的「100 秒幽灵容器」变成 60 秒。新增任何「容器长度」类字段前先问它是不是派生值。
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
@@ -188,7 +188,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   | `element_image` | geo_image（地理配准贴图，控制点网格 JSON 内联） | Image（图片） |
 
 - **★ 不使用触发器（2026-09-12 起全部移除）**：数据库侧只有表 / 索引 / 视图，**没有触发器**。理由：网页端 Dexie（IndexedDB）没有触发器，数据库侧触发器只在桌面端生效 → 同一规则两套真相；且规则藏在表定义外、与写入端重复。
-- **改版的代价 —— 弱引用**：五处 —— `element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries/plots/events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（父子互引，见 §5 底图条）、`provider_endpoint.poll_json.$.statusRole`（异步接口指向的查询接口，藏在 JSON 里，2026-09-21 加），全部由写入端保证。项目侧 `element_marker.asset_id` / `move_icon_asset_id` / 音频列 / `camera_keyframe.follow_route_element_id` 都是**真外键**（SET NULL），删除素材或路线不需要应用层连带清理；动画关键帧内联在 `keyframes_json`，随元素生灭。曾存在的第三类 `element_route.from/to_element_id`（连接线端点）已随「连接线」整条下线（2026-09-19：无工具入口、坐标解析器从未接上，属不可达代码，却给每条写入路径加上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套）。数据库侧只留 `v_check_dangling`（悬空引用）、`v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）、`v_check_async_pairing`（异步接口有没有配套的查询接口）三个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
+- **改版的代价 —— 弱引用**：四处 —— `element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries/plots/events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（父子互引，见 §5 底图条），全部由写入端保证。（原先第五处 `provider_endpoint.poll_json.$.statusRole` —— 异步接口指向哪个查询接口的指针 —— 已随 2026-09-22 改版消失：配对改成「同组 + `role=query`」，`provider.tpl_group` 与 `provider_template.tpl_group` 都是真外键。）项目侧 `element_marker.asset_id` / `move_icon_asset_id` / 音频列 / `camera_keyframe.follow_route_element_id` 都是**真外键**（SET NULL），删除素材或路线不需要应用层连带清理；动画关键帧内联在 `keyframes_json`，随元素生灭。曾存在的第三类 `element_route.from/to_element_id`（连接线端点）已随「连接线」整条下线（2026-09-19：无工具入口、坐标解析器从未接上，属不可达代码，却给每条写入路径加上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套）。数据库侧只留 `v_check_dangling`（悬空引用）、`v_check_territory_ref`（疆域 JSON 内部一致性，`json_each`）、`v_check_async_pairing`（选了异步的实例，它引用的模板组里有没有异步生成接口 + 查询接口）三个**自检视图**——它们不拦截写入，只做体检。**新增跨表引用时必须重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补**。
 - **★ 素材登记只有 `asset` 表这一本账（2026-09-19）**：桌面端曾另存一份 `userData/media/index.json` 映射，同一条事实两处真相，而 `asset` 表里的行反而是为过外键造的壳。现在 `assets:save/read/remove/list/exists` 全部读写 `asset` 表（`storage='file'` + `rel_path`）；删素材时项目侧靠 FK SET NULL，**公共库副本的引用要手工清**（`assets:remove` 里的 UPDATE）+ 启动 `repairAssetRefs` 兜底。配置 JSON 导入还原素材走 `putAssetBytes`（桌面落盘 / 网页存 Dexie Blob），**任一素材失败就中止整笔导入**，不再静默留下坏引用。
 - **★ 公共图层副本必须自洽（不变量，2026-09-19）**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 是**弱引用**（公共库不属任何项目，建不了外键）。副本引用的素材若已不存在，由启动体检 `repairAssetRefs(db)` 把引用清空（**不再补占位行** —— 造一条 `rel_path=''` 的空壳 asset 只会让素材库多出一排点不开的死条目），元素保留、图不保留；副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归：`node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`。
 - **★ 新增/改动字段的同步清单（漏一步就会设计↔实现漂移）**：
@@ -204,7 +204,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
      `node --experimental-sqlite tools/audit-fk-indexes.mjs`（外键索引缺口）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs`（**存进去 = 取出来**：输入原值逐字往返、falsy 合法值不被 `||` 吞、帧↔秒互逆）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`（公共图层副本）·
-     `node --experimental-sqlite tools/verify-provider-endpoint.mjs`（**旧库启动 → 新库结构**：api_key/protocol 旧形状让位重建并搬回行 + 接口模板读写往返 + 异步配对自检）·
+     `node --experimental-sqlite tools/verify-provider-templates.mjs`（**旧库启动 → 三张新表**：让位不删表 + seed 铺组后搬回 Key + 模板组逐字往返 + 真外键拦截 + 异步配对自检）·
      `node --experimental-strip-types tools/verify-request-engine.mjs`（模板求值 / 出参解码 / 异步轮询，全离线）
 
 - **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
@@ -214,7 +214,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **能力矩阵三处联动，改一处必须同步另两处**：**只有 `emoji` 不可着色**（表情字符自带颜色）、`model` 不可贴地（位图贴片）——其余 9 种形态都可着色（multiply 染色，白色=原色）。① DDL 的 CHECK（**不要**再给 model/gif 加 `color IS NULL` 约束，2026-09-19 已删）② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键（**不要为性能删外键**，强制检查 ≈1µs/行），但不使用触发器（见上一条）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
-- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（660 字段中文说明词表，**新增字段漏补说明会直接报错**）。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（698 字段中文说明词表，**新增字段漏补说明会直接报错**）。
 - **文档一律 Markdown**（2026-09-11 起）：`docs/` 下不再有 HTML，也不要用脚本生成 HTML；图用 ```mermaid 代码块内嵌（E-R 图源 `docs/db-er-diagram.mmd`），不再预渲染 SVG。
 
 ## 11. 标记（Pin）形态扩展的代码落点

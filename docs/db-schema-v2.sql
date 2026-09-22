@@ -1081,11 +1081,11 @@ CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
 -- 8. 应用配置聚合（与项目内容解耦，Key 只存本机）
 -- -----------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS provider_template_group (  -- 接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口
-  tpl_group TEXT PRIMARY KEY,  -- 组 id：openai-chat / dashscope-image / custom-tts-1
-  kind       TEXT NOT NULL,  -- 组所属能力：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不写 CHECK）
+CREATE TABLE IF NOT EXISTS provider_template_group (  -- 接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口（共享数据，实例只引用）
+  tpl_group TEXT PRIMARY KEY,  -- 模板组 id（一个功能一条）：openai-chat / dashscope-image / custom-tts-1 …
+  kind       TEXT NOT NULL,  -- 组所属能力：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK）
   label      TEXT NOT NULL DEFAULT '',  -- 组显示名（L 的 JSON 或纯文本）
-  note       TEXT,  -- 组说明（接谁家的哪套端点）
+  note       TEXT,  -- 组说明（接谁家的哪套端点、有什么坑）
   base_url   TEXT NOT NULL DEFAULT '',  -- 新建实例时预填的建议 Base URL
   models_json TEXT CHECK (models_json IS NULL OR json_valid(models_json)),  -- 候选模型列表 JSON（实例页下拉用）
   default_model TEXT NOT NULL DEFAULT '',  -- 新建实例时预填的模型
@@ -1096,7 +1096,7 @@ CREATE TABLE IF NOT EXISTS provider_template_group (  -- 接口模板组：一�
 );
 CREATE INDEX IF NOT EXISTS ix_tg_kind ON provider_template_group(kind, ord);
 
-CREATE TABLE IF NOT EXISTS provider_template (  -- 一条接口怎么发、返回从哪取（共享数据，实例只引用不复制）
+CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板行：一条接口怎么发、返回从哪取（含异步查询与克隆；共享数据）
   tpl_id      TEXT PRIMARY KEY,  -- 接口行 id，形如 <tpl_group>:<role>:<mode>
   tpl_group   TEXT NOT NULL REFERENCES provider_template_group(tpl_group) ON DELETE CASCADE,  -- 所属模板组
   role       TEXT NOT NULL,  -- 组内用途：generate / synthesize / query / clone（不写 CHECK）
@@ -1108,13 +1108,13 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 一条接口怎么发、返�
   headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 请求头模板 JSON
   query_json TEXT CHECK (query_json IS NULL OR json_valid(query_json)),  -- 查询串参数模板 JSON
   body_json  TEXT CHECK (body_json IS NULL OR json_valid(body_json)),  -- 请求体模板 JSON（值是 {name} 占位）
-  vars_json  TEXT CHECK (vars_json IS NULL OR json_valid(vars_json)),  -- 入参声明表 JSON（stage=instance 实例填 / call 调用传）
+  vars_json  TEXT CHECK (vars_json IS NULL OR json_valid(vars_json)),  -- 入参声明表 JSON（stage=instance 实例填 / call 调用时传）
   resp_json  TEXT CHECK (resp_json IS NULL OR json_valid(resp_json)),  -- 返回槽位 JSON（content/image/audio/voiceId/taskId/status/success/fail/pending/errorCode/error）
   decode_kind TEXT,  -- 产物解码：NULL 响应体即产物 / hex / base64 / url 远端链接
   fetch_headers_json TEXT CHECK (fetch_headers_json IS NULL OR json_valid(fetch_headers_json)),  -- 下载产物时附带的请求头（空 = 裸 GET 签名链接）
   poll_interval_ms INTEGER NOT NULL DEFAULT 1500,  -- 异步轮询间隔（离散步长，存原值 ms；只有 query 行读）
   poll_timeout_ms  INTEGER NOT NULL DEFAULT 120000,  -- 异步轮询超时（ms；只有 query 行读）
-  ref_sample_rate INTEGER,  -- 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k，各家不同）
+  ref_sample_rate INTEGER,  -- 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k）
   created_at INTEGER,  -- 创建时间（epoch ms，审计用）
   updated_at INTEGER,  -- 最后修改时间（epoch ms，审计用）
   CHECK (headers_json IS NULL OR json_valid(headers_json))
@@ -1127,7 +1127,7 @@ CREATE TABLE IF NOT EXISTS provider (  -- 能力实例：用哪组模板 + 这�
   provider_id TEXT PRIMARY KEY,  -- 能力实例 id
   kind       TEXT NOT NULL,  -- 能力：llm 文案生成 / tts 语音（含克隆）/ image 图片生成
   label      TEXT NOT NULL DEFAULT '',  -- 显示名
-  tpl_group  TEXT NOT NULL REFERENCES provider_template_group(tpl_group),  -- 引用哪一组接口模板（真外键，不是弱引用）
+  tpl_group  TEXT NOT NULL REFERENCES provider_template_group(tpl_group),  -- 引用哪一组接口模板（真外键）
   base_url   TEXT NOT NULL DEFAULT '',  -- 接口基础地址（一个能力一份，不跨能力共享）
   api_key    TEXT NOT NULL DEFAULT '',  -- 主密钥（模板里写 {apiKey}）
   api_key2   TEXT,  -- 第二凭证（模板里写 {apiKey2}，火山 TTS 的 Access Key）
@@ -1147,6 +1147,7 @@ CREATE TABLE IF NOT EXISTS provider (  -- 能力实例：用哪组模板 + 这�
 -- 每个 kind 至多一条生效（部分唯一索引，替代旧的「先清后置」两步写法）
 CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_active ON provider(kind) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
+CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_group);
 
 -- =============================================================================
 -- 9. 外键支撑索引（FK 子表列必须建索引 —— SQLite 上外键唯一的真实成本来源）
