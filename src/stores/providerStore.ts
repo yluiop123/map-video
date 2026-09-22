@@ -40,6 +40,9 @@ const ACTIVE_OF: Record<ProviderKind, 'activeLlmId' | 'activeTtsId' | 'activeIma
 };
 const CUSTOM_GROUP: Record<ProviderKind, string> = { llm: 'custom-llm', tts: 'custom-tts', image: 'custom-image' };
 
+/** 单飞：同一时刻只允许一次 hydrate 真的在跑 */
+let hydrating: Promise<void> | null = null;
+
 function ensureActive(cfgs: ProviderConfig[], activeId: string | null): string | null {
   if (activeId && cfgs.some((c) => c.id === activeId)) return activeId;
   return cfgs[0]?.id ?? null;
@@ -170,6 +173,9 @@ export const useProviderStore = create<ProviderState>()(
       /** 桌面端启动时从 SQLite 加载；库里没有模板行时按 seed 铺一次表 */
       hydrate: async () => {
         if (!IS_DESKTOP) return;
+        // StrictMode 会把 effect 跑两遍，两次并发 hydrate 会各自铺一遍 seed（幂等但白写一遍库）
+        if (hydrating) return hydrating;
+        hydrating = (async () => {
         try {
           let rawGroups = await window.mapvideo!.templates.list();
           if (!rawGroups.length) {
@@ -195,7 +201,11 @@ export const useProviderStore = create<ProviderState>()(
           });
         } catch (e) {
           console.warn('[providers] SQLite 加载失败:', e);
+        } finally {
+          hydrating = null;
         }
+        })();
+        return hydrating;
       },
     }),
     {

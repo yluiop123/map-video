@@ -830,6 +830,9 @@ const parseCol = (s, fallback) => {
 };
 const blank = (v) => v == null || (typeof v === 'object' && Object.keys(v).length === 0);
 
+/** v1 的模板包 id → v2 模板组 id（异步出图在 v2 并进同一组的两条 generate 变体） */
+const RECIPE_TO_GROUP = { 'dashscope-image-async': 'dashscope-image' };
+
 /**
  * 把让位出去的旧行搬回新表：Base URL / Key / 模型 / 音色原样，recipe → tpl_group，
  * 散在各接口行的 overrides_json 汇总成 params_json，旧接口行里存在 async 就把实例 mode 定成 async。
@@ -852,7 +855,7 @@ export function migrateProvidersFromStale(db) {
     const mine = eps.filter((e) => e.provider_id === r.provider_id);
     const params = {};
     for (const e of mine) Object.assign(params, parseCol(e.overrides_json, {}) ?? {});
-    const recipe = r.recipe || (r.kind === 'tts' ? 'custom-tts' : r.kind === 'image' ? 'custom-image' : 'custom-llm');
+    const recipe = RECIPE_TO_GROUP[r.recipe] || r.recipe || (r.kind === 'tts' ? 'custom-tts' : r.kind === 'image' ? 'custom-image' : 'custom-llm');
     // 那组模板还没铺上（自定义包名 / seed 未落库）：留在 stale 表里，下次启动再搬，不静默丢配置
     if (!groups.has(recipe)) { skipped += 1; continue; }
     ins.run(
