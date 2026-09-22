@@ -86,7 +86,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 - `max_concurrency` / `retry_times` 是账号/上游限额属性（同一家不同账号额度不同），所以属实例层。
 - `params_json` 的键 = 该组各接口 `stage=instance` 变量名的并集；同名跨接口共用一个值（`synthesize` 与 `clone` 天然共用 `model`，这就是「克隆产出的音色绑同款 target_model」的落法）。
 - 取值优先级：**调用端显式传入 > 实例 `params_json` > 模板 `default`**。
-- 同一能力要多套配置共用一个 Key（如 `wan2.2` 同步 + `wan2.5` 异步并存）时，形状是把 `base_url` + 两把 Key 抽成 `credential` 表、实例用可空外键 `credential_id` 引用 —— 引用而非分组，不改变"每能力一行实例"的语义。目前没有这种用法，不建。
+- **凭证按能力各配一份**：llm / tts / image 三处各自填 `base_url` + `api_key`，**不抽公共凭证表**。一次配置只管一个能力，删改互不影响，界面也不必多一层「账号」概念。代价是同一家厂商（如通义一个 Key 打通三类）的 Key 要填三遍 —— 这个代价明确接受。
 
 ## 四、入参声明 `vars_json`
 
@@ -134,7 +134,8 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 | `status` + `success[]` / `fail[]` / `pending[]` | 状态路径与三组枚举值 | `query` |
 | `errorCode` / `error` | 失败时要点名的上游错误码/错误信息路径 | 所有行 |
 
-- 路径写法：**点号 + 数字下标**（`output.choices.0.message.content`、`audios.0.url`），不引 JSONPath。上游是 batch 接口（一个请求回多条）时同样够用。
+- **路径写法用方括号下标**：`output.choices[0].message.content[0].image`、`audios[0].url` —— 与上游文档、jq、JSONPath 的写法逐字一致，抄过来就能用。求值前一行归一化：`path.replace(/\[(\d+)\]/g, '.$1').split('.')`，**存库存原样**（不做"存进去跟输入不一样"的把戏）。`output.choices.0.message.content` 这种纯点号写法同样收，但不是界面与文档的写法。
+- **只支持 `[数字]`**，不做完整 JSONPath（`$..`、`[*]`、`[?(@.x=='y')]`）：那要引依赖或写解析器，而且模板里一旦能写表达式，「看模板就知道实际发了什么」这个前提就没了。上游是 batch 接口（一个请求回多条）时，按下标取就够了。
 - 三枚举用标签编辑器（可增删多个值），因为上游状态名不止一个（`FAILED` / `CANCELED` / `UNKNOWN`）。
 - `decode` 描述"拿到的东西怎么变成字节"：`NULL`（响应体即字节 / 槽位里就是 data URI）｜`hex`（MiniMax 音频）｜`base64`｜`url`（槽位取到的是远端链接 → 走第⑤步下载）。
 
@@ -218,9 +219,26 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`） | 模板组下拉（查组表，按 kind 过滤）→ Base URL / API Key / 第二凭证 → **同步 / 异步** → 该组 `stage=instance` 参数表 → 并发数 / 重试次数 → 底部「接口模板 · N →」 |
-| **接口模板页**（`EndpointTemplatesPage`，整屏） | 左侧模板组列表（含「N 个实例在用」）→ 右侧逐接口卡片：url / method / headers / body / **入参声明表** / **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用 |
+| **接口模板页**（`EndpointTemplatesPage`，整屏） | 左侧模板组列表（含「N 个实例在用」）→ 右侧**每个 role 一张接口卡片**：url / method / headers / body / **入参声明表** / **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用；底部一排「＋」补接口 |
 
-- **`query` 不是独立卡片**，而是 `generate·async` 卡片下半区的「查询接口」子块 —— 成对关系同屏看得见，`＋` 补一条 / `✕` 删一条都作用在那条 query 行上；实例页选了「异步」才会用到这块。
+### 查询接口与音色克隆在哪配
+
+**一个组里每个 role 一张卡片**，seed 铺组时就把该有的行铺上；手工接一家时靠底部那排「＋」补：
+
+| kind | 卡片（role·mode） | 出现条件 | 新增入口 |
+|---|---|---|---|
+| `llm` | 文案生成 `generate·sync` | 恒有 | 唯一必需行，不给删 |
+| `image` | 图片生成·同步 `generate·sync` | 该家有同步接法 | 「＋ 生成接口·同步」 |
+| `image` | 图片生成·异步 `generate·async` | 该家有异步接法 | 「＋ 生成接口·异步」 |
+| `image` | **状态查询 `query`** | 组里有 async 生成行时才有意义 | 「＋ 查询接口」 |
+| `tts` | 语音合成 `synthesize·sync` / `·async` | 同图片两行 | 「＋ 合成接口·同步 / ·异步」 |
+| `tts` | **状态查询 `query`** | 同上 | 「＋ 查询接口」 |
+| `tts` | **音色克隆 `clone`** | 该家支持建音色 | 「＋ 音色克隆」 |
+
+- 成对关系写在两处，谁都不必猜：`query` 卡片顶部一行「↑ 供 `generate·async` 轮询使用」；`generate·async` 卡片顶部一行「轮询用：`query` ✓」或「轮询用：**缺查询接口** → 点下方「＋ 查询接口」」。
+- 同一 role 只能有一张（唯一索引 `(tpl_group, role, mode)`），所以已有 `query` 时「＋ 查询接口」不出现 —— 不给配出两条查询接口的机会。
+- 「✕ 删接口」走二次确认，说清「模板组的默认形状不受影响，可再点＋加回来，但你在模板里改过的内容会丢」。
+- 缺必填 role 时实例页顶部红字点名（第七节），并给「＋ 去补」直接跳到模板页。
 - 两页不混在同一屏；⚙ 是唯一入口（`VoicePicker` 只留选音色 + 试听）。
 - 实例页每个控件都要对得上库里某一列（`api_key` 一格对 `api_key` 一列，参数一格对 `params_json` 的一个键）；空值写成「删键」而不是存 `null`。
 - **试调用**是这套设计的验收口：每张接口卡片给「实际发出的请求」（密钥打码）+「响应摘要」（状态码、按槽位取到的值、音频给播放键、异步逐次显示轮询过程与状态原文、失败原样带上游 `code/message`）。
@@ -251,7 +269,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
              "label":{"zh":"最大输出 token","en":"Max tokens"}, "omitIfEmpty":true },
            { "name":"enable_thinking","stage":"instance","type":"bool","default":false,
              "label":{"zh":"思考模式","en":"Thinking"} } ],
-  "resp":{ "content":"choices.0.message.content", "errorCode":"error.code", "error":"error.message" } }
+  "resp":{ "content":"choices[0].message.content", "errorCode":"error.code", "error":"error.message" } }
 
 // provider（实例）
 { "kind":"llm", "label":"DeepSeek", "tpl_group":"openai-chat",
@@ -319,7 +337,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "url":"{baseUrl}/api/v1/tasks/{taskId}",
   "headers":{ "Authorization":"Bearer {apiKey}" }, "vars":[],
   "decode":"url", "poll_interval_ms":1500, "poll_timeout_ms":120000,
-  "resp":{ "audio":"output.results.0.url", "status":"output.task_status",
+  "resp":{ "audio":"output.results[0].url", "status":"output.task_status",
            "success":["SUCCEEDED"], "pending":["PENDING","RUNNING"],
            "fail":["FAILED","CANCELED","UNKNOWN"], "errorCode":"code", "error":"message" } }
 
@@ -346,7 +364,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
            { "name":"n","stage":"instance","type":"int","default":1,"label":{"zh":"张数","en":"Count"} },
            { "name":"watermark","stage":"instance","type":"bool","default":false,"label":{"zh":"水印","en":"Watermark"} } ],
   "decode":"url",
-  "resp":{ "image":"output.choices.0.message.content.0.image", "errorCode":"code", "error":"message" } }
+  "resp":{ "image":"output.choices[0].message.content[0].image", "errorCode":"code", "error":"message" } }
 
 // ② generate·async —— 多一个异步头，只登记 taskId；vars 与 ① 同
 { "tpl_group":"dashscope-image", "role":"generate", "mode":"async", "method":"POST",
@@ -362,7 +380,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "url":"{baseUrl}/api/v1/tasks/{taskId}",
   "headers":{ "Authorization":"Bearer {apiKey}" }, "vars":[],
   "decode":"url", "poll_interval_ms":1500, "poll_timeout_ms":180000,
-  "resp":{ "image":"output.results.0.url", "status":"output.task_status",
+  "resp":{ "image":"output.results[0].url", "status":"output.task_status",
            "success":["SUCCEEDED"], "pending":["PENDING","RUNNING"],
            "fail":["FAILED","CANCELED","UNKNOWN"], "errorCode":"code", "error":"message" } }
 
