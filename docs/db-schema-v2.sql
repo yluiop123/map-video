@@ -1081,47 +1081,72 @@ CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
 -- 8. 应用配置聚合（与项目内容解耦，Key 只存本机）
 -- -----------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS provider (  -- 应用配置：AI 文案 / 配音 / 图片服务商（密钥只存本机，与项目内容解耦）
-  provider_id TEXT PRIMARY KEY,  -- 服务商配置 id
-  kind       TEXT NOT NULL CHECK (kind IN ('llm','tts','image')),  -- 类别：llm 文案生成 / tts 语音合成（含克隆）/ image 图片生成
-  recipe     TEXT NOT NULL DEFAULT '',  -- 模板包 id（决定「内置形态」与铺出哪些接口；改显示名不影响）
-  label      TEXT NOT NULL DEFAULT '',  -- 显示名
-  base_url   TEXT NOT NULL DEFAULT '',  -- 接口基础地址
-  secrets_json TEXT CHECK (secrets_json IS NULL OR json_valid(secrets_json)),  -- 命名密钥槽 JSON：{apiKey, secret2}（火山 Access Key / MiniMax group_id 用 secret2）
-  model      TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型
-  voice      TEXT,  -- 音色 / 说话人 ID
-  speed      REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
-  extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),  -- 附加请求参数（JSON，合并进请求体）
-  active     INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),  -- 是否生效（每个 kind 至多一条为 1）
-  ord        INTEGER NOT NULL DEFAULT 0  -- 同类内排序
+CREATE TABLE IF NOT EXISTS provider_template_group (  -- 接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口
+  tpl_group TEXT PRIMARY KEY,  -- 组 id：openai-chat / dashscope-image / custom-tts-1
+  kind       TEXT NOT NULL,  -- 组所属能力：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不写 CHECK）
+  label      TEXT NOT NULL DEFAULT '',  -- 组显示名（L 的 JSON 或纯文本）
+  note       TEXT,  -- 组说明（接谁家的哪套端点）
+  base_url   TEXT NOT NULL DEFAULT '',  -- 新建实例时预填的建议 Base URL
+  models_json TEXT CHECK (models_json IS NULL OR json_valid(models_json)),  -- 候选模型列表 JSON（实例页下拉用）
+  default_model TEXT NOT NULL DEFAULT '',  -- 新建实例时预填的模型
+  default_voice TEXT,  -- 新建实例时预填的音色
+  ord        INTEGER NOT NULL DEFAULT 0,  -- 组列表排序
+  created_at INTEGER,  -- 创建时间（epoch ms，审计用）
+  updated_at INTEGER  -- 最后修改时间（epoch ms，审计用）
 );
--- 一家供应商 = 一组接口模板（role 各一条）：怎么发、怎么取回、同步还是异步全在这里，代码里不再有协议分支
-CREATE TABLE IF NOT EXISTS provider_endpoint (
-  endpoint_id TEXT PRIMARY KEY,  -- 接口模板行 id，形如 <provider_id>:<role>
-  provider_id TEXT NOT NULL REFERENCES provider(provider_id) ON DELETE CASCADE,  -- 所属供应商
-  role       TEXT NOT NULL,  -- 用途：llm.generate / tts.synthesize / tts.clone / tts.query / image.generate / image.query
-  ord        INTEGER NOT NULL DEFAULT 0,  -- 同一供应商内的展示顺序
-  enabled    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),  -- 是否启用（关掉即该 role 不可用）
-  mode       TEXT NOT NULL DEFAULT 'sync',  -- sync 一次到位 / async 提交后轮询
+CREATE INDEX IF NOT EXISTS ix_tg_kind ON provider_template_group(kind, ord);
+
+CREATE TABLE IF NOT EXISTS provider_template (  -- 一条接口怎么发、返回从哪取（共享数据，实例只引用不复制）
+  tpl_id      TEXT PRIMARY KEY,  -- 接口行 id，形如 <tpl_group>:<role>:<mode>
+  tpl_group   TEXT NOT NULL REFERENCES provider_template_group(tpl_group) ON DELETE CASCADE,  -- 所属模板组
+  role       TEXT NOT NULL,  -- 组内用途：generate / synthesize / query / clone（不写 CHECK）
+  mode       TEXT NOT NULL DEFAULT 'sync',  -- 这条变体服务哪种方式：sync / async（query·clone 恒 sync）
+  ord        INTEGER NOT NULL DEFAULT 0,  -- 组内展示顺序
+  label      TEXT,  -- 接口显示名（L 的 JSON）
   method     TEXT NOT NULL DEFAULT 'POST',  -- HTTP 方法
-  path       TEXT NOT NULL DEFAULT '',  -- 路径模板（支持 {baseUrl} 等占位）
+  url        TEXT NOT NULL DEFAULT '',  -- 地址模板，{baseUrl} 出现在哪由占位符决定
   headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 请求头模板 JSON
   query_json TEXT CHECK (query_json IS NULL OR json_valid(query_json)),  -- 查询串参数模板 JSON
-  body_json  TEXT CHECK (body_json IS NULL OR json_valid(body_json)),  -- 请求体模板 JSON（值是 {var} 占位）
-  vars_json  TEXT CHECK (vars_json IS NULL OR json_valid(vars_json)),  -- 变量声明表 JSON（inject 调用期注入 / param 配置期可填）
-  overrides_json TEXT CHECK (overrides_json IS NULL OR json_valid(overrides_json)),  -- 用户在配置期给该接口参数填的值
-  resp_kind  TEXT,  -- 响应类别：auto / audio / json / text
-  decode_kind TEXT,  -- 结果解码：hex / base64 / url（远端产物再下载）
-  pick_json  TEXT CHECK (pick_json IS NULL OR json_valid(pick_json)),  -- 出参登记表 JSON（text/audio/image/voiceId/error… 的取值路径）
-  poll_json  TEXT CHECK (poll_json IS NULL OR json_valid(poll_json))  -- 异步轮询规则 JSON（任务 id 路径、查询 role、完成/失败判定、超时）
+  body_json  TEXT CHECK (body_json IS NULL OR json_valid(body_json)),  -- 请求体模板 JSON（值是 {name} 占位）
+  vars_json  TEXT CHECK (vars_json IS NULL OR json_valid(vars_json)),  -- 入参声明表 JSON（stage=instance 实例填 / call 调用传）
+  resp_json  TEXT CHECK (resp_json IS NULL OR json_valid(resp_json)),  -- 返回槽位 JSON（content/image/audio/voiceId/taskId/status/success/fail/pending/errorCode/error）
+  decode_kind TEXT,  -- 产物解码：NULL 响应体即产物 / hex / base64 / url 远端链接
+  fetch_headers_json TEXT CHECK (fetch_headers_json IS NULL OR json_valid(fetch_headers_json)),  -- 下载产物时附带的请求头（空 = 裸 GET 签名链接）
+  poll_interval_ms INTEGER NOT NULL DEFAULT 1500,  -- 异步轮询间隔（离散步长，存原值 ms；只有 query 行读）
+  poll_timeout_ms  INTEGER NOT NULL DEFAULT 120000,  -- 异步轮询超时（ms；只有 query 行读）
+  ref_sample_rate INTEGER,  -- 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k，各家不同）
+  created_at INTEGER,  -- 创建时间（epoch ms，审计用）
+  updated_at INTEGER,  -- 最后修改时间（epoch ms，审计用）
+  CHECK (headers_json IS NULL OR json_valid(headers_json))
+);
+-- 一个组里同一个 role+mode 只能有一条（异步配对与「查询接口唯一」都由这条索引保证）
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tpl_role ON provider_template(tpl_group, role, mode);
+CREATE INDEX IF NOT EXISTS ix_tpl_group ON provider_template(tpl_group, ord);
+
+CREATE TABLE IF NOT EXISTS provider (  -- 能力实例：用哪组模板 + 这个账号的 Base URL / Key / 同步异步 / 参数（Key 只存本机）
+  provider_id TEXT PRIMARY KEY,  -- 能力实例 id
+  kind       TEXT NOT NULL,  -- 能力：llm 文案生成 / tts 语音（含克隆）/ image 图片生成
+  label      TEXT NOT NULL DEFAULT '',  -- 显示名
+  tpl_group  TEXT NOT NULL REFERENCES provider_template_group(tpl_group),  -- 引用哪一组接口模板（真外键，不是弱引用）
+  base_url   TEXT NOT NULL DEFAULT '',  -- 接口基础地址（一个能力一份，不跨能力共享）
+  api_key    TEXT NOT NULL DEFAULT '',  -- 主密钥（模板里写 {apiKey}）
+  api_key2   TEXT,  -- 第二凭证（模板里写 {apiKey2}，火山 TTS 的 Access Key）
+  mode       TEXT NOT NULL DEFAULT 'sync',  -- 这个账号走同步还是异步：决定用哪条生成变体、要不要查询接口
+  model      TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型（合成与克隆共用同一个值）
+  voice      TEXT,  -- 音色 / 说话人 ID
+  speed      REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
+  params_json TEXT CHECK (params_json IS NULL OR json_valid(params_json)),  -- 实例期参数值 JSON（模板里 stage=instance 的变量）
+  max_concurrency INTEGER NOT NULL DEFAULT 1,  -- 批量并发上限（1 = 串行；账号限额，属实例不属模板）
+  retry_times     INTEGER NOT NULL DEFAULT 2,  -- 限流 / 网络错的退避重试次数（业务错不重试）
+  extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),  -- 附加请求参数（JSON，深合并进请求体的兜底口）
+  active     INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),  -- 是否生效（每个 kind 至多一条为 1）
+  ord        INTEGER NOT NULL DEFAULT 0,  -- 同类内排序
+  created_at INTEGER,  -- 创建时间（epoch ms，审计用）
+  updated_at INTEGER  -- 最后修改时间（epoch ms，审计用）
 );
 -- 每个 kind 至多一条生效（部分唯一索引，替代旧的「先清后置」两步写法）
-CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_active
-  ON provider(kind) WHERE active = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_active ON provider(kind) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
--- 一家供应商里同一个 role 只能有一条（成对配置的落点）
-CREATE UNIQUE INDEX IF NOT EXISTS ux_pe_role ON provider_endpoint(provider_id, role);
-CREATE INDEX IF NOT EXISTS ix_pe_provider ON provider_endpoint(provider_id, ord);
 
 -- =============================================================================
 -- 9. 外键支撑索引（FK 子表列必须建索引 —— SQLite 上外键唯一的真实成本来源）
@@ -1237,18 +1262,23 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
     AND NOT EXISTS (SELECT 1 FROM json_each(t.countries_json) c
                     WHERE c.value->>'countryId' = e.value->>'toCountryId');
 
--- 12.4 异步接口的配对自检（poll_json.statusRole 指向的查询接口必须同供应商存在，
---      否则该接口一调就卡住 —— 弱引用藏在 JSON 里，外键管不到，只能靠视图体检）
+-- 12.4 异步实例的配对自检（实例选了异步，它引用的模板组里就必须有异步生成接口 + 一条查询接口；
+--      配对关系是「同组 + role=query」，没有指针列可填错，但组被改坏时这里能抓到）
 CREATE VIEW IF NOT EXISTS v_check_async_pairing AS
-SELECT e.provider_id AS ref_id, e.role AS target,
-       '异步接口缺配套的状态查询接口 ' || (e.poll_json ->> '$.statusRole') AS problem
-  FROM provider_endpoint e
-  WHERE e.mode = 'async'
-    AND NOT EXISTS (
-      SELECT 1 FROM provider_endpoint s
-      WHERE s.provider_id = e.provider_id
-        AND s.role = (e.poll_json ->> '$.statusRole')
-    );
+SELECT p.provider_id AS ref_id,
+       p.tpl_group   AS target,
+       CASE WHEN NOT EXISTS (SELECT 1 FROM provider_template t
+                             WHERE t.tpl_group = p.tpl_group AND t.mode = 'async'
+                               AND t.role IN ('generate','synthesize'))
+            THEN '异步实例：这组模板没有异步的生成接口'
+            ELSE '异步实例：这组模板缺 role=query 的查询接口' END AS problem
+  FROM provider p
+ WHERE p.mode = 'async'
+   AND (NOT EXISTS (SELECT 1 FROM provider_template t
+                    WHERE t.tpl_group = p.tpl_group AND t.mode = 'async'
+                      AND t.role IN ('generate','synthesize'))
+        OR NOT EXISTS (SELECT 1 FROM provider_template t
+                       WHERE t.tpl_group = p.tpl_group AND t.role = 'query'));
 
 -- 用法：SELECT * FROM v_check_dangling;
 --       SELECT * FROM v_check_territory_ref;

@@ -58,16 +58,16 @@ export function ensureV2Schema(db) {
   } catch { /* 忽略 */ }
   try {
     const ddl = fs.readFileSync(ddlPath, 'utf8');
-    // 旧形状的 provider 表（还带 api_key / protocol）必须先让位 —— **早于 ensureAllColumns**，
-    // 否则补列那一步会把 secrets_json 塞进旧表，形状漂移就检不出来了（实测踩过）
-    const staleProvider = retireProviderIfStale(db);
+    // 旧形状的 provider 表（还带 recipe / secrets_json / provider_endpoint）必须先让位 —— **早于 ensureAllColumns**，
+    // 否则补列那一步会把新列名塞进旧表，形状漂移就检不出来了（实测踩过）
+    retireProviderIfStale(db);
     // 先给旧表补缺失列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）；
     // 必须早于 db.exec(ddl)：视图引用了新列（layer_id），旧表缺列会让整段 DDL 失败。
     ensureAllColumns(db, ddl);
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
     db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref; DROP VIEW IF EXISTS v_check_async_pairing;');
     db.exec(ddl);
-    if (staleProvider) restoreProviderRows(db, staleProvider);
+    // 旧行的搬迁要等模板组铺好之后（provider.tpl_group 是真外键）→ 由渲染端 hydrate 触发
     repairAssetRefs(db);
     return true;
   } catch (e) {
@@ -807,151 +807,210 @@ const ASSET_REFS = [
  * 指向空壳 asset 行的引用 —— 那种行不澄清、留着就是「素材库里有 ID、读出来什么都没有」。
  */
 /**
- * 「模板即数据」改版：provider 表用 `recipe` + `secrets_json` 取代了 `protocol` + `api_key`
- * （protocol 那个 CHECK 白名单是四处真相之一，AGENTS §6.22 / §6.24 两次事故都出自它）。
- * CREATE TABLE IF NOT EXISTS 不会改已存在的表，所以旧库这版让位改名 → DDL 建新表 → 把行搬回来。
- * **搬的是用户资产**：api_key 进 secrets_json.apiKey，模型/音色/地址原样；接口模板行由渲染端按 recipe 铺开。
- * 返回让位的旧表名；不需要处理时 null。
+ * 「模板组 + 实例」改版：接口模板从「每个实例一份副本」（provider_endpoint）搬进两张共享表
+ * （provider_template_group / provider_template），实例只引用组 id。
+ * 旧库这版让位改名（**不删**，Key 是用户资产），等新模板组铺好后由渲染端调 migrateProvidersFromStale 搬回。
  */
 export function retireProviderIfStale(db) {
-  const t = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'provider'").get();
-  if (!t) return null;   // 还没建表（首次启动），DDL 直接建新形状
+  const has = (t) => !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t);
+  if (!has('provider')) return false;
   const cols = db.prepare('PRAGMA table_info(provider)').all().map((c) => c.name);
-  // 认旧形状的正标志，而不是「缺新列」—— 补列那一步可能已经把新列名加上去了
-  if (!cols.includes('api_key') && !cols.includes('protocol')) return null;
+  // 正标志：还带 recipe / secrets_json / protocol，或还有 provider_endpoint 那张表 —— 都是旧形状
+  const stale = has('provider_endpoint') || cols.includes('recipe') || cols.includes('secrets_json') || cols.includes('protocol');
+  if (!stale) return false;
   db.exec('ALTER TABLE provider RENAME TO provider__stale');
-  return 'provider__stale';
+  if (has('provider_endpoint')) db.exec('ALTER TABLE provider_endpoint RENAME TO provider_endpoint__stale');
+  return true;
 }
-
-/** 旧 protocol → 模板包 id（只在搬迁旧行时用一次；新库不再有 protocol 概念） */
-const PROTOCOL_TO_RECIPE = {
-  cosyvoice: 'dashscope-cosyvoice',
-  'qwen-tts': 'dashscope-qwen-tts',
-  'minimax-t2a': 'minimax-t2a',
-  'volc-tts': 'volc-tts',
-  'openai-speech': 'openai-speech',
-};
-
-function recipeOfLegacyRow(r) {
-  if (r.kind === 'tts') return PROTOCOL_TO_RECIPE[r.protocol] || 'custom-tts';
-  if (r.kind === 'image') return /dashscope|aliyuncs/i.test(r.base_url || '') ? 'dashscope-image' : 'custom-image';
-  return 'openai-chat';
-}
-
-/** 把让位出去的旧 provider 行搬回新表（列名/含义对得上的原样搬，api_key 与 protocol 做一次性翻译） */
-export function restoreProviderRows(db, staleTable) {
-  try {
-    const rows = db.prepare(`SELECT * FROM ${staleTable}`).all();
-    const ins = db.prepare(`INSERT INTO provider
-      (provider_id, kind, recipe, label, base_url, secrets_json, model, voice, speed, extra, active, ord)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
-    let n = 0;
-    for (const r of rows) {
-      ins.run(r.provider_id, r.kind, recipeOfLegacyRow(r), r.label ?? '', r.base_url ?? '',
-        JSON.stringify({ apiKey: r.api_key ?? '', secret2: '' }), r.model ?? '', r.voice ?? '',
-        r.speed ?? 1, r.extra ?? null, r.active ?? 0, r.ord ?? 0);
-      n += 1;
-    }
-    db.exec(`DROP TABLE ${staleTable}`);
-    console.log(`[db-v2] provider 表已按「模板即数据」重建，搬回 ${n} 行（Key 保留；接口模板由渲染端按 recipe 铺开）`);
-  } catch (e) {
-    console.error('[db-v2] provider 搬回失败（旧行留在 provider__stale，未删除）:', e?.message || e);
-  }
-}
-
-// ========== 供应商与接口模板（Key 只存本机；「怎么发请求」= provider_endpoint 那些行） ==========
 
 const jsonCol = (v) => (v == null ? null : JSON.stringify(v));
 const parseCol = (s, fallback) => {
   if (!s) return fallback;
   try { return JSON.parse(s); } catch { return fallback; }
 };
+const blank = (v) => v == null || (typeof v === 'object' && Object.keys(v).length === 0);
 
-const EP_COLS = `endpoint_id AS endpointId, provider_id AS providerId, role, ord, enabled, mode, method, path,
-  headers_json AS headersJson, query_json AS queryJson, body_json AS bodyJson, vars_json AS varsJson,
-  overrides_json AS overridesJson, resp_kind AS respKind, decode_kind AS decodeKind,
-  pick_json AS pickJson, poll_json AS pollJson`;
-
-const rowToEndpoint = (e) => ({
-  role: e.role,
-  mode: e.mode,
-  method: e.method,
-  path: e.path,
-  headers: parseCol(e.headersJson, {}) ?? {},
-  query: parseCol(e.queryJson, {}) ?? {},
-  body: parseCol(e.bodyJson, {}),
-  vars: parseCol(e.varsJson, []) ?? [],
-  overrides: parseCol(e.overridesJson, {}),
-  resp: e.respKind || e.decodeKind || e.pickJson
-    ? { kind: e.respKind || undefined, decode: e.decodeKind || undefined, pick: parseCol(e.pickJson, {}) }
-    : undefined,
-  // 空对象 = 没配轮询：JSON 列留 '{}' 会让同步接口被 validateTemplate 判成「配了查询规则」
-  poll: (() => { const p = parseCol(e.pollJson, null); return p && Object.keys(p).length ? p : undefined; })(),
-  enabled: e.enabled === 1,
-});
-
-/** 列出全部供应商（含各自的接口模板行），渲染端 hydrate 用 */
-export function listProvidersV2(db) {
-  const rows = db.prepare(`SELECT provider_id AS id, kind, recipe, label, base_url AS baseUrl,
-      secrets_json AS secretsJson, model, voice, speed, extra, active, ord AS sort
-      FROM provider ORDER BY ord, kind, label`).all();
-  const byProv = new Map();
-  for (const e of db.prepare(`SELECT ${EP_COLS} FROM provider_endpoint ORDER BY provider_id, ord`).all()) {
-    if (!byProv.has(e.providerId)) byProv.set(e.providerId, []);
-    byProv.get(e.providerId).push(rowToEndpoint(e));
+/**
+ * 把让位出去的旧行搬回新表：Base URL / Key / 模型 / 音色原样，recipe → tpl_group，
+ * 散在各接口行的 overrides_json 汇总成 params_json，旧接口行里存在 async 就把实例 mode 定成 async。
+ * **必须在模板组铺好之后调用**（provider.tpl_group 是真外键）。
+ */
+export function migrateProvidersFromStale(db) {
+  const has = (t) => !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t);
+  if (!has('provider__stale')) return 0;
+  const groups = new Set(db.prepare('SELECT tpl_group FROM provider_template_group').all().map((r) => r.tplGroup ?? r.tpl_group));
+  const rows = db.prepare('SELECT * FROM provider__stale').all();
+  const eps = has('provider_endpoint__stale') ? db.prepare('SELECT * FROM provider_endpoint__stale').all() : [];
+  const ins = db.prepare(`INSERT OR IGNORE INTO provider
+    (provider_id, kind, label, tpl_group, base_url, api_key, api_key2, mode, model, voice, speed,
+     params_json, max_concurrency, retry_times, extra, active, ord)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  let n = 0;
+  let skipped = 0;
+  for (const r of rows) {
+    const secrets = parseCol(r.secrets_json, {});
+    const mine = eps.filter((e) => e.provider_id === r.provider_id);
+    const params = {};
+    for (const e of mine) Object.assign(params, parseCol(e.overrides_json, {}) ?? {});
+    const recipe = r.recipe || (r.kind === 'tts' ? 'custom-tts' : r.kind === 'image' ? 'custom-image' : 'custom-llm');
+    // 那组模板还没铺上（自定义包名 / seed 未落库）：留在 stale 表里，下次启动再搬，不静默丢配置
+    if (!groups.has(recipe)) { skipped += 1; continue; }
+    ins.run(
+      r.provider_id, r.kind, r.label ?? '', recipe, r.base_url ?? '',
+      secrets.apiKey ?? r.api_key ?? '', secrets.secret2 ?? '',
+      mine.some((e) => e.mode === 'async') ? 'async' : 'sync',
+      r.model ?? '', r.voice ?? '', r.speed ?? 1,
+      jsonCol(params), 1, 2, r.extra ?? null, r.active ?? 0, r.ord ?? 0,
+    );
+    n += 1;
   }
-  return rows.map((r) => ({
-    id: r.id, kind: r.kind, recipe: r.recipe, label: r.label, baseUrl: r.baseUrl,
-    secrets: parseCol(r.secretsJson, { apiKey: '' }),
-    model: r.model, voice: r.voice || undefined, speed: r.speed ?? 1,
-    extra: r.extra || undefined, active: r.active === 1, sort: r.sort,
-    endpoints: byProv.get(r.id) ?? [],
+  if (skipped) {
+    console.warn(`[db-v2] 有 ${skipped} 行旧配置找不到对应模板组，留在 provider__stale 里等下次（未删除）`);
+    return n;
+  }
+  db.exec('DROP TABLE provider__stale');
+  if (has('provider_endpoint__stale')) db.exec('DROP TABLE provider_endpoint__stale');
+  if (n) console.log(`[db-v2] 旧供应商配置已搬进「模板组 + 实例」结构：${n} 行（Key 保留，接口模板改用共享表）`);
+  return n;
+}
+
+// ========== 接口模板（组 + 行；共享数据，实例只引用） ==========
+
+const TPL_COLS = `tpl_id AS tplId, tpl_group AS tplGroup, role, mode, ord, label, method, url,
+  headers_json AS headersJson, query_json AS queryJson, body_json AS bodyJson, vars_json AS varsJson,
+  resp_json AS respJson, decode_kind AS decodeKind, fetch_headers_json AS fetchHeadersJson,
+  poll_interval_ms AS pollIntervalMs, poll_timeout_ms AS pollTimeoutMs, ref_sample_rate AS refSampleRateHz`;
+
+const textOrJson = (raw, fallback) => {
+  if (raw == null || raw === '') return fallback;
+  const parsed = parseCol(raw, null);
+  return parsed ?? raw;
+};
+
+/** 列出全部模板组（含各自的接口行） */
+export function listTemplateGroupsV2(db) {
+  const gs = db.prepare(`SELECT tpl_group AS tplGroup, kind, label, note, base_url AS baseUrl,
+      models_json AS modelsJson, default_model AS defaultModel, default_voice AS defaultVoice, ord
+      FROM provider_template_group ORDER BY kind, ord, label`).all();
+  const byGroup = new Map();
+  for (const e of db.prepare(`SELECT ${TPL_COLS} FROM provider_template ORDER BY tpl_group, ord`).all()) {
+    if (!byGroup.has(e.tplGroup)) byGroup.set(e.tplGroup, []);
+    byGroup.get(e.tplGroup).push({
+      tplId: e.tplId, role: e.role, mode: e.mode, ord: e.ord,
+      label: textOrJson(e.label, undefined),
+      method: e.method, url: e.url,
+      headers: parseCol(e.headersJson, {}) ?? {}, query: parseCol(e.queryJson, {}) ?? {},
+      body: parseCol(e.bodyJson, undefined), vars: parseCol(e.varsJson, []) ?? [],
+      resp: blank(parseCol(e.respJson, null)) ? undefined : parseCol(e.respJson, {}),
+      decode: e.decodeKind || undefined,
+      fetchHeaders: blank(parseCol(e.fetchHeadersJson, null)) ? undefined : parseCol(e.fetchHeadersJson, {}),
+      pollIntervalMs: e.pollIntervalMs, pollTimeoutMs: e.pollTimeoutMs,
+      refSampleRateHz: e.refSampleRateHz ?? undefined,
+    });
+  }
+  return gs.map((g) => ({
+    tplGroup: g.tplGroup, kind: g.kind,
+    label: textOrJson(g.label, ''),
+    note: textOrJson(g.note, undefined),
+    baseUrl: g.baseUrl, models: parseCol(g.modelsJson, []) ?? [],
+    defaultModel: g.defaultModel || undefined, defaultVoice: g.defaultVoice || undefined,
+    ord: g.ord, rows: byGroup.get(g.tplGroup) ?? [],
   }));
 }
 
-/**
- * 写一条供应商。endpoints 给了就整组覆写（接口模板是一个整体，逐字段 diff 只会制造半新半旧），
- * 没给则保留库里已有的 —— 否则改个模型名就会把用户调过的模板擦掉。
- */
-export function upsertProviderV2(db, cfg) {
-  const id = String(cfg.id);
-  const p = {
-    id, kind: cfg.kind, recipe: String(cfg.recipe || ''), label: cfg.label || '', baseUrl: cfg.baseUrl || '',
-    secrets: jsonCol({ apiKey: cfg.secrets?.apiKey || '', secret2: cfg.secrets?.secret2 || '' }),
-    model: cfg.model || '', voice: cfg.voice || '', speed: cfg.speed ?? 1, extra: cfg.extra || null,
-  };
+/** 整组覆写（模板是一个整体，逐字段 diff 只会制造半新半旧） */
+export function upsertTemplateGroupV2(db, g) {
   const own = db.prepare('BEGIN');
   try {
     own.run();
     db.prepare(`
-      INSERT INTO provider (provider_id, kind, recipe, label, base_url, secrets_json, model, voice, speed, extra, ord)
-      VALUES (@id, @kind, @recipe, @label, @baseUrl, @secrets, @model, @voice, @speed, @extra,
-              COALESCE((SELECT ord FROM provider WHERE provider_id = @id), (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider)))
-      ON CONFLICT(provider_id) DO UPDATE SET kind=@kind, recipe=@recipe, label=@label, base_url=@baseUrl,
-        secrets_json=@secrets, model=@model, voice=@voice, speed=@speed, extra=@extra
-    `).run(p);
-    if (Array.isArray(cfg.endpoints)) {
-      db.prepare('DELETE FROM provider_endpoint WHERE provider_id = ?').run(id);
-      const ins = db.prepare(`
-        INSERT INTO provider_endpoint (endpoint_id, provider_id, role, ord, enabled, mode, method, path,
-          headers_json, query_json, body_json, vars_json, overrides_json, resp_kind, decode_kind, pick_json, poll_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-      cfg.endpoints.forEach((e, i) => ins.run(
-        `${id}:${e.role}`, id, e.role, i, e.enabled === false ? 0 : 1, e.mode || 'sync',
-        String(e.method || 'POST').toUpperCase(), e.path || '',
-        jsonCol(e.headers), jsonCol(e.query), jsonCol(e.body), jsonCol(e.vars), jsonCol(e.overrides),
-        e.resp?.kind ?? null, e.resp?.decode ?? null, jsonCol(e.resp?.pick), jsonCol(e.poll),
-      ));
-    }
+      INSERT INTO provider_template_group (tpl_group, kind, label, note, base_url, models_json,
+        default_model, default_voice, ord, updated_at)
+      VALUES (@tplGroup, @kind, @label, @note, @baseUrl, @models, @defaultModel, @defaultVoice,
+              COALESCE((SELECT ord FROM provider_template_group WHERE tpl_group = @tplGroup),
+                       (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider_template_group WHERE kind = @kind)),
+              @now)
+      ON CONFLICT(tpl_group) DO UPDATE SET kind=@kind, label=@label, note=@note, base_url=@baseUrl,
+        models_json=@models, default_model=@defaultModel, default_voice=@defaultVoice, updated_at=@now
+    `).run({
+      tplGroup: String(g.tplGroup), kind: g.kind,
+      label: typeof g.label === 'string' ? g.label : jsonCol(g.label ?? ''),
+      note: typeof g.note === 'string' ? g.note : jsonCol(g.note ?? null),
+      baseUrl: g.baseUrl ?? '', models: jsonCol(g.models ?? []),
+      defaultModel: g.defaultModel ?? '', defaultVoice: g.defaultVoice ?? null, now: Date.now(),
+    });
+    db.prepare('DELETE FROM provider_template WHERE tpl_group = ?').run(String(g.tplGroup));
+    const ins = db.prepare(`
+      INSERT INTO provider_template (tpl_id, tpl_group, role, mode, ord, label, method, url,
+        headers_json, query_json, body_json, vars_json, resp_json, decode_kind, fetch_headers_json,
+        poll_interval_ms, poll_timeout_ms, ref_sample_rate, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    (g.rows ?? []).forEach((e, i) => ins.run(
+      `${g.tplGroup}:${e.role}:${e.mode || 'sync'}`, String(g.tplGroup), e.role, e.mode || 'sync', i,
+      typeof e.label === 'string' ? e.label : jsonCol(e.label ?? null),
+      String(e.method || 'POST').toUpperCase(), e.url || '',
+      jsonCol(e.headers), jsonCol(e.query), jsonCol(e.body), jsonCol(e.vars),
+      jsonCol(e.resp), e.decode ?? null, jsonCol(e.fetchHeaders),
+      e.pollIntervalMs ?? 1500, e.pollTimeoutMs ?? 120000, e.refSampleRateHz ?? null, Date.now(),
+    ));
     db.prepare('COMMIT').run();
   } catch (err) {
     try { db.prepare('ROLLBACK').run(); } catch { /* 忽略 */ }
     throw err;
   }
+  return { tplGroup: String(g.tplGroup) };
+}
+
+export function removeTemplateGroupV2(db, tplGroup) {
+  db.prepare('DELETE FROM provider_template_group WHERE tpl_group = ?').run(String(tplGroup));
+  return { ok: true };
+}
+
+// ========== 能力实例（Key 只存本机；「怎么发请求」在它引用的模板组里） ==========
+
+/** 列出全部实例（含 active 标记），渲染端 hydrate 用 */
+export function listProvidersV2(db) {
+  const rows = db.prepare(`SELECT provider_id AS id, kind, label, tpl_group AS tplGroup,
+      base_url AS baseUrl, api_key AS apiKey, api_key2 AS apiKey2, mode, model, voice, speed,
+      params_json AS paramsJson, max_concurrency AS maxConcurrency, retry_times AS retryTimes,
+      extra, active, ord AS sort
+      FROM provider ORDER BY ord, kind, label`).all();
+  return rows.map((r) => ({
+    id: r.id, kind: r.kind, label: r.label, tplGroup: r.tplGroup, baseUrl: r.baseUrl,
+    apiKey: r.apiKey ?? '', apiKey2: r.apiKey2 || undefined, mode: r.mode || 'sync',
+    model: r.model ?? '', voice: r.voice || undefined, speed: r.speed ?? 1,
+    params: parseCol(r.paramsJson, {}) ?? {},
+    maxConcurrency: r.maxConcurrency ?? 1, retryTimes: r.retryTimes ?? 2,
+    extra: r.extra || undefined, active: r.active === 1, sort: r.sort,
+  }));
+}
+
+export function upsertProviderV2(db, cfg) {
+  const id = String(cfg.id);
+  const p = {
+    id, kind: cfg.kind, label: cfg.label || '', tplGroup: String(cfg.tplGroup || ''),
+    baseUrl: cfg.baseUrl || '', apiKey: cfg.apiKey || '', apiKey2: cfg.apiKey2 || null,
+    mode: cfg.mode === 'async' ? 'async' : 'sync',
+    model: cfg.model || '', voice: cfg.voice || '', speed: cfg.speed ?? 1,
+    params: jsonCol(cfg.params ?? {}),
+    maxConcurrency: Math.max(1, Math.round(cfg.maxConcurrency ?? 1)),
+    retryTimes: Math.max(0, Math.round(cfg.retryTimes ?? 2)),
+    extra: cfg.extra || null,
+  };
+  db.prepare(`
+    INSERT INTO provider (provider_id, kind, label, tpl_group, base_url, api_key, api_key2, mode,
+      model, voice, speed, params_json, max_concurrency, retry_times, extra, ord, updated_at)
+    VALUES (@id,@kind,@label,@tplGroup,@baseUrl,@apiKey,@apiKey2,@mode,@model,@voice,@speed,
+      @params,@maxConcurrency,@retryTimes,@extra,
+      COALESCE((SELECT ord FROM provider WHERE provider_id = @id), (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider)),
+      @now)
+    ON CONFLICT(provider_id) DO UPDATE SET kind=@kind, label=@label, tpl_group=@tplGroup, base_url=@baseUrl,
+      api_key=@apiKey, api_key2=@apiKey2, mode=@mode, model=@model, voice=@voice, speed=@speed,
+      params_json=@params, max_concurrency=@maxConcurrency, retry_times=@retryTimes, extra=@extra, updated_at=@now
+  `).run({ ...p, now: Date.now() });
   return { id };
 }
 
-/** 删供应商：接口行随 FK 级联（外键在 main.mjs 里是开着的） */
 export function removeProviderV2(db, id) {
   db.prepare('DELETE FROM provider WHERE provider_id = ?').run(String(id));
   return { ok: true };

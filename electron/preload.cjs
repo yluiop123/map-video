@@ -23,7 +23,14 @@ contextBridge.exposeInMainWorld('mapvideo', {
   },
   /** 清空项目数据（项目 + 合集 + 素材），保留应用配置 providers */
   clearAll: () => ipcRenderer.invoke('db:clearAll'),
+  /** 接口模板组（含各自的接口行）：共享数据 */
+  templates: {
+    list: () => ipcRenderer.invoke('db:templates:list'),
+    save: (g) => ipcRenderer.invoke('db:templates:save', g),
+    remove: (tplGroup) => ipcRenderer.invoke('db:templates:remove', tplGroup),
+  },
   providers: {
+    migrate: () => ipcRenderer.invoke('db:providers:migrate'),
     list: () => ipcRenderer.invoke('db:providers:list'),
     upsert: (cfg) => ipcRenderer.invoke('db:providers:upsert', cfg),
     remove: (id) => ipcRenderer.invoke('db:providers:remove', id),
@@ -40,7 +47,7 @@ contextBridge.exposeInMainWorld('mapvideo', {
   /** 通用网络：渲染进程按接口模板算好请求，主进程代发（无 CORS，Key 不出本机） */
   net: {
     request: (req) => ipcRenderer.invoke('net:request', req),
-    fetchUrl: (url) => ipcRenderer.invoke('net:fetchUrl', url),
+    fetchUrl: (url, headers) => ipcRenderer.invoke('net:fetchUrl', url, headers),
   },
   /** 主进程代拉 JSON/GeoJSON 文本（避开渲染进程 CORS） */
   netJson: (url) => ipcRenderer.invoke('net:json', url),

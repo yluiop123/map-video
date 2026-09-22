@@ -2,7 +2,7 @@
  * MapVideo 桌面端主进程：
  * - app:// 自定义协议托管 dist（规避 file:// 的 worker/模块限制）
  * - node:sqlite 内嵌数据库（projects + provider，库文件在 userData）
- * - AI/TTS 管道：渲染进程无 CORS，主进程持配置转发厂商（协议实现与 web 服务端同源）
+ * - 网络管道：渲染进程按接口模板算好请求，主进程只负责发与收（无 CORS，Key 不出本机）
  */
 import { app, BrowserWindow, ipcMain, protocol, shell } from 'electron';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2,
+  listTemplateGroupsV2, upsertTemplateGroupV2, removeTemplateGroupV2, migrateProvidersFromStale,
   listProvidersV2, upsertProviderV2, removeProviderV2, setActiveProviderV2 } from './db-v2.mjs';
 
 const DIST = path.join(app.getAppPath(), 'dist');
@@ -119,8 +120,14 @@ function registerIpc() {
     return { ok: true };
   });
 
-  // Providers（Key 存本地库；「怎么发请求」是 provider_endpoint 里的接口模板行）
+  // 接口模板（provider_template_group + provider_template）：共享数据，实例只引用组 id
+  ipcMain.handle('db:templates:list', () => listTemplateGroupsV2(db));
+  ipcMain.handle('db:templates:save', (_e, g) => upsertTemplateGroupV2(db, g));
+  ipcMain.handle('db:templates:remove', (_e, tplGroup) => removeTemplateGroupV2(db, tplGroup));
+
+  // 能力实例（Key 存本地库；「怎么发请求」在它引用的模板组里）
   // SQL 全在 db-v2.mjs —— 与项目/素材同一层，才能离线跑迁移回归
+  ipcMain.handle('db:providers:migrate', () => ({ moved: migrateProvidersFromStale(db) }));
   ipcMain.handle('db:providers:list', () => listProvidersV2(db));
   ipcMain.handle('db:providers:upsert', (_e, cfg) => { upsertProviderV2(db, cfg); return { ok: true }; });
   ipcMain.handle('db:providers:remove', (_e, id) => { removeProviderV2(db, id); return { ok: true }; });
@@ -134,9 +141,9 @@ function registerIpc() {
       return { error: err?.message || String(err) };
     }
   });
-  ipcMain.handle('net:fetchUrl', async (_e, url) => {
+  ipcMain.handle('net:fetchUrl', async (_e, url, headers) => {
     try {
-      const res = await fetch(String(url));
+      const res = await fetch(String(url), { headers: headers || undefined });
       if (!res.ok) return { error: `下载结果失败 HTTP ${res.status}` };
       const ctype = res.headers.get('content-type') || undefined;
       return { bytes: new Uint8Array(await res.arrayBuffer()), contentType: ctype };
