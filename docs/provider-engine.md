@@ -93,10 +93,10 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 两类参数**各存一个 JSON 列**，界面上也是两块独立的表（不再用一个 `stage` 判别字段区分）：
 
-- **实例参数**（`inst_params_json`）：建实例时在 ⚙ 配的值 —— `size` / `format` / `sampleRate` / `temperature`…
-- **请求参数**（`req_params_json`）：每次调用由程序传进来的值 —— `text` / `prompt` / `systemPrompt` / `userPrompt` / `wavB64`…
+- **实例参数**（`inst_params_json`）：建实例时在 ⚙ 配的值 —— `size` / `format` / `sampleRate` / `prefix`…
+- **请求参数**（`req_params_json`）：**额外**声明的调用期参数，只在需要类型或候选值时才写（见本节末）；正文类占位符不算在内。
 
-两份结构完全相同（下面的字段表），只是归属不同：实例页只渲染前者，试调用面板只给后者长输入框。
+两份结构完全相同（下面的字段表），只是归属不同：实例页只渲染前者。
 **名字与说明都是用户自己填的单个字符串，不做中英两份**（自定义的东西没法自动翻译）。
 
 ```jsonc
@@ -106,8 +106,9 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
     "options": [ { "value": "1024*1024", "label": "方图" },
                  { "value": "2048*1152", "label": "2048×1152" } ], "allowCustom": true } ]
 
-// req_params_json —— 实例页不出现，只在试调用面板长输入框
-[ { "name": "prompt", "type": "string" } ]
+// req_params_json —— 只在需要类型 / 元素子模板时才写（正文类占位符不声明）
+[ { "name": "history", "type": "list", "omitIfEmpty": true,
+    "item": { "body": { "role": "{role}", "content": "{content}" } } } ]
 ```
 
 | 字段 | 含义 |
@@ -123,10 +124,11 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 | `item` | `list` 的元素子模板：`body` + `fields[]`，界面是行编辑器 |
 
 - 控件由 `options` 决定、与 `type` 正交；`bool` 隐含开/关两个选项。
-- 保留占位符不必声明，由实例行直接提供：`{baseUrl}` `{apiKey}` `{apiKey2}` `{model}` `{voice}` `{speed}` `{mode}` `{taskId}`。其中 `voice` 默认取实例列、调用端可逐行覆盖。
+- **不必声明的保留占位符**分两拨：配置里就有值的 `{baseUrl}` `{apiKey}` `{apiKey2}` `{model}` `{voice}` `{speed}` `{mode}` `{params}`，每次调用由程序给的 `{text}` `{prompt}` `{systemPrompt}` `{userPrompt}` `{wavB64}` `{reqId}`（`CALL_VARS`），以及 ② 之后引擎自注的 `{taskId}`。其中 `voice` 默认取实例列、调用端可逐行覆盖。
 - 候选值由模板写死，**不运行时从上游拉**（各家没有统一 list 接口，顺序/文案不可控）。
-- **调用期的正文为什么要声明出来**：`{text}`（待合成文本）`{prompt}`（出图描述）`{systemPrompt}` / `{userPrompt}`（对话）`{wavB64}`（参考音频）这些值每次调用由程序给，声明它们不是为了让人配，而是为了：① 试调用面板知道该长几个输入框（`callVarsOf`）；② 校验时能区分「声明过的调用期参数」和「打错字的占位符」。它们**放在 `req_params_json`**，实例页因此一个都不会渲染出来 —— 早先那种「一整排没人能配的灰字」就是这么来的。`{taskId}` 是例外：②之后由引擎自注，不声明。
-- 界面规则：实例页只渲染该组各接口 `inst_params_json` 里 `when` 成立的参数（写回 `provider.params_json`）；模板页两张表都在，`req_params_json` 那张标「每次调用由程序传进来」。
+- **调用期的正文不声明**：`{text}`（待合成文本）`{prompt}`（出图描述）`{systemPrompt}` / `{userPrompt}`（对话）`{wavB64}`（参考音频）`{reqId}`（火山每次调用的请求号）由调用点直接给值，和 `{model}` 一样是**保留占位符**（引擎里叫 `CALL_VARS`）。声明它们没有任何可配的东西，只会在模板页长出一排没人能填的灰字 —— 所以内置 seed 一条都不写。试调用的输入框由 `callVarsOf` **从占位符反推**（引用到的、既不是配置保留字也不是实例参数的名字），不依赖声明。
+- 那 `req_params_json` 还有用吗：有，但**只用于需要类型或候选值的额外调用参数** —— 典型是 `type='list'` 的多轮历史（要 `item` 子模板给行编辑器）。不声明也能发出去，声明了只是给界面多一点信息。
+- 界面规则：实例页只渲染该组各接口 `inst_params_json` 里 `when` 成立的参数（写回 `provider.params_json`）；模板页两张表都在，初始都是空的，「＋ 参数」自己加。
 
 ## 五、返回槽位 `resp_json`
 
@@ -254,6 +256,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 - 缺必填 role 时实例页顶部红字点名（第七节），并给「＋ 去补」直接跳到模板页。
 - 两页不混在同一屏；⚙ 是唯一入口（`VoicePicker` 只留选音色 + 试听）。
 - 实例页每个控件都要对得上库里某一列（`api_key` 一格对 `api_key` 一列，参数一格对 `params_json` 的一个键）；空值写成「删键」而不是存 `null`。
+- 两张入参表**初始都是空的**：内置 seed 只写请求形状，不替你声明参数。`{text}` / `{prompt}` / `{systemPrompt}` / `{userPrompt}` / `{wavB64}` 由程序给值（保留占位符，声明了也没东西可配），实例要什么参数就点「＋ 参数」加一条、再去 body 里写 `{名字}` 引用它。
 - **试调用**是这套设计的验收口：每张接口卡片给「实际发出的请求」（密钥打码）+「响应摘要」（状态码、按槽位取到的值、音频给播放键、异步逐次显示轮询过程与状态原文、失败原样带上游 `code/message`）。
 - 模板里**不做循环 / 条件表达式**（只有 `when` 等值门控）。一旦能写表达式，配置就从填表变成写程序，出错时看模板也看不出实际发了什么，试调用就失去意义。
 
@@ -263,6 +266,9 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 > 名字与说明都是**单个字符串**；`reqParams` = 每次调用由程序给，`instParams` = 建实例时在 ⚙ 配。
 
 ### 10.1 文案生成 · `openai-chat`（一组一行）
+
+`{systemPrompt}` / `{userPrompt}` 是保留占位符（`callLLM` 每次调用直接给），所以这一行**两张声明表都是空的**；
+要 `temperature` 就自己点「＋ 参数」加一条实例参数，再把 `"temperature":"{temperature}"` 写进 body。
 
 ```jsonc
 // provider_template_group
@@ -277,18 +283,14 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}" },
   "body":{ "model":"{model}",
            "messages":[ { "role":"system", "content":"{systemPrompt}" },
-                        { "role":"user",   "content":"{userPrompt}" } ],
-           "temperature":"{temperature}", "max_tokens":"{maxTokens}" },
-  "req_params":[ { "name":"systemPrompt", "type":"string" },
-                 { "name":"userPrompt",   "type":"string" } ],
-  "inst_params":[ { "name":"temperature", "type":"int", "default":7, "label":"温度（×10）" },
-                  { "name":"maxTokens",   "type":"int", "default":"", "omitIfEmpty":true, "label":"最大输出 token" } ],
+                        { "role":"user",   "content":"{userPrompt}" } ] },
+  "inst_params_json":"[]",  "req_params_json":"[]",   // 两张声明表初始都是空的
   "resp":{ "content":"choices[0].message.content", "errorCode":"error.code", "error":"error.message" } }
 
 // provider（实例）
 { "kind":"llm", "label":"DeepSeek", "tpl_group":"openai-chat",
   "base_url":"https://api.deepseek.com", "api_key":"sk-…", "mode":"sync",
-  "model":"deepseek-chat", "params":{ "temperature":7, "maxTokens":2048 },
+  "model":"deepseek-chat", "params":{},
   "max_concurrency":1, "retry_times":2 }
 ```
 
@@ -301,7 +303,6 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}" },
   "body":{ "model":"{model}",
            "input":{ "text":"{text}", "voice":"{voice}", "format":"{format}", "sample_rate":"{sampleRate}" } },
-  "req_params":[ { "name":"text", "type":"string" } ],
   "inst_params":[ { "name":"format","type":"string","default":"mp3","label":"音频格式","options":["mp3","wav","pcm"] },
                   { "name":"sampleRate","type":"int","default":24000,"label":"采样率","options":[16000,24000,48000] } ],
   "resp":{ "audio":"output.audio.url", "errorCode":"code", "error":"message" },
@@ -313,7 +314,6 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "body":{ "model":"voice-enrollment",
            "input":{ "action":"create_voice", "target_model":"{model}", "prefix":"{prefix}",
                      "url":"data:audio/wav;base64,{wavB64}" } },
-  "req_params":[ { "name":"wavB64", "type":"string" } ],
   "inst_params":[ { "name":"prefix", "type":"string", "default":"mv", "label":"音色名前缀" } ],
   "resp":{ "voiceId":"output.voice_id", "errorCode":"code", "error":"message" },
   "ref_sample_rate":16000 }
@@ -339,7 +339,6 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
   "url":"{baseUrl}/services/aigc/multimodal-generation/generation",
   "body":{ "model":"{model}", "input":{ "messages":[ { "role":"user", "content":[ { "text":"{prompt}" } ] } ] },
            "parameters":{ "size":"{size}", "prompt_extend":"{promptExtend}", "watermark":"{watermark}" } },
-  "req_params":[ { "name":"prompt", "type":"string" } ],
   "inst_params":[ { "name":"size","type":"string","default":"2048*1152","allowCustom":true,"label":"出图尺寸",
                     "options":["1024*1024","2048*1152","2688*1536"] },
                   { "name":"promptExtend","type":"bool","default":false,"label":"提示词改写" },

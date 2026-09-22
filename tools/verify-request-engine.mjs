@@ -9,7 +9,7 @@
  * 退出码非 0 表示有失败项。
  */
 import {
-  buildRequest, callRole, readPath, redact, validateRow, validateGroup, pickRow, applySlots,
+  buildRequest, callRole, readPath, redact, validateRow, validateGroup, pickRow, applySlots, callVarsOf,
 } from '../src/lib/request-engine.ts';
 import { SEED_GROUPS, needsSecret2, seedRow } from '../src/lib/template-seed.ts';
 
@@ -44,11 +44,21 @@ const ctx = {
 let req = buildRequest(chat, { ...ctx, systemPrompt: '你是助手', userPrompt: '写三行' });
 eq('2.1 {baseUrl} 拼出完整地址', req.url, 'https://api.deepseek.com/chat/completions');
 eq('2.2 header 插值密钥', req.headers.Authorization, 'Bearer sk-abcdefghij1234');
-eq('2.3 标量槽保留数字类型', req.body.temperature, 7);
+// 内置的文案模板故意**不预置任何参数**（要 temperature 由用户自己声明 + 写进 body），
+// 所以「类型保留」与「omitIfEmpty 删键」用一张自建行测，不赖在 seed 上。
+const typedRow = {
+  role: 'generate', mode: 'sync', method: 'POST', url: '{baseUrl}/chat',
+  body: { model: '{model}', temperature: '{temperature}', max_tokens: '{maxTokens}' },
+  instParams: [
+    { name: 'temperature', type: 'int', default: 7 },
+    { name: 'maxTokens', type: 'int', default: '', omitIfEmpty: true },
+  ],
+};
+const typed = buildRequest(typedRow, { ...ctx, params: { temperature: 7 } });
+eq('2.3 标量槽保留数字类型', typed.body.temperature, 7);
 eq('2.4 常量骨架数组里的槽位', req.body.messages.map((m) => m.role), ['system', 'user']);
 eq('2.5 骨架里的字符串槽仍是字符串', req.body.messages[1].content, '写三行');
-const noMax = buildRequest(chat, { ...ctx, params: {}, systemPrompt: 'a', userPrompt: 'b' });
-check('2.6 omitIfEmpty 的键没值时连键删掉', !('max_tokens' in noMax.body), noMax.body);
+check('2.6 omitIfEmpty 的键没值时连键删掉', !('max_tokens' in typed.body), typed.body);
 const img = rowOf('dashscope-image', 'generate');
 const imgReq = buildRequest(img, { ...ctx, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', params: { size: '1024*1024', promptExtend: false, watermark: false }, prompt: '猫' });
 eq('2.7 嵌套对象骨架', imgReq.body.input.messages[0].content[0].text, '猫');
@@ -181,6 +191,15 @@ check('7.5 通义语音不要第二凭证', !needsSecret2(groupOf('dashscope-cos
 check('7.6 新建行种子带齐槽位', !!seedRow('image', 'query').resp?.status && Array.isArray(seedRow('image', 'query').resp?.success));
 check('7.7 pickRow 按实例 mode 选变体', pickRow(groupOf('dashscope-image'), 'generate', 'async')?.url.includes('image-generation'));
 check('7.11 查询行的地址不重复带 /api/v1（实测踩过 404）', !groupOf('dashscope-image').rows.find((r) => r.role === 'query').url.includes('/api/v1/api/v1'));
+// 内置模板的参数表：调用期正文是保留占位符（不声明），实例参数只放各家确实要人定的
+check('7.12 文案生成接口两张参数表都是空的（参数由用户自己 ＋）',
+  (chat.instParams ?? []).length === 0 && (chat.reqParams ?? []).length === 0 && !JSON.stringify(chat.body).includes('temperature'));
+check('7.13 语音 / 图片的接口也没人预声明调用期正文',
+  SEED_GROUPS.every((g) => g.rows.every((r) => (r.reqParams ?? []).length === 0)));
+check('7.14 调用期正文不声明也合法，且试调用认得该长哪几个输入框',
+  validateRow(chat, 'llm').length === 0 && callVarsOf(chat).join(',') === 'systemPrompt,userPrompt');
+check('7.15 实例参数不算调用端要填的（图片行的试调用只长 prompt 一个框）',
+  callVarsOf(rowOf('dashscope-image', 'generate')).join(',') === 'prompt');
 eq('7.8 没填的槽不参与取值', applySlots(DOC, { image: '', audio: undefined, status: 'output.results[0].url' }), { status: 'r' });
 check('7.9 只有同步变体的组：选异步会被点名', validateGroup(groupOf('dashscope-cosyvoice'), 'async').some((p) => p.includes('没有异步')));
 check('7.10 音频槽留空 → 取值表里没有 audio 键', Object.keys(applySlots({ x: 1 }, { audio: '' })).length === 0);

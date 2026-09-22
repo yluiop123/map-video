@@ -490,7 +490,7 @@ const NOTES = {
     "query_json": "查询串参数模板 JSON",
     "body_json": "请求体模板 JSON（值是 {name} 占位）",
     "inst_params_json": "实例参数声明表 JSON（建实例时在 ⚙ 配：名字 / 类型 / 默认 / 候选值）",
-    "req_params_json": "请求参数声明表 JSON（每次调用由程序给：text / prompt / wavB64…）",
+    "req_params_json": "额外调用参数声明表 JSON（只在需要类型 / 元素子模板时声明；{text} {prompt} {wavB64} 等正文占位符由程序给值，不必声明）",
     "resp_json": "返回槽位 JSON（content/image/audio/voiceId/taskId/status/success/fail/pending/errorCode/error）",
     "decode_kind": "产物解码：NULL 响应体即产物 / hex / base64 / url 远端链接",
     "fetch_headers_json": "下载产物时附带的请求头（空 = 裸 GET 签名链接）",

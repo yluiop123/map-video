@@ -7,8 +7,10 @@
  * 每行的字段都照实际能跑的形状搬：
  *   文案 / 语音 / 图片的形状 = 2026-09-22 用 `tools/try-real-calls.mjs` 真实调用确认过的响应
  *
- * 参数分两份存：`instParams`（建实例时配：size / format / sampleRate…）与
- * `reqParams`（每次调用由程序给：text / prompt / systemPrompt / wavB64…）。名字与说明都是单个字符串。
+ * 内置 seed 只声明**必需的形状**：`instParams` 只放各家确实要人定的参数（size / format / sampleRate…），
+ * 调用期正文（`{text}` / `{prompt}` / `{systemPrompt}` / `{userPrompt}` / `{wavB64}` / `{reqId}`）是保留占位符、
+ * **一行都不声明** —— 每张卡片的「实例参数 / 请求参数」初始都是空的，要什么由用户自己加。
+ * 名字与说明都是单个字符串（自定义的东西没有自动翻这回事）。
  */
 import type { Mode, ProviderKind, RespSlots, Role, TemplateGroup, TemplateRow, VarSpec } from './request-engine';
 
@@ -17,11 +19,6 @@ const AUTH = { 'Content-Type': 'application/json', Authorization: 'Bearer {apiKe
 /** 实例参数（会出现在 ⚙ 实例页的参数表里） */
 function ip(name: string, extra: Partial<VarSpec> = {}): VarSpec {
   return { name, type: 'string', ...extra };
-}
-
-/** 请求参数（值由调用点给，模板页在「请求参数」区里声明） */
-function rp(name: string, type: VarSpec['type'] = 'string'): VarSpec {
-  return { name, type };
 }
 
 function row(role: Role, mode: Mode, o: Partial<TemplateRow> & { url: string }): TemplateRow {
@@ -43,14 +40,7 @@ const openaiChatRows: TemplateRow[] = [
         { role: 'system', content: '{systemPrompt}' },
         { role: 'user', content: '{userPrompt}' },
       ],
-      temperature: '{temperature}',
-      max_tokens: '{maxTokens}',
     },
-    reqParams: [rp('systemPrompt'), rp('userPrompt')],
-    instParams: [
-      ip('temperature', { type: 'int', default: 7, label: '温度（×10）' }),
-      ip('maxTokens', { type: 'int', default: '', omitIfEmpty: true, label: '最大输出 token' }),
-    ],
     resp: { content: 'choices[0].message.content', errorCode: 'error.code', error: 'error.message' } as RespSlots,
   }),
 ];
@@ -64,7 +54,6 @@ const cosyClone = row('clone', 'sync', {
     model: 'voice-enrollment',
     input: { action: 'create_voice', target_model: '{model}', prefix: '{prefix}', url: 'data:audio/wav;base64,{wavB64}' },
   },
-  reqParams: [rp('wavB64')],
   instParams: [ip('prefix', { default: 'mv', label: '音色名前缀' })],
   resp: { voiceId: 'output.voice_id', errorCode: 'code', error: 'message' } as RespSlots,
   refSampleRateHz: 16000,
@@ -86,7 +75,6 @@ const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', '通义语音（C
         model: '{model}',
         input: { text: '{text}', voice: '{voice}', format: '{format}', sample_rate: '{sampleRate}' },
       },
-      reqParams: [rp('text')],
       instParams: [
         formatParam(['mp3', 'wav', 'pcm']),
         ip('sampleRate', { type: 'int', default: 24000, label: '采样率', options: [16000, 24000, 48000] }),
@@ -109,7 +97,6 @@ const dashscopeQwenTts = group('dashscope-qwen-tts', 'tts', '通义语音（Qwen
     row('synthesize', 'sync', {
       url: '{baseUrl}/services/aigc/multimodal-generation/generation',
       body: { model: '{model}', input: { text: '{text}', voice: '{voice}' } },
-      reqParams: [rp('text')],
       // 实测：这一族的响应给的是远端音频 URL（带时效）→ 当场下载
       resp: { audio: 'output.audio.url', errorCode: 'code', error: 'message' } as RespSlots,
       decode: 'url',
@@ -126,7 +113,6 @@ const dashscopeQwenTts = group('dashscope-qwen-tts', 'tts', '通义语音（Qwen
           audio: { data: 'data:audio/wav;base64,{wavB64}' },
         },
       },
-      reqParams: [rp('wavB64')],
       instParams: [ip('preferredName', { default: 'mapvideo', label: '音色名' })],
       resp: { voiceId: 'output.voice', errorCode: 'code', error: 'message' } as RespSlots,
       refSampleRateHz: 24000,
@@ -139,7 +125,6 @@ const openaiSpeech = group('openai-speech', 'tts', 'OpenAI /audio/speech', {
   rows: [row('synthesize', 'sync', {
     url: '{baseUrl}/audio/speech',
     body: { model: '{model}', voice: '{voice}', input: '{text}', speed: '{speed}', response_format: '{format}' },
-    reqParams: [rp('text')],
     instParams: [formatParam(['mp3', 'wav', 'flac', 'pcm'])],
     // 这一家响应体本身就是音频，所以音频路径留空
     resp: { audio: '', errorCode: 'error.code', error: 'error.message' } as RespSlots,
@@ -158,7 +143,6 @@ const minimaxT2a = group('minimax-t2a', 'tts', 'MiniMax t2a_v2', {
       voice_setting: { voice_id: '{voice}', speed: '{speed}', vol: 1, format: '{format}' },
       audio_setting: { format: '{format}' },
     },
-    reqParams: [rp('text')],
     instParams: [ip('groupId', { label: 'group_id', default: '' }), formatParam(['mp3', 'wav', 'pcm', 'flac'])],
     resp: { audio: 'data.audio', errorCode: 'status_code', error: 'status_msg' } as RespSlots,
     decode: 'hex',
@@ -181,7 +165,6 @@ const volcTts = group('volc-tts', 'tts', '火山 TTS', {
       audio: { voice_type: '{voice}', encoding: 'mp3', speed_ratio: '{speed}' },
       request: { reqid: '{reqId}', text: '{text}', operation: 'query' },
     },
-    reqParams: [rp('text'), rp('reqId')],
     resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
   })],
 });
@@ -190,7 +173,6 @@ const customTts = group('custom-tts', 'tts', '自定义语音', {
   rows: [row('synthesize', 'sync', {
     url: '{baseUrl}',
     body: { model: '{model}', voice: '{voice}', text: '{text}', speed: '{speed}' },
-    reqParams: [rp('text')],
     resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
   })],
 });
@@ -220,7 +202,6 @@ const dashscopeImage = group('dashscope-image', 'image', '通义图片生成', {
         input: { messages: [{ role: 'user', content: [{ text: '{prompt}' }] }] },
         parameters: { size: '{size}', prompt_extend: '{promptExtend}', watermark: '{watermark}' },
       },
-      reqParams: [rp('prompt')],
       instParams: imageInstParams,
       resp: { image: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' } as RespSlots,
       decode: 'url',
@@ -233,7 +214,6 @@ const dashscopeImage = group('dashscope-image', 'image', '通义图片生成', {
         input: { messages: [{ role: 'user', content: [{ text: '{prompt}' }] }] },
         parameters: { size: '{size}', n: '{count}', watermark: '{watermark}' },
       },
-      reqParams: [rp('prompt')],
       instParams: [...imageInstParams, ip('count', { type: 'int', default: 1, label: '张数' })],
       resp: { taskId: 'output.task_id', errorCode: 'code', error: 'message' } as RespSlots,
     }),
@@ -263,7 +243,6 @@ const customImage = group('custom-image', 'image', '自定义图片', {
   rows: [row('generate', 'sync', {
     url: '{baseUrl}',
     body: { model: '{model}', prompt: '{prompt}', size: '{size}' },
-    reqParams: [rp('prompt')],
     instParams: [ip('size', { default: '1024*1024', allowCustom: true, label: '出图尺寸', options: ['1024*1024', '2048*1152'] })],
     resp: { image: 'data[0].url', errorCode: 'code', error: 'message' } as RespSlots,
     decode: 'url',

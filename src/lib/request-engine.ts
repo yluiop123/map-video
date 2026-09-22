@@ -144,6 +144,13 @@ export interface ReqCtx {
 /** 不必声明的保留占位符：配置里就有值的那些（{taskId} 由引擎在②之后注入，也不用声明） */
 export const RESERVED = ['baseUrl', 'apiKey', 'apiKey2', 'model', 'voice', 'speed', 'mode', 'params', 'taskId'];
 
+/**
+ * 调用期正文：值每次调用由程序给（`callLLM` 给 systemPrompt / userPrompt，`callTTS` 给 text…），
+ * **同样不必声明** —— 声明它们只会在模板页长出一排没人能配的空行。
+ * 要额外类型 / 候选值时才在「请求参数」里声明同名项；试调用的输入框由 `callVarsOf` 从占位符反推。
+ */
+export const CALL_VARS = ['text', 'prompt', 'systemPrompt', 'userPrompt', 'wavB64', 'reqId'];
+
 /** 一行里两类参数的合并视图（求值与校验都按它） */
 export const allParams = (row: TemplateRow): VarSpec[] => [...(row.instParams ?? []), ...(row.reqParams ?? [])];
 
@@ -544,7 +551,7 @@ export function validateRow(row: TemplateRow, kind: ProviderKind): string[] {
   const problems: string[] = [];
   const declared = new Set(allParams(row).map((v) => v.name));
   for (const n of referencedVars(row)) {
-    if (RESERVED.includes(n)) continue;
+    if (RESERVED.includes(n) || CALL_VARS.includes(n)) continue;
     if (!declared.has(n)) problems.push(`模板引用了未声明的变量「${n}」`);
   }
   for (const v of allParams(row)) {
@@ -577,10 +584,13 @@ export function validateRow(row: TemplateRow, kind: ProviderKind): string[] {
   return problems;
 }
 
-/** 这一行要调用端给值的占位符 = 请求参数里真被引用到的那些（试调用面板据此长输入框） */
+/**
+ * 这一行要调用端给值的占位符 = 引用到的、既不是配置保留字也不是实例参数的名字
+ * （试调用面板据此长输入框）。**声明与否不影响这里** —— 调用期正文本来就不用声明。
+ */
 export function callVarsOf(row: TemplateRow): string[] {
-  const used = new Set(referencedVars(row));
-  return (row.reqParams ?? []).map((v) => v.name).filter((n) => used.has(n));
+  const inst = new Set((row.instParams ?? []).map((v) => v.name));
+  return referencedVars(row).filter((n) => !RESERVED.includes(n) && !inst.has(n));
 }
 
 /** 整组 + 实例的成对校验：缺 role、异步没配查询、同步配了查询都在这一步点名 */

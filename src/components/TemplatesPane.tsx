@@ -237,9 +237,12 @@ function RowEditor({ group, row, instance, lang }: { group: TemplateGroup; row: 
       <JsonField label="Body" value={row.body} onCommit={(v) => patch({ body: v })} />
 
       <div className="grid gap-1.5">
-        <ParamList title={t('实例参数', 'Instance params')} hint={t('建实例时在 ⚙ 里配的值', 'Configured per instance')}
+        <ParamList title={t('实例参数', 'Instance params')}
+          hint={t('建实例时在 ⚙ 里配的值 · 在 body 里写 {名字} 引用它', 'Values set per instance · reference them as {name} in the body')}
           vars={row.instParams ?? []} onCommit={(vars) => patch({ instParams: vars })} />
-        <ParamList title={t('请求参数', 'Request params')} hint={t('每次调用由程序传进来的值', 'Filled by the caller each request')}
+        <ParamList title={t('请求参数', 'Request params')}
+          hint={t('这里只声明需要类型 / 候选值的调用参数 · {text} {prompt} {systemPrompt} {userPrompt} {wavB64} 由程序给值，不必声明',
+            'Declare only call params needing a type / options · {text} {prompt} {systemPrompt} {userPrompt} {wavB64} come from the caller')}
           vars={row.reqParams ?? []} onCommit={(vars) => patch({ reqParams: vars })} />
       </div>
       <RespEditor row={row} kind={group.kind} onCommit={(resp) => patch({ resp })} />
