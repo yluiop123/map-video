@@ -232,6 +232,9 @@ function ModeRow({ cfg, ep }: { cfg: ProviderConfig; ep: ProviderEndpoint }) {
     const endpoints = (cfg.endpoints ?? []).map((e) => (e.role === ep.role ? { ...e, ...p } : e));
     useProviderStore.getState().update(cfg.id, { endpoints });
   };
+  // 这一类接口压根没有「查询任务状态」这种 role（LLM 就是纯同步）→ 整行不出现，别留噪音
+  const queryRole = `${ep.role.split('.')[0]}.query` as Role;
+  if (!ROLES_BY_KIND[cfg.kind].includes(queryRole)) return null;
   const queries = cfg.endpoints.filter((e) => e.role.endsWith('.query'));
   const canAsync = queries.length > 0;
   const poll = ep.poll ?? null;
@@ -244,14 +247,19 @@ function ModeRow({ cfg, ep }: { cfg: ProviderConfig; ep: ProviderEndpoint }) {
           { value: 'async', label: t('异步任务', 'Async task') },
         ]}
         onChange={(v) => {
-          if (v === 'async' && !poll) {
-            patch({ mode: 'async', poll: { taskId: '', statusRole: queries[0]?.role ?? ep.role.replace(/\.\w+$/, '.query') as Role, intervalMs: 1500, timeoutMs: 120000, done: { path: '', equals: 'SUCCEEDED' } } });
-          } else patch({ mode: v as 'sync' | 'async' });
+          if (v !== 'async') { patch({ mode: 'sync' }); return; }
+          // 切异步就得有地方查状态：没有查询接口就当场补一条（同类模板包里通常有现成形状），
+          // 而不是让状态下拉里只有它自己 —— 那等于自己指向自己，调用了才报错
+          const seed = queries.some((q) => q.role === queryRole) ? null : { ...seedTemplate(cfg.kind, queryRole), enabled: true, overrides: {} };
+          const endpoints = (cfg.endpoints ?? []).map((e) => (e.role === ep.role
+            ? { ...e, mode: 'async' as const, poll: e.poll ?? { taskId: '', statusRole: queryRole, intervalMs: 1500, timeoutMs: 120000, done: { path: '', equals: 'SUCCEEDED' } } }
+            : e));
+          useProviderStore.getState().update(cfg.id, { endpoints: seed ? [...endpoints, seed] : endpoints });
         }}
       />
       {!canAsync && ep.mode !== 'async' && (
-        <span className="text-[10px] text-muted-foreground/60" title={t('该供应商没配 *.query 接口；要接异步任务，去「接口模板」添加', 'No *.query endpoint; add one under Endpoints to use async')}>
-          {t('（无可用查询接口）', '(no query endpoint)')}
+        <span className="text-[10px] text-muted-foreground/60">
+          {t(`选异步会自动补一条 ${queryRole} 接口`, `Choosing async adds a ${queryRole} endpoint`)}
         </span>
       )}
       {ep.mode === 'async' && poll && (
@@ -260,8 +268,9 @@ function ModeRow({ cfg, ep }: { cfg: ProviderConfig; ep: ProviderEndpoint }) {
             value={poll.statusRole}
             onChange={(e) => patch({ poll: { ...poll, statusRole: e.target.value as Role } })}
             className="input h-7 text-xs w-32"
+            title={t('轮询用哪个接口查任务状态', 'Which endpoint reports task status')}
           >
-            {(queries.length ? queries : [ep]).map((q) => <option key={q.role} value={q.role}>{q.role}</option>)}
+            {cfg.endpoints.filter((q) => q.role.endsWith('.query')).map((q) => <option key={q.role} value={q.role}>{q.role}</option>)}
           </select>
           <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
             {t('间隔 ms', 'interval ms')}
@@ -317,7 +326,16 @@ function VarControl({ v, value, onChange }: { v: VarSpec; value: unknown; onChan
     );
   }
   if (v.type === 'number') {
-    return wrap(<NumberInput className="input h-7 w-24 text-xs" value={Number(value ?? v.default ?? 0)} step={1} onCommit={(n) => onChange(n)} />);
+    // 未设 = 空串，绝不能显示成 0：0 是合法值（会被当真值发出去），两者必须分得开
+    const raw = value ?? v.default;
+    return wrap(
+      <NumberInput
+        className="input h-7 w-24 text-xs"
+        value={raw === undefined || raw === '' ? '' : Number(raw)}
+        step={1}
+        onCommit={(n) => onChange(Number.isNaN(n) ? '' : n)}
+      />
+    );
   }
   if (v.type === 'json') {
     return wrap(<JsonField label={t('JSON', 'JSON')} value={value ?? {}} onCommit={(o) => onChange(o)} />);
