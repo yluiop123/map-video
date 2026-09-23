@@ -229,10 +229,12 @@ export function TopBar({ onOpenExport, onOpenSettings }: ToolbarProps) {
         保存
       </button>
 
-      {/* 设置（AI 能力：文案生成 / 语音克隆 / 图片生成） */}
-      <button onClick={onOpenSettings} className={iconBtn} title="设置 · AI">
-        <Settings2 size={15} />
-      </button>
+      {/* 设置（AI 能力：文案生成 / 语音克隆 / 图片生成）—— AI 只在桌面端，网页版不放这个入口 */}
+      {IS_DESKTOP && (
+        <button onClick={onOpenSettings} className={iconBtn} title="设置 · AI">
+          <Settings2 size={15} />
+        </button>
+      )}
 
       {/* 字幕生成：主题 → 整片 + 字幕 + 配音（顶栏与时间线「🎙 配音」块同一入口） */}
       <button

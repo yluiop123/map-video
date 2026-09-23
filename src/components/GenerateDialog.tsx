@@ -8,6 +8,7 @@
  */
 import { useState, useRef, useEffect, type ComponentProps } from 'react';
 import { useProjectStore } from '../stores/projectStore';
+import { IS_DESKTOP } from '../lib/backend';
 import { useProviderStore } from '../stores/providerStore';
 import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
 import { callLLM, callTTS, parseSrt, srtTime } from '../lib/providers';
@@ -341,7 +342,8 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="flex items-center gap-1.5 mb-2 flex-wrap">
-          <button
+          {!IS_DESKTOP && <p className="w-full text-[11px] text-muted-foreground">{t('网页版不含 AI：文案请用「粘贴文本 / 导入 SRT」或逐行手写。AI 生成与配音在桌面版可用。', 'Web build has no AI: paste text, import an SRT, or type lines. AI lives in the desktop app.')}</p>}
+          {IS_DESKTOP && <button
             onClick={genText}
             disabled={busy || !topic.trim() || !llm?.baseUrl}
             className="h-7 px-2.5 rounded-md bg-white text-black text-[11px] font-medium hover:bg-white/90 disabled:opacity-40"
@@ -350,7 +352,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
               : t('未配置文案生成服务（顶栏 ⚙ 设置）', 'No LLM provider configured')}
           >
             {busy ? t('生成中…', 'Working…') : t('🤖 AI 生成文案', '🤖 Generate script')}
-          </button>
+          </button>}
           <label className="h-7 px-2 inline-flex items-center rounded-md border border-white/15 text-[11px] hover:bg-white/10 cursor-pointer" title={t('导入 SRT 覆盖当前行', 'Import SRT (replaces lines)')}>
             📥 {t('导入 SRT', 'Import SRT')}
             <input type="file" accept=".srt,text/plain" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void importSrt(f); e.target.value = ''; }} />
@@ -367,15 +369,15 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
             title={t('导出为 SRT', 'Export SRT')}
           >📤 {t('导出 SRT', 'Export SRT')}</button>
           <button onClick={addRow} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10" title={t('在末尾加一行字幕', 'Append a line')}>＋ {t('加一行', 'Add')}</button>
-          <button
+          {IS_DESKTOP && <button
             onClick={genAllMissing}
             disabled={busy || genIdx !== null || !tts?.baseUrl || !rows.some((r) => r.text.trim() && !r.audioUrl)}
             className="h-7 px-2 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
             title={t('给所有还没有配音的行生成语音（已有配音的行不动）', 'Generate voice for every line without audio')}
           >
             ▶▶ {t('全部生成配音', 'Generate all voice')}
-          </button>
-          {batch && (
+          </button>}
+          {IS_DESKTOP && batch && (
             <>
               <span className="h-7 px-2 inline-flex items-center rounded-md border border-white/10 text-[11px] font-mono text-sky-200">
                 {batch.done}/{batch.total}
@@ -412,10 +414,12 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        <div className="mb-2">
-          <p className="text-[11px] text-muted-foreground mb-1.5">{t('配音音色', 'Voice')}</p>
-          <VoicePicker />
-        </div>
+        {IS_DESKTOP && (
+          <div className="mb-2">
+            <p className="text-[11px] text-muted-foreground mb-1.5">{t('配音音色', 'Voice')}</p>
+            <VoicePicker />
+          </div>
+        )}
 
         <div className="border-t border-white/10 pt-2 mb-2">
           <div className="space-y-1.5 max-h-[38vh] overflow-y-auto pr-1">
@@ -429,14 +433,14 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                   placeholder={t('一行字幕（可直接贴入整篇文案，按行拆分）', 'One subtitle per line (paste a whole script to split)')}
                 />
                 <div className="shrink-0 flex items-center gap-1 pt-0.5">
-                  <button
+                  {IS_DESKTOP && <button
                     onClick={() => genRow(idx)}
                     disabled={genIdx !== null || !r.text.trim()}
                     className="w-7 h-7 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
                     title={r.audioUrl ? t('重新生成并覆盖原配音', 'Regenerate (overwrites audio)') : t('生成本句配音', 'Generate voice for this line')}
                   >
                     {genIdx === idx ? '⏳' : r.status === 'error' ? '⚠' : r.audioUrl ? '🔁' : '🔊'}
-                  </button>
+                  </button>}
                   {r.audioUrl && (
                     <button
                       onClick={() => audit(r)}

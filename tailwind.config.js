@@ -48,6 +48,12 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // shadcn 的浮层原子（Popover / Select 内容 / Tooltip）都写 bg-popover text-popover-foreground，
+        // 令牌在 index.css 里早就有，只是之前没映射 —— 不映射的话下拉面板会是个透明方块。
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

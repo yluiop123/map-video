@@ -52,7 +52,9 @@ components/
   PropertiesPanel.tsx  # Mapimator 式 Settings 面板（Pin/Route/Shape/Image 四类，见 §5）
   ElementsPanel.tsx    # 左侧浮动元素面板：搜索/眼睛显隐/副标题/GeoJSON-GPX 导入/底部统计（由右下「元素」按钮开合）
   App.tsx              # 布局：TopBar + 全幅地图舞台(浮动工具条/元素浮层/右侧浮层) + 时间线
-  ui/primitives.tsx    # 共享 UI 原子：Section/Field/StyleGrid/Toggle/ColorPicker/OptionBlocks/PanelHeader（勿在各面板重复定义）
+  ui/                  # 共享原子两处：primitives.tsx（本项目自研：Section/Field/StyleGrid/Toggle/ColorPicker/OptionBlocks/PanelHeader）
+                       #   + shadcn 原子（button/input/textarea/label/select/dialog/popover/tooltip/tabs/switch/slider/progress/badge/collapsible/radio-group…）
+                       #   新界面优先用 shadcn 那批；旧面板沿用 primitives，别为用而用；配置见根目录 components.json（`npx shadcn add <名字>` 追加）
   RegionPickerDialog.tsx / FrameTimeField.tsx / Storyboard.tsx(已废弃文件仍存在) 等
 compositions/          # Remotion 导出端：MapVideo(单轴渲染) / MapScene / OverlayRenderer
 lib/
@@ -141,7 +143,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - 顶栏工具是**扁平一键直达**（点击即创建/进入模式），样式差异全部放右侧 Settings 面板切换；**没有下拉工具组**。工具条/时间线上的「图层」按钮开合左侧图层浮层（editorStore.elementsOpen，默认收起）。界面上指 Layer 的地方一律叫「图层」，「元素」只留给单个 element。
 - Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
 - 右侧浮层显示条件：element 模式需有选中元素；keyframe 模式始终显示（editorStore.panelMode 三态）。
-- 共享 UI 原子统一从 `components/ui/primitives.tsx` 引入，勿再在各面板复制。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（色板 = Tailwind 官方表 `lib/tw-colors.ts`，**族顺序跟 docs/colors 页一致**：先 red→rose 彩色再 slate→stone 中性，v4 独有的 taupe/mauve/mist/olive 因项目锁在 3.4 不收；默认只铺**每族 500 那一列** 24 格 + 「展开全色阶」看 22 族 × 11 阶，底部是 `input[type=color]` + **`#RRGGBB` 文本框**（认 `#abc` 缩写，回车/失焦生效，非法就退回原值不吞输入）；不要再写裸 `input[type=color]`，也不要再维护第四份色值表）；枚举选项一律用 OptionBlocks（横向选项块），不要再写原生 `<select>`。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
+- 共享 UI 原子统一从 `components/ui/` 引入，勿再在各面板复制。**新写的界面一律用 shadcn 原子**（`ui/button`、`ui/dialog`、`ui/select`、`ui/popover`、`ui/tabs`、`ui/switch`、`ui/slider`、`ui/progress`、`ui/collapsible`、`ui/radio-group`、`ui/badge`、`ui/input`、`ui/textarea`、`ui/label`、`ui/tooltip`）；旧的 `primitives.tsx` 那批继续用、不强行迁移。shadcn 的浮层（Dialog/Popover/Select/Tooltip）自带 portal，**不要再手写 `createPortal(…, document.body)`**（血泪教训 23 那条的浮层定位交给 Radix）。令牌沿用 `index.css` 现有 HSL（shadcn 需要的 `--popover` / `--card` / `--input` / `--ring` 都在，tailwind 里已把 `popover` 补上映射）。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（色板 = Tailwind 官方表 `lib/tw-colors.ts`，**族顺序跟 docs/colors 页一致**：先 red→rose 彩色再 slate→stone 中性，v4 独有的 taupe/mauve/mist/olive 因项目锁在 3.4 不收；默认只铺**每族 500 那一列** 24 格 + 「展开全色阶」看 22 族 × 11 阶，底部是 `input[type=color]` + **`#RRGGBB` 文本框**（认 `#abc` 缩写，回车/失焦生效，非法就退回原值不吞输入）；不要再写裸 `input[type=color]`，也不要再维护第四份色值表）；枚举选项一律用 OptionBlocks（横向选项块），**不写原生 `<select>`**；需要下拉时用 `ui/select`（Radix，不是原生）。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
 - **供应商配置只在 ⚙ 一处改**，且**能力配置与接口模板是左侧两个独立入口**（不混在同一屏，也不是同一区的页签 —— 日常项与专家项混在一起，结果是没人敢动模板也看不清自己改了什么）：`ProviderPanel`（文案生成 / 语音克隆 / 图片生成三屏）**一处一份** = 当前模板组（只读芯片，不给下拉）+ Base URL + 两把 Key + 同步异步 + 实例参数 + 并发/重试，**没有 ＋添加 / ✕删除**（一个能力一行，多套配置不是本设计要的东西）；`TemplatesPane`（左侧第 4 项「接口模板」）= 模板组列表（当前那组标「● 使用中」，组头一个「**用作本能力**」按钮 = 换组但不重填 Key）+ 每 role 一张接口卡片，可 `＋ 查询接口` / `＋ 音色克隆` 加行、`✕` 删行（确认走 ConfirmHost）、「恢复默认」用 seed 覆盖。**异步的配对靠「同组 + role=query」，不是指针列**；`query` 行是独立卡片，卡片顶部与 `generate·async` 卡片互相点名。
   **配置页的每个控件都必须对得上库里的列**：参数来自该行 `inst_params_json`（`when` 成立才显示），写回 `provider.params_json`。
   **两张入参表初始都是空的**（内置 seed 只写请求形状，不替你声明参数）：`{text}` `{prompt}` `{systemPrompt}` `{userPrompt}` `{wavB64}` `{reqId}` 由调用点直接给值，属**保留占位符**（引擎里的 `CALL_VARS`），声明它们只会在模板页长出一排没人能填的灰字；试调用的输入框由 `callVarsOf` **从占位符反推**，不依赖声明。`req_params_json` 只留给「需要类型 / 元素子模板的额外调用参数」（如 `type='list'` 的多轮历史）。要实例参数就点「＋ 参数」加一条，再去 body 里写 `{名字}` 引用。
@@ -158,6 +160,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 ## 8. 协作约定
 
 - **★ 不为兼容性牺牲设计（用户明确要求，2026-09-11）**：改造 / 重构时**不考虑向后兼容**——不做老存档迁移、不保留旧字段、不写双读分支、不堆 `normalize*` 兜底链、不为旧库加兼容性 `ALTER TABLE`；一律按「设计是否合理」决策，数据结构可以直改，老数据可丢弃或重新生成。若某处确实必须保留兼容，先与用户确认。
+- **AI 功能只有桌面端支持**（2026-09-23 拍板）：网页版隐藏 ⚙「设置 · AI」入口与字幕生成里的 AI 生成 / 配音 / 音色区（`IS_DESKTOP` 门禁），只留「粘贴文本 / 导入 SRT / 逐行手写 / 字幕样式 / 导出」。已有配音是项目里的 dataURL，网页仍可试听。
 - 与用户**中文交流**，回复精简；改动后提醒刷新（用户浏览器常需 Ctrl+F5 才拿最新包）。
 - 用户的真实测试数据在自己浏览器的 IndexedDB（如 test001 项目）；自动化调试 Chrome 的 profile 是隔离的——跨环境验证用「⚙️ 导出配置 json → 放项目根目录 → 脚本导入」的方式（参考 `tools/test-import.mjs`）。
 - 导出视频、播放、镜头插值等改动完成后，优先用 `tools/` 脚本做一次带截图的自动化回归。
