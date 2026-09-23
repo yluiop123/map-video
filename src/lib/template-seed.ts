@@ -39,7 +39,7 @@ const pacing = (intervalMs: number, attempts: number): ParamSpec[] => [
 
 const deepseekChat: TemplateDef = {
   id: 'deepseek-chat', name: 'DeepSeek 对话', category: 'llm',
-  note: 'OpenAI 兼容形状：POST ${baseUrl}/chat/completions；reasoning_effort / thinking 控制思考强度',
+
   headers: { ...JSON_CT, ...AUTH },
   instanceParams: net('https://api.deepseek.com'),
   sync: {
@@ -74,7 +74,7 @@ const imageOutputs = { url: 'output.choices[0].message.content[0].image', errorC
 
 const qwenImage: TemplateDef = {
   id: 'qwen-image', name: '千问 文生图', category: 'image',
-  note: '同步走 multimodal-generation 直接回图片链接；异步走 image-generation + 异步头，再按 ${taskId} 查 /tasks/{taskId}',
+
   headers: { ...JSON_CT, ...AUTH },
   instanceParams: [...net('https://maas.qianwenaiapi.com/api/v1'), ...pacing(5000, 360)],
   sync: {
@@ -126,7 +126,7 @@ const qwenImage: TemplateDef = {
 
 const qwenTts: TemplateDef = {
   id: 'qwen-tts', name: '千问 TTS', category: 'tts',
-  note: '非流式合成回 output.audio.url（带时效 → 当场下载）；复刻音色绑 target_model，换模型即另一条音色',
+
   useClone: true,
   headers: { ...JSON_CT, ...AUTH },
   instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),

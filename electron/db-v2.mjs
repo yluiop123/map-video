@@ -64,6 +64,7 @@ export function ensureV2Schema(db) {
     // 先给旧表补缺失列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）；
     // 必须早于 db.exec(ddl)：视图引用了新列（layer_id），旧表缺列会让整段 DDL 失败。
     ensureAllColumns(db, ddl);
+    dropRetiredColumns(db);
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
     db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref; DROP VIEW IF EXISTS v_check_async_pairing;');
     db.exec(ddl);
@@ -129,6 +130,25 @@ function ensureAllColumns(db, ddl) {
       } catch (e) {
         console.warn(`[db-v2] 补列失败 ${table}.${col}:`, e?.message || e);
       }
+    }
+  }
+}
+
+/**
+ * DDL 里已经删掉的列，旧库还留着 —— 启动时直接 DROP COLUMN 掉（SQLite 3.35+ 支持），
+ * 库里不留「读它的人已经不存在」的列。列本身有值时会抛错，那种改动要走让位而不是删列。
+ */
+const RETIRED_COLUMNS = [['provider_template', 'note']];
+function dropRetiredColumns(db) {
+  for (const [table, col] of RETIRED_COLUMNS) {
+    let have;
+    try { have = db.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name); } catch { continue; }
+    if (!have.includes(col)) continue;
+    try {
+      db.exec(`ALTER TABLE ${table} DROP COLUMN ${col}`);
+      console.log(`[db-v2] 删掉作废列 ${table}.${col}`);
+    } catch (e) {
+      console.warn(`[db-v2] 删列失败 ${table}.${col}:`, e?.message || e);
     }
   }
 }
@@ -871,15 +891,16 @@ const blank = (v) => v == null || (typeof v === 'object' && Object.keys(v).lengt
 const RECIPE_TO_TPL = { 'dashscope-image-async': 'dashscope-image' };
 
 /**
- * 把让位出去的旧行搬回新表：Base URL / 密钥 / 模型 / 音色 / 语速 全部并进 `values.instance`
+ * 把让位出去的旧行搬回新表：Base URL / 密钥 / 模型 / 音色 全部并进 `values.instance`
  * （新形状里它们就是模板声明的普通参数，不再有具名列），v1 散在接口副本里的 overrides 一并汇总。
  * **必须在模板铺好之后调用**（provider.tpl_id 是真外键）。
- * 归档可能有多份（用户连着经历过几次形状漂移 → `provider__stale`、`provider__stale2` …），逐份搬、逐份清。
+ *
+ * 搬完（含搬不动的）**一律把归档表清掉**：让位是升级过程的中转，不是要留在库里给用户看的第四种表；
+ * 搬不动的行在日志里点名（带 Key 的尤其点出来），但不再无限期占着库。
  */
 export function migrateProvidersFromStale(db) {
   const archives = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'provider__stale*'")
     .all().map((r) => r.name);
-  if (!archives.length) return 0;
   const epTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'provider_endpoint__stale*'")
     .all().map((r) => r.name);
   // 表名一律来自 sqlite_master，不是用户输入
@@ -889,9 +910,9 @@ export function migrateProvidersFromStale(db) {
     (provider_id, tpl_id, name, sync, values_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`);
   const now = Date.now();
   let n = 0;
-  let skipped = 0;
+  let lost = 0;
+  let lostWithKey = 0;
   for (const table of archives) {
-    let left = 0;
     // rowid 排序：三代旧形状里 provider_id / ord 都不保证存在
     for (const r of db.prepare(`SELECT rowid AS __row, * FROM ${table} ORDER BY __row`).all()) {
       const v1 = 'recipe' in r;                       // v1：recipe + secrets_json + 每实例接口副本
@@ -900,7 +921,11 @@ export function migrateProvidersFromStale(db) {
       const instance = v1 ? {} : (parseCol(r.params_json, {}) ?? {});
       for (const e of mine) Object.assign(instance, parseCol(e.overrides_json, {}) ?? {});
       const tplId = v1 ? (RECIPE_TO_TPL[r.recipe] || r.recipe || `custom-${r.kind}`) : (r.tpl_group ?? r.tpl_id);
-      if (!tplId || !tplIds.has(tplId)) { left += 1; continue; }
+      if (!tplId || !tplIds.has(tplId)) {
+        lost += 1;
+        if (secrets.apiKey || r.api_key) lostWithKey += 1;
+        continue;
+      }
       // 旧的具名列并进 values.instance（那里已有值就不覆盖）
       const merge = (key, val) => {
         if (val !== undefined && val !== null && val !== '' && instance[key] === undefined) instance[key] = val;
@@ -917,19 +942,18 @@ export function migrateProvidersFromStale(db) {
       ins.run(id, tplId, r.label ?? r.name ?? '', asyncish ? 0 : 1, jsonCol({ instance, requests: {} }), now, now);
       n += 1;
     }
-    // **搬不动的行留着归档表**（Key 是用户资产，宁可下次再搬也不能删）
-    skipped += left;
-    if (!left) db.exec(`DROP TABLE ${table}`);
-    else console.warn(`[db-v2] ${table} 里有 ${left} 行找不到对应模板，留在库里等下次（未删除）`);
   }
-  if (!skipped) for (const t of epTables) db.exec(`DROP TABLE ${t}`);
+  const stale = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%\\_\\_stale%' ESCAPE '\\'").all()
+    .map((r) => r.name);
+  for (const t of stale) db.exec(`DROP TABLE ${t}`);
   if (n) console.log(`[db-v2] 旧接口配置已搬回新形状：${n} 条实例（密钥并入 values.instance，模板改成一行一份）`);
+  if (stale.length) console.log(`[db-v2] 已清掉让位归档表 ${stale.length} 张${lost ? `（其中 ${lost} 行旧配置没有对应模板，未搬回${lostWithKey ? `，含 ${lostWithKey} 行填过 Key` : ''}）` : ''}`);
   return n;
 }
 
 // ========== 接口模板（一行 = 一份完整模板；共享数据，实例只引用） ==========
 
-const TPL_COLS = `tpl_id AS id, name, category, note, use_clone AS useClone, upload AS hasUpload,
+const TPL_COLS = `tpl_id AS id, name, category, use_clone AS useClone, upload AS hasUpload,
   headers_json AS headersJson, instance_params_json AS instanceParamsJson,
   sync_json AS syncJson, async_json AS asyncJson, download_json AS downloadJson,
   upload_json AS uploadJson, clone_json AS cloneJson, ref_sample_rate AS refSampleRateHz, ord`;
@@ -938,7 +962,7 @@ const TPL_COLS = `tpl_id AS id, name, category, note, use_clone AS useClone, upl
 export function listTemplatesV2(db) {
   return db.prepare(`SELECT ${TPL_COLS} FROM provider_template ORDER BY category, ord, name`).all()
     .map((r) => ({
-      id: r.id, name: r.name ?? '', category: r.category, note: r.note || undefined,
+      id: r.id, name: r.name ?? '', category: r.category,
       useClone: !!r.useClone, hasUpload: !!r.hasUpload,
       headers: parseCol(r.headersJson, {}) ?? {},
       instanceParams: parseCol(r.instanceParamsJson, []) ?? [],
@@ -956,20 +980,20 @@ export function listTemplatesV2(db) {
 export function upsertTemplateV2(db, t) {
   const now = Date.now();
   db.prepare(`
-    INSERT INTO provider_template (tpl_id, name, category, note, use_clone, upload,
+    INSERT INTO provider_template (tpl_id, name, category, use_clone, upload,
       headers_json, instance_params_json, sync_json, async_json, download_json, upload_json, clone_json,
       ref_sample_rate, ord, created_at, updated_at)
-    VALUES (@id,@name,@category,@note,@useClone,@hasUpload,@headers,@instanceParams,@sync,@async,
+    VALUES (@id,@name,@category,@useClone,@hasUpload,@headers,@instanceParams,@sync,@async,
       @download,@upload,@clone,@refSampleRateHz,
       COALESCE((SELECT ord FROM provider_template WHERE tpl_id = @id),
                (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider_template WHERE category = @category)),
       @now,@now)
-    ON CONFLICT(tpl_id) DO UPDATE SET name=@name, category=@category, note=@note, use_clone=@useClone,
+    ON CONFLICT(tpl_id) DO UPDATE SET name=@name, category=@category, use_clone=@useClone,
       upload=@hasUpload, headers_json=@headers, instance_params_json=@instanceParams, sync_json=@sync,
       async_json=@async, download_json=@download, upload_json=@upload, clone_json=@clone,
       ref_sample_rate=@refSampleRateHz, updated_at=@now
   `).run({
-    id: String(t.id), name: t.name ?? '', category: t.category, note: t.note ?? null,
+    id: String(t.id), name: t.name ?? '', category: t.category,
     useClone: t.useClone ? 1 : 0, hasUpload: t.hasUpload ? 1 : 0,
     headers: jsonCol(t.headers), instanceParams: jsonCol(t.instanceParams ?? []),
     sync: jsonCol(t.sync), async: jsonCol(t.async), download: jsonCol(t.download),

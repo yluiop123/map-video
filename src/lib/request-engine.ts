@@ -78,7 +78,6 @@ export interface TemplateDef {
   id: string;
   name: string;
   category: Category;
-  note?: string;
   /** 有没有克隆音色接口（仅 tts 用得上） */
   useClone?: boolean;
   /** 克隆前要不要先上传拿 fileId（false = 直接把音频 base64 塞进 body） */

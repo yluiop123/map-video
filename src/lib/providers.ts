@@ -149,6 +149,14 @@ export async function trialCall(inst: InstanceDef, key: ReqKey, callArgs: Record
   return { values: r.values, bytes: r.bytes, mime: r.mime, steps: r.steps };
 }
 
+/** 预览 / 试调用时给调用级参数占位的样例文本（只有界面用，不进真实调用） */
+export const SAMPLE_CALL_ARGS: Record<string, string> = {
+  text: '这段旁白用来试听音色。',
+  prompt: '一只戴宇航员头盔的橘猫',
+  systemPrompt: '你是连通性测试助手。',
+  userPrompt: '只回复两个字：正常',
+};
+
 // ========== 对外几个动作 ==========
 
 export async function callLLM(inst: InstanceDef, systemPrompt: string, userPrompt: string): Promise<string> {

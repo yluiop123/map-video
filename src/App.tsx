@@ -251,7 +251,7 @@ export default function App() {
       )}
 
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsDialog open onClose={() => setSettingsOpen(false)} />}
       <ConfirmHost />
     </div>
   );

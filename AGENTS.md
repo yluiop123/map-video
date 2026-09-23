@@ -43,7 +43,7 @@ components/
   MapSearchBox.tsx     # 地名/坐标搜索，内嵌顶栏（项目芯片右侧）；地图实例经 lib/shared-map.ts 共享，EditableMap load/unload 时 set
   FxPanelBody.tsx      # 特效面板主体：天气/画面/弹窗/音乐 四页签（**无字幕页签**，字幕已迁到 GenerateDialog）；服务配置弹窗已搬去 ProviderPanel
   ProviderPanel.tsx    # ⚙ 设置 · AI 的「实例设置」页：实例芯片一排 + ＋实例 / 模板下拉 / 同步异步 / 实例级参数 / 按请求分区的请求级参数（密钥按声明渲染成密码框）
-  TemplatesPane.tsx    # ⚙ 左侧独立的「接口模板」入口：一行一份模板（三栏：模板列表 · 六个接口槽卡片 · 实例级参数表）+ 每槽「预览请求（零网络）」「试调用（真发一次）」+ 三层参数表与 outputs 行编辑器
+  TemplatesPane.tsx    # ⚙ 左侧独立的「接口模板」入口：一行一份模板（三栏：模板列表 · 六个接口槽卡片 · 实例级参数表）+ 每槽「预览请求（零网络，密钥打码）」+ 三层参数表与 outputs 行编辑器
   SettingsDialog.tsx   # ⚙ 设置 · AI 外壳：左侧文案 / 语音 / 图片三类，右侧嵌 ProviderPanel（唯一入口，内联那份已删）
   VoicePicker.tsx      # 字幕生成里的音色区：上「配音音色」（系统音色，男/女两组默认折叠）＋ 下「克隆音色」（内置男声/女声样本格 + ⬆上传其它音色）+ 试听
   GenerateDialog.tsx   # 顶栏「字幕生成」：需求 → LLM 整片脚本 → **逐行字幕 + 逐行配音（可覆盖）+ SRT 导入导出 + 字幕样式**；也是字幕条目与样式的唯一编辑处
@@ -130,7 +130,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
     - **地图舞台内的 `zIndex` 会漏到模态窗之上**：`FxPreviewLayer` 里字幕是 `zIndex: 60`，而 `GenerateDialog` 是 `z-50`，舞台盒子原本没有层叠上下文，60 就跑去和根上下文比大小，于是**预览字幕盖住字幕生成弹窗**。修法是给 `App.tsx` 那个 `absolute` 的 stageBox 加 `isolate`，把地图 / 字幕 / 弹窗卡片 / 屏幕特效压成一个上下文（组内相对顺序不变，MapLibre 图层照旧）。A/B 实测：`isolation:isolate` 时舞台内 z-60 探针的命中区被弹窗夺回，改回 `auto` 即复现遮挡。以后新增「舞台内高 z-index 的预览层」不必再单独跟模态窗比大小。
 24. **枚举白名单不要写进 DDL，接口形状也不要写进 switch**（2026-09-21 两条相关教训，同日已一并解决）：
     - 起因：`provider.protocol` 的 `CHECK (… IN (五项))` 是「一家供应商怎么发请求」的第四份真相（另三份是 renderer 的 switch、主进程的 switch、`assertTtsPairing`）。拆出 `cosyvoice` 协议时只改了三处，DDL 那份漏了 → 新行插库报 `CHECK constraint failed`；而 `providerStore.dbSync()` 只 `console.warn`，渲染端读的是 zustand 内存态，所以**当场全好、重启即丢**（`hydrate()` 用库里的行覆盖状态）。
-    - 现在的做法（2026-09-23 定稿）：**四张表**（`docs/provider-engine.md`）——`provider_template`（**一行 = 一份完整模板**：category / 是否克隆 / 是否先上传 / 模板级 headers / **实例级参数声明** / `sync_json`·`async_json`·`download_json`·`upload_json`·`clone_json` 六个接口槽 / 参考音频采样率）、`provider`（**只有五个业务列**：引用哪份模板 + 名字 + 同步异步 + `values_json{instance,requests}`；一份模板可挂多条实例，调用处选实例，没有 `active`）、`voice`（克隆音色账本，唯一键 `(provider_id, source_hash, target_model)`）、`task`（在途异步任务，跨重启续跑）。**实例不内置任何字段**：`baseUrl` / 密钥 / 模型 / 尺寸全是模板声明的参数，密钥 = 声明成 `valueType:'secret'` 的普通参数（渲染成密码框 + 按声明打码），所以「哪些名字算敏感值」只有一处答案。**category·role 一律不加 CHECK**，取值由 TS 联合类型 + 保存前 `validateTemplate()` 管；接新供应商不改表、不加 switch、不改代码（模板行就是数据）。**模板名 / 说明 / 参数 label 是用户自己填的单个字符串，不做中英两份**（自定义的东西没法自动翻；界面自身的标题才走 `t()`）。
+    - 现在的做法（2026-09-23 定稿）：**四张表**（`docs/provider-engine.md`）——`provider_template`（**一行 = 一份完整模板**：category / 是否克隆 / 是否先上传 / 模板级 headers / **实例级参数声明** / `sync_json`·`async_json`·`download_json`·`upload_json`·`clone_json` 六个接口槽 / 参考音频采样率）、`provider`（**只有五个业务列**：引用哪份模板 + 名字 + 同步异步 + `values_json{instance,requests}`；一份模板可挂多条实例，调用处选实例，没有 `active`）、`voice`（克隆音色账本，唯一键 `(provider_id, source_hash, target_model)`）、`task`（在途异步任务，跨重启续跑）。**实例不内置任何字段**：`baseUrl` / 密钥 / 模型 / 尺寸全是模板声明的参数，密钥 = 声明成 `valueType:'secret'` 的普通参数（渲染成密码框 + 按声明打码），所以「哪些名字算敏感值」只有一处答案。**category·role 一律不加 CHECK**，取值由 TS 联合类型 + 保存前 `validateTemplate()` 管；接新供应商不改表、不加 switch、不改代码（模板行就是数据）。**模板名 / 参数 label 是用户自己填的单个字符串，不做中英两份**（自定义的东西没法自动翻；界面自身的标题才走 `t()`）。
     - 旧库的形状漂移仍走启动体检：`retireProviderIfStale()` 认**正标志**（不能认「缺了新列」——补列那步 `ensureAllColumns` 会先把新列名塞进旧表，把漂移盖住，实测踩过）：实例侧「带 recipe·secrets_json·protocol / `tpl_group` / `kind` / `base_url`·`api_key`·`params_json` 等具名列 / 还有 `provider_endpoint` 表」，模板侧「`provider_template` 还带 `tpl_group`·`role`·`vars_json`·行级 `label`（= 组表那版的形状）」。让位是**改名不删**（用户的模板改动与 Key 都是资产）→ DDL 建新表 → 渲染端 hydrate 先按 seed 铺模板、再调 `providers.migrate()` 把旧具名列并进 `values.instance`（`overrides_json`/`params_json` 一并汇总；有 async 行则实例 `sync=0`；`speed` 是旧表默认值 1 就别搬，会在 values 里留一个没人声明的键；搬不动的行留在 stale 表等下次，搬干净才 DROP 归档表）。**改名前要临时 `PRAGMA foreign_keys = OFF`**：外键条款的改写跟这个开关走，开着改父表名会把子表（`provider.tpl_id`）永远指向 `…__stale` 那份死表；同理改名前要把**命名索引**先 DROP（否则新表的 `CREATE INDEX IF NOT EXISTS` 会被静默跳过，丢掉唯一约束）。回归 `node --experimental-sqlite tools/verify-provider-templates.mjs`（[1][2] 测两代新表逐字往返与真外键、[3] 测音色唯一键与任务级联、[4] 测异步配对自检、[5] 测三代旧形状让位搬回）。
     - 推广开一句：**凡是「用户能改、又能从别处推不出来」的值才入库；同一条事实只允许一处真相，宁可让它是一张表，也不要多处 if**。
 
@@ -144,12 +144,12 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - Settings 面板结构：`{X} Settings` 头(✕关闭) → **LABEL**(首字段,同步元素 name) → 类型/样式按钮组(StyleGrid) → SIZE(等比%) → ORIENTATION → 图标颜色 → 时间 → Show Label + LABEL STYLE → **点动画**(开关默认关) → Delete Layer。Section 无边框、大写小标题+白5%分隔线。
 - 右侧浮层显示条件：element 模式需有选中元素；keyframe 模式始终显示（editorStore.panelMode 三态）。
 - 共享 UI 原子统一从 `components/ui/` 引入，勿再在各面板复制。**新写的界面一律用 shadcn 原子**（`ui/button`、`ui/dialog`、`ui/select`、`ui/popover`、`ui/tabs`、`ui/switch`、`ui/slider`、`ui/progress`、`ui/collapsible`、`ui/radio-group`、`ui/badge`、`ui/input`、`ui/textarea`、`ui/label`、`ui/tooltip`）；旧的 `primitives.tsx` 那批继续用、不强行迁移。shadcn 的浮层（Dialog/Popover/Select/Tooltip）自带 portal，**不要再手写 `createPortal(…, document.body)`**（血泪教训 23 那条的浮层定位交给 Radix）。令牌沿用 `index.css` 现有 HSL（shadcn 需要的 `--popover` / `--card` / `--input` / `--ring` 都在，tailwind 里已把 `popover` 补上映射）。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色选择一律用 ColorPicker（色板 = Tailwind 官方表 `lib/tw-colors.ts`，**族顺序跟 docs/colors 页一致**：先 red→rose 彩色再 slate→stone 中性，v4 独有的 taupe/mauve/mist/olive 因项目锁在 3.4 不收；默认只铺**每族 500 那一列** 24 格 + 「展开全色阶」看 22 族 × 11 阶，底部是 `input[type=color]` + **`#RRGGBB` 文本框**（认 `#abc` 缩写，回车/失焦生效，非法就退回原值不吞输入）；不要再写裸 `input[type=color]`，也不要再维护第四份色值表）；枚举选项一律用 OptionBlocks（横向选项块），**不写原生 `<select>`**；需要下拉时用 `ui/select`（Radix，不是原生）。图标上传走 IconUploadButton→UploadIconDialog（统一 64×64 + 命名入 customSymbols），现**仅服务于「移动图标」的 image 样式**（custom_icon 类型已下线）；PIN STYLE 网格由 PinStyleChooser 提供（标记/旗帜共用，Marker(flag) 与点类型面板结构已统一）。
-- **供应商配置只在 ⚙ 一处改**，且**实例设置与接口模板是左侧两个独立入口**（不混在同一屏，也不是同一区的页签 —— 日常项与专家项混在一起，结果是没人敢动模板也看不清自己改了什么）：`ProviderPanel`（文案 / 语音 / 图片三屏）= 实例芯片一排 + `＋实例` + 模板下拉 + 同步/异步 + **实例级参数** + **按请求分区的参数**；一份模板可以配多条实例（两套账号），调用处显式选一条，**没有 `active` 标记**；`TemplatesPane`（左侧「接口模板」）= 一行一份模板，三栏（模板列表 / 六个接口槽卡片 / 实例级参数表），每槽给「**预览请求（零网络，按声明打码）**」与「**试调用（真发一次，回 steps + 取到的字段 + 字节数）**」，「恢复默认」用 seed 覆盖那一行。**异步的配对是同一行模板里的 `async.submit` ↔ `async.query` 两个键，不是指针列**，所以没有「查询接口指向自己」这种脏行的可能。
+- **供应商配置只在 ⚙ 一处改**，且**实例设置与接口模板是左侧两个独立入口**（不混在同一屏，也不是同一区的页签 —— 日常项与专家项混在一起，结果是没人敢动模板也看不清自己改了什么）：`ProviderPanel`（文案 / 语音 / 图片三屏）= 实例芯片一排 + `＋实例` + 模板下拉 + 同步/异步 + **实例级参数** + **按请求分区的参数** + **试调用**（选一条接口槽真发一次，回 steps / 取到的字段 / 字节数）；一份模板可以配多条实例（两套账号），调用处显式选一条，**没有 `active` 标记**；`TemplatesPane`（左侧「接口模板」）= 一行一份模板，三栏（模板列表 / 六个接口槽卡片 / 实例级参数表），每槽给「**预览请求（零网络，按声明打码）**」——**试调用不在这一页**（要真发就得用实例的 Key），在实例页底部；「恢复默认」用 seed 覆盖那一行。**异步的配对是同一行模板里的 `async.submit` ↔ `async.query` 两个键，不是指针列**，所以没有「查询接口指向自己」这种脏行的可能。
   **配置页的每个控件都必须对得上模板声明的参数**：实例级参数写回 `values.instance[key]`，请求级写回 `values.requests[<ReqKey>][key]`；**实例表本身没有一个具名列**（早先的 `base_url` / `api_key` / `model` / `voice` / `speed` 全已并进 `values_json`），密钥就是声明成 `valueType:'secret'` 的普通参数。
   **占位符一律 `${name}`**（早先的单花括号 `{name}` 作废）：整串位置保类型、嵌在字符串里插值、**没给值就删键**（父对象被删空连父键一起删）；声明了却没人给 = 当场点名，不发半个请求。调用级参数（`text` / `prompt` / `systemPrompt` / `userPrompt` / 参考音频）由调用点给值，界面输入框从占位符反推，不靠声明。
-  参数控件一律按 `valueType` + `options` 走（有候选值 → OptionBlocks；boolean → 开/关；list → 行编辑器；secret → 密码框），**不写原生 `<select>`**；界面自身的文案走 `t('中文','English')`，但**用户自定义的模板名 / 说明 / 参数 label 一律单个字符串**（自定义内容没有自动翻这回事），**只有 value 进请求体**。
+  参数控件一律按 `valueType` + `options` 走（有候选值 → OptionBlocks；boolean → 开/关；list → 行编辑器；secret → 密码框），**不写原生 `<select>`**；界面自身的文案走 `t('中文','English')`，但**用户自定义的模板名 / 参数 label 一律单个字符串**（自定义内容没有自动翻这回事），**只有 value 进请求体**。
   接口模板页的入参声明按**层**分（实例级一张表在右栏，请求级 / 调用级每张接口卡片各一份），字段一列一个（名字 / 类型下拉 / 说明 / 默认 / 必填 / 候选值 / 范围 / 文件限制 / transform）；返回不再是一排固定槽位，而是 **`outputs: { 想要的名字: 相对路径 }`** 行编辑器，取出的名字直接进下游作用域（`${taskId}` `${fileId}` `${voiceId}` 都是这么来的）。
-  原来的「测试连通性」按钮被每接口的「试调用」取代（后者顺带给出打码后的请求预览），⚙ 里也不再保留 `inline` 的第二入口。
+  原来的「测试连通性」按钮被实例页的「试调用」取代（模板页只留零网络的预览请求），⚙ 里也不再保留 `inline` 的第二入口。
 - 时间显示用秒（`lib/time.ts` / FrameTimeField），内部仍存帧。
 - **路线「显示标记」与标记设置走同一套形态约定**：`moveIconStyleOf`（PropertiesPanel）与 `pinStyleOf` 逐条对应 —— **圆点 / 水滴针 归入「图片」类**（是内置图形，不是跳出图片类的独立形态），所以资源网格开头那两格点下去后资源区**不会消失**，只是选中态从圆点换到图片/水滴针；非资源形态（气泡/旗帜/文字/表情）不渲染资源区（`MoveResourcePicker` 自己 return null，调用处不再写 include 列表）。「图标样式」按钮行只列 气泡/旗帜/文字/表情 + 5 个资源形态，**不要**把圆点/水滴针单独提成按钮。
 - **路线顶点编辑**：EditableMap 对 line/moving_point/arrow/double_arrow 显示路径点标记（vertex-dot 图层，选中的更大更蓝），mousedown 优先命中顶点（12px）→ 拖拽只更新该点坐标（routePathOf/hitRouteVertex 辅助函数）；路径点坐标也可在属性面板「路径点」中输入/删除。燕尾箭头归入形状类别（categoryOf 特判 arrowType）。
@@ -174,7 +174,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2：桌面端已落地，网页端仍为简化实现）
 
-**规模**：27 张表 / 4 视图 / **0 触发器** / 704 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：27 张表 / 4 视图 / **0 触发器** / 703 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 片长（`project.endFrame`）不入库**（2026-09-19）：`project.end_sec` 列已删——它是纯派生量且**没有任何 UI 能改它**（`setProjectEndFrame` 零调用）。读取端 `getProjectV2` 现按内容实际结束推导：`endFrame = max(60s × fps, 元素/特效/弹窗/机位/字幕/音乐的结束帧)`，与时间线口径一致；空项目从原来的「100 秒幽灵容器」变成 60 秒。新增任何「容器长度」类字段前先问它是不是派生值。
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
@@ -219,7 +219,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **能力矩阵三处联动，改一处必须同步另两处**：**只有 `emoji` 不可着色**（表情字符自带颜色）、`model` 不可贴地（位图贴片）——其余 9 种形态都可着色（multiply 染色，白色=原色）。① DDL 的 CHECK（**不要**再给 model/gif 加 `color IS NULL` 约束，2026-09-19 已删）② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键（**不要为性能删外键**，强制检查 ≈1µs/行），但不使用触发器（见上一条）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
-- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（704 字段中文说明词表，**新增字段漏补说明会直接报错**）。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（703 字段中文说明词表，**新增字段漏补说明会直接报错**）。
 - **文档一律 Markdown**（2026-09-11 起）：`docs/` 下不再有 HTML，也不要用脚本生成 HTML；图用 ```mermaid 代码块内嵌（E-R 图源 `docs/db-er-diagram.mmd`），不再预渲染 SVG。
 
 ## 11. 标记（Pin）形态扩展的代码落点

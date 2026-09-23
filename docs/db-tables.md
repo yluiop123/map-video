@@ -4,7 +4,7 @@
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：27 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 4 个视图 · 0 个触发器 · 704 列（外键全部有索引）
+- **规模**：27 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 4 个视图 · 0 个触发器 · 703 列（外键全部有索引）
 
 **目录**
 
@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 704 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，704 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 703 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，703 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -846,14 +846,13 @@
 
 **职责**：接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）
 
-17 列 · 主键 `tpl_id`
+16 列 · 主键 `tpl_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `tpl_id` | TEXT | `PK` | 模板 id（一行 = 一份完整模板）：deepseek-chat / qwen-image / qwen-tts / custom-1 … |
 | `name` | TEXT | `NOT NULL` | 模板名（用户自填的单个字符串，不做中英两份） · 默认 `''` |
 | `category` | TEXT | `NOT NULL` | 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK） |
-| `note` | TEXT | — | 说明：接谁家的哪套端点、有什么坑 |
 | `use_clone` | INTEGER | `NOT NULL` | 有没有克隆音色接口（只有 tts 用得上） · 默认 `0` · `CHECK (use_clone IN (0,1))` |
 | `upload` | INTEGER | `NOT NULL` | 克隆前要不要先上传拿 fileId（use_clone=1 才有意义；0 = 直接塞 base64） · 默认 `0` · `CHECK (upload IN (0,1))` |
 | `headers_json` | TEXT | — | 模板级请求头 JSON（这一行的所有请求共用一份） · `CHECK (headers_json IS NULL OR json_valid(headers_json))` |

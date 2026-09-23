@@ -6,16 +6,24 @@
  * 以及按请求分区的请求级参数（同步与异步的 model 可以不一样）。
  * 「怎么发请求」不在这页 —— 那是左侧单独的「接口模板」入口（TemplatesPane）。
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { OptionBlocks, useT } from './ui/primitives';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import { Separator } from './ui/separator';
+import { Switch } from './ui/switch';
+import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { Button } from './ui/button';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
-import { REQ_KEYS, requestOf, validateTemplate, type Category, type InstanceDef, type ParamSpec, type ReqKey } from '../lib/request-engine';
+import {
+  REQ_KEYS, callKeysOf, requestOf, validateTemplate,
+  type Category, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
+} from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
+import { previewRequest, trialCall, SAMPLE_CALL_ARGS } from '../lib/providers';
 import { IS_DESKTOP } from '../lib/backend';
 import { useConfirm } from './ui/ConfirmHost';
 
@@ -80,7 +88,6 @@ export function ProviderPanel({ kind }: { kind: Category }) {
 /** 一条实例的表单 */
 function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplName: string; missingTpl: boolean }) {
   const t = useT();
-  const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
   const store = useProviderStore.getState();
   const templates = useProviderStore((s) => s.templates);
   const confirm = useConfirm();
@@ -88,7 +95,13 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
   const mine = templates.filter((x) => x.category === (tpl?.category ?? 'llm'));
   const setValues = (patch: Partial<InstanceDef>, values?: Parameters<typeof store.updateInstance>[2]) => store.updateInstance(inst.id, patch, values);
   const problems = tpl ? validateTemplate(tpl) : [`模板「${inst.tplId}」已经不在了`];
-  const canPickMode = !!(tpl?.sync?.submit && tpl.async?.submit);
+  /** 只给这份模板真有的接法：没有异步接口就不摆「异步任务」这一格（不做隐式降级，也不给配错的机会） */
+  const modes = [
+    ...(tpl?.sync?.submit ? [{ value: 'sync', label: t('同步', 'Sync') }] : []),
+    ...(tpl?.async?.submit ? [{ value: 'async', label: t('异步任务', 'Async task') }] : []),
+  ];
+  const curMode = inst.sync ? 'sync' : 'async';
+  const badMode = modes.length > 0 && !modes.some((m) => m.value === curMode);
 
   const drop = async () => {
     const ok = await confirm({ message: t(`删除实例「${inst.name || inst.id}」？密钥与取值一起删。`, 'Delete this instance?'), danger: true });
@@ -96,88 +109,191 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
   };
 
   return (
-    <div className="space-y-2 border-t border-white/10 pt-2">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Input value={inst.name} onChange={(e) => setValues({ name: e.target.value })} className="h-7 text-xs w-40" placeholder={t('实例名', 'Name')} />
+        <Input value={inst.name} onChange={(e) => setValues({ name: e.target.value })} className="h-7 w-40 text-xs" placeholder={t('实例名', 'Name')} />
         <Select value={inst.tplId} onValueChange={(tplId) => setValues({ tplId })}>
-          <SelectTrigger className="h-7 flex-1 min-w-40 text-xs"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-7 min-w-40 flex-1 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>{mine.map((x) => <SelectItem key={x.id} value={x.id} className="text-xs">{x.name || x.id}</SelectItem>)}</SelectContent>
         </Select>
-        <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={() => void drop()}>✕ {t('删除', 'delete')}</Button>
+        <Button variant="outline" size="sm" className="h-7 shrink-0 text-[11px] text-red-400/90" onClick={() => void drop()}>
+          {t('删除实例', 'Delete')}
+        </Button>
       </div>
       {missingTpl && <p className="text-[10px] text-red-400">{t('这条实例引用的模板已被删除，换一份或去接口模板重建。', 'Its template is gone.')}</p>}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[10px] text-muted-foreground">{t('请求方式', 'Mode')}</span>
-        <OptionBlocks<string>
-          value={inst.sync ? 'sync' : 'async'}
-          options={[{ value: 'sync', label: t('同步', 'Sync') }, { value: 'async', label: t('异步任务', 'Async task') }]}
-          onChange={(v) => setValues({ sync: v === 'sync' })}
-        />
-        {!canPickMode && <span className="text-[10px] text-muted-foreground/60">
-          {t(`这份模板（${tplName}）只有${inst.sync ? '同步' : '异步'}一种接法`, 'This template only has one mode')}
-        </span>}
+      <div className="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-x-3">
+        <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('请求方式', 'Mode')}</Label>
+        <div className="flex flex-wrap items-center gap-2">
+          <OptionBlocks<string>
+            value={badMode ? '' : curMode}
+            options={modes}
+            onChange={(v) => setValues({ sync: v === 'sync' })}
+          />
+          {badMode && (
+            <span className="text-[10px] text-red-400">
+              {t(`这条实例存的是${inst.sync ? '同步' : '异步'}，但这份模板没有那一套接口 —— 点上面改回来`,
+                'Stored mode has no matching endpoint in this template — pick the one above')}
+            </span>
+          )}
+          {modes.length === 1 && !badMode && (
+            <span className="text-[10px] text-muted-foreground/60">
+              {t(`这份模板（${tplName}）只有${inst.sync ? '同步' : '异步'}一种接法`, 'This template only has one mode')}
+            </span>
+          )}
+        </div>
       </div>
 
       {!!tpl?.instanceParams?.length && (
-        <div className="space-y-1">
-          <div className="text-[10px] text-muted-foreground font-medium">{t('实例参数（这份模板声明的，全部请求共用）', 'Instance params')}</div>
+        <Group title={t('实例参数', 'Instance params')} hint={t('这份模板声明的，全部请求共用', 'declared by the template, shared')}>
           {tpl.instanceParams.map((p) => (
             <ParamControl key={p.key} p={p} value={inst.values.instance?.[p.key]}
               onChange={(v) => setValues({}, { instance: { [p.key]: v } })} />
           ))}
-        </div>
+        </Group>
       )}
 
       {tpl && REQ_KEYS.filter((k) => k !== 'async.query' && !!requestOf(tpl, k)?.requestParams?.length).map((k) => (
-        <div key={k} className="space-y-1">
-          <div className="text-[10px] text-muted-foreground font-medium">
-            {t(REQ_TITLE[k].zh, REQ_TITLE[k].en)} · {t('请求参数', 'request params')}
-          </div>
+        <Group key={k} title={`${t(REQ_TITLE[k].zh, REQ_TITLE[k].en)} · ${t('参数', 'params')}`}
+          hint={t('这个请求专属，同名参数不同请求可以取不同值', 'per-request values')}>
           {(requestOf(tpl, k)?.requestParams ?? []).map((p) => (
             <ParamControl key={p.key} p={p} value={inst.values.requests?.[k]?.[p.key]}
               onChange={(v) => setValues({}, { requests: { [k]: { ...(inst.values.requests?.[k] ?? {}), [p.key]: v } } })} />
           ))}
-        </div>
+        </Group>
       ))}
+
+      {tpl && <TrialBox inst={inst} tpl={tpl} />}
 
       {problems.length > 0
         ? <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>
-        : <p className="text-[10px] text-muted-foreground">{pickLabel(tpl?.note ?? '', lang) || t('接口形状齐备', 'Endpoints look complete')}</p>}
+        : null}
     </div>
   );
 }
 
-/** 单个参数控件：type 定存储类型，options 定控件形态（有候选值用选项块，不写原生 select） */
+/**
+ * 试调用：真发一条，用**这条实例**的取值与 Key（模板页只有零网络的预览）。
+ * 产物只回显字节数与取到的字段，不落库 —— 落库是各业务动作自己的事。
+ */
+function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
+  const t = useT();
+  const keys = REQ_KEYS.filter((k) => !!requestOf(tpl, k));
+  const [key, setKey] = useState<ReqKey>('sync.submit');
+  const [inputs, setInputs] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [out, setOut] = useState('');
+  const cur = keys.includes(key) ? key : keys[0];
+  if (!cur) return null;
+  const callKeys = callKeysOf(tpl, cur);
+  const args = (): Record<string, unknown> => {
+    const o: Record<string, unknown> = {};
+    for (const k of callKeys) {
+      const v = inputs[k] ?? SAMPLE_CALL_ARGS[k];
+      if (v !== undefined) o[k] = v;
+    }
+    return o;
+  };
+  const preview = () => {
+    try { setOut(JSON.stringify(previewRequest(inst, cur, args()), null, 1)); }
+    catch (e) { setOut(e instanceof Error ? e.message : String(e)); }
+  };
+  const run = async () => {
+    setBusy(true); setOut('');
+    try {
+      const r = await trialCall(inst, cur, args());
+      const size = r.bytes?.length ? ` → ${(r.bytes.length / 1024).toFixed(0)}KB` : '';
+      setOut(`${r.steps.map((x) => `${x.key} HTTP ${x.status}`).join(' → ')}${size}\n${JSON.stringify(r.values, null, 1)}`);
+    } catch (e) { setOut(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Group title={t('试调用', 'Try a call')} hint={t('用这条实例的取值与 Key 真发一条；产物只回显，不落库', 'sends a real request with this instance key')}>
+      <Tabs value={cur} onValueChange={(v) => setKey(v as ReqKey)}>
+        <TabsList className="h-8">
+          {keys.map((k) => (
+            <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_TITLE[k].zh, REQ_TITLE[k].en)}</TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      {callKeys.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {callKeys.map((k) => (
+            <label key={k} className="flex items-center gap-1 text-[10px]">
+              <span className="text-muted-foreground">{k}</span>
+              <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-40 text-[11px]"
+                onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
+            </label>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-1.5">
+        <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={preview}>🔍 {t('预览请求', 'Preview')}</Button>
+        <Button size="sm" className="h-7 text-[11px]" disabled={busy} onClick={() => void run()}>
+          {busy ? '⏳' : '▶'} {t('试调用', 'Run')}
+        </Button>
+      </div>
+      {out && <pre className="max-h-44 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{out}</pre>}
+    </Group>
+  );
+}
+
+/** 一组参数：标题 + 说明 + 分隔线（界面自身的文案，走 t()） */
+function Group({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <Separator />
+      <div className="text-[10px] font-medium text-muted-foreground">
+        {title}{hint && <span className="font-normal text-muted-foreground/60"> · {hint}</span>}
+      </div>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
+
+/** 单个参数控件：valueType 定存储类型，options 定控件形态（有候选值用选项块，不写原生 select） */
 function ParamControl({ p, value, onChange }: { p: ParamSpec; value: unknown; onChange: (v: unknown) => void }) {
   const t = useT();
   const label = p.label || p.key;
   const opts = (p.options ?? []).map((o) => (typeof o === 'object' && o !== null ? o : { value: o as string | number | boolean }));
+  const empty = value === undefined || value === null || value === '';
+  // 「没填」与「填了默认值」要看得见：控件下方单列一行说明，不挤在控件右边
+  const hint = empty && p.defaultValue !== undefined && p.valueType !== 'secret'
+    ? `${t('未填，按默认', 'unset, using default')} ${String(p.defaultValue)}`
+    : p.valueType === 'number' && (p.min !== undefined || p.max !== undefined)
+      ? `${p.min ?? '-'} … ${p.max ?? '-'}`
+      : '';
   const wrap = (children: React.ReactNode) => (
-    <div className="flex flex-wrap items-center gap-2">
-      <Label className="w-28 shrink-0 text-[10px] font-normal text-muted-foreground" title={p.key}>{label}</Label>
-      {children}
+    <div className="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-x-3 gap-y-0.5">
+      <Label className="text-right text-[10px] font-normal text-muted-foreground" title={p.key}>{label}</Label>
+      <div className="min-w-0">
+        {children}
+        {hint && <div className="mt-0.5 text-[9px] text-muted-foreground/60">{hint}</div>}
+      </div>
     </div>
   );
-  const empty = value === undefined || value === null || value === '';
 
   if (p.valueType === 'secret') {
-    return wrap(<Input type="password" value={String(value ?? '')} className="h-7 text-xs flex-1 min-w-32" placeholder="••••••"
+    return wrap(<Input type="password" value={String(value ?? '')} className="h-7 text-xs" placeholder="••••••"
       onChange={(e) => onChange(e.target.value)} title={t('只存本机，不回显', 'stored locally, never shown')} />);
   }
   if (p.valueType === 'boolean') {
-    return wrap(<OptionBlocks<string> value={String(value ?? p.defaultValue ?? 'false')}
-      options={[{ value: 'true', label: t('开', 'On') }, { value: 'false', label: t('关', 'Off') }]}
-      onChange={(v) => onChange(v === 'true')} />);
+    return (
+      <div className="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-x-3">
+        <Label className="text-right text-[10px] font-normal text-muted-foreground" title={p.key}>{label}</Label>
+        <label className="flex items-center gap-2">
+          <Switch checked={empty ? p.defaultValue !== false : value === true} onCheckedChange={onChange} />
+          <span className="text-[10px] text-muted-foreground">{value === false || (empty && p.defaultValue === false) ? t('关', 'off') : t('开', 'on')}</span>
+        </label>
+      </div>
+    );
   }
   if (opts.length) {
     return wrap(
-      <div className="flex flex-wrap items-center gap-1.5">
-        <OptionBlocks<string> value={String(empty ? p.defaultValue ?? '' : value)}
-          options={opts.map((o) => ({ value: String(o.value), label: o.label ?? String(o.value) }))}
-          onChange={(v) => onChange(p.valueType === 'number' ? Number(v) : v)} />
-        {empty && p.defaultValue !== undefined && <span className="text-[10px] text-muted-foreground/60">{t('默认', 'default')} {String(p.defaultValue)}</span>}
-      </div>,
+      <OptionBlocks<string> value={String(empty ? p.defaultValue ?? '' : value)}
+        options={opts.map((o) => ({ value: String(o.value), label: o.label ?? String(o.value) }))}
+        onChange={(v) => onChange(p.valueType === 'number' ? Number(v) : v)} />,
     );
   }
   if (p.valueType === 'number') {
@@ -187,9 +303,9 @@ function ParamControl({ p, value, onChange }: { p: ParamSpec; value: unknown; on
       onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))} />);
   }
   if (p.valueType === 'text' || p.valueType === 'json') {
-    return wrap(<textarea value={String(value ?? '')} rows={2} className="input flex-1 min-w-40 text-[11px] font-mono resize-y"
+    return wrap(<Textarea rows={2} value={String(value ?? '')} className="text-[11px] font-mono"
       placeholder={p.valueType === 'json' ? '{}' : ''} onChange={(e) => onChange(e.target.value)} />);
   }
-  return wrap(<Input value={String(value ?? '')} className="h-7 text-xs flex-1 min-w-32 font-mono" placeholder={String(p.defaultValue ?? '')}
+  return wrap(<Input value={String(value ?? '')} className="h-7 text-xs font-mono" placeholder={String(p.defaultValue ?? '')}
     onChange={(e) => onChange(e.target.value)} />);
 }

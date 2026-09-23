@@ -168,7 +168,7 @@ if (which === 'all' || which === 'tts') {
 if (which === 'clone') {
   await step('声音复刻（参考音频 → voiceId）', async () => {
     const tpl = seedTemplate('qwen-tts');
-    const inst = instOf('qwen-tts', 'qwen', { clone: { preferredName: 'mapvideo-reg' } });
+    const inst = instOf('qwen-tts', 'qwen', { clone: { preferredName: 'mvregtest' } });
     const sample = path.join(HERE, '..', 'public', 'voices', 'male.mp3');
     const b64 = fs.readFileSync(sample).toString('base64');
     const r = await runClone(tpl, inst, deps, { audioDataUri: `data:audio/mp3;base64,${b64}` });

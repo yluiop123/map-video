@@ -7,11 +7,15 @@
  *
  * 「预览请求」零网络（只跑求值 + 密钥打码），「试调用」真发一条。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useT } from './ui/primitives';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import { Badge } from './ui/badge';
+import { Separator } from './ui/separator';
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
+import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Switch } from './ui/switch';
 import { useConfirm } from './ui/ConfirmHost';
@@ -22,7 +26,7 @@ import {
   type Category, type InstanceDef, type OutputFormat, type ParamSpec, type ReqKey,
   type RequestDef, type TemplateDef, type ValueType,
 } from '../lib/request-engine';
-import { previewRequest, trialCall } from '../lib/providers';
+import { previewRequest, SAMPLE_CALL_ARGS } from '../lib/providers';
 
 const CATEGORY_LABEL: Record<Category, { zh: string; en: string }> = {
   llm: { zh: '文案生成', en: 'Text' },
@@ -61,8 +65,8 @@ function addable(t: TemplateDef): ReqKey[] {
 }
 
 const blankRequest = (key: ReqKey): RequestDef => (key === 'async.query'
-  ? { path: '{baseUrl}/tasks/${taskId}', method: 'GET', body: { task_id: '${taskId}' }, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] }
-  : { path: '{baseUrl}/', method: 'POST', requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} });
+  ? { path: '${baseUrl}/tasks/${taskId}', method: 'GET', body: {}, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] }
+  : { path: '${baseUrl}/', method: 'POST', requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} });
 
 export function TemplatesPane() {
   const t = useT();
@@ -74,7 +78,7 @@ export function TemplatesPane() {
   const restoreTemplate = useProviderStore((s) => s.restoreTemplate);
   const confirm = useConfirm();
   const [category, setCategory] = useState<Category>('llm');
-  const [selId, setSelId] = useState('openai-chat');
+  const [selId, setSelId] = useState('');
   const [selReq, setSelReq] = useState<ReqKey>('sync.submit');
 
   const mine = useMemo(() => templates.filter((x) => x.category === category), [templates, category]);
@@ -100,27 +104,32 @@ export function TemplatesPane() {
   };
 
   return (
-    <div className="space-y-2">
-      <h3 className="text-sm font-semibold">{t('🧩 接口模板', '🧩 Endpoint templates')}</h3>
-      <p className="text-[11px] text-muted-foreground">
-        {t('一份模板 = 一个功能用到的全部接口（同步 / 异步 / 下载 / 上传 / 克隆）。三层参数都在这儿填，实例那边只填取值与密钥。',
-          'One template = every endpoint a capability needs. All three parameter layers live here; instances only hold values and keys.')}
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {(Object.keys(CATEGORY_LABEL) as Category[]).map((k) => (
-          <button key={k} onClick={() => { setCategory(k); setSelId(''); }}
-            className={`h-7 px-2.5 rounded-md border text-[11px] ${k === category ? 'border-white/30 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
-            {t(CATEGORY_LABEL[k].zh, CATEGORY_LABEL[k].en)}
-          </button>
-        ))}
+    <div className="flex h-full min-h-0 flex-col gap-2">
+      <div className="shrink-0">
+        <h3 className="text-sm font-semibold">{t('🧩 接口模板', '🧩 Endpoint templates')}</h3>
+        <p className="text-[11px] text-muted-foreground">
+          {t('一份模板 = 一个功能用到的全部接口（同步 / 异步 / 下载 / 上传 / 克隆）。三层参数都在这儿填，实例那边只填取值与密钥。',
+            'One template = every endpoint a capability needs. All three parameter layers live here; instances only hold values and keys.')}
+        </p>
       </div>
 
-      <div className="grid gap-2 md:grid-cols-[160px_minmax(0,1fr)]">
-        <div className="space-y-1">
+      <Tabs value={category} onValueChange={(k) => { setCategory(k as Category); setSelId(''); }} className="shrink-0">
+        <TabsList className="h-8">
+          {(Object.keys(CATEGORY_LABEL) as Category[]).map((k) => (
+            <TabsTrigger key={k} value={k} className="text-[11px]">{t(CATEGORY_LABEL[k].zh, CATEGORY_LABEL[k].en)}</TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+
+      <div className="grid min-h-0 flex-1 grid-cols-[150px_minmax(0,1fr)] gap-3 xl:grid-cols-[150px_minmax(0,1fr)_300px]">
+        {/* 左：这一类的模板列表 */}
+        <div className="min-h-0 space-y-1 overflow-y-auto pr-0.5">
           {mine.map((x) => (
             <button key={x.id} onClick={() => setSelId(x.id)} title={x.id}
-              className={`w-full text-left h-7 px-2 rounded-md border text-[11px] truncate ${x.id === tpl?.id ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
-              {x.name || x.id}<span className="text-muted-foreground/60"> · {usedBy(x.id).length}</span>
+              className={`flex w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left text-[11px] ${
+                x.id === tpl?.id ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
+              <span className="min-w-0 flex-1 truncate">{x.name || x.id}</span>
+              <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal tabular-nums">{usedBy(x.id).length}</Badge>
             </button>
           ))}
           <Button variant="outline" size="sm" className="w-full h-7 text-[11px]" onClick={() => setSelId(addTemplate(category).id)}>
@@ -128,29 +137,31 @@ export function TemplatesPane() {
           </Button>
         </div>
 
+        {/* 中：模板头 + 选中的那条接口 */}
         {tpl && (
-          <div className="space-y-2 min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Input value={tpl.name} onChange={(e) => patch({ ...tpl, name: e.target.value })} className="h-7 text-xs w-40" placeholder={t('模板名', 'Name')} />
-              <Input value={tpl.id} onChange={(e) => patch({ ...tpl, id: e.target.value })} className="h-7 text-xs w-44 font-mono" placeholder="id" />
-              <Button variant="outline" size="sm" className="h-7 text-[11px]" disabled={!seedTemplate(tpl.id)}
-                onClick={() => restoreTemplate(tpl.id)} title={t('丢弃本地改动，取回内置默认形状', 'Restore the built-in shape')}>
-                {t('恢复默认', 'Restore')}
-              </Button>
-              <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={() => void drop()}>{t('删除模板', 'Delete')}</Button>
+          <div className="min-h-0 min-w-0 space-y-2 overflow-y-auto pr-1">
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-1.5">
+              <Input value={tpl.name} onChange={(e) => patch({ ...tpl, name: e.target.value })} className="h-7 text-xs" placeholder={t('模板名', 'Name')} />
+              <Input value={tpl.id} onChange={(e) => patch({ ...tpl, id: e.target.value })} className="h-7 text-xs font-mono" placeholder="id" />
+              <div className="flex items-center gap-1.5">
+                <Button variant="outline" size="sm" className="h-7 text-[11px]" disabled={!seedTemplate(tpl.id)}
+                  onClick={() => restoreTemplate(tpl.id)} title={t('丢弃本地改动，取回内置默认形状', 'Restore the built-in shape')}>
+                  {t('恢复默认', 'Restore')}
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={() => void drop()}>{t('删除', 'Delete')}</Button>
+              </div>
             </div>
-            <Input value={tpl.note ?? ''} onChange={(e) => patch({ ...tpl, note: e.target.value })} className="h-7 text-xs w-full"
-              placeholder={t('说明（接的哪家、有什么坑）', 'Note')} />
-            <div className="flex flex-wrap items-center gap-4 text-[11px]">
-              <label className="flex items-center gap-1.5">
+
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[11px]">
+              <label className="flex items-center gap-2">
                 <Switch id="tpl-clone" checked={!!tpl.useClone} onCheckedChange={(v) => patch({ ...tpl, useClone: v })} />
                 <Label htmlFor="tpl-clone" className="text-[11px] font-normal">{t('有克隆音色接口', 'voice clone')}</Label>
               </label>
-              <label className="flex items-center gap-1.5">
+              <label className="flex items-center gap-2">
                 <Switch id="tpl-upload" checked={!!tpl.hasUpload} disabled={!tpl.useClone} onCheckedChange={(v) => patch({ ...tpl, hasUpload: v })} />
                 <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('克隆前先上传拿 fileId', 'upload first')}</Label>
               </label>
-              <label className="flex items-center gap-1.5">
+              <label className="flex items-center gap-2">
                 <span className="text-muted-foreground text-[10px]">{t('参考音频采样率', 'ref rate')}</span>
                 <Input type="number" value={tpl.refSampleRateHz ?? ''} className="h-6 w-24 text-[10px]"
                   onChange={(e) => patch({ ...tpl, refSampleRateHz: e.target.value ? Number(e.target.value) : undefined })} />
@@ -159,41 +170,47 @@ export function TemplatesPane() {
 
             <JsonBox label="Headers" value={tpl.headers ?? {}} onChange={(headers) => patch({ ...tpl, headers: headers as Record<string, unknown> })}
               hint={t('所有请求共用一份，值里可写 ${apiKey}', 'shared by every request; ${apiKey} allowed')} />
-            <ParamTable title={t('实例级参数（整份模板共用）', 'Instance params')}
-              hint={t('Base URL 与密钥就在这儿声明；secret 渲染成密码框', 'declare baseUrl / keys here')}
-              params={tpl.instanceParams ?? []} onChange={(instanceParams) => patch({ ...tpl, instanceParams })} />
 
-            <div className="border-t border-white/10" />
+            <Separator />
 
-            <div className="flex flex-wrap items-center gap-1.5">
-              {REQ_KEYS.filter((k) => present(tpl, k)).map((k) => (
-                <button key={k} onClick={() => setSelReq(k)}
-                  className={`h-7 px-2 rounded-md border text-[11px] ${k === selReq ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
-                  {t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}
-                </button>
-              ))}
-              {addable(tpl).map((k) => (
-                <Button key={k} variant="outline" size="sm" className="h-7 text-[11px]"
-                  onClick={() => {
-                    const next: TemplateDef = { ...tpl };
-                    if (k === 'sync.submit') next.sync = { submit: blankRequest(k) };
-                    else if (k === 'async.submit') next.async = { submit: blankRequest(k), query: undefined };
-                    else if (k === 'async.query') next.async = { submit: next.async?.submit, query: blankRequest(k) };
-                    else next[k] = blankRequest(k);
-                    if (k === 'clone') next.useClone = true;
-                    if (k === 'upload') next.hasUpload = true;
-                    patch(next); setSelReq(k);
-                  }}>
-                  ＋ {t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}
-                </Button>
-              ))}
-            </div>
-
-            {present(tpl, selReq) && (
-              <RequestEditor tpl={tpl} reqKey={selReq} inst={usedBy(tpl.id)[0] ?? null} onChange={patch} />
-            )}
+            <Tabs value={selReq} onValueChange={(k) => setSelReq(k as ReqKey)} className="w-full">
+              <TabsList className="h-8 flex-wrap">
+                {REQ_KEYS.filter((k) => present(tpl, k)).map((k) => (
+                  <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}</TabsTrigger>
+                ))}
+              </TabsList>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {addable(tpl).map((k) => (
+                  <Button key={k} variant="outline" size="sm" className="h-7 text-[11px]"
+                    onClick={() => {
+                      const next: TemplateDef = { ...tpl };
+                      if (k === 'sync.submit') next.sync = { submit: blankRequest(k) };
+                      else if (k === 'async.submit') next.async = { submit: blankRequest(k), query: undefined };
+                      else if (k === 'async.query') next.async = { submit: next.async?.submit, query: blankRequest(k) };
+                      else next[k] = blankRequest(k);
+                      if (k === 'clone') next.useClone = true;
+                      if (k === 'upload') next.hasUpload = true;
+                      patch(next); setSelReq(k);
+                    }}>
+                    ＋ {t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}
+                  </Button>
+                ))}
+              </div>
+              {present(tpl, selReq) && (
+                <div className="mt-2"><RequestEditor tpl={tpl} reqKey={selReq} inst={usedBy(tpl.id)[0] ?? null} onChange={patch} /></div>
+              )}
+            </Tabs>
 
             {problems.length > 0 && <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>}
+          </div>
+        )}
+
+        {/* 右：实例级参数（整份模板共用） */}
+        {tpl && (
+          <div className="hidden min-h-0 overflow-y-auto border-l border-white/10 pl-3 xl:block">
+            <ParamTable title={t('实例级参数', 'Instance params')}
+              hint={t('全请求共用；Base URL 与密钥就在这儿声明，secret 渲染成密码框', 'declare baseUrl / keys here')}
+              params={tpl.instanceParams ?? []} onChange={(instanceParams) => patch({ ...tpl, instanceParams })} />
           </div>
         )}
       </div>
@@ -229,13 +246,12 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
   };
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState('');
-  const [run, setRun] = useState<{ busy: boolean; text: string }>({ busy: false, text: '' });
   const callKeys = callKeysOf(tpl, reqKey);
 
   const args = (): Record<string, unknown> => {
     const out: Record<string, unknown> = {};
     for (const k of callKeys) {
-      const v = inputs[k] ?? DEFAULT_INPUT[k];
+      const v = inputs[k] ?? SAMPLE_CALL_ARGS[k];
       if (v !== undefined) out[k] = v;
     }
     return out;
@@ -245,26 +261,16 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
     try { setPreview(JSON.stringify(previewRequest(inst, reqKey, args()), null, 1)); }
     catch (e) { setPreview(e instanceof Error ? e.message : String(e)); }
   };
-  const doRun = async () => {
-    if (!inst) return;
-    setRun({ busy: true, text: '' });
-    try {
-      const r = await trialCall(inst, reqKey, args());
-      const size = r.bytes?.length ? ` → ${Math.round(r.bytes.length / 1024)}KB` : '';
-      setRun({ busy: false, text: `${r.steps.map((x) => `${x.key} HTTP ${x.status}`).join(' → ')}${size}\n${JSON.stringify(r.values, null, 1)}` });
-    } catch (e) { setRun({ busy: false, text: e instanceof Error ? e.message : String(e) }); }
-  };
 
   return (
     <div className="space-y-2 rounded-md border border-white/10 p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-medium">{t(REQ_LABEL[reqKey].zh, REQ_LABEL[reqKey].en)}</span>
         <Select value={def.method ?? 'POST'} onValueChange={(method) => set({ method })}>
           <SelectTrigger className="h-7 w-[70px] text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>{['GET', 'POST', 'PUT'].map((m) => <SelectItem key={m} value={m} className="text-[11px]">{m}</SelectItem>)}</SelectContent>
         </Select>
         <Input value={def.path} onChange={(e) => set({ path: e.target.value })} className="h-7 text-xs flex-1 min-w-40 font-mono" placeholder="{baseUrl}/…" />
-        <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={dropReq}>✕ {t('删这条', 'remove')}</Button>
+        <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={dropReq}>{t('删这条接口', 'remove')}</Button>
       </div>
 
       <JsonBox label={t('附加请求头', 'Extra headers')} value={def.headers ?? {}} onChange={(headers) => set({ headers: headers as Record<string, unknown> })}
@@ -326,18 +332,16 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
         {callKeys.map((k) => (
           <label key={k} className="flex items-center gap-1 text-[10px]">
             <span className="text-muted-foreground">{k}</span>
-            <Input value={inputs[k] ?? DEFAULT_INPUT[k] ?? ''} className="h-6 w-28 text-[11px]" onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
+            <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-28 text-[11px]" onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
           </label>
         ))}
         <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={doPreview}>🔍 {t('预览请求', 'Preview')}</Button>
-        <Button size="sm" className="h-7 text-[11px]" onClick={() => void doRun()} disabled={run.busy || !inst}
-          title={inst ? '' : t('要先有一条实例用这份模板（试调用要真密钥）', 'Needs an instance with a key')}>
-          ▶ {t('试调用', 'Try')}</Button>
+        <span className="text-[10px] text-muted-foreground/60">
+          {t('只算不发；真发一条去「实例设置」页的试调用', 'no bytes sent; real calls live on the instance page')}
+        </span>
       </div>
-      {(preview || run.text) && (
-        <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">
-          {preview || (run.busy ? t('发送中…', 'Sending…') : run.text)}
-        </pre>
+      {preview && (
+        <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{preview}</pre>
       )}
     </div>
   );
@@ -349,19 +353,14 @@ const rename = (map: Record<string, string>, from: string, to: string) => {
   for (const [k, v] of Object.entries(map)) next[k === from ? to : k] = v;
   return next;
 };
-const DEFAULT_INPUT: Record<string, string> = {
-  text: '这段旁白用来试听音色。',
-  prompt: '一只戴宇航员头盔的橘猫',
-  systemPrompt: '你是连通性测试助手。',
-  userPrompt: '只回复两个字：正常',
-};
-
 // ========== 三层参数共用的编辑器 ==========
 
 function ParamTable({ title, hint, params, onChange }: {
   title: string; hint?: string; params: ParamSpec[]; onChange: (p: ParamSpec[]) => void;
 }) {
   const t = useT();
+  const uid = useId();
+  const sid = (i: number) => `${uid}-req-${i}`;
   const at = (i: number, p: Partial<ParamSpec>) => onChange(params.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const optsText = (p: ParamSpec) => (p.options ?? []).map((o) => (typeof o === 'object' && o !== null ? `${o.value}${o.label ? `=${o.label}` : ''}` : String(o))).join(', ');
   return (
@@ -371,40 +370,42 @@ function ParamTable({ title, hint, params, onChange }: {
       </div>
       {params.map((p, i) => (
         <div key={i} className="space-y-1 rounded border border-white/10 p-1.5">
-          <div className="flex flex-wrap items-center gap-1">
-            <Input value={p.key} onChange={(e) => at(i, { key: e.target.value })} className="h-6 w-28 text-[10px] font-mono" placeholder="key" />
+          <div className="grid grid-cols-[minmax(0,1fr)_86px_22px] items-center gap-1">
+            <Input value={p.key} onChange={(e) => at(i, { key: e.target.value })} className="h-6 text-[10px] font-mono" placeholder="key" />
             <Select value={p.valueType ?? 'string'} onValueChange={(v) => at(i, { valueType: v as ValueType })}>
-              <SelectTrigger className="h-6 w-[86px] text-[10px]"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-6 text-[10px]"><SelectValue /></SelectTrigger>
               <SelectContent>{VALUE_TYPES.map((v) => <SelectItem key={v} value={v} className="text-[10px]">{v}</SelectItem>)}</SelectContent>
             </Select>
-            <Input value={p.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="h-6 w-28 text-[10px]" placeholder={t('说明', 'label')} />
-            <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 w-20 text-[10px]" placeholder={t('默认值', 'default')} />
-            <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <Switch id={`req-${i}`} checked={p.required !== false} onCheckedChange={(v) => at(i, { required: v })} />
-              <Label htmlFor={`req-${i}`} className="text-[10px] font-normal">{t('必填', 'required')}</Label>
-            </label>
-            <Button variant="ghost" size="sm" className="h-6 w-6 text-[10px]" onClick={() => onChange(params.filter((_, j) => j !== i))}>✕</Button>
+            <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-[10px]" onClick={() => onChange(params.filter((_, j) => j !== i))}>✕</Button>
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            <Input value={p.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="h-6 text-[10px]" placeholder={t('说明', 'label')} />
+            <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 text-[10px]" placeholder={t('默认值', 'default')} />
           </div>
           <div className="flex flex-wrap items-center gap-1">
+            <label className="flex items-center gap-1 pr-1 text-[10px] text-muted-foreground">
+              <Switch id={sid(i)} checked={!!p.required} onCheckedChange={(v) => at(i, { required: v })} />
+              <Label htmlFor={sid(i)} className="text-[10px] font-normal">{t('必填', 'required')}</Label>
+            </label>
             {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
-              <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 flex-1 min-w-32 text-[10px] font-mono"
+              <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 min-w-32 flex-1 basis-40 text-[10px] font-mono"
                 placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />
             )}
             {p.valueType === 'number' && (
-              <>
-                <Input type="number" value={p.min ?? ''} onChange={(e) => at(i, { min: num(e.target.value) })} className="h-6 w-16 text-[10px]" placeholder="min" />
-                <Input type="number" value={p.max ?? ''} onChange={(e) => at(i, { max: num(e.target.value) })} className="h-6 w-16 text-[10px]" placeholder="max" />
-                <Input type="number" step="0.1" value={p.step ?? ''} onChange={(e) => at(i, { step: num(e.target.value) })} className="h-6 w-16 text-[10px]" placeholder="step" />
-              </>
+              <div className="grid min-w-32 flex-1 basis-40 grid-cols-3 gap-1">
+                <Input type="number" value={p.min ?? ''} onChange={(e) => at(i, { min: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="min" />
+                <Input type="number" value={p.max ?? ''} onChange={(e) => at(i, { max: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="max" />
+                <Input type="number" step="0.1" value={p.step ?? ''} onChange={(e) => at(i, { step: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="step" />
+              </div>
             )}
             {p.valueType === 'file' && (
               <>
-                <Input value={p.accept ?? ''} onChange={(e) => at(i, { accept: e.target.value })} className="h-6 w-28 text-[10px] font-mono" placeholder=".mp3,.wav" />
-                <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-28 text-[10px]" placeholder={t('最大字节', 'maxSize')} />
+                <Input value={p.accept ?? ''} onChange={(e) => at(i, { accept: e.target.value })} className="h-6 min-w-20 flex-1 text-[10px] font-mono" placeholder=".mp3,.wav" />
+                <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-20 text-[10px]" placeholder={t('上限字节', 'maxSize')} />
               </>
             )}
             <Select value={p.transform ?? 'none'} onValueChange={(v) => at(i, { transform: v === 'none' ? undefined : (v as ParamSpec['transform']) })}>
-              <SelectTrigger className="h-6 w-36 text-[10px]"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-6 w-32 text-[10px]"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none" className="text-[10px]">{t('不做转换', 'no transform')}</SelectItem>
                 <SelectItem value="hotFixArray" className="text-[10px]">hotFix → 数组</SelectItem>
@@ -450,8 +451,7 @@ function JsonBox({ label, value, onChange, hint }: { label: string; value: unkno
       <div className="text-[10px] text-muted-foreground">
         {label} · {hint ?? t('JSON', 'JSON')}{bad && <span className="text-red-400"> · {t('还不成形，暂不应用', 'not valid yet')}</span>}
       </div>
-      <textarea value={text} onChange={(e) => commit(e.target.value)} rows={4}
-        className={`input w-full text-[10px] font-mono resize-y ${bad ? 'border-red-400/60' : ''}`} />
+      <Textarea value={text} onChange={(e) => commit(e.target.value)} rows={4} className={`text-[10px] font-mono ${bad ? 'border-red-400/60' : ''}`} />
     </div>
   );
 }

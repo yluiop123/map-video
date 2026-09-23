@@ -1085,7 +1085,6 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板：一行 = 一�
   tpl_id      TEXT PRIMARY KEY,  -- 模板 id（一行 = 一份完整模板）：deepseek-chat / qwen-image / qwen-tts / custom-1 …
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,  -- 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK）
-  note        TEXT,  -- 说明：接谁家的哪套端点、有什么坑
   use_clone   INTEGER NOT NULL DEFAULT 0 CHECK (use_clone IN (0,1)),  -- 有没有克隆音色接口（只有 tts 用得上）
   upload      INTEGER NOT NULL DEFAULT 0 CHECK (upload IN (0,1)),  -- 克隆前要不要先上传拿 fileId（use_clone=1 才有意义；0 = 直接塞 base64）
   headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 模板级请求头 JSON（这一行的所有请求共用一份）

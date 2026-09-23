@@ -38,7 +38,7 @@ const fresh = () => {
 
 /** 一份字段给满的模板（三层参数 / outputs / 两枚举 / 桥接都上，用来验逐字往返） */
 const TPL = {
-  id: 'verify-image', name: '回归用图片', category: 'image', note: '只给回归用',
+  id: 'verify-image', name: '回归用图片', category: 'image',
   useClone: false, hasUpload: false,
   headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' },
   instanceParams: [
@@ -188,15 +188,14 @@ console.log('\n[5] 旧形状让位 → 密钥搬进 values.instance');
   const cols = db.prepare('PRAGMA table_info(provider)').all().map((c) => c.name);
   eq('5.3 新表只剩「选哪份模板 + 名字 + 同步异步 + values」四样', cols, ['provider_id', 'tpl_id', 'name', 'sync', 'values_json', 'created_at', 'updated_at']);
   check('5.4 模板表也换了一行一份的形状', !db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name).includes('role'));
-  check('5.5 模板没铺之前 migrate 搬不动（返回 0 且归档留着）',
-    migrateProvidersFromStale(db) === 0 && !!db.prepare("SELECT 1 FROM provider__stale LIMIT 1").get());
+  check('5.5 让位后新表是空的（等 hydrate 铺完模板才搬）', listProvidersV2(db).length === 0);
   db.exec('PRAGMA foreign_keys = ON');
   upsertTemplateV2(db, { id: 'openai-chat', name: '对话', category: 'llm', instanceParams: [], sync: { submit: { path: '${baseUrl}/chat/completions', body: {} } } });
   eq('5.6 v1 行搬回：密钥 / baseUrl / 模型并进 values.instance，overrides 汇总进去', migrateProvidersFromStale(db), 1);
   const v1Row = listProvidersV2(db).find((x) => x.id === 'llm-1');
   eq('5.7 values.instance 内容对得上', v1Row.values.instance, { temperature: 7, baseUrl: 'https://api.deepseek.com', apiKey: 'sk-不得丢-v1', model: 'deepseek-flash' });
   check('5.8 旧接口行有 async → 这条实例变异步', v1Row.sync === false);
-  check('5.9 搬干净就不留归档表', !db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%__stale'").get());
+  check('5.9 搬完不留任何 __stale 表', !db.prepare("SELECT name FROM sqlite_master WHERE name GLOB '*__stale*'").get());
   check('5.10 幂等：再启动一次不再让位', ensureV2Schema(db) === true && listProvidersV2(db).length === 1);
   db.close();
 }
@@ -255,10 +254,22 @@ console.log('\n[6] 二次让位（__stale 已被上一代占名）');
   eq('6.3 搬回的是当前这一代（找不到模板的那份留着）', migrateProvidersFromStale(db), 1);
   const moved = listProvidersV2(db)[0];
   eq('6.4 新一代的 Key 进了 values.instance', moved && moved.values.instance.apiKey, 'sk-新-也别丢');
-  check('6.5 搬不动的旧归档仍留着（Key 是资产，宁可下次再搬）',
-    !!db.prepare("SELECT 1 FROM provider__stale WHERE provider_id='old-1'").get());
-  check('6.6 搬干净的那份才删掉',
-    !db.prepare("SELECT name FROM sqlite_master WHERE name='provider__stale2'").get());
+  check('6.5 搬完一律清归档（不再留 __stale 尾巴）',
+    !db.prepare("SELECT name FROM sqlite_master WHERE name GLOB '*__stale*'").get());
+  db.close();
+}
+
+// ---------- 7. DDL 删掉的列，旧库要跟着删 ----------
+console.log('\n[7] 作废列清理');
+{
+  const db = fresh();
+  db.exec('ALTER TABLE provider_template ADD COLUMN note TEXT');
+  upsertTemplateV2(db, { id: 'keep-me', name: '留着这行', category: 'llm', instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {} } } });
+  check('7.1 启动前确实带着 note 列', db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'note'));
+  ensureV2Schema(db);
+  const cols = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
+  check('7.2 启动后 note 列已删（不是留着没人读）', !cols.includes('note'), cols.join(','));
+  check('7.3 删列不丢行', listTemplatesV2(db).map((x) => x.id).join() === 'keep-me');
   db.close();
 }
 

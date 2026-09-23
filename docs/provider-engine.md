@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS provider_template (
   tpl_id      TEXT PRIMARY KEY,          -- deepseek-chat / qwen-image / qwen-tts / custom-1 …
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,             -- llm / tts / image（不加 CHECK，取值由 TS 联合类型管）
-  note        TEXT,
   use_clone   INTEGER NOT NULL DEFAULT 0 CHECK (use_clone IN (0,1)),  -- 有没有克隆接口
   upload      INTEGER NOT NULL DEFAULT 0 CHECK (upload IN (0,1)),     -- 克隆前要不要先上传拿 fileId
   headers_json TEXT,     instance_params_json TEXT,     -- 模板级请求头 / 实例级参数声明
@@ -181,11 +180,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 
 | 页面 | 装什么 |
 |---|---|
-| **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数**。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组）；中：六个接口槽的卡片（path/method/headers/body/form/三层参数表/outputs 行编辑器/两个枚举/`outputFormat`）；右：实例级参数表。每格都有**预览请求（零网络，密钥打码）**与**试调用（真发一次，回 steps + 取到的字段 + 字节数）** |
+| **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组）；中：六个接口槽的卡片（path/method/headers/body/form/三层参数表/outputs 行编辑器/两个枚举/`outputFormat`）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
-- 「试调用」是这套设计的验收口：改完模板先看实际会长成什么样，再决定要不要花一次真调用。
+- 「预览请求 → 试调用」是这套设计的验收口，两件事分在两页：**预览**在模板页（只跑求值 + 按声明打码，一个字节都不发），**试调用**在实例页（真发一条要的是这条实例的 Key）。改完模板先看形状，再决定要不要花一次真调用。
 - 缺配项**当场点名**（`validateTemplate`）：有 `async.submit` 没 `async.query`、查询没 `successValues`、勾了克隆没配 `clone`、实例参数同名重复、占位符没人给值 —— 不留到运行时。
 - 新界面用 shadcn 原子（`src/components/ui/`），旧面板沿用 `ui/primitives.tsx`；两边都不写原生 `<select>`。
 - **AI 功能只有桌面端有**：网页端不配 Key、不显示字幕生成里的 AI 区（浏览器直连必然 CORS，且 Key 没地方安全存）。
