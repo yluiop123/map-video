@@ -1,208 +1,250 @@
 /**
- * verify-request-engine.mjs — 引擎 + 内置模板 seed 的离线回归（不联网、不动库）
+ * verify-request-engine.mjs — 引擎 + 内置模板的离线回归（不联网、不动库）
  *
- * 覆盖：路径两种写法、模板求值（类型保留 / 插值 / {@name} 展开 / omitIfEmpty / when 门控）、
- *       五步取回管线（响应体即产物 / hex / base64 / 远端链接当场下载并带鉴权头）、
- *       异步（提交 → taskId → 同组 query 行轮询 → 三枚举判定 → 超时）、密钥打码、
- *       行与组的保存前校验，以及全部内置模板组逐组试构造。
+ * 覆盖：路径两种写法与未命中、三层参数取值优先级、`${}` 求值（类型保留 / 可选参数没填即删键 /
+ *       没声明的占位符点名）、headers 逐请求覆盖、outputs 隐式流转、hotFix 数据驱动转换、
+ *       产物四种封装（binary / hex / base64 / url）与 download 桥接当场下载、
+ *       异步两步（提交 → 两枚举判定 → 取产物）、克隆的一体式与分离式、密钥打码、模板自检，
+ *       以及全部内置模板逐份试构造。
  * 运行：node --experimental-strip-types tools/verify-request-engine.mjs
- * 退出码非 0 表示有失败项。
  */
 import {
-  buildRequest, callRole, readPath, redact, validateRow, validateGroup, pickRow, applySlots, callVarsOf,
+  REQ_KEYS, applyOutputs, buildRequest, callKeysOf, classify, hotFixToArrays, readPath,
+  redact, requestOf, runClone, runSync, secretsOf, submitAsync, queryOnce, validateTemplate, EngineError,
 } from '../src/lib/request-engine.ts';
-import { SEED_GROUPS, needsSecret2, seedRow } from '../src/lib/template-seed.ts';
+import { SEED_TEMPLATES, seedTemplate } from '../src/lib/template-seed.ts';
 
 let failed = 0;
 const check = (name, pass, detail) => {
   if (!pass) failed += 1;
   console.log(`${pass ? '  ok  ' : ' FAIL '} ${name}${detail !== undefined && !pass ? `\n         ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`);
 };
-const eq = (name, got, want) => check(name, JSON.stringify(got) === JSON.stringify(want), { got, want });
-const throws = async (name, fn, wantIncludes) => {
+const canon = (v) => (Array.isArray(v) ? v.map(canon)
+  : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])]))
+  : v);
+const eq = (name, got, want) => check(name, JSON.stringify(canon(got)) === JSON.stringify(canon(want)), { got, want });
+const throws = async (name, fn, want) => {
   try { await fn(); check(name, false, '没抛错'); }
-  catch (e) { const m = e instanceof Error ? e.message : String(e); check(name, !wantIncludes || m.includes(wantIncludes), m); }
+  catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    check(name, !want || (typeof want === 'function' ? want(e) : m.includes(want)), m);
+  }
 };
 
-const groupOf = (id) => SEED_GROUPS.find((g) => g.tplGroup === id);
-const rowOf = (id, role, mode = 'sync') => groupOf(id).rows.find((r) => r.role === role && r.mode === mode);
+/** 一条实例：取值全在 values 两包里（baseUrl / 密钥也是模板声明出来的普通参数） */
+const inst = (tplId, o = {}) => ({
+  id: `prov_${tplId}`, tplId, name: tplId, sync: o.sync ?? true,
+  values: {
+    instance: { baseUrl: 'https://x.example/v1', apiKey: 'sk-abcdefghij1234', model: 'm-instance', ...o.instance },
+    requests: o.requests ?? {},
+  },
+});
 
-// ========== 1. 路径 ==========
-const DOC = { output: { choices: [{ message: { content: [{ image: 'u' }] } }], results: [{ url: 'r' }] } };
-eq('1.1 方括号下标', readPath(DOC, 'output.choices[0].message.content[0].image'), 'u');
-eq('1.2 纯点号下标同样收', readPath(DOC, 'output.results.0.url'), 'r');
-check('1.3 下标越界返回 undefined', readPath(DOC, 'output.choices[5].message') === undefined);
-check('1.4 键名当字符串取不到数组元素', readPath(DOC, 'output.choices.x') === undefined);
-
-// ========== 2. 求值 ==========
-const chat = rowOf('openai-chat', 'generate');
-// 实例行提供的保留占位符（真实调用里由 ctxOf 一律给齐：speed 缺省 1、voice 来自实例列）
-const ctx = {
-  baseUrl: 'https://api.deepseek.com', apiKey: 'sk-abcdefghij1234', apiKey2: '', model: 'deepseek-chat',
-  voice: 'longanyang', speed: 1, mode: 'sync', params: { temperature: 7, maxTokens: 2048 },
-};
-let req = buildRequest(chat, { ...ctx, systemPrompt: '你是助手', userPrompt: '写三行' });
-eq('2.1 {baseUrl} 拼出完整地址', req.url, 'https://api.deepseek.com/chat/completions');
-eq('2.2 header 插值密钥', req.headers.Authorization, 'Bearer sk-abcdefghij1234');
-// 内置的文案模板故意**不预置任何参数**（要 temperature 由用户自己声明 + 写进 body），
-// 所以「类型保留」与「omitIfEmpty 删键」用一张自建行测，不赖在 seed 上。
-const typedRow = {
-  role: 'generate', mode: 'sync', method: 'POST', url: '{baseUrl}/chat',
-  body: { model: '{model}', temperature: '{temperature}', max_tokens: '{maxTokens}' },
-  instParams: [
-    { name: 'temperature', type: 'int', default: 7 },
-    { name: 'maxTokens', type: 'int', default: '', omitIfEmpty: true },
-  ],
-};
-const typed = buildRequest(typedRow, { ...ctx, params: { temperature: 7 } });
-eq('2.3 标量槽保留数字类型', typed.body.temperature, 7);
-eq('2.4 常量骨架数组里的槽位', req.body.messages.map((m) => m.role), ['system', 'user']);
-eq('2.5 骨架里的字符串槽仍是字符串', req.body.messages[1].content, '写三行');
-check('2.6 omitIfEmpty 的键没值时连键删掉', !('max_tokens' in typed.body), typed.body);
-const img = rowOf('dashscope-image', 'generate');
-const imgReq = buildRequest(img, { ...ctx, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', params: { size: '1024*1024', promptExtend: false, watermark: false }, prompt: '猫' });
-eq('2.7 嵌套对象骨架', imgReq.body.input.messages[0].content[0].text, '猫');
-eq('2.8 bool 参数保留布尔', imgReq.body.parameters.watermark, false);
-check('2.9 空 parameters 不会被误删（模板写死的键留着）', !!imgReq.body.parameters && 'size' in imgReq.body.parameters);
-
-// {@name} 展开 + when 门控
-const spliceRow = {
-  role: 'generate', mode: 'sync', method: 'POST', url: '{baseUrl}/x',
-  body: { model: '{model}', messages: [{ role: 'user', content: '{text}' }, '{@history}'] },
-  reqParams: [
-    { name: 'text', type: 'string' },
-    { name: 'history', type: 'list', omitIfEmpty: true, item: { body: { role: '{role}', content: '{content}' }, fields: [] } },
-  ],
-};
-eq('2.10 空 list 展开后不留空位', buildRequest(spliceRow, { ...ctx, text: 'hi' }).body.messages.length, 1);
-const spliced = buildRequest(spliceRow, { ...ctx, text: 'hi', history: [{ role: 'assistant', content: '上一句' }] });
-eq('2.11 {@name} 整段展开且保留对象类型', spliced.body.messages[1], { role: 'assistant', content: '上一句' });
-const gatedRow = {
-  role: 'generate', mode: 'sync', url: '{baseUrl}/g',
-  body: { a: '{a}', b: '{b}' },
-  instParams: [{ name: 'a', when: 'mode == async' }, { name: 'b' }],
-};
-eq('2.12 when 不成立的变量连父键一起消失', buildRequest(gatedRow, { ...ctx, params: { b: 2 } }).body, { b: 2 });
-eq('2.13 实例 mode 决定 when 是否成立', buildRequest(gatedRow, { ...ctx, mode: 'async', params: { a: 1, b: 2 } }).body, { a: 1, b: 2 });
-
-// ========== 3. 打码 ==========
-const masked = redact(req, ctx);
-check('3.1 预览里密钥打码', masked.headers.Authorization.includes('****') && !masked.headers.Authorization.includes('bcdef'), masked.headers.Authorization);
-check('3.2 原文不在任何字段里', !JSON.stringify(masked).includes('sk-abcdefghij1234'));
-
-// ========== 4. 取回与解码（五步管线） ==========
-/** 造一个假传输：按顺序吐响应（吐完重复最后一个），并记下每次发出的请求与下载 */
-const mk = (...replies) => {
+/** 假传输：按 URL 关键字命中 canned，并把发出去的请求记下来 */
+const mk = (canned) => {
   const sent = [];
   const fetches = [];
-  let i = 0;
-  return {
-    sent, fetches,
-    send: async (r) => { sent.push(r); return replies[Math.min(i++, replies.length - 1)]; },
-    fetchBytes: async (u, h) => { fetches.push({ u, h }); return { bytes: new Uint8Array([1, 2, 3]), mime: 'audio/wav' }; },
-    sleep: async () => {},
-    // 每次 +1000ms，用来测超时分支
-    now: (() => { let t = 0; return () => (t += 1000); })(),
+  const deps = {
+    send: async (r) => {
+      sent.push(r);
+      // 同一 URL 可以排多条响应（轮询就是靠它演 RUNNING → SUCCEEDED）
+      const at = canned.findIndex((c) => r.url.includes(c.on) || c.on === '*');
+      if (at < 0) return { status: 404, text: 'no canned' };
+      const hit = canned.length > 1 && canned.filter((c) => r.url.includes(c.on)).length > 1 ? canned.splice(at, 1)[0] : canned[at];
+      return hit.res();
+    },
+    fetchBytes: async (u, headers) => { fetches.push({ u, headers }); return { bytes: new Uint8Array([1, 2, 3, 4]), mime: 'audio/mpeg' }; },
   };
+  return { deps, sent, fetches };
 };
+const json = (o, status = 200) => () => ({ status, contentType: 'application/json', json: o });
+const bytesOf = (o) => () => ({ status: 200, contentType: 'application/octet-stream', bytes: o });
 
-const cosy = groupOf('dashscope-cosyvoice');
-let c = mk({ status: 200, contentType: 'audio/mpeg', bytes: new Uint8Array([9, 9, 9]) });
-let out = await callRole(cosy, { ...ctx, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'cosyvoice-v3.5-flash', voice: 'longanyang', params: { format: 'mp3', sampleRate: 24000 } }, 'synthesize', { text: '你好' }, c);
-check('4.1 响应体本身就是音频（audio 槽留空）', out.bytes?.length === 3 && out.mime === 'audio/mpeg');
+// ========== 1. 路径 ==========
+console.log('\n[1] 路径取值');
+const DOC = { output: { choices: [{ message: { content: [{ image: 'u' }] } }], results: [{ url: 'r' }], task_status: 'SUCCEEDED' } };
+eq('1.1 方括号下标', readPath(DOC, 'output.choices[0].message.content[0].image'), 'u');
+eq('1.2 纯点号下标同样收', readPath(DOC, 'output.results.0.url'), 'r');
+check('1.3 越界给 undefined（不是空数组）', readPath(DOC, 'output.choices[9].message') === undefined, readPath(DOC, 'output.choices[9].message'));
+eq('1.4 完整 $ 写法也收', readPath(DOC, '$.output.task_status'), 'SUCCEEDED');
+check('1.5 路径为空 = 不取', readPath(DOC, '') === undefined);
 
-c = mk({ status: 200, contentType: 'application/json', json: { output: { audio: { url: 'https://x/a.wav' } } } });
-out = await callRole(groupOf('dashscope-qwen-tts'), { ...ctx, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'qwen3-tts-flash', voice: 'Cherry', params: {} }, 'synthesize', { text: '你好' }, c);
-check('4.2 产物是远端链接 → 当场下载', out.bytes?.length === 3, out.values);
-eq('4.3 下载走的是那个链接', c.fetches.map((f) => f.u), ['https://x/a.wav']);
-
-c = mk({ status: 200, contentType: 'application/json', json: { data: { audio: 'deadbeef' } } });
-out = await callRole(groupOf('minimax-t2a'), { ...ctx, baseUrl: 'https://api.minimax.chat/v1/t2a_v2', model: 'm', voice: 'v', params: { groupId: 'g1', format: 'mp3' } }, 'synthesize', { text: '你好' }, c);
-eq('4.4 hex 解码', Array.from(out.bytes ?? []), [0xde, 0xad, 0xbe, 0xef]);
-eq('4.5 group_id 走 query（实例参数，不占密钥列）', c.sent[0].query, { group_id: 'g1' });
-check('4.6 第二凭证列没被 group_id 占用', !JSON.stringify(c.sent[0]).includes('apiKey2'));
-
-c = mk({ status: 200, contentType: 'application/json', json: { output: { voice_id: 'cosyvoice-x-f' } } });
-out = await callRole(cosy, { ...ctx, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'cosyvoice-v3.5-flash', params: { prefix: 'mv' } }, 'clone', { wavB64: 'AAAA' }, c);
-eq('4.7 克隆取音色 ID', out.values.voiceId, 'cosyvoice-x-f');
-const dataUri = buildRequest(rowOf('dashscope-cosyvoice', 'clone'), { ...ctx, baseUrl: 'https://d', params: { prefix: 'mv' }, wavB64: 'ab+cd==' });
-eq('4.8 data URI 里的 +/= 没被当占位符', dataUri.body.input.url, 'data:audio/wav;base64,ab+cd==');
-
-// ========== 5. 异步（同组 query 行轮询） ==========
-const imgAsync = groupOf('dashscope-image');
-const actx = { ...ctx, baseUrl: 'https://dashscope.aliyuncs.com/api/v1', mode: 'async', model: 'wan2.6-t2i', params: { size: '1024*1024', count: 1, promptExtend: false, watermark: false } };
-c = mk(
-  { status: 200, contentType: 'application/json', json: { output: { task_id: 'T9' } } },
-  { status: 200, contentType: 'application/json', json: { output: { task_status: 'RUNNING' } } },
-  // 产物形状照 2026-09-22 实测的异步查询响应（choices[…].content[…].image，不是 results）
-  { status: 200, contentType: 'application/json', json: { output: { task_status: 'SUCCEEDED', choices: [{ message: { content: [{ image: 'https://x/r.png' }] } }] } } },
-);
-out = await callRole(imgAsync, actx, 'generate', { prompt: '猫' }, c);
-check('5.1 异步产物来自 query 行', out.bytes?.length === 3, out.values);
-eq('5.2 taskId 交回界面', out.values.taskId, 'T9');
-eq('5.3 轮询过程逐步记录', out.steps.map((s) => s.label), ['generate 提交', '查询状态', '查询状态']);
-check('5.4 第二次请求把 {taskId} 拼进了地址', c.sent[1].url.endsWith('/tasks/T9'), c.sent[1].url);
-eq('5.5 异步变体的头与同步不同', buildRequest(rowOf('dashscope-image', 'generate', 'async'), { ...actx, prompt: '猫' }).headers['X-DashScope-Async'], 'enable');
-const qrow = rowOf('dashscope-image', 'query');
-check('5.6 查询行的 url 用 {taskId} 占位', qrow.url.includes('{taskId}'));
-
-c = mk(
-  { status: 200, contentType: 'application/json', json: { output: { task_id: 'T9' } } },
-  { status: 200, contentType: 'application/json', json: { output: { task_status: 'FAILED' } } },
-);
-await throws('5.7 命中 fail 枚举 → 点名状态原文', () => callRole(imgAsync, actx, 'generate', { prompt: '猫' }, c), 'FAILED');
-
-c = mk(
-  { status: 200, contentType: 'application/json', json: { output: { task_id: 'T9' } } },
-  { status: 200, contentType: 'application/json', json: { output: { task_status: 'RUNNING' } } },
-);
-await throws('5.8 轮询超时会报错', () => callRole(imgAsync, actx, 'generate', { prompt: '猫' }, c), '超时');
-
-c = mk(
-  { status: 200, contentType: 'application/json', json: { output: { task_id: 'T9' } } },
-  { status: 200, contentType: 'application/json', json: { output: { task_status: 'WEIRD' } } },
-);
-await throws('5.9 三枚举都没命中的状态要点名（不是死循环）', () => callRole(imgAsync, actx, 'generate', { prompt: '猫' }, c), '未识别的任务状态');
-
-const noQuery = { ...imgAsync, rows: imgAsync.rows.filter((r) => r.role !== 'query') };
-await throws('5.10 缺查询接口时报错点名', () => callRole(noQuery, actx, 'generate', { prompt: '猫' }, mk({ status: 200, contentType: 'application/json', json: { output: { task_id: 'T9' } } })), '查询接口');
-
-// ========== 6. 保存前校验 ==========
-check('6.1 异步生成行缺 taskId 会点名', validateRow({ ...rowOf('dashscope-image', 'generate', 'async'), resp: {} }, 'image').some((p) => p.includes('任务 id')));
-check('6.2 同步行配了状态会点名', validateRow({ ...rowOf('dashscope-image', 'generate'), resp: { image: 'a', status: 'b' } }, 'image').some((p) => p.includes('同步接口不该配')));
-check('6.3 查询行缺成功枚举会点名', validateRow({ ...qrow, resp: { ...qrow.resp, success: [] } }, 'image').some((p) => p.includes('成功')));
-check('6.4 未声明的占位符会点名', validateRow({ ...chat, body: { x: '{nope}' } }, 'llm').some((p) => p.includes('nope')));
-check('6.5 list 变量缺 item 会点名', validateRow({ ...chat, instParams: [{ name: 'l', type: 'list' }] }, 'llm').some((p) => p.includes('元素子模板')));
-check('6.6 音频槽留空是合法的（响应体即音频）', validateRow(rowOf('dashscope-cosyvoice', 'synthesize'), 'tts').length === 0);
-check('6.7 异步实例缺查询接口 → 组级点名', validateGroup(noQuery, 'async').some((p) => p.includes('查询接口')));
-check('6.8 缺必需 role → 组级点名', validateGroup({ ...cosy, rows: [] }, 'sync').some((p) => p.includes('必需')));
-
-// ========== 7. seed 自检 ==========
-for (const g of SEED_GROUPS) {
-  const problems = validateGroup(g, 'sync');
-  check(`7.1 ${g.tplGroup} 同步形状可用`, problems.length === 0, problems);
-  const keys = g.rows.map((r) => `${r.role}:${r.mode}`);
-  check(`7.2 ${g.tplGroup} 没有重复 role+mode`, new Set(keys).size === keys.length, keys);
-  const asyncProblems = g.rows.some((r) => r.mode === 'async') ? validateGroup(g, 'async') : [];
-  check(`7.3 ${g.tplGroup} 异步形状可用`, asyncProblems.length === 0, asyncProblems);
+// ========== 2. 三层参数与求值 ==========
+console.log('\n[2] 三层参数与求值');
+{
+  const tpl = seedTemplate('deepseek-chat');
+  const i = inst('deepseek-chat', { requests: { 'sync.submit': { model: 'deepseek-flash', temperature: 0.6 } } });
+  const { req, missing } = buildRequest(tpl, i, 'sync.submit', { systemPrompt: '你是助手', userPrompt: '写三行' });
+  eq('2.1 请求级覆盖实例级（同名 key 各存各的）', req.body.model, 'deepseek-flash');
+  eq('2.2 数字参数保留类型', req.body.temperature, 0.6);
+  eq('2.3 写死在模板里的字面量原样带走', req.body.stream, false);
+  eq('2.4 没填的可选参数连键删掉', 'max_tokens' in req.body, false);
+  eq('2.5 嵌套对象里全空 → 父键一起删（不留半成品 thinking）', 'thinking' in req.body, false);
+  eq('2.6 调用级参数进骨架', [req.body.messages[0].content, req.body.messages[1].content], ['你是助手', '写三行']);
+  eq('2.7 baseUrl 求值后就是完整地址（不再二次拼接）', req.url, 'https://x.example/v1/chat/completions');
+  eq('2.8 密钥从实例参数进 header', req.headers.Authorization, 'Bearer sk-abcdefghij1234');
+  check('2.9 声明过的参数没填 = 不算错，不点名', missing.size === 0, [...missing]);
+  const typo = buildRequest({ ...tpl, sync: { submit: { ...tpl.sync.submit, body: { a: '${hasingxie}' } } } }, i, 'sync.submit', {}).missing;
+  check('2.10 占位符打错字 → 点名（别静默发出去）', [...typo].includes('hasingxie'), [...typo]);
+  const deep = buildRequest(tpl, inst('deepseek-chat', { requests: { 'sync.submit': { thinking: 'enabled', reasoningEffort: 'high' } } }), 'sync.submit', { systemPrompt: 'a', userPrompt: 'b' }).req;
+  eq('2.11 枚举值原样进嵌套对象', deep.body.thinking, { type: 'enabled' });
+  check('2.12 没选思考强度时整个 thinking 键消失', !('thinking' in buildRequest(tpl, i, 'sync.submit', { systemPrompt: 'a', userPrompt: 'b' }).req.body));
+  eq('2.13 枚举参数按原值发出', deep.body.reasoning_effort, 'high');
 }
-check('7.4 火山要第二凭证', needsSecret2(groupOf('volc-tts')));
-check('7.5 通义语音不要第二凭证', !needsSecret2(groupOf('dashscope-cosyvoice')));
-check('7.6 新建行种子带齐槽位', !!seedRow('image', 'query').resp?.status && Array.isArray(seedRow('image', 'query').resp?.success));
-check('7.7 pickRow 按实例 mode 选变体', pickRow(groupOf('dashscope-image'), 'generate', 'async')?.url.includes('image-generation'));
-check('7.11 查询行的地址不重复带 /api/v1（实测踩过 404）', !groupOf('dashscope-image').rows.find((r) => r.role === 'query').url.includes('/api/v1/api/v1'));
-// 内置模板的参数表：调用期正文是保留占位符（不声明），实例参数只放各家确实要人定的
-check('7.12 文案生成接口两张参数表都是空的（参数由用户自己 ＋）',
-  (chat.instParams ?? []).length === 0 && (chat.reqParams ?? []).length === 0 && !JSON.stringify(chat.body).includes('temperature'));
-check('7.13 语音 / 图片的接口也没人预声明调用期正文',
-  SEED_GROUPS.every((g) => g.rows.every((r) => (r.reqParams ?? []).length === 0)));
-check('7.14 调用期正文不声明也合法，且试调用认得该长哪几个输入框',
-  validateRow(chat, 'llm').length === 0 && callVarsOf(chat).join(',') === 'systemPrompt,userPrompt');
-check('7.15 实例参数不算调用端要填的（图片行的试调用只长 prompt 一个框）',
-  callVarsOf(rowOf('dashscope-image', 'generate')).join(',') === 'prompt');
-eq('7.8 没填的槽不参与取值', applySlots(DOC, { image: '', audio: undefined, status: 'output.results[0].url' }), { status: 'r' });
-check('7.9 只有同步变体的组：选异步会被点名', validateGroup(groupOf('dashscope-cosyvoice'), 'async').some((p) => p.includes('没有异步')));
-check('7.10 音频槽留空 → 取值表里没有 audio 键', Object.keys(applySlots({ x: 1 }, { audio: '' })).length === 0);
 
-console.log(failed ? `\n===== ${failed} 项失败 =====` : '\n===== 全部通过 =====');
+// ========== 3. headers 覆盖 / outputs / 发音修正 ==========
+console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
+{
+  const tpl = seedTemplate('qwen-image');
+  const i = inst('qwen-image', { sync: false });
+  const s = buildRequest(tpl, i, 'sync.submit', { prompt: '猫' }).req;
+  const a = buildRequest(tpl, i, 'async.submit', { prompt: '猫' }).req;
+  check('3.1 异步头只加在异步那条', a.headers['X-DashScope-Async'] === 'enable' && !('X-DashScope-Async' in s.headers), a.headers);
+  eq('3.2 两条都用模板级 Authorization', [s.headers.Authorization, a.headers.Authorization], ['Bearer sk-abcdefghij1234', 'Bearer sk-abcdefghij1234']);
+  eq('3.3 outputs 把 task_id 收成中间变量', applyOutputs({ output: { task_id: 'T9' } }, { taskId: 'output.task_id' }), { taskId: 'T9' });
+  eq('3.4 查询请求直接 ${taskId}', buildRequest(tpl, i, 'async.query', {}, { taskId: 'T9' }).req.url, 'https://x.example/v1/tasks/T9');
+  eq('3.5 hotFix 摊成上游要的数组', hotFixToArrays({ pronunciation: [{ 重庆: 'chong2 qing4' }], replace: [{ AI: '人工智能' }] }), ['重庆/chong2 qing4', 'AI/人工智能']);
+  const t2 = { ...tpl, sync: { submit: { ...tpl.sync.submit, callParams: [{ key: 'hotFix', label: '发音修正', valueType: 'json', transform: 'hotFixArray' }], body: { a: '${hotFix}' } } } };
+  eq('3.6 声明了 transform 的参数自动成形', buildRequest(t2, inst('x'), 'sync.submit', { hotFix: { pronunciation: [{ 长: 'chang2' }] } }).req.body.a, ['长/chang2']);
+  check('3.7 没给 hotFix 时整键消失（只这一个键时连 body 都不发）', buildRequest(t2, inst('x'), 'sync.submit', {}).req.body === undefined);
+  const t3 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { n: '${n}' }, callParams: [{ key: 'n', label: '个数', valueType: 'number' }] } } };
+  eq('3.8 字符串数字按声明转成数字', buildRequest(t3, inst('x'), 'sync.submit', { n: '3' }).req.body.n, 3);
+}
+
+// ========== 4. 产物四种封装与桥接 ==========
+console.log('\n[4] 产物还原');
+{
+  const tts = seedTemplate('qwen-tts');
+  const d = mk([{ on: 'multimodal-generation', res: json({ output: { audio: { url: 'https://cdn/a.wav' } } }) }]);
+  const out = await runSync(tts, inst('qwen-tts'), d.deps, 'sync.submit', { text: '你好', voice: 'Cherry' });
+  eq('4.1 url 产物当场下载（不留时效链接）', out.bytes?.length, 4);
+  eq('4.2 下载用的就是那条链接', d.fetches.map((f) => f.u), ['https://cdn/a.wav']);
+  check('4.3 裸 GET（链接自带签名，不必再带鉴权头）', !d.fetches[0].headers || Object.keys(d.fetches[0].headers).length === 0, d.fetches[0].headers);
+
+  const bin = seedTemplate('qwen-tts');
+  const d2 = mk([{ on: '*', res: bytesOf(new Uint8Array([9, 9, 9])) }]);
+  const t2 = { ...bin, sync: { submit: { ...bin.sync.submit, outputFormat: 'binary', outputs: undefined } } };
+  eq('4.4 binary = 响应体即产物', Array.from((await runSync(t2, inst('qwen-tts'), d2.deps, 'sync.submit', { text: 'a', voice: 'v' })).bytes ?? []), [9, 9, 9]);
+
+  const hexT = { ...bin, sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { audio: 'data.audio' }, outputFormat: 'hex' } } };
+  const d3 = mk([{ on: '/x', res: json({ data: { audio: 'deadbeef' } }) }]);
+  eq('4.5 hex 解码', Array.from((await runSync(hexT, inst('qwen-tts'), d3.deps, 'sync.submit', {})).bytes ?? []), [0xde, 0xad, 0xbe, 0xef]);
+  const b64T = { ...hexT, sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { audio: 'data.audio' }, outputFormat: 'base64' } } };
+  const d4 = mk([{ on: '/x', res: json({ data: { audio: 'AAEC' } }) }]);
+  eq('4.6 base64 解码', Array.from((await runSync(b64T, inst('qwen-tts'), d4.deps, 'sync.submit', {})).bytes ?? []), [0, 1, 2]);
+
+  const bridge = {
+    ...bin,
+    sync: { submit: { path: '${baseUrl}/submit', body: {}, outputs: { fileId: 'data.file_id' } } },
+    download: { path: '${baseUrl}/files/retrieve?file_id=${fileId}', method: 'GET', outputs: { url: 'file.download_url' } },
+  };
+  const d5 = mk([
+    { on: '/submit', res: json({ data: { file_id: 'F1' } }) },
+    { on: 'retrieve', res: json({ file: { download_url: 'https://cdn/f1' } }) },
+  ]);
+  const via = await runSync(bridge, inst('qwen-tts'), d5.deps, 'sync.submit', {});
+  eq('4.7 配了 download 桥接：先取 fileId 再拿地址下载', [via.bytes?.length, d5.sent.map((x) => (x.url.includes('retrieve') ? 'download' : 'submit'))], [4, ['submit', 'download']]);
+  const noProd = await runSync({ ...bridge, download: undefined, sync: { submit: { path: '${baseUrl}/submit', body: {} } } }, inst('qwen-tts'), mk([{ on: '/submit', res: json({ ok: 1 }) }]).deps, 'sync.submit', {});
+  check('4.8 只取字段不要产物（文案类就是这样）→ bytes 留空不抛错', noProd.bytes === undefined, noProd.bytes);
+}
+
+// ========== 5. 异步两步 ==========
+console.log('\n[5] 异步：提交 → 轮询 → 取产物');
+{
+  const tpl = seedTemplate('qwen-image');
+  const i = inst('qwen-image', { sync: false });
+  const { deps, sent } = mk([
+    { on: 'image-generation', res: json({ output: { task_id: 'T9' } }) },
+    { on: '/tasks/T9', res: json({ output: { task_status: 'RUNNING' } }) },
+    // 2026-09-23 实测：异步查询回的图片与同步同一路径（output.choices[0].message.content[0].image），
+    // 文档写的 output.results[].url 是旧形状 —— 桩数据照实测写，别照文档写
+    { on: '/tasks/T9', res: json({ output: { task_status: 'SUCCEEDED', choices: [{ message: { content: [{ image: 'https://cdn/i.png' }] } }] } }) },
+  ]);
+  const first = await submitAsync(tpl, i, deps, { prompt: '猫' });
+  eq('5.1 提交拿到 taskId', first.taskId, 'T9');
+  eq('5.2 中间态 = 继续查', (await queryOnce(tpl, i, deps, first.values)).outcome, 'pending');
+  const ok = await queryOnce(tpl, i, deps, first.values);
+  eq('5.3 命中成功值就取回产物', [ok.outcome, ok.bytes?.length], ['success', 4]);
+  eq('5.4 查询打了两次同一个地址', sent.filter((x) => x.url.includes('/tasks/')).length, 2);
+  eq('5.5 查询是 GET 不带体', [sent[1].method, sent[1].body], ['GET', undefined]);
+  const bad = mk([{ on: '/tasks/T8', res: json({ code: 'Throttling', message: '太挤了', output: { task_status: 'FAILED' } }) }]);
+  await throws('5.6 失败把上游 code/message 原样抛回', () => queryOnce(tpl, i, bad.deps, { taskId: 'T8' }), 'Throttling');
+  eq('5.7 两个列表都没命中 = pending', classify('PENDING', ['SUCCEEDED'], ['FAILED']), 'pending');
+  // 2026-09-23 真机抓到的完整响应（task 276a888f…，排队 9 分钟）原样留一份：
+  // 谁把产物路径改回文档写法，这条就会红
+  const REAL = { request_id: 'x', output: { task_id: '276a888f', task_status: 'SUCCEEDED', submit_time: '2026-09-23 20:34:42.491', end_time: '2026-09-23 20:43:57.991', choices: [{ message: { content: [{ type: 'image', image: 'https://cdn.real/i.png' }] }, finish_reason: 'stop' }], rewrite_status: 'success' }, usage: { output_image_count: 1 } };
+  eq('5.7b 真机响应的产物路径取得到', applyOutputs(REAL, tpl.async.query.outputs).url, 'https://cdn.real/i.png');
+  eq('5.8 状态值大小写不敏感（各家写法不一）', classify('Succeeded', ['succeeded'], ['failed']), 'success');
+  await throws('5.9 5xx / 429 带状态码抛回（调度层才知道能不能重试）', async () => {
+    const d = mk([{ on: '/tasks/', res: () => ({ status: 429, text: 'too many' }) }]);
+    try { await queryOnce(tpl, i, d.deps, { taskId: 'T1' }); }
+    catch (e) { if (e.status !== 429) throw new EngineError(`状态码没带回来：${e.status}`); throw e; }
+  }, (e) => e.status === 429);
+}
+
+// ========== 6. 克隆 ==========
+console.log('\n[6] 音色克隆');
+{
+  const qwen = seedTemplate('qwen-tts');
+  const d = mk([{ on: 'customization', res: json({ output: { voice: 'qwen-voice-77' } }) }]);
+  const r = await runClone(qwen, inst('qwen-tts'), d.deps, { audioDataUri: 'data:audio/wav;base64,AA==', model: 'qwen3-tts-vc-2026-01-22', preferredName: 'mv' });
+  eq('6.1 一体式：data URI 直接进 body，一步拿音色 ID', [r.values.voiceId, d.sent.length], ['qwen-voice-77', 1]);
+  const body = d.sent[0].body;
+  eq('6.2 复刻目标模型走请求级参数（合成必须同款）', body.input.target_model, 'qwen3-tts-vc-2026-01-22');
+  eq('6.3 外层 model 是写死的注册服务名', body.model, 'qwen-voice-enrollment');
+
+  const up = { ...qwen, hasUpload: true, upload: { path: '${baseUrl}/files/upload', body: {}, outputs: { fileId: 'file.file_id' } }, clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileId}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } } };
+  const d2 = mk([{ on: 'files/upload', res: json({ file: { file_id: 'F7' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-7' }) }]);
+  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { preferredName: 'mv' });
+  eq('6.4 分离式：先上传拿 fileId 再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
+  eq('6.5 中间变量 fileId 自动流进克隆请求体', d2.sent[1].body.file_id, 'F7');
+}
+
+// ========== 7. 打码 ==========
+console.log('\n[7] 密钥打码');
+{
+  const tpl = seedTemplate('deepseek-chat');
+  const i = inst('deepseek-chat', { instance: { apiKey: 'sk-super-secret-0123456789' } });
+  const r = buildRequest(tpl, i, 'sync.submit', { systemPrompt: 'a', userPrompt: 'b' }).req;
+  const red = redact(r, secretsOf(tpl, i));
+  check('7.1 打码后不含明文 Key', !JSON.stringify(red).includes('super-secret'), JSON.stringify(red).slice(0, 120));
+  check('7.2 原请求仍在（发出去用的是它，不是打码版）', r.headers.Authorization.includes('super-secret'));
+  eq('7.3 只遮声明成 secret 的那个取值', redact(r, secretsOf(tpl, i)).headers.Authorization, 'Bearer ****');
+  check('7.4 baseUrl 这种非 secret 参数不遮', JSON.stringify(redact(r, secretsOf(tpl, i)).url).includes('x.example'), redact(r, []).url);
+}
+
+// ========== 8. 模板自检 ==========
+console.log('\n[8] 保存前自检');
+{
+  check('8.1 内置模板全部自检干净', SEED_TEMPLATES.every((t) => validateTemplate(t).length === 0),
+    SEED_TEMPLATES.map((t) => [t.id, validateTemplate(t)]).filter(([, x]) => x.length));
+  const base = seedTemplate('qwen-image');
+  check('8.2 有异步提交没查询 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit } }).some((x) => x.includes('查询')));
+  check('8.3 查询没配成功值 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit, query: { ...base.async.query, successValues: [] } } }).some((x) => x.includes('successValues')));
+  check('8.4 实例参数同名重复 → 点名', validateTemplate({ ...base, instanceParams: [...base.instanceParams, { key: 'baseUrl', label: '重' }] }).some((x) => x.includes('重复')));
+  check('8.5 勾了克隆却没配 clone 请求 → 点名', validateTemplate({ ...base, category: 'tts', useClone: true }).some((x) => x.includes('clone')));
+  check('8.6 谁都能自己加异步（分类不限制接口形状）', validateTemplate({ ...seedTemplate('deepseek-chat'), async: base.async }).length === 0,
+    validateTemplate({ ...seedTemplate('deepseek-chat'), async: base.async }));
+}
+
+// ========== 9. 逐份 seed 试构造 ==========
+console.log('\n[9] 内置模板逐份试构造');
+for (const t of SEED_TEMPLATES) {
+  const keys = REQ_KEYS.filter((k) => !!requestOf(t, k));
+  let ok = true;
+  let why = '';
+  for (const k of keys) {
+    try {
+      const i = inst(t.id, { sync: !(k === 'async.submit' || k === 'async.query') });
+      const args = {};
+      for (const x of callKeysOf(t, k)) args[x] = `v-${x}`;
+      if (k === 'async.query') args.taskId = 'T1';
+      const built = buildRequest(t, i, k, args, k === 'async.query' ? { taskId: 'T1' } : {});
+      if (built.missing.size) { ok = false; why = `没人给值：${[...built.missing].join(',')}`; break; }
+    } catch (e) { ok = false; why = e instanceof Error ? e.message : String(e); break; }
+  }
+  check(`9 ${t.id}：${keys.join(' + ')} 都拼得出请求`, ok, why);
+}
+
+console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);
 process.exit(failed ? 1 : 0);

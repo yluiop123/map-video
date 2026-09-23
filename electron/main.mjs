@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2,
-  listTemplateGroupsV2, upsertTemplateGroupV2, removeTemplateGroupV2, migrateProvidersFromStale,
+  listTemplatesV2, upsertTemplateV2, removeTemplateV2, migrateProvidersFromStale,
   listProvidersV2, upsertProviderV2, removeProviderV2 } from './db-v2.mjs';
 
 const DIST = path.join(app.getAppPath(), 'dist');
@@ -38,13 +38,27 @@ function initDb() {
 // 主进程不再认识任何供应商：怎么发请求由渲染端的接口模板算好，这里只负责发出去、按 Content-Type 分类拿回来。
 // （原先这里是 5 条 `switch (cfg.protocol)`，与渲染端那份互为影子，改一家要改两处 —— 见 AGENTS §6.7 / §6.22）
 async function httpRequest(req) {
-  const url = new URL(req.url);
-  for (const [k, v] of Object.entries(req.query || {})) url.searchParams.set(k, String(v));
-  const res = await fetch(url.href, {
-    method: req.method || 'POST',
-    headers: req.headers || {},
-    body: req.method === 'GET' || req.body == null ? undefined : JSON.stringify(req.body),
-  });
+  const headers = { ...(req.headers || {}) };
+  let body;
+  if (req.method !== 'GET') {
+    if (req.form) {
+      // multipart 上传（参考音频那类）：表单字段/文件由渲染端算好，这里只负责拼 FormData。
+      // Content-Type 必须交还给 fetch 生成（它要带 boundary）。
+      delete headers['Content-Type']; delete headers['content-type'];
+      const fd = new FormData();
+      for (const [k, v] of Object.entries(req.form)) {
+        if (v == null) continue;
+        fd.append(k, typeof v === 'string' ? v : new Blob([v]), typeof v === 'string' ? undefined : String(k));
+      }
+      body = fd;
+    } else if (req.body != null) {
+      body = JSON.stringify(req.body);
+    }
+  }
+  const init = { method: req.method || 'POST', headers, body };
+  const res = req.timeoutMs
+    ? await fetch(req.url, { ...init, signal: AbortSignal.timeout(req.timeoutMs) })
+    : await fetch(req.url, init);
   const ctype = res.headers.get('content-type') || '';
   const out = { status: res.status, contentType: ctype };
   if (ctype.includes('json')) out.json = await res.json().catch(() => undefined);
@@ -121,13 +135,13 @@ function registerIpc() {
   });
 
   // 接口模板（provider_template_group + provider_template）：共享数据，实例只引用组 id
-  ipcMain.handle('db:templates:list', () => listTemplateGroupsV2(db));
-  ipcMain.handle('db:templates:save', (_e, g) => upsertTemplateGroupV2(db, g));
-  ipcMain.handle('db:templates:remove', (_e, tplGroup) => removeTemplateGroupV2(db, tplGroup));
+  ipcMain.handle('db:templates:list', () => listTemplatesV2(db));
+  ipcMain.handle('db:templates:save', (_e, t) => upsertTemplateV2(db, t));
+  ipcMain.handle('db:templates:remove', (_e, tplId) => removeTemplateV2(db, tplId));
 
-  // 能力实例（Key 存本地库；「怎么发请求」在它引用的模板组里）
+  // 能力实例（一个模板可配多条；Key 存在本机的 values 里，「怎么发请求」在模板里）
   // SQL 全在 db-v2.mjs —— 与项目/素材同一层，才能离线跑迁移回归
-  ipcMain.handle('db:providers:remove', (_e, kind) => { removeProviderV2(db, kind); return { ok: true }; });
+  ipcMain.handle('db:providers:remove', (_e, providerId) => { removeProviderV2(db, providerId); return { ok: true }; });
   ipcMain.handle('db:providers:migrate', () => ({ moved: migrateProvidersFromStale(db) }));
   ipcMain.handle('db:providers:list', () => listProvidersV2(db));
   ipcMain.handle('db:providers:upsert', (_e, cfg) => { upsertProviderV2(db, cfg); return { ok: true }; });

@@ -1,445 +1,467 @@
 /**
- * TemplatesPane.tsx — 接口模板（provider_template_group / provider_template）
+ * TemplatesPane.tsx — ⚙ 设置 · AI 左侧的「接口模板」页（三栏）
  *
- * ⚙ 设置 · AI 左侧的独立入口，与「实例设置」不在同一个页面：
- * 这一页改的是「一家怎么发请求」（共享数据，改完所有引用它的实例都受影响），
- * 实例设置页改的是「这个账号用什么 Key、走同步还是异步、参数取多少」。
+ * 一份模板 = 数据库一行，里面同时装着：headers、实例级参数、同步 / 异步两套接口、
+ * 下载 / 上传桥接、克隆音色。三层参数（实例级 / 请求级 / 调用级）都在这页自由增删改 ——
+ * 引擎里没有任何按厂商名写的分支，界面配不出来的东西就不该存在。
+ *
+ * 「预览请求」零网络（只跑求值 + 密钥打码），「试调用」真发一条。
  */
-import { useMemo, useState } from 'react';
-import { JsonField, NumberInput, OptionBlocks, useT } from './ui/primitives';
+import { useEffect, useMemo, useState } from 'react';
+import { useT } from './ui/primitives';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Switch } from './ui/switch';
 import { useConfirm } from './ui/ConfirmHost';
-import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
-import { pickLabel, type L } from '../lib/i18n';
+import { seedTemplate } from '../lib/template-seed';
 import {
-  callVarsOf, validateGroup, validateRow,
-  type Mode, type ProviderKind, type RespSlots, type Role, type TemplateGroup, type TemplateRow, type VarSpec,
+  REQ_KEYS, callKeysOf, requestOf, validateTemplate,
+  type Category, type InstanceDef, type OutputFormat, type ParamSpec, type ReqKey,
+  type RequestDef, type TemplateDef, type ValueType,
 } from '../lib/request-engine';
-import { previewRequest, runRoleDebug } from '../lib/providers';
-import { SEED_GROUPS } from '../lib/template-seed';
-import type { ProviderConfig } from '../types';
+import { previewRequest, trialCall } from '../lib/providers';
 
-const KIND_LABEL: Record<ProviderKind, L> = {
+const CATEGORY_LABEL: Record<Category, { zh: string; en: string }> = {
   llm: { zh: '文案生成', en: 'Text' },
   tts: { zh: '语音', en: 'Voice' },
   image: { zh: '图片', en: 'Image' },
 };
 
-const ROLE_LABEL: Record<Role, L> = {
-  generate: { zh: '生成接口', en: 'Generate' },
-  synthesize: { zh: '语音合成', en: 'Synthesize' },
-  query: { zh: '查询接口', en: 'Status query' },
-  clone: { zh: '音色克隆', en: 'Voice clone' },
+/** 每条请求在界面上的名字（这是界面自身的文案，所以中英两份） */
+const REQ_LABEL: Record<ReqKey, { zh: string; en: string }> = {
+  'sync.submit': { zh: '同步 · 提交', en: 'Sync · submit' },
+  'async.submit': { zh: '异步 · 提交', en: 'Async · submit' },
+  'async.query': { zh: '异步 · 查询', en: 'Async · query' },
+  download: { zh: '桥接 · 下载', en: 'Bridge · download' },
+  upload: { zh: '桥接 · 上传', en: 'Bridge · upload' },
+  clone: { zh: '核心 · 克隆音色', en: 'Core · voice clone' },
 };
 
-/** 每类功能可以有哪些接口行（已存在的不再列） */
-const ADDABLE: Record<ProviderKind, { role: Role; mode: Mode }[]> = {
-  llm: [{ role: 'generate', mode: 'sync' }],
-  image: [{ role: 'generate', mode: 'sync' }, { role: 'generate', mode: 'async' }, { role: 'query', mode: 'sync' }],
-  tts: [{ role: 'synthesize', mode: 'sync' }, { role: 'synthesize', mode: 'async' }, { role: 'query', mode: 'sync' }, { role: 'clone', mode: 'sync' }],
-};
+const VALUE_TYPES: ValueType[] = ['string', 'text', 'number', 'boolean', 'enum', 'multiEnum', 'array', 'secret', 'file', 'json'];
+const FORMATS: (OutputFormat | 'none')[] = ['none', 'binary', 'hex', 'base64', 'url'];
 
-/** 试调用要拿一份真实账号才能拼出/发出请求：这个能力的那一份配置就是它（没配过就没得调） */
-function instanceOf(cfg: ProviderConfig | null, tplGroup: string): ProviderConfig | undefined {
-  return cfg && cfg.tplGroup === tplGroup ? cfg : undefined;
+const present = (t: TemplateDef, key: ReqKey) => !!requestOf(t, key);
+
+/** 还能补哪些请求：异步要成对（提交 + 查询），上传只在克隆时有意义 */
+function addable(t: TemplateDef): ReqKey[] {
+  const out: ReqKey[] = [];
+  if (t.category !== 'llm') {
+    if (!t.async?.submit) out.push('async.submit');
+    if (t.async?.submit && !t.async.query) out.push('async.query');
+    if (!t.download) out.push('download');
+  }
+  if (t.category === 'tts') {
+    if (!t.clone) out.push('clone');
+    else if (t.useClone && !t.upload) out.push('upload');
+  }
+  return out;
 }
+
+const blankRequest = (key: ReqKey): RequestDef => (key === 'async.query'
+  ? { path: '{baseUrl}/tasks/${taskId}', method: 'GET', body: { task_id: '${taskId}' }, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] }
+  : { path: '{baseUrl}/', method: 'POST', requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} });
 
 export function TemplatesPane() {
   const t = useT();
-  const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
+  const templates = useProviderStore((s) => s.templates);
+  const instances = useProviderStore((s) => s.instances);
+  const saveTemplate = useProviderStore((s) => s.saveTemplate);
+  const addTemplate = useProviderStore((s) => s.addTemplate);
+  const removeTemplate = useProviderStore((s) => s.removeTemplate);
+  const restoreTemplate = useProviderStore((s) => s.restoreTemplate);
   const confirm = useConfirm();
-  const groups = useProviderStore((s) => s.groups);
-  const llm = useProviderStore((s) => s.llm);
-  const tts = useProviderStore((s) => s.tts);
-  const image = useProviderStore((s) => s.image);
-  const [kind, setKind] = useState<ProviderKind>('llm');
-  /** 这个能力当前那一份配置（一个能力一处；用它指向哪组来判断"哪组在用"） */
-  const cfg = kind === 'llm' ? llm : kind === 'tts' ? tts : image;
-  const kindGroups = useMemo(() => groups.filter((g) => g.kind === kind), [groups, kind]);
-  const [sel, setSel] = useState('openai-chat');
-  const group = kindGroups.find((g) => g.tplGroup === sel) ?? kindGroups[0] ?? null;
+  const [category, setCategory] = useState<Category>('llm');
+  const [selId, setSelId] = useState('openai-chat');
+  const [selReq, setSelReq] = useState<ReqKey>('sync.submit');
 
-  const pickKind = (k: ProviderKind) => {
-    setKind(k);
-    setSel(groups.find((g) => g.kind === k)?.tplGroup ?? '');
-  };
-  const addGroup = () => {
-    const id = `custom-${kind}-${Math.random().toString(36).slice(2, 6)}`;
-    useProviderStore.getState().addGroup({
-      tplGroup: id, kind, rows: [],
-      label: `自定义${pickLabel(KIND_LABEL[kind], lang)}-${Math.random().toString(36).slice(2, 4)}`,
-    });
-    setSel(id);
-  };
-  const dropGroup = async () => {
-    if (!group) return;
-    const inUse = cfg?.tplGroup === group.tplGroup;
+  const mine = useMemo(() => templates.filter((x) => x.category === category), [templates, category]);
+  const tpl = mine.find((x) => x.id === selId) ?? mine[0];
+  useEffect(() => { if (tpl && tpl.id !== selId) setSelId(tpl.id); }, [tpl, selId]);
+  useEffect(() => {
+    if (tpl && !present(tpl, selReq)) setSelReq(REQ_KEYS.find((k) => present(tpl, k)) ?? 'sync.submit');
+  }, [tpl, selReq]);
+
+  const patch = (next: TemplateDef) => { if (next.id) saveTemplate(next); };
+  const usedBy = (id: string) => instances.filter((i) => i.tplId === id);
+  const problems = tpl ? validateTemplate(tpl) : [];
+
+  const drop = async () => {
+    if (!tpl) return;
+    const users = usedBy(tpl.id).length;
     const ok = await confirm({
-      message: t(`删除模板组「${group.label}」？${inUse ? `本能力正在用它，删掉后这处配置会指向别组。` : ''}`, `Delete this group? ${inUse ? 'This capability uses it now.' : ''}`),
+      message: t(`删除模板「${tpl.name || tpl.id}」？${users ? `有 ${users} 条实例在用它，会一起删掉。` : ''}`,
+        `Delete this template? ${users ? `${users} instance(s) go with it.` : ''}`),
       danger: true,
     });
-    if (!ok) return;
-    useProviderStore.getState().removeGroup(group.tplGroup);
-    setSel(kindGroups.find((g) => g.tplGroup !== group.tplGroup)?.tplGroup ?? '');
+    if (ok) { removeTemplate(tpl.id); setSelId(''); }
   };
 
   return (
     <div className="space-y-2">
       <h3 className="text-sm font-semibold">{t('🧩 接口模板', '🧩 Endpoint templates')}</h3>
       <p className="text-[11px] text-muted-foreground">
-        {t('一组 = 一个功能要哪几条接口；一行 = 一条接口怎么发、返回从哪取。哪一组在用由 ⚙ 那个能力的那一处配置决定（一处一份），改这里立刻反映到那一处。', 'A group = the endpoints one capability needs; a row = how it sends and where results are read. Which group is live is decided once per capability in Settings.')}
+        {t('一份模板 = 一个功能用到的全部接口（同步 / 异步 / 下载 / 上传 / 克隆）。三层参数都在这儿填，实例那边只填取值与密钥。',
+          'One template = every endpoint a capability needs. All three parameter layers live here; instances only hold values and keys.')}
       </p>
       <div className="flex flex-wrap gap-1.5">
-        {(['llm', 'tts', 'image'] as ProviderKind[]).map((k) => (
-          <button key={k} onClick={() => pickKind(k)} className={`h-7 px-2.5 rounded-md border text-[11px] ${k === kind ? 'border-white/30 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
-            {pickLabel(KIND_LABEL[k], lang)}
+        {(Object.keys(CATEGORY_LABEL) as Category[]).map((k) => (
+          <button key={k} onClick={() => { setCategory(k); setSelId(''); }}
+            className={`h-7 px-2.5 rounded-md border text-[11px] ${k === category ? 'border-white/30 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
+            {t(CATEGORY_LABEL[k].zh, CATEGORY_LABEL[k].en)}
           </button>
         ))}
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {kindGroups.map((g) => {
-          const inUse = cfg?.tplGroup === g.tplGroup;
-          return (
-            <button key={g.tplGroup} onClick={() => setSel(g.tplGroup)} title={g.tplGroup}
-              className={`h-7 px-2 rounded-md border text-[11px] ${g.tplGroup === group?.tplGroup ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
-              {g.label}{inUse ? ` · ${t('使用中', 'in use')}` : ''}
-            </button>
-          );
-        })}
-        <button onClick={addGroup} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10">＋ {t('模板组', 'Group')}</button>
-      </div>
 
-      {group && (
-        <GroupEditor
-          key={group.tplGroup}
-          group={group}
-          cfg={cfg}
-          inUse={cfg?.tplGroup === group.tplGroup}
-          onUse={() => useProviderStore.getState().useGroup(group.kind, group.tplGroup)}
-          onDelete={() => void dropGroup()}
-        />
-      )}
-    </div>
-  );
-}
-
-function GroupEditor({ group, cfg, inUse, onUse, onDelete }: {
-  group: TemplateGroup; cfg: ProviderConfig | null; inUse: boolean; onUse: () => void; onDelete: () => void;
-}) {
-  const t = useT();
-  const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
-  const store = useProviderStore.getState();
-  const problems = validateGroup(group, 'sync');
-  const seed = SEED_GROUPS.some((g) => g.tplGroup === group.tplGroup);
-  const missing = ADDABLE[group.kind].filter((x) => !group.rows.some((r) => r.role === x.role && r.mode === x.mode));
-  const patch = (g: TemplateGroup) => store.saveGroup(g);
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <input value={group.label} onChange={(e) => patch({ ...group, label: e.target.value })} className="input h-7 text-xs w-40" placeholder={t('组名称', 'Group name')} />
-        <input value={group.baseUrl ?? ''} onChange={(e) => patch({ ...group, baseUrl: e.target.value })} className="input h-7 text-xs flex-1 min-w-40 font-mono" placeholder="https://…/api/v1" />
-        <button
-          onClick={onUse}
-          disabled={inUse}
-          title={inUse ? t('本能力已经用这一组', 'This capability already uses it') : t('这处配置改用它（Base URL / Key 不重填）', 'Point this capability here (credentials stay)')}
-          className={`h-7 px-2 rounded-md border text-[10px] ${inUse ? 'border-[var(--brand)] text-[var(--brand)]' : 'border-white/15 hover:bg-white/10'}`}
-        >{inUse ? t('● 本能力使用中', '● In use') : t('用作本能力', 'Use for this capability')}</button>
-        <button
-          onClick={() => store.restoreGroup(group.tplGroup)}
-          disabled={!seed} title={t('丢弃本地改动，取回内置默认形状', 'Restore the built-in shape')}
-          className="h-7 px-2 rounded-md border border-white/15 text-[10px] hover:bg-white/10 disabled:opacity-40"
-        >{t('恢复默认', 'Restore')}</button>
-        <button onClick={onDelete} className="h-7 px-2 rounded-md border border-white/15 text-[10px] text-red-400/80 hover:bg-red-500/10">{t('删除组', 'Delete')}</button>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[10px] text-muted-foreground/70 shrink-0">{t('候选模型', 'Models')}</span>
-        <input
-          value={(group.models ?? []).join(', ')} placeholder="deepseek-chat, …"
-          onChange={(e) => patch({ ...group, models: e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) })}
-          className="input h-6 flex-1 min-w-40 text-[10px] font-mono"
-        />
-      </div>
-      {!!group.note && <p className="text-[10px] text-muted-foreground/80">{group.note}</p>}
-      {problems.length > 0 && <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>}
-
-      {group.rows.map((row) => (
-        <RowEditor key={`${row.role}:${row.mode}`} group={group} row={row} instance={instanceOf(cfg, group.tplGroup)} lang={lang} />
-      ))}
-
-      {missing.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-muted-foreground/70">{t('可添加的接口', 'Add endpoint')}</span>
-          {missing.map((m) => (
-            <button key={`${m.role}:${m.mode}`} onClick={() => store.addRow(group.tplGroup, m.role, m.mode)}
-              className="h-6 px-2 rounded-md border border-white/15 text-[10px] hover:bg-white/10">
-              ＋ {pickLabel(ROLE_LABEL[m.role], lang)}{m.mode === 'async' ? `·${t('异步', 'async')}` : ''}
+      <div className="grid gap-2 md:grid-cols-[160px_minmax(0,1fr)]">
+        <div className="space-y-1">
+          {mine.map((x) => (
+            <button key={x.id} onClick={() => setSelId(x.id)} title={x.id}
+              className={`w-full text-left h-7 px-2 rounded-md border text-[11px] truncate ${x.id === tpl?.id ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
+              {x.name || x.id}<span className="text-muted-foreground/60"> · {usedBy(x.id).length}</span>
             </button>
           ))}
+          <Button variant="outline" size="sm" className="w-full h-7 text-[11px]" onClick={() => setSelId(addTemplate(category).id)}>
+            ＋ {t('模板', 'template')}
+          </Button>
         </div>
-      )}
+
+        {tpl && (
+          <div className="space-y-2 min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Input value={tpl.name} onChange={(e) => patch({ ...tpl, name: e.target.value })} className="h-7 text-xs w-40" placeholder={t('模板名', 'Name')} />
+              <Input value={tpl.id} onChange={(e) => patch({ ...tpl, id: e.target.value })} className="h-7 text-xs w-44 font-mono" placeholder="id" />
+              <Button variant="outline" size="sm" className="h-7 text-[11px]" disabled={!seedTemplate(tpl.id)}
+                onClick={() => restoreTemplate(tpl.id)} title={t('丢弃本地改动，取回内置默认形状', 'Restore the built-in shape')}>
+                {t('恢复默认', 'Restore')}
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={() => void drop()}>{t('删除模板', 'Delete')}</Button>
+            </div>
+            <Input value={tpl.note ?? ''} onChange={(e) => patch({ ...tpl, note: e.target.value })} className="h-7 text-xs w-full"
+              placeholder={t('说明（接的哪家、有什么坑）', 'Note')} />
+            <div className="flex flex-wrap items-center gap-4 text-[11px]">
+              <label className="flex items-center gap-1.5">
+                <Switch id="tpl-clone" checked={!!tpl.useClone} onCheckedChange={(v) => patch({ ...tpl, useClone: v })} />
+                <Label htmlFor="tpl-clone" className="text-[11px] font-normal">{t('有克隆音色接口', 'voice clone')}</Label>
+              </label>
+              <label className="flex items-center gap-1.5">
+                <Switch id="tpl-upload" checked={!!tpl.hasUpload} disabled={!tpl.useClone} onCheckedChange={(v) => patch({ ...tpl, hasUpload: v })} />
+                <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('克隆前先上传拿 fileId', 'upload first')}</Label>
+              </label>
+              <label className="flex items-center gap-1.5">
+                <span className="text-muted-foreground text-[10px]">{t('参考音频采样率', 'ref rate')}</span>
+                <Input type="number" value={tpl.refSampleRateHz ?? ''} className="h-6 w-24 text-[10px]"
+                  onChange={(e) => patch({ ...tpl, refSampleRateHz: e.target.value ? Number(e.target.value) : undefined })} />
+              </label>
+            </div>
+
+            <JsonBox label="Headers" value={tpl.headers ?? {}} onChange={(headers) => patch({ ...tpl, headers: headers as Record<string, unknown> })}
+              hint={t('所有请求共用一份，值里可写 ${apiKey}', 'shared by every request; ${apiKey} allowed')} />
+            <ParamTable title={t('实例级参数（整份模板共用）', 'Instance params')}
+              hint={t('Base URL 与密钥就在这儿声明；secret 渲染成密码框', 'declare baseUrl / keys here')}
+              params={tpl.instanceParams ?? []} onChange={(instanceParams) => patch({ ...tpl, instanceParams })} />
+
+            <div className="border-t border-white/10" />
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              {REQ_KEYS.filter((k) => present(tpl, k)).map((k) => (
+                <button key={k} onClick={() => setSelReq(k)}
+                  className={`h-7 px-2 rounded-md border text-[11px] ${k === selReq ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
+                  {t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}
+                </button>
+              ))}
+              {addable(tpl).map((k) => (
+                <Button key={k} variant="outline" size="sm" className="h-7 text-[11px]"
+                  onClick={() => {
+                    const next: TemplateDef = { ...tpl };
+                    if (k === 'sync.submit') next.sync = { submit: blankRequest(k) };
+                    else if (k === 'async.submit') next.async = { submit: blankRequest(k), query: undefined };
+                    else if (k === 'async.query') next.async = { submit: next.async?.submit, query: blankRequest(k) };
+                    else next[k] = blankRequest(k);
+                    if (k === 'clone') next.useClone = true;
+                    if (k === 'upload') next.hasUpload = true;
+                    patch(next); setSelReq(k);
+                  }}>
+                  ＋ {t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}
+                </Button>
+              ))}
+            </div>
+
+            {present(tpl, selReq) && (
+              <RequestEditor tpl={tpl} reqKey={selReq} inst={usedBy(tpl.id)[0] ?? null} onChange={patch} />
+            )}
+
+            {problems.length > 0 && <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function RowEditor({ group, row, instance, lang }: { group: TemplateGroup; row: TemplateRow; instance?: ProviderConfig; lang: 'zh' | 'en' }) {
+// ========== 选中请求 ==========
+
+function RequestEditor({ tpl, reqKey, inst, onChange }: {
+  tpl: TemplateDef; reqKey: ReqKey; inst: InstanceDef | null; onChange: (t: TemplateDef) => void;
+}) {
   const t = useT();
-  const confirm = useConfirm();
-  const store = useProviderStore.getState();
+  const def = requestOf(tpl, reqKey)!;
+  const set = (p: Partial<RequestDef>) => {
+    const merged = { ...def, ...p };
+    const next: TemplateDef = { ...tpl };
+    if (reqKey === 'sync.submit') next.sync = { submit: merged };
+    else if (reqKey === 'async.submit') next.async = { submit: merged, query: next.async?.query };
+    else if (reqKey === 'async.query') next.async = { submit: next.async?.submit, query: merged };
+    else next[reqKey as 'download' | 'upload' | 'clone'] = merged;
+    onChange(next);
+  };
+  const dropReq = () => {
+    const next: TemplateDef = { ...tpl };
+    if (reqKey === 'sync.submit') next.sync = {};
+    else if (reqKey === 'async.submit') next.async = {};
+    else if (reqKey === 'async.query') next.async = { submit: next.async?.submit };
+    else delete (next as unknown as Record<string, unknown>)[reqKey];
+    if (reqKey === 'clone') next.useClone = false;
+    if (reqKey === 'upload') next.hasUpload = false;
+    onChange(next);
+  };
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState('');
-  const [run, setRun] = useState<{ s: 'idle' | 'run' | 'ok' | 'err'; text?: string }>({ s: 'idle' });
-  const patch = (p: Partial<TemplateRow>) => {
-    store.updateRow(group.tplGroup, row.role, row.mode, p);
-    setPreview('');
-  };
-  const problems = validateRow(row, group.kind);
-  const ownsProduct = row.role === 'query' || (row.role !== 'clone' && row.mode === 'sync');
-  const injects = callVarsOf(row);
-  const title = pickLabel(ROLE_LABEL[row.role], lang);
+  const [run, setRun] = useState<{ busy: boolean; text: string }>({ busy: false, text: '' });
+  const callKeys = callKeysOf(tpl, reqKey);
 
-  const dropRow = async () => {
-    if (await confirm({ message: t(`从这组模板移除「${title}」？引用这组的实例会立刻少掉这条能力。`, 'Remove this endpoint?'), danger: true })) {
-      store.removeRow(group.tplGroup, row.role, row.mode);
+  const args = (): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const k of callKeys) {
+      const v = inputs[k] ?? DEFAULT_INPUT[k];
+      if (v !== undefined) out[k] = v;
     }
+    return out;
   };
   const doPreview = () => {
-    if (!instance) { setPreview(t('还没有实例引用这组模板 —— 预览要用它的 Key 才能拼出真实请求。', 'No instance uses this group yet — preview needs its credentials.')); return; }
-    try {
-      const r = previewRequest(instance, row.role, filledInputs(row, inputs));
-      setPreview(`${r.method} ${r.url}\nheaders: ${JSON.stringify(r.headers)}\nquery: ${JSON.stringify(r.query)}\nbody: ${JSON.stringify(r.body, null, 1)}`);
-    } catch (e) { setPreview(`✕ ${e instanceof Error ? e.message : String(e)}`); }
+    if (!inst) { setPreview(t('还没有实例用这份模板 —— 预览要用它填的取值才拼得出真实请求。', 'No instance uses this template yet.')); return; }
+    try { setPreview(JSON.stringify(previewRequest(inst, reqKey, args()), null, 1)); }
+    catch (e) { setPreview(e instanceof Error ? e.message : String(e)); }
   };
   const doRun = async () => {
-    if (!instance) return;
-    setRun({ s: 'run' });
+    if (!inst) return;
+    setRun({ busy: true, text: '' });
     try {
-      const r = await runRoleDebug(instance, row.role, filledInputs(row, inputs));
-      const shown = r.steps.map((s) => `${s.label} HTTP ${s.status} ${JSON.stringify(s.values)}`).join('\n');
-      setRun({ s: 'ok', text: `${shown}${r.bytes ? `\n→ 音频/图片 ${r.bytes.length} 字节（${r.mime || '未知类型'}）` : ''}` });
-    } catch (e) { setRun({ s: 'err', text: e instanceof Error ? e.message : String(e) }); }
+      const r = await trialCall(inst, reqKey, args());
+      const size = r.bytes?.length ? ` → ${Math.round(r.bytes.length / 1024)}KB` : '';
+      setRun({ busy: false, text: `${r.steps.map((x) => `${x.key} HTTP ${x.status}`).join(' → ')}${size}\n${JSON.stringify(r.values, null, 1)}` });
+    } catch (e) { setRun({ busy: false, text: e instanceof Error ? e.message : String(e) }); }
   };
 
   return (
-    <div className="border border-white/10 rounded-lg p-2.5 space-y-1.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] font-medium">{title}</span>
-        {row.role !== 'clone' && (
-          <OptionBlocks<string>
-            value={row.mode}
-            options={[{ value: 'sync', label: t('同步', 'Sync') }, { value: 'async', label: t('异步', 'Async') }]}
-            onChange={(v) => patch({ mode: v as Mode })}
-          />
-        )}
-        <span className="text-[10px] font-mono text-muted-foreground/60 flex-1 truncate">{row.role}·{row.mode}</span>
-        <button onClick={() => void dropRow()} className="h-6 px-1.5 rounded-md border border-white/15 text-[10px] text-red-400/80 hover:bg-red-500/10">✕</button>
-      </div>
-
-      {row.role === 'query' && <p className="text-[10px] text-muted-foreground/70">↑ {t('供异步生成接口轮询使用', 'Used to poll the async submit endpoint')}</p>}
-      {row.mode === 'async' && row.role !== 'query' && (
-        <p className="text-[10px] text-muted-foreground/70">
-          {group.rows.some((r) => r.role === 'query')
-            ? t('轮询用：查询接口 ✓', 'Polled by the status query endpoint ✓')
-            : `⚠ ${t('缺查询接口 —— 点下方「＋ 查询接口」补', 'Missing the status query endpoint')}`}
-        </p>
-      )}
-      {problems.length > 0 && <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>}
-
+    <div className="space-y-2 rounded-md border border-white/10 p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <OptionBlocks<string> value={row.method || 'POST'} options={['GET', 'POST', 'PUT', 'DELETE'].map((m) => ({ value: m, label: m }))} onChange={(v) => patch({ method: v })} />
-        <input value={row.url} onChange={(e) => patch({ url: e.target.value })} className="input h-7 flex-1 min-w-40 text-[11px] font-mono" placeholder="{baseUrl}/…" />
+        <span className="text-[11px] font-medium">{t(REQ_LABEL[reqKey].zh, REQ_LABEL[reqKey].en)}</span>
+        <Select value={def.method ?? 'POST'} onValueChange={(method) => set({ method })}>
+          <SelectTrigger className="h-7 w-[70px] text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectContent>{['GET', 'POST', 'PUT'].map((m) => <SelectItem key={m} value={m} className="text-[11px]">{m}</SelectItem>)}</SelectContent>
+        </Select>
+        <Input value={def.path} onChange={(e) => set({ path: e.target.value })} className="h-7 text-xs flex-1 min-w-40 font-mono" placeholder="{baseUrl}/…" />
+        <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={dropReq}>✕ {t('删这条', 'remove')}</Button>
       </div>
 
-      <JsonField label="Headers" value={row.headers} onCommit={(v) => patch({ headers: v as Record<string, unknown> })} />
-      <JsonField label="Query" value={row.query} onCommit={(v) => patch({ query: v as Record<string, unknown> })} />
-      <JsonField label="Body" value={row.body} onCommit={(v) => patch({ body: v })} />
+      <JsonBox label={t('附加请求头', 'Extra headers')} value={def.headers ?? {}} onChange={(headers) => set({ headers: headers as Record<string, unknown> })}
+        hint={t('只写需要覆盖模板级的那几个（如异步开关头）', 'only what this request overrides')} />
+      <ParamTable title={t('请求级参数（这个请求专属）', 'Request params')}
+        hint={t('取值存实例的「按请求」那一区，同名可不同值', 'values stored per request')}
+        params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
+      <ParamTable title={t('调用级参数（每次调用现场给）', 'Call params')}
+        hint={t('不落库；调用页与「试调用」按这些长输入框', 'given at call time')}
+        params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
 
-      <div className="grid gap-1.5">
-        <ParamList title={t('实例参数', 'Instance params')}
-          hint={t('建实例时在 ⚙ 里配的值 · 在 body 里写 {名字} 引用它', 'Values set per instance · reference them as {name} in the body')}
-          vars={row.instParams ?? []} onCommit={(vars) => patch({ instParams: vars })} />
-        <ParamList title={t('请求参数', 'Request params')}
-          hint={t('这里只声明需要类型 / 候选值的调用参数 · {text} {prompt} {systemPrompt} {userPrompt} {wavB64} 由程序给值，不必声明',
-            'Declare only call params needing a type / options · {text} {prompt} {systemPrompt} {userPrompt} {wavB64} come from the caller')}
-          vars={row.reqParams ?? []} onCommit={(vars) => patch({ reqParams: vars })} />
-      </div>
-      <RespEditor row={row} kind={group.kind} onCommit={(resp) => patch({ resp })} />
+      <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })}
+        hint={t('值里写 ${key} 引用上面的参数', 'use ${key}')} />
+      <JsonBox label="Form" value={def.form ?? {}} onChange={(form) => set({ form: form as Record<string, unknown> })}
+        hint={t('multipart 字段（上传文件用）', 'multipart fields')} />
 
-      {ownsProduct && (
-        <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-          <span>{t('产物解码', 'decode')}</span>
-          <OptionBlocks<string> value={row.decode ?? '-'} options={['-', 'hex', 'base64', 'url'].map((m) => ({ value: m, label: m }))}
-            onChange={(v) => patch({ decode: v === '-' ? undefined : v as 'hex' })} />
-          <span className="text-muted-foreground/60">{t('url = 查询完成后当场下载转存，不保存远端链接', 'url = downloaded on the spot; the remote link is never stored')}</span>
+      <div className="space-y-1">
+        <div className="text-[10px] text-muted-foreground">
+          {t('从响应里取字段（outputs）', 'Outputs')} · {t('取出来的名字下一个请求直接 ${它}', 'downstream requests use ${name}')}
         </div>
-      )}
-      {row.role === 'query' && (
-        <>
-          <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-            <label className="flex items-center gap-1">{t('轮询间隔 ms', 'interval ms')}
-              <NumberInput className="input h-7 w-20 text-xs" value={row.pollIntervalMs ?? 1500} step={100} min={200} onCommit={(n) => patch({ pollIntervalMs: n })} />
-            </label>
-            <label className="flex items-center gap-1">{t('超时 ms', 'timeout ms')}
-              <NumberInput className="input h-7 w-24 text-xs" value={row.pollTimeoutMs ?? 120000} step={1000} min={1000} onCommit={(n) => patch({ pollTimeoutMs: n })} />
-            </label>
+        {Object.entries(def.outputs ?? {}).map(([k, v]) => (
+          <div key={k} className="flex items-center gap-1">
+            <Input value={k} className="h-6 w-28 text-[10px] font-mono" placeholder="taskId"
+              onChange={(e) => set({ outputs: rename(mapOf(def), k, e.target.value) })} />
+            <Input value={String(v)} className="h-6 flex-1 text-[10px] font-mono" placeholder="output.task_id"
+              onChange={(e) => set({ outputs: { ...mapOf(def), [k]: e.target.value } })} />
+            <Button variant="ghost" size="sm" className="h-6 w-6 text-[10px]" onClick={() => { const n = { ...mapOf(def) }; delete n[k]; set({ outputs: n }); }}>✕</Button>
           </div>
-          <JsonField label={t('下载产物附带的头', 'Download headers')} value={row.fetchHeaders} onCommit={(v) => patch({ fetchHeaders: v as Record<string, unknown> })} />
-        </>
+        ))}
+        <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => set({ outputs: { ...mapOf(def), '': '' } })}>
+          ＋ {t('取值', 'output')}
+        </Button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-[10px]">
+        <span className="text-muted-foreground">{t('产物封装', 'outputFormat')}</span>
+        <Select value={def.outputFormat ?? 'none'} onValueChange={(v) => set({ outputFormat: v === 'none' ? undefined : (v as OutputFormat) })}>
+          <SelectTrigger className="h-7 w-32 text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectContent>{FORMATS.map((f) => (
+            <SelectItem key={f} value={f} className="text-[11px]">
+              {f === 'none' ? t('无（不取产物）', 'none') : f === 'binary' ? t('binary 响应体即产物', 'binary') : f === 'url' ? t('url 当场下载', 'url') : f}
+            </SelectItem>
+          ))}</SelectContent>
+        </Select>
+        <span className="text-muted-foreground">{t('超时 ms', 'timeout')}</span>
+        <Input type="number" value={def.timeoutMs ?? ''} className="h-7 w-24 text-[11px]"
+          onChange={(e) => set({ timeoutMs: e.target.value ? Number(e.target.value) : undefined })} />
+      </div>
+
+      {reqKey === 'async.query' && (
+        <div className="space-y-1.5">
+          <ListField label={t('算成功的状态值', 'successValues')} value={def.successValues ?? []} onChange={(successValues) => set({ successValues })} />
+          <ListField label={t('算失败的状态值', 'failureValues')} value={def.failureValues ?? []} onChange={(failureValues) => set({ failureValues })} />
+          <p className="text-[10px] text-muted-foreground/70">{t('中间态不用配：两个列表都没命中就继续查。', 'Anything unlisted keeps polling.')}</p>
+        </div>
       )}
 
-      <div className="border-t border-white/[0.06] pt-1.5 space-y-1">
-        <div className="flex flex-wrap items-end gap-1.5">
-          {injects.filter((n) => n !== 'wavB64').map((n) => (
-            <label key={n} className="flex flex-col text-[10px] text-muted-foreground">
-              {n}
-              <input value={inputs[n] ?? DEFAULT_INPUT[n] ?? ''} onChange={(e) => setInputs((s) => ({ ...s, [n]: e.target.value }))} className="input h-6 w-32 text-[11px]" />
-            </label>
-          ))}
-          {injects.includes('wavB64') && (
-            <label className="h-6 px-2 inline-flex items-center rounded-md border border-white/15 text-[10px] hover:bg-white/10 cursor-pointer">
-              ⬆ {t('参考音频', 'reference audio')}
-              <input type="file" accept="audio/*" className="hidden" onChange={async (e) => {
-                const f = e.target.files?.[0];
-                if (f) {
-                  const b = new Uint8Array(await f.arrayBuffer());
-                  let bin = '';
-                  for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...b.subarray(i, i + 0x8000));
-                  setInputs((s) => ({ ...s, wavB64: btoa(bin) }));
-                }
-                e.target.value = '';
-              }} />
-            </label>
-          )}
-          <button onClick={doPreview} className="h-7 px-2.5 rounded-md border border-white/15 text-[11px] hover:bg-white/10">{t('预览请求', 'Preview')}</button>
-          <button
-            onClick={() => void doRun()} disabled={run.s === 'run' || !instance}
-            title={instance ? '' : t('需要先有一个引用这组模板的实例（试调用要用它的 Key）', 'Needs an instance with a key')}
-            className="h-7 px-2.5 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
-          >
-            {run.s === 'run' ? t('调用中…', 'Calling…') : t('试调用', 'Test call')}
-          </button>
-        </div>
-        {preview && <pre className="max-h-40 overflow-auto text-[10px] font-mono text-muted-foreground whitespace-pre-wrap break-all">{preview}</pre>}
-        {run.s !== 'idle' && run.s !== 'run' && (
-          <pre className={`max-h-40 overflow-auto text-[10px] font-mono whitespace-pre-wrap break-all ${run.s === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>{run.text}</pre>
-        )}
+      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+        {callKeys.map((k) => (
+          <label key={k} className="flex items-center gap-1 text-[10px]">
+            <span className="text-muted-foreground">{k}</span>
+            <Input value={inputs[k] ?? DEFAULT_INPUT[k] ?? ''} className="h-6 w-28 text-[11px]" onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
+          </label>
+        ))}
+        <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={doPreview}>🔍 {t('预览请求', 'Preview')}</Button>
+        <Button size="sm" className="h-7 text-[11px]" onClick={() => void doRun()} disabled={run.busy || !inst}
+          title={inst ? '' : t('要先有一条实例用这份模板（试调用要真密钥）', 'Needs an instance with a key')}>
+          ▶ {t('试调用', 'Try')}</Button>
       </div>
+      {(preview || run.text) && (
+        <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">
+          {preview || (run.busy ? t('发送中…', 'Sending…') : run.text)}
+        </pre>
+      )}
     </div>
   );
 }
 
+const mapOf = (def: RequestDef) => def.outputs ?? {};
+const rename = (map: Record<string, string>, from: string, to: string) => {
+  const next: Record<string, string> = {};
+  for (const [k, v] of Object.entries(map)) next[k === from ? to : k] = v;
+  return next;
+};
 const DEFAULT_INPUT: Record<string, string> = {
   text: '这段旁白用来试听音色。',
+  prompt: '一只戴宇航员头盔的橘猫',
   systemPrompt: '你是连通性测试助手。',
   userPrompt: '只回复两个字：正常',
-  prompt: '一只戴宇航员头盔的橘猫，赛博朋克风格',
-  preferredName: 'mapvideo',
-  prefix: 'mv',
 };
 
-/** 试调用输入：只给「调用端要填的」占位符长输入框，没填的走默认值 */
-function filledInputs(row: TemplateRow, inputs: Record<string, string>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const name of callVarsOf(row)) {
-    const val = inputs[name] ?? DEFAULT_INPUT[name];
-    if (val !== undefined) out[name] = val;
-  }
-  return out;
-}
+// ========== 三层参数共用的编辑器 ==========
 
-/** 参数声明表：名字 / 类型（下拉）/ 默认 / 说明 / 候选值 */
-function ParamList({ title, hint, vars, onCommit }: {
-  title: string; hint: string; vars: VarSpec[]; onCommit: (vars: VarSpec[]) => void;
+function ParamTable({ title, hint, params, onChange }: {
+  title: string; hint?: string; params: ParamSpec[]; onChange: (p: ParamSpec[]) => void;
 }) {
   const t = useT();
-  const write = (next: VarSpec[]) => onCommit(next);
-  const at = (i: number, p: Partial<VarSpec>) => write(vars.map((v, j) => (i === j ? { ...v, ...p } : v)));
-  const optText = (v: VarSpec) => (v.options ?? []).map((o) => {
-    const obj = typeof o === 'object' && o !== null;
-    const value = obj ? String((o as { value: unknown }).value) : String(o);
-    const label = obj && (o as { label?: string }).label ? `=${(o as { label: string }).label}` : '';
-    return `${value}${label}`;
-  }).join(', ');
+  const at = (i: number, p: Partial<ParamSpec>) => onChange(params.map((x, j) => (j === i ? { ...x, ...p } : x)));
+  const optsText = (p: ParamSpec) => (p.options ?? []).map((o) => (typeof o === 'object' && o !== null ? `${o.value}${o.label ? `=${o.label}` : ''}` : String(o))).join(', ');
   return (
     <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-2 text-[10px]">
-        <span className="text-muted-foreground font-medium">{title}</span>
-        <span className="text-muted-foreground/60">{hint} · {t('占位符 {name} 取标量（保留类型），{@name} 在数组里展开', '{name} = scalar, {@name} splices')}</span>
+      <div className="text-[10px] text-muted-foreground font-medium">
+        {title}{hint && <span className="font-normal text-muted-foreground/70"> · {hint}</span>}
       </div>
-      {vars.map((v, i) => (
-        <div key={i} className="flex flex-wrap items-center gap-1">
-          <input value={v.name} onChange={(e) => at(i, { name: e.target.value })} className="input h-6 w-24 text-[10px] font-mono" placeholder="name" />
-          <select value={v.type ?? 'string'} onChange={(e) => at(i, { type: e.target.value as VarSpec['type'] })} className="input h-6 w-20 text-[10px]">
-            {['string', 'int', 'bool', 'list', 'json'].map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
-          <input value={String(v.default ?? '')} onChange={(e) => at(i, { default: e.target.value })} className="input h-6 w-16 text-[10px]" placeholder={t('默认', 'default')} />
-          <input value={v.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="input h-6 w-28 text-[10px]" placeholder={t('说明', 'label')} />
-          <input value={optText(v)} onChange={(e) => at(i, { options: parseOptions(e.target.value) })} className="input h-6 flex-1 min-w-28 text-[10px] font-mono" placeholder={t('候选值：16000=16k, 24000=24k', 'options: 16000=16k, 24000=24k')} />
-          <button onClick={() => write(vars.filter((_, j) => j !== i))} className="h-6 w-6 rounded text-[10px] text-muted-foreground hover:text-red-400 hover:bg-white/10">✕</button>
+      {params.map((p, i) => (
+        <div key={i} className="space-y-1 rounded border border-white/10 p-1.5">
+          <div className="flex flex-wrap items-center gap-1">
+            <Input value={p.key} onChange={(e) => at(i, { key: e.target.value })} className="h-6 w-28 text-[10px] font-mono" placeholder="key" />
+            <Select value={p.valueType ?? 'string'} onValueChange={(v) => at(i, { valueType: v as ValueType })}>
+              <SelectTrigger className="h-6 w-[86px] text-[10px]"><SelectValue /></SelectTrigger>
+              <SelectContent>{VALUE_TYPES.map((v) => <SelectItem key={v} value={v} className="text-[10px]">{v}</SelectItem>)}</SelectContent>
+            </Select>
+            <Input value={p.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="h-6 w-28 text-[10px]" placeholder={t('说明', 'label')} />
+            <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 w-20 text-[10px]" placeholder={t('默认值', 'default')} />
+            <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Switch id={`req-${i}`} checked={p.required !== false} onCheckedChange={(v) => at(i, { required: v })} />
+              <Label htmlFor={`req-${i}`} className="text-[10px] font-normal">{t('必填', 'required')}</Label>
+            </label>
+            <Button variant="ghost" size="sm" className="h-6 w-6 text-[10px]" onClick={() => onChange(params.filter((_, j) => j !== i))}>✕</Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
+              <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 flex-1 min-w-32 text-[10px] font-mono"
+                placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />
+            )}
+            {p.valueType === 'number' && (
+              <>
+                <Input type="number" value={p.min ?? ''} onChange={(e) => at(i, { min: num(e.target.value) })} className="h-6 w-16 text-[10px]" placeholder="min" />
+                <Input type="number" value={p.max ?? ''} onChange={(e) => at(i, { max: num(e.target.value) })} className="h-6 w-16 text-[10px]" placeholder="max" />
+                <Input type="number" step="0.1" value={p.step ?? ''} onChange={(e) => at(i, { step: num(e.target.value) })} className="h-6 w-16 text-[10px]" placeholder="step" />
+              </>
+            )}
+            {p.valueType === 'file' && (
+              <>
+                <Input value={p.accept ?? ''} onChange={(e) => at(i, { accept: e.target.value })} className="h-6 w-28 text-[10px] font-mono" placeholder=".mp3,.wav" />
+                <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-28 text-[10px]" placeholder={t('最大字节', 'maxSize')} />
+              </>
+            )}
+            <Select value={p.transform ?? 'none'} onValueChange={(v) => at(i, { transform: v === 'none' ? undefined : (v as ParamSpec['transform']) })}>
+              <SelectTrigger className="h-6 w-36 text-[10px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none" className="text-[10px]">{t('不做转换', 'no transform')}</SelectItem>
+                <SelectItem value="hotFixArray" className="text-[10px]">hotFix → 数组</SelectItem>
+                <SelectItem value="base64DataUri" className="text-[10px]">文件 → data URI</SelectItem>
+                <SelectItem value="json" className="text-[10px]">字符串 → JSON</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       ))}
-      <button onClick={() => write([...vars, { name: '', type: 'string' }])} className="h-6 px-2 rounded-md border border-white/15 text-[10px] hover:bg-white/10">＋ {t('参数', 'param')}</button>
+      <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => onChange([...params, { key: '', label: '', valueType: 'string' }])}>
+        ＋ {t('参数', 'param')}
+      </Button>
     </div>
   );
 }
 
-function parseOptions(s: string): VarSpec['options'] | undefined {
+const num = (s: string) => (s === '' ? undefined : Number(s));
+
+/** `a, b=乙, 16000=16k` → 候选值（数字 / 真假自动成形；只有 value 会进请求体） */
+function parseList(s: string): ParamSpec['options'] {
   const parts = s.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
   if (!parts.length) return undefined;
-  return parts.map((p) => {
-    const [raw, label] = p.split('=');
-    const num = Number(raw);
-    const value = raw === 'true' ? true : raw === 'false' ? false : Number.isNaN(num) || raw === '' ? raw : num;
+  return parts.map((raw) => {
+    const [v, label] = raw.split('=');
+    const value = v === 'true' ? true : v === 'false' ? false : Number.isNaN(Number(v)) || v === '' ? v : Number(v);
     return label ? { value, label } : value;
-  }) as VarSpec['options'];
+  }) as ParamSpec['options'];
 }
 
-/** 返回槽位：按 role + mode 只渲染该填的那几格 */
-function RespEditor({ row, kind, onCommit }: { row: TemplateRow; kind: ProviderKind; onCommit: (resp: RespSlots) => void }) {
+// ========== 小块 ==========
+
+function JsonBox({ label, value, onChange, hint }: { label: string; value: unknown; onChange: (v: unknown) => void; hint?: string }) {
   const t = useT();
-  const resp = row.resp ?? {};
-  const at = (p: Partial<RespSlots>) => onCommit({ ...resp, ...p });
-  const list = (arr?: string[]) => (arr ?? []).join(', ');
-  const fields: { key: keyof RespSlots; label: string; placeholder?: string; show: boolean }[] = [
-    { key: 'content', label: t('返回内容路径', 'Content path'), placeholder: 'choices[0].message.content', show: kind === 'llm' && row.mode === 'sync' },
-    { key: 'image', label: t('图片路径', 'Image path'), placeholder: 'output.choices[0].message.content[0].image', show: kind === 'image' && (row.role === 'query' || row.mode === 'sync') },
-    { key: 'audio', label: t('音频路径', 'Audio path'), placeholder: t('留空 = 响应体本身就是音频', 'empty = the body is the audio'), show: kind === 'tts' && (row.role === 'query' || row.mode === 'sync') },
-    { key: 'voiceId', label: t('音色 ID 路径', 'Voice id path'), placeholder: 'output.voice_id', show: row.role === 'clone' },
-    { key: 'taskId', label: t('任务 id 路径', 'Task id path'), placeholder: 'output.task_id', show: row.mode === 'async' && row.role !== 'query' },
-    { key: 'status', label: t('任务状态路径', 'Status path'), placeholder: 'output.task_status', show: row.role === 'query' },
-  ];
+  const [text, setText] = useState(() => JSON.stringify(value ?? {}, null, 1));
+  const [bad, setBad] = useState(false);
+  const commit = (next: string) => {
+    setText(next);
+    try { onChange(JSON.parse(next || '{}')); setBad(false); } catch { setBad(true); }
+  };
   return (
     <div className="space-y-1">
-      <span className="text-[10px] text-muted-foreground">{t('返回取法', 'Result paths')}</span>
-      {fields.filter((f) => f.show).map((f) => (
-        <div key={String(f.key)} className="flex items-center gap-2">
-          <span className="w-28 shrink-0 text-[10px] text-muted-foreground">{f.label}</span>
-          <input
-            value={String(resp[f.key] ?? '')}
-            onChange={(e) => at({ [f.key]: e.target.value } as Partial<RespSlots>)}
-            className="input h-6 flex-1 text-[10px] font-mono" placeholder={f.placeholder}
-          />
-        </div>
-      ))}
-      {row.role === 'query' && (
-        <div className="flex flex-wrap items-center gap-2">
-          {(['success', 'pending', 'fail'] as const).map((k) => (
-            <label key={k} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              {k === 'success' ? t('成功状态', 'success') : k === 'pending' ? t('在途状态', 'pending') : t('失败状态', 'fail')}
-              <input
-                value={list(resp[k])}
-                onChange={(e) => at({ [k]: e.target.value.split(/[,，]/).map((x) => x.trim()).filter(Boolean) } as Partial<RespSlots>)}
-                className="input h-6 w-40 text-[10px] font-mono" placeholder="SUCCEEDED"
-              />
-            </label>
-          ))}
-        </div>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[10px] text-muted-foreground/70">{t('错误取值', 'error paths')}</span>
-        <input value={String(resp.errorCode ?? '')} onChange={(e) => at({ errorCode: e.target.value })} className="input h-6 w-28 text-[10px] font-mono" placeholder="code" />
-        <input value={String(resp.error ?? '')} onChange={(e) => at({ error: e.target.value })} className="input h-6 w-28 text-[10px] font-mono" placeholder="message" />
+      <div className="text-[10px] text-muted-foreground">
+        {label} · {hint ?? t('JSON', 'JSON')}{bad && <span className="text-red-400"> · {t('还不成形，暂不应用', 'not valid yet')}</span>}
       </div>
+      <textarea value={text} onChange={(e) => commit(e.target.value)} rows={4}
+        className={`input w-full text-[10px] font-mono resize-y ${bad ? 'border-red-400/60' : ''}`} />
+    </div>
+  );
+}
+
+function ListField({ label, value, onChange }: { label: string; value: string[]; onChange: (v: string[]) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+      <span className="w-28 shrink-0 text-muted-foreground">{label}</span>
+      <Input value={value.join(', ')} className="h-6 flex-1 min-w-40 text-[10px] font-mono"
+        onChange={(e) => onChange(e.target.value.split(/[,，]/).map((x) => x.trim()).filter(Boolean))} />
     </div>
   );
 }

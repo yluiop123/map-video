@@ -1,162 +1,149 @@
 /**
- * request-engine.ts — 模板求值引擎（纯函数 + 可注入传输，离线可单测）
+ * request-engine.ts — 接口模板的求值与执行（「模板即数据」的那一半）
  *
- * 一份数据描述「一个接口怎么发、返回从哪取」，双端共用，代码里没有协议分支。
- * 设计见 docs/provider-engine.md；本文件不碰网络、不碰 DOM、不 import store。
- *
- * 求值规则刻意做小：
- *   {name}   独占一个标量 → 整段替换、保留原类型；在字符串内部 → 插值
- *   {@name}  只能独占一个值位 → 整段展开（数组/对象/数字类型全保留）
- * 没有循环、没有表达式语言，只有 `when: "a == b"` 等值门控与 omitIfEmpty ——
- * 模板里一旦能写程序，出错时看模板就看不出实际发了什么，「试调用」也就失去意义。
+ * 形状照 `docs/provider-engine.md`：一份模板 = 一行（同步 / 异步 / 桥接 / 克隆都在里面），
+ * 参数分三层（实例级 / 请求级 / 调用级），占位符统一 `${x}`，中间变量靠 `outputs` 隐式流转。
+ * **这里没有按厂商名写的分支**：三家的差异（认证头、taskId 在 path 还是 body、hex 还是 url、
+ * 发音修正的数组形状）全部是模板里的数据。
+ * 引擎不碰网络、不碰 DOM —— 传输由调用端注入 deps.send / deps.fetchBytes。
  */
-import type { L } from './i18n';
-
-/** 引擎不依赖界面层：自检信息一律取中文那一份（L = string | {zh,en}） */
-const zh = (l: L | undefined): string => (l == null ? '' : typeof l === 'string' ? l : l.zh);
+import { JSONPath } from 'jsonpath-plus';
 
 // ========== 类型 ==========
 
-export type ProviderKind = 'llm' | 'tts' | 'image';
-/** 组内用途；kind 已在组上，所以这里不带前缀 */
-export type Role = 'generate' | 'synthesize' | 'query' | 'clone';
-export type Mode = 'sync' | 'async';
-export type VarType = 'int' | 'string' | 'bool' | 'list' | 'json';
+export type Category = 'llm' | 'tts' | 'image';
+/** 请求在模板里的位置；界面与 values.requests 都用这个名字 */
+export type ReqKey = 'sync.submit' | 'async.submit' | 'async.query' | 'download' | 'upload' | 'clone';
+export type ValueType =
+  | 'string' | 'text' | 'number' | 'boolean' | 'enum' | 'multiEnum' | 'array' | 'secret' | 'file' | 'json';
+/** 产物封装方式：binary 响应体即产物 / hex / base64 / url 是带时效的链接 */
+export type OutputFormat = 'binary' | 'hex' | 'base64' | 'url';
 
-export interface VarOption {
-  value: string | number | boolean;
-  /** 省略则显示 value；只有 value 会进请求体 */
-  label?: string;
-}
+export interface OptionSpec { value: string | number | boolean; label?: string }
 
 /**
- * 一条入参声明。名字与说明都是**用户自己填的单个字符串**（不双语 —— 自定义的东西没法自动翻）。
- * 实例参数与请求参数**各存各的字段**（`TemplateRow.instParams` / `reqParams`），不再用一个 stage 区分。
+ * 一条参数声明。名字 / 说明都是用户自填的单个字符串（自定义的东西没有自动翻这回事）。
+ * `transform` 是**数据驱动的取值变换**，用来吃掉「同一条数据在不同厂商要变成不同形状」这类差异，
+ * 免得引擎里长出 `if (厂商 === 'minimax')`。
  */
-export interface VarSpec {
-  name: string;
-  type?: VarType;
+export interface ParamSpec {
+  key: string;
   label?: string;
-  default?: string | number | boolean;
-  /** 有 options 就用选项块；bool 隐含两个选项，不必写 */
-  options?: (VarOption | string | number | boolean)[];
-  /** true → 选项块旁再给输入框（默认 false：宁可显式加候选，也不放开门让上游报错教人） */
-  allowCustom?: boolean;
-  /** 没给值时连父键一起删（不少上游拒绝空数组 / 空对象 / null，但键不存在是合法的） */
-  omitIfEmpty?: boolean;
-  /** 等值门控，如 "mode == async" */
-  when?: string;
-  /** type='list' 时的元素子模板：body 里用 {@name} 展开，fields 决定行编辑器长什么样 */
-  item?: { body: unknown; fields?: VarSpec[] };
+  valueType?: ValueType;
+  required?: boolean;
+  defaultValue?: unknown;
+  /** 有 options 就是选项块；enum 单值、multiEnum 数组 */
+  options?: (OptionSpec | string | number | boolean)[];
+  min?: number;
+  max?: number;
+  step?: number;
+  minCount?: number;
+  maxCount?: number;
+  /** array 的元素类型 */
+  itemType?: 'string' | 'number';
+  accept?: string;
+  maxSize?: number;
+  /**
+   * hotFixArray：把 {pronunciation:[{词:音}]} / {replace:[{原:换}]} 摊成 ["词/音", …]
+   * base64DataUri：文件字节 → `data:<mime>;base64,…`
+   * json：字符串按 JSON 解析后再入体
+   */
+  transform?: 'hotFixArray' | 'base64DataUri' | 'json';
 }
 
-/** 出参固定槽位：界面按 role+mode 只渲染该填的那几格 */
-export interface RespSlots {
-  content?: string;
-  image?: string;
-  audio?: string;
-  voiceId?: string;
-  taskId?: string;
-  status?: string;
-  success?: string[];
-  fail?: string[];
-  pending?: string[];
-  errorCode?: string;
-  error?: string;
-}
-
-export interface TemplateRow {
-  tplId?: string;
-  role: Role;
-  /** 这条变体服务哪种方式；query / clone 恒 sync */
-  mode: Mode;
-  ord?: number;
+/** 一条请求（核心或桥接）。headers 只在模板顶层配一份，请求上只写需要覆盖的那几个 */
+export interface RequestDef {
+  /** 地址模板，`${x}` 随便写；查询参数直接拼在串上（各家 taskId 位置不同，写在这里就行） */
+  path: string;
   method?: string;
-  /** 完整地址模板，{baseUrl} 出现在哪由它自己决定 */
-  url: string;
   headers?: Record<string, unknown>;
-  query?: Record<string, unknown>;
+  /** 请求级参数：这个请求专属（model / size…），取值存实例的 values.requests[<本 key>] */
+  requestParams?: ParamSpec[];
+  /** 调用级参数：每次调用由界面 / 程序给（text / prompt / file / hotFix…） */
+  callParams?: ParamSpec[];
   body?: unknown;
-  /** 实例参数：建实例时在 ⚙ 里配的值（size / format / sampleRate / temperature…） */
-  instParams?: VarSpec[];
-  /** 请求参数：每次调用由程序给的值（text / prompt / systemPrompt / wavB64…） */
-  reqParams?: VarSpec[];
-  resp?: RespSlots;
-  /** 产物怎么还原成字节：hex（MiniMax）/ base64 / url（远端链接，当场下载） */
-  decode?: 'hex' | 'base64' | 'url';
-  /** 下载产物时附带的请求头；空 = 裸 GET 签名链接 */
-  fetchHeaders?: Record<string, unknown>;
-  pollIntervalMs?: number;
-  pollTimeoutMs?: number;
-  /** clone 行：参考音频要求采样率（CosyVoice 16k、Qwen-TTS ≥24k，写死过一次就出事） */
+  /** multipart 表单（上传参考音频用；file 值由引擎换成文件部分） */
+  form?: Record<string, unknown>;
+  /** 从响应里取字段：{ taskId: 'output.task_id' } —— 取出来的名字进作用域，下游 ${taskId} 直接用 */
+  outputs?: Record<string, string>;
+  outputFormat?: OutputFormat;
+  /** 只有 query 用；中间态不配（没命中两个列表就继续查） */
+  successValues?: string[];
+  failureValues?: string[];
+  timeoutMs?: number;
+}
+
+/** 一份完整模板 */
+export interface TemplateDef {
+  id: string;
+  name: string;
+  category: Category;
+  note?: string;
+  /** 有没有克隆音色接口（仅 tts 用得上） */
+  useClone?: boolean;
+  /** 克隆前要不要先上传拿 fileId（false = 直接把音频 base64 塞进 body） */
+  hasUpload?: boolean;
+  headers?: Record<string, unknown>;
+  /** 实例级参数声明：所有请求共用（超时 / 批次并发 / 查询节奏 / 音色失效信号…） */
+  instanceParams?: ParamSpec[];
+  sync?: { submit?: RequestDef };
+  async?: { submit?: RequestDef; query?: RequestDef };
+  /** 桥接：fileId → 最终下载地址（同步异步共用） */
+  download?: RequestDef;
+  /** 桥接：本地文件 → fileId */
+  upload?: RequestDef;
+  /** 核心：参考音频 → 音色 ID */
+  clone?: RequestDef;
+  /** 克隆参考音频要求采样率 Hz（CosyVoice 16k、Qwen-TTS ≥24k） */
   refSampleRateHz?: number;
 }
 
-export interface TemplateGroup {
-  tplGroup: string;
-  kind: ProviderKind;
-  /** 用户自定义名称，单个字符串（不做中英两份） */
-  label: string;
-  note?: string;
-  ord?: number;
-  /** 新建实例时的预填建议 */
-  baseUrl?: string;
-  models?: string[];
-  defaultModel?: string;
-  defaultVoice?: string;
-  rows: TemplateRow[];
+/** 实例的取值：`{ instance: {…}, requests: { "async.submit": {…} } }`（密钥也在里面，模板把它声明成 `valueType:'secret'`） */
+export interface InstanceValues {
+  instance?: Record<string, unknown>;
+  requests?: Record<string, Record<string, unknown>>;
 }
-
-/** 每个 kind 至少要有的 role，缺了这家不可用 */
-export const REQUIRED_ROLE: Record<ProviderKind, Role> = { llm: 'generate', tts: 'synthesize', image: 'generate' };
-
-/** 各类功能可能出现的 role（模板页据此列出还能补哪条接口） */
-export const ROLES_BY_KIND: Record<ProviderKind, Role[]> = {
-  llm: ['generate'],
-  tts: ['synthesize', 'query', 'clone'],
-  image: ['generate', 'query'],
-};
-
-/** 界面标题：role + mode */
-export const ROLE_LABEL: Record<Role, L> = {
-  generate: { zh: '生成', en: 'Generate' },
-  synthesize: { zh: '语音合成', en: 'Synthesize' },
-  query: { zh: '状态查询', en: 'Status query' },
-  clone: { zh: '音色克隆', en: 'Voice clone' },
-};
-
-// ========== 求值上下文 ==========
-
-export interface ReqCtx {
-  baseUrl?: string;
-  apiKey?: string;
-  apiKey2?: string;
-  model?: string;
-  voice?: string;
-  speed?: number;
-  /** 实例选的同步 / 异步 */
-  mode?: Mode;
-  /** 实例期参数（模板声明表里那些入参的取值） */
-  params?: Record<string, unknown>;
-  [k: string]: unknown;
-}
-
-/** 不必声明的保留占位符：配置里就有值的那些（{taskId} 由引擎在②之后注入，也不用声明） */
-export const RESERVED = ['baseUrl', 'apiKey', 'apiKey2', 'model', 'voice', 'speed', 'mode', 'params', 'taskId'];
 
 /**
- * 调用期正文：值每次调用由程序给（`callLLM` 给 systemPrompt / userPrompt，`callTTS` 给 text…），
- * **同样不必声明** —— 声明它们只会在模板页长出一排没人能配的空行。
- * 要额外类型 / 候选值时才在「请求参数」里声明同名项；试调用的输入框由 `callVarsOf` 从占位符反推。
+ * 一条实例 = 一行 provider。
+ * **没有任何内置字段**：baseUrl / apiKey / 模型 / 音色都是模板里声明出来的参数，
+ * 取值统一在 `values` 里（`instance` 整实例共用、`requests[<请求>]` 按请求各存各的）。
+ * 界面上 `valueType:'secret'` 的参数渲染成密码框，密钥就落在这份 JSON 里（只存本机，不进项目文件）。
  */
-export const CALL_VARS = ['text', 'prompt', 'systemPrompt', 'userPrompt', 'wavB64', 'reqId'];
+export interface InstanceDef {
+  id: string;
+  /** 用哪一份模板 */
+  tplId: string;
+  name: string;
+  /** 走同步还是异步 */
+  sync: boolean;
+  values: InstanceValues;
+}
 
-/** 一行里两类参数的合并视图（求值与校验都按它） */
-export const allParams = (row: TemplateRow): VarSpec[] => [...(row.instParams ?? []), ...(row.reqParams ?? [])];
+/** 求值后的请求 */
+export interface ResolvedRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body?: unknown;
+  form?: Record<string, string | Uint8Array>;
+  timeoutMs?: number;
+}
 
-const WHOLE = /^\{([A-Za-z_][A-Za-z0-9_.]*)\}$/;
-const SPLICE = /^\{@([A-Za-z_][A-Za-z0-9_.]*)\}$/;
-const EMBED = /\{([A-Za-z_][A-Za-z0-9_.]*)\}/g;
+export interface HttpResult {
+  status: number;
+  contentType?: string;
+  json?: unknown;
+  text?: string;
+  bytes?: Uint8Array;
+}
+
+export interface Deps {
+  send: (r: ResolvedRequest) => Promise<HttpResult>;
+  fetchBytes: (url: string, headers?: Record<string, string>) => Promise<{ bytes: Uint8Array; mime?: string }>;
+}
+
+/** 引擎不依赖界面层：自带的标签类型这里只留 string（用户自定义的东西不做中英两份） */
 
 export class EngineError extends Error {
   /** 带上游状态码，调度层才知道这条能不能重试（429 / 5xx 才重试） */
@@ -167,449 +154,525 @@ export class EngineError extends Error {
   }
 }
 
-const isPlain = (v: unknown) => v !== undefined && v !== null && v !== '';
-
-/** 路径支持 `a.b[0].c` 与 `a.b.0.c` 两种写法；界面与文档统一用前者 */
-export function normalizePath(path: string): string {
-  return path.replace(/\[(\d+)\]/g, '.$1');
+/**
+ * **没有任何内置占位符**：`${baseUrl}` `${apiKey}` 都是模板 instanceParams 里声明出来的参数，
+ * 取值落在实例的 values.instance；中间变量（taskId / fileId / voiceId）靠 outputs 流转，也不进声明表。
+ * 于是"这一份模板要人填什么"只有一处答案 —— 模板本身，界面照它渲染，密钥那几条渲染成密码框。
+ */
+export function secretKeysOf(tpl: TemplateDef, reqKey: ReqKey): string[] {
+  const req = requestOf(tpl, reqKey);
+  return [...(tpl.instanceParams ?? []), ...(req?.requestParams ?? []), ...(req?.callParams ?? [])]
+    .filter((p) => p.valueType === 'secret')
+    .map((p) => p.key);
 }
 
-export function readPath(obj: unknown, path: string): unknown {
-  let cur: unknown = obj;
-  for (const seg of normalizePath(path).split('.')) {
-    if (cur == null) return undefined;
-    if (Array.isArray(cur)) {
-      const i = Number(seg);
-      if (Number.isNaN(i)) return undefined;
-      cur = cur[i];
-    } else if (typeof cur === 'object') {
-      cur = (cur as Record<string, unknown>)[seg];
-    } else {
-      return undefined;
-    }
+export const REQ_KEYS: ReqKey[] = ['sync.submit', 'async.submit', 'async.query', 'download', 'upload', 'clone'];
+
+export const CATEGORY_LABEL: Record<Category, string> = { llm: '文案生成', tts: '语音', image: '图片' };
+
+// ========== 请求定位 ==========
+
+export function requestOf(tpl: TemplateDef, key: ReqKey): RequestDef | undefined {
+  switch (key) {
+    case 'sync.submit': return tpl.sync?.submit;
+    case 'async.submit': return tpl.async?.submit;
+    case 'async.query': return tpl.async?.query;
+    case 'download': return tpl.download;
+    case 'upload': return tpl.upload;
+    case 'clone': return tpl.clone;
   }
-  return cur;
 }
 
-function lookup(ctx: ReqCtx, name: string): unknown {
-  const direct = name.split('.').reduce<unknown>((acc, seg) => {
-    if (acc == null || typeof acc !== 'object') return undefined;
-    return (acc as Record<string, unknown>)[seg];
-  }, ctx);
-  if (direct !== undefined) return direct;
-  // model / voice 这类既可能在顶层也可能在实例参数里，统一兜到 params
-  return readPath(ctx.params ?? {}, name);
+/** 实例的同步 / 异步开关决定用哪条提交接口（模板本身不参与判断） */
+export function submitKeyOf(sync: boolean): ReqKey {
+  return sync ? 'sync.submit' : 'async.submit';
 }
 
-type VarMap = Map<string, VarSpec>;
-
-/** gated = 声明了但被 when 关掉的变量，引用到就当作「不给值、连键删掉」 */
-interface Scope {
-  ctx: ReqCtx;
-  vars: VarMap;
-  gated: Set<string>;
+/** 这个请求要调用端给值的参数名（试调用与调用页据此长输入框） */
+export function callKeysOf(tpl: TemplateDef, key: ReqKey): string[] {
+  return (requestOf(tpl, key)?.callParams ?? []).map((p) => p.key);
 }
 
-function resolveValue(name: string, s: Scope): { present: boolean; value: unknown } {
-  if (s.gated.has(name)) return { present: false, value: undefined };
-  const spec = s.vars.get(name);
-  let v = lookup(s.ctx, name);
-  if (v === undefined && spec?.default !== undefined) v = spec.default;
-  if (v === undefined) {
-    if (spec?.omitIfEmpty) return { present: false, value: undefined };
-    throw new EngineError(`缺少变量「${name}」（模板没它发不出请求）`);
+/** 这个请求的请求级参数（实例设置页按请求分区渲染） */
+export function requestParamsOf(tpl: TemplateDef, key: ReqKey): ParamSpec[] {
+  return requestOf(tpl, key)?.requestParams ?? [];
+}
+
+/** 整份模板的实例级参数（密钥那三个走 provider 的具名列，不在这里重复） */
+export const instanceParamsOf = (tpl: TemplateDef): ParamSpec[] => tpl.instanceParams ?? [];
+
+// ========== 取值 ==========
+
+/** 路径支持 `output.a[0].b`；不以 `$` 开头就补上，与上游文档逐字一致 */
+export function readPath(doc: unknown, rel: string): unknown {
+  if (!rel) return undefined;
+  const path = rel.startsWith('$') ? rel : `$.${rel}`;
+  try {
+    const got = JSONPath({ path, json: doc as object, resultType: 'value' }) as unknown[];
+    if (!Array.isArray(got) || !got.length) return undefined;
+    return got.length === 1 ? got[0] : got;
+  } catch {
+    return undefined;
   }
-  if ((v === null || v === '') && spec?.omitIfEmpty) return { present: false, value: undefined };
-  return { present: true, value: v };
 }
 
-function interpolate(str: string, s: Scope): string {
-  return str.replace(EMBED, (_m, name: string) => {
-    const { value } = resolveValue(name, s);
-    return typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
-  });
+/** 按 outputs 声明从响应里取一批中间变量 */
+export function applyOutputs(doc: unknown, outputs?: Record<string, string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, rel] of Object.entries(outputs ?? {})) {
+    const v = readPath(doc, rel);
+    if (v !== undefined) out[name] = v;
+  }
+  return out;
 }
 
-/** 递归求值：undefined 表示「这个键 / 这个元素应当删掉」 */
+/**
+ * 参数声明的 valueType / transform 落到实际值：控件给的是字符串，进请求体前按声明成形。
+ * 未识别的键（界面里手打的 `${x}`）原样传出去，交给「未声明占位符」那条校验点名。
+ */
+function castParam(spec: ParamSpec | undefined, raw: unknown): unknown {
+  if (raw === undefined || raw === null) return raw;
+  const t = spec?.valueType;
+  if (spec?.transform === 'json' && typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return raw; }
+  }
+  if (spec?.transform === 'hotFixArray') return hotFixToArrays(raw);
+  if (spec?.transform === 'base64DataUri') return raw;     // 调用端已给 data URI
+  if (typeof raw !== 'string') return raw;
+  if (t === 'number') return raw === '' ? raw : Number(raw);
+  if (t === 'boolean') return raw === 'true';
+  if (t === 'json') { try { return JSON.parse(raw); } catch { return raw; } }
+  return raw;
+}
+
+/**
+ * 发音修正 → 数组形状：`{词: "chong2 qing4"}` → `"词/chong2 qing4"`。
+ * 千问要对象、MiniMax / 字节要这个数组 —— 差别只在模板里选不选这个 transform。
+ */
+export function hotFixToArrays(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const o = raw as Record<string, unknown>;
+  const one = (arr: unknown) => (Array.isArray(arr) ? arr : arr ? [arr] : []);
+  const tone = [
+    ...one(o.pronunciation).flatMap((m) => Object.entries((m ?? {}) as object).map(([k, v]) => `${k}/${v}`)),
+    ...one(o.replace).flatMap((m) => Object.entries((m ?? {}) as object).map(([k, v]) => `${k}/${v}`)),
+  ];
+  return tone.length ? tone : undefined;
+}
+
+/** 一次求值的作用域：调用参数 > 上游 outputs > 请求级 > 实例级 > 声明的 defaultValue > 内置 */
+export interface Scope {
+  values: Record<string, unknown>;
+  /** 三层声明 + outputs 产出 + 内置字段的合集：在里面就说明是「可选参数没给值」，不是写错 */
+  declared: Set<string>;
+  /** 引用了但**任何地方都没声明**的名字 —— 只可能是占位符打错字，预览与校验要点名 */
+  missing: Set<string>;
+}
+
+export function scopeOf(
+  tpl: TemplateDef,
+  inst: InstanceDef,
+  reqKey: ReqKey,
+  callArgs: Record<string, unknown> = {},
+  upstream: Record<string, unknown> = {},
+): Scope {
+  const req = requestOf(tpl, reqKey);
+  const specs = new Map<string, ParamSpec>();
+  for (const p of tpl.instanceParams ?? []) specs.set(p.key, p);
+  for (const p of req?.requestParams ?? []) specs.set(p.key, p);
+  for (const p of req?.callParams ?? []) specs.set(p.key, p);
+
+  const values: Record<string, unknown> = {};
+  const put = (k: string, v: unknown) => { if (v !== undefined) values[k] = castParam(specs.get(k), v); };
+
+  // 先铺声明里的默认值，再逐层往上覆盖
+  for (const p of [...(tpl.instanceParams ?? []), ...(req?.requestParams ?? []), ...(req?.callParams ?? [])]) {
+    if (p.defaultValue !== undefined) put(p.key, p.defaultValue);
+  }
+  // 实例级取值（含 baseUrl / 密钥）
+  for (const [k, v] of Object.entries(inst.values.instance ?? {})) put(k, v);
+  // 请求级取值（同名 key 在不同请求下各存各的：同步与异步的 model 可以不一样）
+  for (const [k, v] of Object.entries(inst.values.requests?.[reqKey] ?? {})) put(k, v);
+  // 上游 outputs
+  for (const [k, v] of Object.entries(upstream)) put(k, v);
+  // 调用参数最高
+  for (const [k, v] of Object.entries(callArgs)) put(k, v);
+
+  const declared = new Set<string>([...specs.keys(), ...Object.keys(upstream)]);
+  return { values, declared, missing: new Set<string>() };
+}
+
+// ========== 求值 ==========
+
+const WHOLE = /^\$\{([A-Za-z_][A-Za-z0-9_.]*)\}$/;
+const EMBED = /\$\{([A-Za-z_][A-Za-z0-9_.]*)\}/g;
+
+/** 递归求值：返回 undefined 表示「这个键 / 这个元素应当删掉」（没给值就不把空键发给上游） */
 function walk(node: unknown, s: Scope): unknown {
   if (typeof node === 'string') {
     const whole = WHOLE.exec(node);
     if (whole) {
-      const r = resolveValue(whole[1], s);
-      return r.present ? r.value : undefined;
+      const name = whole[1];
+      if (name in s.values) return s.values[name];
+      // 声明过 → 只是这个可选参数没填：删键；没声明 → 十有八九是占位符写错，点名
+      if (!s.declared.has(name)) s.missing.add(name);
+      return undefined;
     }
-    if (SPLICE.test(node)) throw new EngineError(`「${node}」只能出现在数组里（{@name} 是数组展开）`);
-    return node.includes('{') ? interpolate(node, s) : node;
+    if (!node.includes('${')) return node;
+    return node.replace(EMBED, (_m, name: string) => {
+      if (!(name in s.values)) {
+        if (!s.declared.has(name)) s.missing.add(name);
+        return '';
+      }
+      const v = s.values[name];
+      return typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '');
+    });
   }
   if (Array.isArray(node)) {
     const out: unknown[] = [];
     for (const item of node) {
-      if (typeof item === 'string') {
-        const sp = SPLICE.exec(item);
-        if (sp) {
-          const r = resolveValue(sp[1], s);
-          if (r.present) {
-            const arr = Array.isArray(r.value) ? r.value : [r.value];
-            for (const e of arr) out.push(walk(e, s));
-          }
-          continue;
-        }
-      }
       const v = walk(item, s);
       if (v !== undefined) out.push(v);
     }
     // 原本有内容、结果全被省略 → 连这个数组一起删（不留空数组给上游挑理）
-    if (node.length > 0 && out.length === 0) return undefined;
-    return out;
+    return node.length > 0 && out.length === 0 ? undefined : out;
   }
   if (node && typeof node === 'object') {
-    const entries = Object.entries(node as Record<string, unknown>);
     const out: Record<string, unknown> = {};
-    for (const [k, v] of entries) {
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
       const rv = walk(v, s);
       if (rv !== undefined) out[k] = rv;
     }
-    if (entries.length > 0 && Object.keys(out).length === 0) return undefined;
-    return out;
+    return Object.keys(out).length ? out : undefined;
   }
   return node;
 }
 
-/** `when: "a == b"`：只支持 == / !=，路径从 ctx 取（界面也用它决定某个参数该不该出现） */
-export function whenOk(cond: string | undefined, ctx: ReqCtx): boolean {
-  if (!cond) return true;
-  const m = /^([\w.]+)\s*(==|!=)\s*(.+)$/.exec(cond.trim());
-  if (!m) return true;
-  const left = String(lookup(ctx, m[1]) ?? '');
-  const right = m[3].trim().replace(/^['"]|['"]$/g, '');
-  return m[2] === '==' ? left === right : left !== right;
-}
-
-export interface ResolvedRequest {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  query: Record<string, string>;
-  body: unknown;
-}
-
-function joinUrl(base: string, path: string): string {
-  if (/^https?:\/\//i.test(path)) return path;
-  const b = (base || '').replace(/\/+$/, '');
-  const p = path.startsWith('/') ? path : `/${path}`;
-  return `${b}${p}`;
-}
-
-export function buildRequest(row: TemplateRow, ctx: ReqCtx): ResolvedRequest {
-  const vars: VarMap = new Map();
-  const gated = new Set<string>();
-  for (const v of allParams(row)) {
-    if (whenOk(v.when, ctx)) vars.set(v.name, v);
-    else gated.add(v.name);
-  }
-  const s: Scope = { ctx, vars, gated };
+/** 求值成一条可发出的请求（不发送；预览与发送共用这一份） */
+export function buildRequest(
+  tpl: TemplateDef,
+  inst: InstanceDef,
+  reqKey: ReqKey,
+  callArgs: Record<string, unknown> = {},
+  upstream: Record<string, unknown> = {},
+): { req: ResolvedRequest; missing: Set<string> } {
+  const def = requestOf(tpl, reqKey);
+  if (!def) throw new EngineError(`模板「${tpl.name}」没有 ${reqKey} 这条请求`);
+  const s = scopeOf(tpl, inst, reqKey, callArgs, upstream);
   const headers: Record<string, string> = {};
-  for (const [k, v] of Object.entries(row.headers ?? {})) {
+  for (const [k, v] of Object.entries({ ...(tpl.headers ?? {}), ...(def.headers ?? {}) })) {
     const rv = walk(v, s);
-    if (rv !== undefined) headers[k] = String(rv);
+    if (rv !== undefined && rv !== '') headers[k] = String(rv);
   }
-  const query: Record<string, string> = {};
-  for (const [k, v] of Object.entries(row.query ?? {})) {
+  const url = String(walk(def.path, s) ?? '');
+  const body = def.body === undefined ? undefined : walk(structuredClone(def.body), s);
+  const form: Record<string, string | Uint8Array> = {};
+  for (const [k, v] of Object.entries(def.form ?? {})) {
     const rv = walk(v, s);
-    if (rv !== undefined) query[k] = String(rv);
+    if (typeof rv === 'string') form[k] = rv;
+    else if (rv instanceof Uint8Array) form[k] = rv;
   }
-  const body = row.body === undefined ? undefined : walk(row.body, s);
   return {
-    url: joinUrl(ctx.baseUrl || '', walk(row.url, s) as string),
-    method: (row.method || 'POST').toUpperCase(),
-    headers,
-    query,
-    body,
+    req: {
+      method: (def.method ?? 'POST').toUpperCase(),
+      url: url.startsWith('http') ? url : `${String(s.values.baseUrl ?? '').replace(/\/+$/, '')}/${url.replace(/^\/+/, '')}`,
+      headers,
+      body: body && Object.keys(body).length ? body : undefined,
+      form: Object.keys(form).length ? form : undefined,
+      timeoutMs: def.timeoutMs ?? numberValue(s.values.timeoutMs),
+    },
+    missing: s.missing,
   };
 }
 
-/** 打码：试调用与日志里绝不让密钥原文出现 */
-export function redact(req: ResolvedRequest, ctx: ReqCtx): ResolvedRequest {
-  const secrets = [ctx.apiKey, ctx.apiKey2].filter((s) => !!s && s.length >= 6) as string[];
-  const mask = (s: string) => {
-    let out = s;
-    for (const v of secrets) out = out.split(v).join(`${v.slice(0, 4)}****（长度 ${v.length}）`);
-    return out;
-  };
-  return {
-    ...req,
-    url: mask(req.url),
-    headers: Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, mask(v)])),
-    body: JSON.parse(mask(JSON.stringify(req.body ?? null))),
-  };
+const numberValue = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && v !== '' ? Number(v) : undefined);
+
+/**
+ * 这份模板声明成 secret 的参数，在这个实例里的实际取值（打码用）。
+ * **按声明认，不按长度猜** —— 否则 baseUrl 这种长值会被遮成"密钥"，而真密钥短一点反而漏遮。
+ */
+export function secretsOf(tpl: TemplateDef, inst: InstanceDef): string[] {
+  const keys = new Set<string>();
+  for (const k of secretKeysOf(tpl, 'sync.submit')) keys.add(k);
+  for (const key of REQ_KEYS) for (const k of secretKeysOf(tpl, key)) keys.add(k);
+  return [...keys].map((k) => inst.values.instance?.[k]).filter((v): v is string => typeof v === 'string' && !!v);
 }
 
-// ========== 响应侧 ==========
-
-export interface SendResult {
-  status: number;
-  contentType?: string;
-  bytes?: Uint8Array;
-  json?: unknown;
-  text?: string;
+/** GET 不带体；有 form 时交给传输层拼 multipart */
+export function hasBody(r: ResolvedRequest): boolean {
+  return r.method !== 'GET' && (r.body !== undefined || r.form !== undefined);
 }
 
-export interface CallResult {
-  /** 按槽位取出的值（content / image / audio / voiceId / taskId / status / errorCode …） */
+/** 密钥打码：预览与日志都走这里，长度留着（对不上 Key 长度时一眼能看出来） */
+const mask = (s: string) => `${s.slice(0, 2)}****（长度 ${s.length}）`;
+
+export function redactUrl(url: string, secrets: string[]): string {
+  let out = url;
+  for (const s of secrets) if (s) out = out.split(s).join(mask(s));
+  return out;
+}
+
+/** 整条请求打码后的副本（「预览请求」面板用，绝不回显 Key 原文） */
+export function redact(r: ResolvedRequest, secrets: string[]): ResolvedRequest {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(r.headers)) {
+    headers[k] = secrets.some((s) => s && v.includes(s)) ? v.replace(/(Bearer |bearer )?\S*$/, '$1****') : v;
+  }
+  return { ...r, url: redactUrl(r.url, secrets), headers };
+}
+
+// ========== 状态判定 ==========
+
+export type Outcome = 'success' | 'failed' | 'pending';
+
+/** 只配成功与失败：没命中两个列表就是「继续查」，多一种状态就少一格要填 */
+export function classify(raw: unknown, successValues?: string[], failureValues?: string[]): Outcome {
+  const v = String(raw ?? '').trim();
+  if ((successValues ?? []).some((s) => s.toLowerCase() === v.toLowerCase())) return 'success';
+  if ((failureValues ?? []).some((s) => s.toLowerCase() === v.toLowerCase())) return 'failed';
+  return 'pending';
+}
+
+/**
+ * 上游错误原样带回来，界面不做二次翻译（否则查不到根因）。
+ * 状态码本身不算错：产物可能压根不在 JSON 里（binary），由调用方按情况判。
+ */
+export function errorOf(values: Record<string, unknown>, res: HttpResult): string | null {
+  const text = String(values.error ?? '').trim();
+  const code = String(values.errorCode ?? '').trim();
+  if (!text && !code) return res.status >= 400 ? `HTTP ${res.status}${res.text ? ` · ${res.text.slice(0, 200)}` : ''}` : null;
+  return [code, text].filter(Boolean).join(' · ');
+}
+
+// ========== 产物还原 ==========
+
+function hexToBytes(s: string): Uint8Array {
+  const clean = s.replace(/[^0-9a-fA-F]/g, '');
+  const out = new Uint8Array(Math.floor(clean.length / 2));
+  for (let i = 0; i < out.length; i += 1) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function b64ToBytes(s: string): Uint8Array {
+  const bin = atob(s.replace(/\s/g, ''));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/**
+ * 把响应变成字节：`binary` 直接就是响应体；hex / base64 从某个字段取；url 当场下载（时效链接绝不留到以后）。
+ * 产物在哪个字段由模板的 `outputs` 决定（audio / image / url 这些名字随各家）。
+ */
+export async function toBytes(
+  res: HttpResult,
+  format: OutputFormat | undefined,
+  values: Record<string, unknown>,
+  deps: Deps,
+  downloadHeaders?: Record<string, string>,
+): Promise<{ bytes: Uint8Array; mime?: string; viaUrl?: string }> {
+  if (!format || format === 'binary') {
+    if (res.bytes) return { bytes: res.bytes, mime: res.contentType };
+    throw new EngineError('上游没回字节流，但这一步按「响应体即产物」配置');
+  }
+  const raw = values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl;
+  if (typeof raw !== 'string' || !raw) {
+    // 把实际取到的槽位点名 —— 99% 是模板的产物路径写错了，不列出来就只能瞎猜
+    const got = Object.entries(values).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 40) : JSON.stringify(v)}`);
+    throw new EngineError(`产物取不到（outputFormat=${format}，但 outputs 里没音频 / 图片 / 链接；这一步取到的是：${got.join('、') || '什么都没有'}）`);
+  }
+  if (format === 'hex') return { bytes: hexToBytes(raw) };
+  if (format === 'base64') return { bytes: b64ToBytes(raw) };
+  const got = await deps.fetchBytes(raw, downloadHeaders);
+  return { bytes: got.bytes, mime: got.mime, viaUrl: raw };
+}
+
+// ========== 执行（同步一把梭 / 异步分两步给调度器） ==========
+
+export interface Step { key: ReqKey; url: string; status: number; values: Record<string, unknown> }
+
+export interface RunResult {
   values: Record<string, unknown>;
-  /** 解出来的音频 / 图片字节 */
   bytes?: Uint8Array;
   mime?: string;
-  /** 异步时逐次轮询的过程，试调用面板直接渲染它 */
-  steps: { label: string; url: string; status: number; values: Record<string, unknown> }[];
+  /** 异步提交后交回给调度器的东西 */
+  taskId?: string;
+  steps: Step[];
 }
 
-export interface Deps {
-  send: (req: ResolvedRequest) => Promise<SendResult>;
-  /** decode:'url' 时下载远端结果 */
-  fetchBytes?: (url: string, headers?: Record<string, string>) => Promise<{ bytes: Uint8Array; mime?: string }>;
-  sleep?: (ms: number) => Promise<void>;
-  now?: () => number;
+async function http(tpl: TemplateDef, inst: InstanceDef, key: ReqKey, deps: Deps, callArgs: Record<string, unknown>, upstream: Record<string, unknown>) {
+  const { req, missing } = buildRequest(tpl, inst, key, callArgs, upstream);
+  if (missing.size) throw new EngineError(`这些占位符没有任何来源给值：${[...missing].map((m) => `\${${m}}`).join('、')}`);
+  const res = await deps.send(req);
+  const doc = res.json ?? (res.bytes ? undefined : res.text);
+  const values = applyOutputs(doc, requestOf(tpl, key)?.outputs);
+  return { req, res, values };
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.trim();
-  const out = new Uint8Array(Math.floor(clean.length / 2));
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
-  return out;
-}
+/** 同步：提交 →（配了 download 桥接就再拿一次 URL）→ 还原产物 */
+export async function runSync(
+  tpl: TemplateDef, inst: InstanceDef, deps: Deps,
+  key: ReqKey, callArgs: Record<string, unknown> = {}, upstream0: Record<string, unknown> = {},
+): Promise<RunResult> {
+  const steps: Step[] = [];
+  const up = { ...upstream0 };
+  const first = await http(tpl, inst, key, deps, callArgs, up);
+  Object.assign(up, first.values);
+  steps.push({ key, url: redact(first.req, secretsOf(tpl, inst)).url, status: first.res.status, values: first.values });
+  const err = errorOf(first.values, first.res);
+  if (err) throw new EngineError(err, first.res.status);
 
-function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64.replace(/^data:[^,]*,/, '').trim());
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function jsonOf(res: SendResult): unknown {
-  if (res.json !== undefined) return res.json;
-  if (typeof res.text === 'string' && res.text) {
-    try { return JSON.parse(res.text); } catch { /* 非 JSON 响应 */ }
-  }
-  return undefined;
-}
-
-function looksLikeMedia(res: SendResult): boolean {
-  const ct = (res.contentType || '').toLowerCase();
-  return !!res.bytes && (ct.startsWith('audio/') || ct.startsWith('image/') || ct.startsWith('video/') || ct === 'application/octet-stream');
-}
-
-/** 按槽位从一份 JSON 里取值（三枚举与空串不参与取值） */
-export function applySlots(json: unknown, resp?: RespSlots): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const key of ['content', 'image', 'audio', 'voiceId', 'taskId', 'status', 'errorCode', 'error'] as const) {
-    const path = resp?.[key];
-    if (!path) continue;
-    const v = readPath(json, path);
-    if (v !== undefined) out[key] = v;
-  }
-  return out;
-}
-
-function errOf(values: Record<string, unknown>, res: SendResult): string | null {
-  const code = values.errorCode ?? values.code;
-  const msg = values.error ?? values.message ?? values.errMsg;
-  if (res.status >= 200 && res.status < 300 && !code) return null;
-  if (msg || code) return `${code ? `${code} · ` : ''}${msg || `HTTP ${res.status}`}`;
-  return res.status >= 400 ? `HTTP ${res.status}` : null;
-}
-
-/** 第④⑤步：取产物 + 还原成字节（响应体即产物 / 槽位里是 hex·base64·链接） */
-async function extract(
-  row: TemplateRow,
-  json: unknown,
-  res: SendResult,
-  deps: Deps,
-  ctx: ReqCtx,
-): Promise<Pick<CallResult, 'values' | 'bytes' | 'mime'>> {
-  let values = applySlots(json, row.resp);
-  const e = errOf(values, res);
-  if (e) throw new EngineError(e, res.status);
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
-  const raw = (values.audio ?? values.image ?? '') as unknown;
-  if (looksLikeMedia(res) && typeof raw !== 'string') {
-    bytes = res.bytes;
-    mime = res.contentType;
-  } else if (typeof raw === 'string' && raw) {
-    if (raw.startsWith('data:')) bytes = b64ToBytes(raw);
-    else if (row.decode === 'hex') bytes = hexToBytes(raw);
-    else if (row.decode === 'base64') bytes = b64ToBytes(raw);
-    else if (row.decode === 'url' || /^https?:/i.test(raw)) {
-      if (!deps.fetchBytes) throw new EngineError(`产物是远端 URL，但没注入 fetchBytes：${raw}`);
-      const hdr = buildRequest({ ...row, url: '', body: undefined, headers: row.fetchHeaders, query: {} }, ctx);
-      const got = await deps.fetchBytes(raw, hdr.headers);
-      bytes = got.bytes;
-      mime = got.mime;
-    } else bytes = b64ToBytes(raw);
-    if (bytes) values = { ...values, productBytes: `${bytes.length} 字节` };
-  } else if (res.bytes) {
-    bytes = res.bytes;
-    mime = res.contentType;
+  const def = requestOf(tpl, key)!;
+  if (def.outputFormat === 'url' && !tpl.download) {
+    const got = await toBytes(first.res, 'url', first.values, deps);
+    bytes = got.bytes; mime = got.mime;
+  } else if (def.outputFormat && def.outputFormat !== 'url') {
+    const got = await toBytes(first.res, def.outputFormat, first.values, deps);
+    bytes = got.bytes; mime = got.mime;
+  } else if (tpl.download) {
+    const dl = await http(tpl, inst, 'download', deps, callArgs, up);
+    Object.assign(up, dl.values);
+    steps.push({ key: 'download', url: redact(dl.req, secretsOf(tpl, inst)).url, status: dl.res.status, values: dl.values });
+    const dlErr = errorOf(dl.values, dl.res);
+    if (dlErr) throw new EngineError(dlErr, dl.res.status);
+    const got = await toBytes(dl.res, 'url', dl.values, deps);
+    bytes = got.bytes; mime = got.mime;
+  } else if (first.res.bytes) {
+    bytes = first.res.bytes; mime = first.res.contentType;
   }
-  return { values, bytes, mime };
+  return { values: up, bytes, mime, steps };
 }
 
-const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** 组内取行：先按 role + 实例 mode 配，配不到再退到同 role 的任意一条 */
-export function pickRow(group: TemplateGroup, role: Role, mode?: Mode): TemplateRow | undefined {
-  const rows = group.rows.filter((r) => r.role === role);
-  return (mode ? rows.find((r) => r.mode === mode) : undefined) ?? rows[0];
+/** 异步第一步：提交，拿中间变量（taskId 之类）交给调度器存 */
+export async function submitAsync(
+  tpl: TemplateDef, inst: InstanceDef, deps: Deps, callArgs: Record<string, unknown> = {}, upstream0: Record<string, unknown> = {},
+): Promise<RunResult> {
+  const got = await http(tpl, inst, 'async.submit', deps, callArgs, upstream0);
+  const err = errorOf(got.values, got.res);
+  if (err) throw new EngineError(err, got.res.status);
+  return {
+    values: got.values,
+    taskId: String(got.values.taskId ?? Object.values(got.values)[0] ?? ''),
+    steps: [{ key: 'async.submit', url: redact(got.req, secretsOf(tpl, inst)).url, status: got.res.status, values: got.values }],
+  };
 }
 
-/**
- * 跑一个功能：同步一次到位；异步 = 提交 → 记 taskId → 同组 query 行轮询 → 完成后取产物并下载。
- * 组装键是 (tpl_group, role='query')，没有可填错的指针列。
- */
-export async function callRole(
-  group: TemplateGroup,
-  ctx: ReqCtx,
-  role: Role,
-  inputs: Record<string, unknown>,
-  deps: Deps,
-): Promise<CallResult> {
-  const submit = pickRow(group, role, ctx.mode);
-  if (!submit) throw new EngineError(`模板组「${group.tplGroup}」没配 ${role} 接口`);
-  const full: ReqCtx = { ...ctx, ...inputs };
-  const steps: CallResult['steps'] = [];
-  const req = buildRequest(submit, full);
-  const first = await deps.send(req);
-  const firstJson = jsonOf(first);
-  steps.push({ label: `${role} 提交`, url: redact(req, full).url, status: first.status, values: applySlots(firstJson, submit.resp) });
-  const firstErr = errOf(steps[0].values, first);
+/** 异步第二步：查一次，命中成功就把产物取回来（可能再走 download 桥接） */
+export async function queryOnce(
+  tpl: TemplateDef, inst: InstanceDef, deps: Deps, upstream: Record<string, unknown>,
+): Promise<{ outcome: Outcome; status?: string; values: Record<string, unknown>; bytes?: Uint8Array; mime?: string; step: Step }> {
+  const q = requestOf(tpl, 'async.query')!;
+  const got = await http(tpl, inst, 'async.query', deps, {}, upstream);
+  const values = { ...upstream, ...got.values };
+  const step: Step = { key: 'async.query', url: redact(got.req, secretsOf(tpl, inst)).url, status: got.res.status, values: got.values };
+  if (got.res.status >= 500 || got.res.status === 429) throw new EngineError(`查询接口 HTTP ${got.res.status}`, got.res.status);
+  const outcome = classify(got.values.status, q.successValues, q.failureValues);
+  if (outcome === 'failed') throw new EngineError(errorOf(got.values, got.res) ?? '上游报失败', got.res.status);
+  if (outcome !== 'success') return { outcome, status: String(got.values.status ?? ''), values, step };
 
-  if (submit.mode !== 'async') {
-    if (firstErr) throw new EngineError(firstErr, first.status);
-    const tail = await extract(submit, firstJson, first, deps, full);
-    return { ...tail, steps };
+  let bytes: Uint8Array | undefined;
+  let mime: string | undefined;
+  if (tpl.download && values.fileId !== undefined) {
+    const dl = await http(tpl, inst, 'download', deps, {}, values);
+    Object.assign(values, dl.values);
+    const got2 = await toBytes(dl.res, 'url', dl.values, deps);
+    bytes = got2.bytes; mime = got2.mime;
+  } else {
+    const got2 = await toBytes(got.res, q.outputFormat ?? 'url', values, deps);
+    bytes = got2.bytes; mime = got2.mime;
   }
-
-  const query = pickRow(group, 'query');
-  if (!query) throw new EngineError('异步需要「状态查询」接口，这组模板里没有（去接口模板点「＋ 查询接口」）');
-  const taskId = readPath(firstJson, submit.resp?.taskId ?? '');
-  if (!isPlain(taskId)) throw new EngineError(`提交响应里没找到任务 id（槽位 taskId = ${submit.resp?.taskId || '未填'}）${firstErr ? ` · ${firstErr}` : ''}`);
-
-  const sleep = deps.sleep ?? wait;
-  const started = deps.now?.() ?? Date.now();
-  const interval = query.pollIntervalMs ?? 1500;
-  const timeout = query.pollTimeoutMs ?? 120_000;
-  const done = (query.resp?.success ?? []).map(String);
-  const bad = (query.resp?.fail ?? []).map(String);
-  for (;;) {
-    if ((deps.now?.() ?? Date.now()) - started > timeout) throw new EngineError(`任务 ${taskId} 轮询超时（${timeout}ms）`);
-    await sleep(interval);
-    const qreq = buildRequest(query, { ...full, taskId });
-    const qres = await deps.send(qreq);
-    const qjson = jsonOf(qres);
-    const qValues = applySlots(qjson, query.resp);
-    steps.push({ label: '查询状态', url: redact(qreq, full).url, status: qres.status, values: qValues });
-    const st = String(qValues.status ?? '');
-    if (bad.includes(st)) throw new EngineError(`任务失败：${st}${qValues.error ? ` · ${String(qValues.error)}` : ''}`, qres.status);
-    if (done.includes(st)) {
-      const tail = await extract(query, qjson, qres, deps, full);
-      return { values: { ...tail.values, taskId }, bytes: tail.bytes, mime: tail.mime, steps };
-    }
-    const e = errOf(qValues, qres);
-    if (e) throw new EngineError(e, qres.status);
-    const pending = (query.resp?.pending ?? []).map(String);
-    if (pending.length && !pending.includes(st)) throw new EngineError(`未识别的任务状态「${st}」——请在查询接口的「在途状态」里补上它`);
-  }
+  return { outcome, status: String(got.values.status ?? ''), values, bytes, mime, step };
 }
 
-// ========== 模板自检（保存前跑，别把问题留到运行时） ==========
+/** 上传 + 克隆：一体式的厂商直接把音频塞 body，分离式的先传拿 fileId */
+export async function runClone(
+  tpl: TemplateDef, inst: InstanceDef, deps: Deps, callArgs: Record<string, unknown>,
+): Promise<RunResult> {
+  const steps: Step[] = [];
+  const up: Record<string, unknown> = {};
+  if (tpl.hasUpload && requestOf(tpl, 'upload')) {
+    const up1 = await http(tpl, inst, 'upload', deps, callArgs, up);
+    Object.assign(up, up1.values);
+    steps.push({ key: 'upload', url: redact(up1.req, secretsOf(tpl, inst)).url, status: up1.res.status, values: up1.values });
+    const e1 = errorOf(up1.values, up1.res);
+    if (e1) throw new EngineError(e1, up1.res.status);
+  }
+  const cl = await http(tpl, inst, 'clone', deps, callArgs, up);
+  Object.assign(up, cl.values);
+  steps.push({ key: 'clone', url: redact(cl.req, secretsOf(tpl, inst)).url, status: cl.res.status, values: cl.values });
+  const err = errorOf(cl.values, cl.res);
+  if (err) throw new EngineError(err, cl.res.status);
+  return { values: up, steps };
+}
 
-export function referencedVars(row: TemplateRow): string[] {
-  const names = new Set<string>();
-  const scan = (node: unknown) => {
+// ========== 保存前自检（别把问题留到运行时） ==========
+
+export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[] {
+  const out: { key: ReqKey; name: string }[] = [];
+  const scan = (key: ReqKey, node: unknown, declared: Set<string>) => {
     if (typeof node === 'string') {
-      for (const m of node.matchAll(new RegExp(WHOLE.source, 'g'))) names.add(m[1]);
-      for (const m of node.matchAll(new RegExp(SPLICE.source, 'g'))) names.add(m[1]);
-      for (const m of node.matchAll(EMBED)) names.add(m[1]);
+      for (const m of node.matchAll(new RegExp(WHOLE.source, 'g'))) if (!declared.has(m[1])) out.push({ key, name: m[1] });
+      for (const m of node.matchAll(EMBED)) if (!declared.has(m[1])) out.push({ key, name: m[1] });
       return;
     }
-    if (Array.isArray(node)) node.forEach(scan);
-    else if (node && typeof node === 'object') Object.values(node).forEach(scan);
+    if (Array.isArray(node)) node.forEach((x) => scan(key, x, declared));
+    else if (node && typeof node === 'object') Object.values(node).forEach((x) => scan(key, x, declared));
   };
-  scan([row.url, row.headers, row.query, row.body]);
-  return [...names];
+  const produced = new Set<string>();
+  for (const key of REQ_KEYS) for (const name of Object.keys(requestOf(tpl, key)?.outputs ?? {})) produced.add(name);
+  for (const key of REQ_KEYS) {
+    const def = requestOf(tpl, key);
+    if (!def) continue;
+    const declared = new Set<string>(produced);
+    for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? []), ...(def.callParams ?? [])]) declared.add(p.key);
+    scan(key, def.path, declared);
+    scan(key, def.headers, declared);
+    scan(key, def.body, declared);
+    scan(key, def.form, declared);
+  }
+  return out;
 }
 
-/** 该行的产物槽：llm 取文本、语音取音频、图片取图片 */
-function productSlotOf(row: TemplateRow, kind: ProviderKind): 'content' | 'audio' | 'image' {
-  if (kind === 'llm') return 'content';
-  return row.role === 'synthesize' ? 'audio' : 'image';
-}
-
-/** 单条接口行的问题清单；空数组 = 可用 */
-export function validateRow(row: TemplateRow, kind: ProviderKind): string[] {
+/** 整份模板的问题清单；空数组 = 可用 */
+export function validateTemplate(tpl: TemplateDef): string[] {
   const problems: string[] = [];
-  const declared = new Set(allParams(row).map((v) => v.name));
-  for (const n of referencedVars(row)) {
-    if (RESERVED.includes(n) || CALL_VARS.includes(n)) continue;
-    if (!declared.has(n)) problems.push(`模板引用了未声明的变量「${n}」`);
+  const need = tpl.category === 'llm' ? '文案生成必须有 sync.submit' : null;
+  if (need && !tpl.sync?.submit) problems.push(need);
+  if (tpl.category !== 'llm' && !tpl.sync?.submit && !tpl.async?.submit) problems.push('至少要配一条提交接口（同步或异步）');
+  if (tpl.async?.submit && !tpl.async.query) problems.push('配了异步提交就必须配异步查询（async.query）');
+  if (tpl.async?.query && !(tpl.async.query.successValues ?? []).length) problems.push('查询接口必须配 successValues（不知道查成什么样算完成）');
+  if (tpl.useClone && !tpl.clone) problems.push('勾了「支持克隆音色」但没配 clone 请求');
+  if (tpl.hasUpload && !tpl.upload) problems.push('勾了「克隆前先上传」但没配 upload 请求');
+  for (const key of REQ_KEYS) {
+    const def = requestOf(tpl, key);
+    if (def && key !== 'async.query' && !def.path?.trim()) problems.push(`${key} 没填 path`);
   }
-  for (const v of allParams(row)) {
-    if (v.type === 'list' && !v.item) problems.push(`变量「${v.name}」是 list 但没给元素子模板`);
-    if (v.type === 'bool' && v.options) problems.push(`变量「${v.name}」是 bool，两个选项已隐含，不必写 options`);
-  }
-  const resp = row.resp ?? {};
-  const product = productSlotOf(row, kind);
-  if (row.role === 'query') {
-    if (!resp.status) problems.push('必须登记「任务状态」的取值路径');
-    if (!resp.success?.length) problems.push('必须定义「成功」的状态值');
-    if (!resp.image && !resp.audio) problems.push('必须登记产物路径（完成后可从这里取图 / 音频）');
-    if (resp.taskId) problems.push('任务 id 由生成接口登记，查询接口不用填');
-  } else if (row.role === 'clone') {
-    if (!resp.voiceId) problems.push('必须登记「音色 ID」的取值路径');
-    if (row.decode) problems.push('克隆接口只返回 json，不需要解码方式');
-  } else if (row.mode === 'async') {
-    if (!resp.taskId) problems.push('标成异步就必须登记「任务 id」的取值路径');
-    if (resp.status || resp.success?.length || resp[product]) problems.push('产物与状态都由查询接口登记，生成行不要再填');
-  } else {
-    // 音频允许登记成「空」：CosyVoice / OpenAI speech 的响应体本身就是音频
-    if (product === 'audio' ? resp.audio === undefined : !resp[product]) {
-      problems.push(product === 'audio'
-        ? '必须登记音频路径（响应体本身就是音频时，路径留空即可）'
-        : `必须登记${product === 'content' ? '返回内容' : '图片'}的取值路径`);
-    }
-    if (resp.status || resp.taskId) problems.push('同步接口不该配任务 id / 状态判定');
-  }
-  if (row.decode === 'url' && !resp.image && !resp.audio) problems.push('解码方式是「远端链接」，但没登记产物路径');
-  return problems;
-}
-
-/**
- * 这一行要调用端给值的占位符 = 引用到的、既不是配置保留字也不是实例参数的名字
- * （试调用面板据此长输入框）。**声明与否不影响这里** —— 调用期正文本来就不用声明。
- */
-export function callVarsOf(row: TemplateRow): string[] {
-  const inst = new Set((row.instParams ?? []).map((v) => v.name));
-  return referencedVars(row).filter((n) => !RESERVED.includes(n) && !inst.has(n));
-}
-
-/** 整组 + 实例的成对校验：缺 role、异步没配查询、同步配了查询都在这一步点名 */
-export function validateGroup(group: TemplateGroup, mode: Mode = 'sync'): string[] {
-  const problems: string[] = group.rows.flatMap((r) => validateRow(r, group.kind).map((p) => `${rowTitle(r)}：${p}`));
-  const need = REQUIRED_ROLE[group.kind];
-  if (!group.rows.some((r) => r.role === need)) problems.push(`缺少必需的「${zh(ROLE_LABEL[need])}」接口`);
-  if (mode === 'async') {
-    const submit = group.rows.find((r) => r.role === need && r.mode === 'async');
-    if (!submit) problems.push('这个实例选了异步，但这组模板没有异步的生成接口');
-    else if (!group.rows.some((r) => r.role === 'query')) problems.push('异步需要「状态查询」接口，点「＋ 查询接口」补');
-  } else if (group.rows.some((r) => r.role === 'query') && !group.rows.some((r) => r.mode === 'async')) {
-    problems.push('配了查询接口却没有异步生成接口（本实例走同步，它不会被用到）');
+  const dup = new Map<string, number>();
+  for (const p of tpl.instanceParams ?? []) dup.set(p.key, (dup.get(p.key) ?? 0) + 1);
+  for (const [k, n] of dup) if (n > 1) problems.push(`实例级参数「${k}」重复声明了`);
+  const seen = new Set<string>();
+  for (const { key, name } of referencedVars(tpl)) {
+    const id = `${key}:\${${name}}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    problems.push(`${key} 引用了 \${${name}}，但没有任何来源给它（三层参数里都没有这个名字，也不是 outputs 的产出）`);
   }
   return problems;
 }
 
-/** 界面用的行标题：音色克隆 / 语音合成·异步 / 状态查询 */
-export function rowTitle(row: TemplateRow): string {
-  const name = zh(ROLE_LABEL[row.role]);
-  return row.mode === 'async' ? `${name}·异步` : name;
+/** 实例是否配齐到能发出去（缺 baseUrl / Key 时界面要说话，别只让请求炸） */
+export function missingOfInstance(tpl: TemplateDef, inst: InstanceDef, key: ReqKey): string[] {
+  const need: string[] = [];
+  const def = requestOf(tpl, key);
+  if (!def) return [`${key} 这条请求模板里没有`];
+  const given = scopeOf(tpl, inst, key, {}, {});
+  const has = (n: string) => n in given.values;
+  for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? [])]) {
+    // 有默认值或可选的就不催；催的只是「非填不可、又没给值」的那些
+    if (p.required === false || p.defaultValue !== undefined || has(p.key)) continue;
+    need.push(`参数「${p.label || p.key}」没填`);
+  }
+  return need;
 }

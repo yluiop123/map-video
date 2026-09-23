@@ -1,25 +1,25 @@
 # MapVideo V2 表清单速查
 
-> 26 张表、4 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表（另有 5 张同构的公共元素副本表），从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
+> 27 张表、4 个视图、**不使用触发器** —— 元素表按工具栏分为 5 张类别宽表（另有 5 张同构的公共元素副本表），从「整个项目塞进一列 JSON」到「规范化关系表」的逐表对照。
 
 - **数据源**：`docs/db-schema-v2.sql`（唯一事实源，DDL 已实测可执行）
 - **设计依据**：`docs/db-redesign.md`
-- **规模**：26 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 4 个视图 · 0 个触发器 · 698 列（外键全部有索引）
+- **规模**：27 张表 · 5 张元素类别宽表 + 5 张公共元素副本表 · 4 个视图 · 0 个触发器 · 704 列（外键全部有索引）
 
 **目录**
 
-- 一、26 张表的构成与分流规则
+- 一、27 张表的构成与分流规则
 - 二、字段归属：TS 类型 → 数据库表
-- 三、26 张表逐表速查（按 11 组）
+- 三、27 张表逐表速查（按 11 组）
 - 四、每张表的字段（字段字典）
 - 五、工具栏与元素类型
 - 六、容易混淆的 5 组
 - 七、一次「打开」与一次「保存」
 - 附：4 个视图，以及为什么没有触发器
 
-## 一、26 张表的构成与分流规则
+## 一、27 张表的构成与分流规则
 
-**26 张表不是 24 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
+**27 张表不是 24 个新概念**，而是同一个项目数据按「字段从哪来、怎么用」拆开的结果。整体按下面四条规则分流：
 
 | 规则 | 判据 | 处理方式 | 落到的表 |
 |---|---|---|---|
@@ -28,14 +28,16 @@
 | **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`countries_json` / `plots_json` / `events_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
-#### 一句话理解 26 张表的构成
+#### 一句话理解 27 张表的构成
 
 - **5 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域 · 图片**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
 - **6 张**是「公共图层库」：`public_layer` + 5 张与项目元素表**同构**的公共副本表（把某个图层连元素整体复制一份，供其它项目导入）；
 - **5 张**是「时间轴上的子集合」：镜头关键帧、屏幕特效、字幕档、字幕条目、配乐段落；
 - **1 张**是「弹窗」：`overlay` 本体（custom / person 内容块内联 `payload_json`，原 3 张内容块表已删除）；
 - **1 张**是「素材库」：`asset`（自定义图标 / 图片 / GIF / 模型 / 音频等二进制，`kind` 区分，按「项目 / 类型 / 时间戳」落盘）；
-- **4 张**是合集、项目本体、图层与应用配置。
+- **2 张**是「底图 / 高程目录」：`base_map` · `elevation_map`，**每项目一份**（内置项在创建项目时作为普通行复制进来，之后各项目各改各的）；
+- **4 张**是「应用配置」：`provider_template` · `provider` · `voice` · `task`（与项目内容解耦，见 `docs/provider-engine.md`）；
+- **3 张**是合集、项目本体、图层。
 
 ## 二、字段归属：TS 类型 → 数据库表
 
@@ -64,12 +66,12 @@
 | `territory` 元素内的 `countries / plots / events` | `element_territory` 的 `countries_json` / `plots_json` / `events_json` | P3 内联：疆域自包含、整体读写；代价是失去复合外键，由 `v_check_territory_ref` 视图兜底 |
 | `geo_image` 元素（地理配准贴图） | `element_image` 的 `grid_json` | P3 内联：控制点网格 `(rows+1)×(cols+1)`（2×2=四角投影，更大=网格变形）；图片本体走**全局素材库**（`asset_id` 弱引用、无外键） |
 | （二进制素材） | `asset` | P4 外置存储：图片 / 音频 / 视频 / 字体统一入表，业务表只留 `asset_id` |
-| `providers` | `provider` | 独立聚合；「每 kind 至多一条 active」由部分唯一索引保证 |
+| `providers` | `provider` + `provider_template` | 独立聚合；界面拿到的实例 = provider 行 + 它引用的模板行（`values_json` 两段 + 模板声明），**没有 `active` 与部分唯一索引** —— 一个模板多条实例，调用处选一条 |
 
 > 注：底图 / 高程图**每项目一份**（`base_map` / `elevation_map`）—— 面板支持增删改与调地形夸张，「内置常量不入库」的前提早已不成立。
 > **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project.elevation_exaggeration`（为空则用内置默认）。
 
-## 三、26 张表逐表速查（按 11 组）
+## 三、27 张表逐表速查（按 11 组）
 
 读法：**表名** · 一句话职责 · 主键 · 删除行为。
 
@@ -158,15 +160,16 @@
 |---|---|---|---|---|
 | `overlay` | 弹窗本体（10 类：文本/图片/图表/人物/对话…） | `overlay_id` | 图表/时间轴/对话等内容按 P3 留在 `payload_json` | 「弹窗」面板（`FxPanelBody.tsx`）+ 画面渲染 `fx/FxRender.tsx` OverlayContentView |
 
-### 组 10 · 应用配置 2 张
+### 组 10 · 应用配置（接口模板 / 实例 / 音色 / 任务）4 张
 
-「一家供应商怎么发请求」只有这一处真相（模板即数据，见 `docs/provider-engine.md`）：**组表**说一个功能要哪几条接口，**接口表**说每条怎么发、返回从哪取，**配置表**只装这一处配置的凭证与取值。协议列与代码里的 `switch` 一并删掉。
+「一家供应商怎么发请求」只有模板这一处真相（模板即数据，见 `docs/provider-engine.md`）：**模板行**一份装下同步 / 异步 / 桥接 / 克隆全部接法，**实例行**只留「选哪份模板 + 一组取值」，**音色**与**任务**是两本账本。协议列、代码里的 `switch`、以及「模板组」这一层表都一并删掉。
 
 | 表 | 职责 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
-| `provider_template_group` | 接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口 | `tpl_group` | `kind` 在组上（组内每行必然同值，故不重复存）；`label` / `note` 是用户自填的单个字符串；`models_json` / `default_*` 是新建这处配置时的建议值 | ⚙ →「接口模板」（`TemplatesPane.tsx`） |
-| `provider_template` | 一条接口怎么发、返回从哪取（含异步查询与音色克隆） | `tpl_id`（`<tpl_group>:<role>:<mode>`） | 两类入参各一列（`inst_params_json` / `req_params_json`）；`resp_json` 是**固定槽位**不是自由 map；`role`·`mode`·`kind` **不写 CHECK**（TS 类型 + 保存前 `validateRow` 管）；`ux_tpl_role` 保证同组同 role+mode 唯一 | 同上 → 每 role 一张接口卡片 |
-| `provider` | 一处一份的 AI 配置（文案 / 语音 / 图片） | **`kind`**（全表最多三行） | `tpl_group` 是**真外键**（引用哪一组模板，改它叫「用作本能力」）；两把 Key 两个具名列，不塞 JSON 槽位；`mode` 在这里（不属接口行）；同步/异步配错了由 `v_check_async_pairing` 体检 | ⚙ →「文案生成 / 语音克隆 / 图片生成」（`ProviderPanel.tsx`） |
+| `provider_template` | **一行 = 一份完整模板**（这一家这个功能怎么发、返回从哪取、产物怎么变字节） | `tpl_id` | 六个接口槽各占一个 JSON 列（`sync` / `async` / `download` / `upload` / `clone` + 模板级 `headers`）；`outputs` 是**自由 map**（`{想要名字: 相对路径}`）不再是固定槽位；`category` **不写 CHECK**（TS 类型 + 保存前 `validateTemplate` 管）；`use_clone` / `upload` 两个开关决定界面上那两格显不显示 | ⚙ →「接口模板」（`TemplatesPane.tsx`，三栏） |
+| `provider` | 实例：引用哪份模板 + 同步异步 + 一组取值（**一个模板可配几套账号**） | `provider_id` | **只有五个业务列**：`tpl_id`（真外键，被引用时删不掉）· `name` · `sync` · `values_json{instance,requests}` · 时间戳；`baseUrl` / 密钥 / 模型 / 尺寸全是模板声明的参数，**密钥 = `valueType:'secret'` 的普通参数**；没有 `active`，调用处选实例 | ⚙ →「文案 / 语音 / 图片」（`ProviderPanel.tsx`） |
+| `voice` | 克隆音色账本：**同实例 + 同参考音频 + 同目标模型只建一次** | `voice_row_id` | 唯一键 `ux_voice_once(provider_id, source_hash, target_model)` —— voiceId 换模型即失效（实测 418）；`source_asset_id` 是 `RESTRICT`（原件被音色引用时删不掉，失效靠它重建）；`status` 就是抢占标志 | 字幕生成里的「克隆音色」区（`VoicePicker.tsx`） |
+| `task` | 在途异步任务：唯一价值是**跨重启续跑** | `task_id` | `batch_id` 一次动作一批；`project_id` / `entry_id` 真外键 `CASCADE`（删项目或删字幕条带走在途任务，不需要自检视图）；`artifact_id` `SET NULL`（产物当场落 `asset`）；`next_query_at` 给调度器错峰 | 逐条配音状态 + 顶栏在途任务浮层 |
 
 ### 组 11 · 公共图层与公共元素（跨项目图库） 6 张
 
@@ -187,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **26 张表 / 694 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，694 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 704 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，704 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -204,7 +207,7 @@
 - **组 7 · 疆域类元素（Terr 工具）**：`element_territory`
 - **组 8 · 贴图类元素（Image 工具）**：`element_image`
 - **组 9 · 叠加层（弹窗）**：`overlay`
-- **组 10 · 应用配置**：`provider_template_group` · `provider_template` · `provider`
+- **组 10 · 应用配置（接口模板 / 实例 / 音色 / 任务）**：`provider_template` · `provider` · `voice` · `task`
 - **组 11 · 公共图层与公共元素（跨项目图库）**：`public_layer` · `public_element_marker` · `public_element_route` · `public_element_shape` · `public_element_territory` · `public_element_image`
 
 ### 组 1 · 合集 / 项目 / 图层（含配置）
@@ -837,80 +840,99 @@
 
 - `CHECK (end_sec >= start_sec)`（同项目内排序）
 
-### 组 10 · 应用配置
+### 组 10 · 应用配置（接口模板 / 实例 / 音色 / 任务）
 
-#### provider_template_group — 接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口（共享数据，实例只引用）
+#### provider_template — 接口模板：一行 = 一个完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这一行的 JSON 列里）
 
-**职责**：接口模板组：一个功能要哪几条接口（组头：kind / 显示名 / 候选模型 / 建议 Base URL）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx）
+**职责**：接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）
 
-11 列 · 主键 `tpl_group`
-
-| 列 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `tpl_group` | TEXT | `PK` | 模板组 id（一个功能一条）：openai-chat / dashscope-image / custom-tts-1 … |
-| `kind` | TEXT | `NOT NULL` | 组所属能力：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK） |
-| `label` | TEXT | `NOT NULL` | 组显示名（用户自定义的单个字符串，不做中英两份） · 默认 `''` |
-| `note` | TEXT | — | 组说明（接谁家的哪套端点、有什么坑） |
-| `base_url` | TEXT | `NOT NULL` | 新建实例时预填的建议 Base URL · 默认 `''` |
-| `models_json` | TEXT | — | 候选模型列表 JSON（实例页下拉用） · `CHECK (models_json IS NULL OR json_valid(models_json))` |
-| `default_model` | TEXT | `NOT NULL` | 新建实例时预填的模型 · 默认 `''` |
-| `default_voice` | TEXT | — | 新建实例时预填的音色 |
-| `ord` | INTEGER | `NOT NULL` | 组列表排序 · 默认 `0` |
-| `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
-| `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
-
-#### provider_template — 接口模板行：一条接口怎么发、返回从哪取（含异步查询与克隆；共享数据）
-
-**职责**：接口模板行：一条接口怎么发、返回从哪取（含异步查询与音色克隆）　**前端**：⚙ 设置 · AI → 左侧「接口模板」→ 组内接口卡片
-
-20 列 · 主键 `tpl_id`
+17 列 · 主键 `tpl_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `tpl_id` | TEXT | `PK` | 接口行 id，形如 <tpl_group>:<role>:<mode> |
-| `tpl_group` | TEXT | `NOT NULL` `FK → provider_template_group CASCADE` | 所属模板组 |
-| `role` | TEXT | `NOT NULL` | 组内用途：generate / synthesize / query / clone（不写 CHECK） |
-| `mode` | TEXT | `NOT NULL` | 这条变体服务哪种方式：sync / async（query·clone 恒 sync） · 默认 `'sync'` |
-| `ord` | INTEGER | `NOT NULL` | 组内展示顺序 · 默认 `0` |
-| `method` | TEXT | `NOT NULL` | HTTP 方法 · 默认 `'POST'` |
-| `url` | TEXT | `NOT NULL` | 地址模板，{baseUrl} 出现在哪由占位符决定 · 默认 `''` |
-| `headers_json` | TEXT | — | 请求头模板 JSON · `CHECK (headers_json IS NULL OR json_valid(headers_json))` |
-| `query_json` | TEXT | — | 查询串参数模板 JSON · `CHECK (query_json IS NULL OR json_valid(query_json))` |
-| `body_json` | TEXT | — | 请求体模板 JSON（值是 {name} 占位） · `CHECK (body_json IS NULL OR json_valid(body_json))` |
-| `inst_params_json` | TEXT | — | 实例参数声明表 JSON（建实例时在 ⚙ 配：名字 / 类型 / 默认 / 候选值） · `CHECK (inst_params_json IS NULL OR json_valid(inst_params_json))` |
-| `req_params_json` | TEXT | — | 额外调用参数声明表 JSON（只在需要类型 / 元素子模板时声明；{text} {prompt} {wavB64} 等正文占位符由程序给值，不必声明） · `CHECK (req_params_json IS NULL OR json_valid(req_params_json))` |
-| `resp_json` | TEXT | — | 返回槽位 JSON（content/image/audio/voiceId/taskId/status/success/fail/pending/errorCode/error） · `CHECK (resp_json IS NULL OR json_valid(resp_json))` |
-| `decode_kind` | TEXT | — | 产物解码：NULL 响应体即产物 / hex / base64 / url 远端链接 |
-| `fetch_headers_json` | TEXT | — | 下载产物时附带的请求头（空 = 裸 GET 签名链接） · `CHECK (fetch_headers_json IS NULL OR json_valid(fetch_headers_json))` |
-| `poll_interval_ms` | INTEGER | `NOT NULL` | 异步轮询间隔（离散步长，存原值 ms；只有 query 行读） · 默认 `1500` |
-| `poll_timeout_ms` | INTEGER | `NOT NULL` | 异步轮询超时（ms；只有 query 行读） · 默认 `120000` |
-| `ref_sample_rate` | INTEGER | — | 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k） |
+| `tpl_id` | TEXT | `PK` | 模板 id（一行 = 一份完整模板）：deepseek-chat / qwen-image / qwen-tts / custom-1 … |
+| `name` | TEXT | `NOT NULL` | 模板名（用户自填的单个字符串，不做中英两份） · 默认 `''` |
+| `category` | TEXT | `NOT NULL` | 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK） |
+| `note` | TEXT | — | 说明：接谁家的哪套端点、有什么坑 |
+| `use_clone` | INTEGER | `NOT NULL` | 有没有克隆音色接口（只有 tts 用得上） · 默认 `0` · `CHECK (use_clone IN (0,1))` |
+| `upload` | INTEGER | `NOT NULL` | 克隆前要不要先上传拿 fileId（use_clone=1 才有意义；0 = 直接塞 base64） · 默认 `0` · `CHECK (upload IN (0,1))` |
+| `headers_json` | TEXT | — | 模板级请求头 JSON（这一行的所有请求共用一份） · `CHECK (headers_json IS NULL OR json_valid(headers_json))` |
+| `instance_params_json` | TEXT | — | 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json） · `CHECK (instance_params_json IS NULL OR json_valid(instance_params_json))` |
+| `sync_json` | TEXT | — | 同步接法 { submit }（一条请求直接拿产物） · `CHECK (sync_json IS NULL OR json_valid(sync_json))` |
+| `async_json` | TEXT | — | 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举） · `CHECK (async_json IS NULL OR json_valid(async_json))` |
+| `download_json` | TEXT | — | 桥接请求：fileId → 最终下载地址（同步异步共用；不配 = 上一步直接给产物） · `CHECK (download_json IS NULL OR json_valid(download_json))` |
+| `upload_json` | TEXT | — | 桥接请求：本地文件 → fileId（仅克隆用） · `CHECK (upload_json IS NULL OR json_valid(upload_json))` |
+| `clone_json` | TEXT | — | 克隆音色请求：参考音频 → voiceId · `CHECK (clone_json IS NULL OR json_valid(clone_json))` |
+| `ref_sample_rate` | INTEGER | — | 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k，写死过一次就出事） |
+| `ord` | INTEGER | `NOT NULL` | 列表排序（同分类内） · 默认 `0` |
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
 
-#### provider — 能力配置：一个能力一行（llm / tts / image 共三行），选用的模板组 + 这一处的 Base URL / Key / 参数（Key 只存本机）
+#### provider — 实例：一个模板可以配几套账号，调用处选实例（取值全在 values_json，密钥不占具名列）
 
-**职责**：能力实例：用哪组模板 + 账号（Base URL / 两把 Key / 同步异步 / 参数 / 并发重试）　**前端**：⚙ 设置 · AI → 左侧文案 / 语音 / 图片（ProviderPanel.tsx）
+**职责**：实例：用哪份模板 + 全部取值（密钥是声明成 secret 的普通参数，不占具名列）　**前端**：⚙ 设置 · AI → 左侧文案 / 语音 / 图片（ProviderPanel.tsx，实例芯片 + 表单）
 
-15 列 · 主键 `kind`
+7 列 · 主键 `provider_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `kind` | TEXT | `PK` | 能力 = 主键：llm 文案生成 / tts 语音（含克隆）/ image 图片生成（全表最多三行，一处一套凭证） |
-| `tpl_group` | TEXT | `NOT NULL` `FK → provider_template_group` | 这个能力当前用哪一组接口模板（真外键） |
-| `base_url` | TEXT | `NOT NULL` | 接口基础地址（一个能力一份，不跨能力共享） · 默认 `''` |
-| `api_key` | TEXT | `NOT NULL` | 主密钥（模板里写 {apiKey}） · 默认 `''` |
-| `api_key2` | TEXT | — | 第二凭证（模板里写 {apiKey2}，火山 TTS 的 Access Key） |
-| `mode` | TEXT | `NOT NULL` | 这个能力走同步还是异步：决定用哪条生成变体、要不要查询接口 · 默认 `'sync'` |
-| `model` | TEXT | `NOT NULL` | 模型名 / TTS 音色模型（合成与克隆共用同一个值） · 默认 `''` |
-| `voice` | TEXT | — | 音色 / 说话人 ID |
-| `speed` | REAL | `NOT NULL` | 语速（0.5–2） · 默认 `1` · `CHECK (speed BETWEEN 0.5 AND 2)` |
-| `params_json` | TEXT | — | 实例参数取值 JSON（对模板 inst_params_json 声明的那些名字） · `CHECK (params_json IS NULL OR json_valid(params_json))` |
-| `max_concurrency` | INTEGER | `NOT NULL` | 批量并发上限（1 = 串行；账号限额，属实例不属模板） · 默认 `1` |
-| `retry_times` | INTEGER | `NOT NULL` | 限流 / 网络错的退避重试次数（业务错不重试） · 默认 `2` |
-| `extra` | TEXT | — | 附加请求参数（JSON，深合并进请求体的兜底口） · `CHECK (extra IS NULL OR json_valid(extra))` |
+| `provider_id` | TEXT | `PK` | 实例 id：prov_tts_minimax … |
+| `tpl_id` | TEXT | `NOT NULL` `FK → provider_template` | 用哪一份模板（真外键） |
+| `name` | TEXT | `NOT NULL` | 实例名（界面与任务列表用它认，如「MiniMax-TTS-生产」） · 默认 `''` |
+| `sync` | INTEGER | `NOT NULL` | 走同步还是异步：决定用模板里 sync_json 还是 async_json 那套 · 默认 `1` · `CHECK (sync IN (0,1))` |
+| `values_json` | TEXT | — | 全部取值 JSON：{ instance: { baseUrl, apiKey, timeoutMs… }, requests: { "async.submit": { model, size… } } }（密钥是声明成 secret 的普通参数，不占具名列） · `CHECK (values_json IS NULL OR json_valid(values_json))` |
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
+
+#### voice — 克隆音色账本：同一份参考音频在同一实例 + 同一目标模型下只建一次
+
+**职责**：克隆音色账本：同实例 + 同参考音频 + 同目标模型只建一次（幂等键）　**前端**：字幕生成弹窗内的「克隆音色」区（VoicePicker.tsx）+ 音色管理
+
+15 列 · 主键 `voice_row_id`
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `voice_row_id` | TEXT | `PK` | 行 id（不是厂商的 voiceId，那个在 voice_id 列） |
+| `provider_id` | TEXT | `NOT NULL` `FK → provider CASCADE` | 属于哪个实例（音色池按实例隔离） |
+| `source_hash` | TEXT | `NOT NULL` | 参考音频内容哈希（幂等键的一维） |
+| `target_model` | TEXT | `NOT NULL` | 绑定的模型（实测：voiceId 换模型即失效，所以它必须进唯一键） |
+| `source_asset_id` | TEXT | `NOT NULL` `FK → asset RESTRICT` | 参考音频原件（失效时靠它重建；删素材会被拦） |
+| `label` | TEXT | `NOT NULL` | 界面显示名（如「男声·内置」「客服音色」） · 默认 `''` |
+| `file_id` | TEXT | — | 上传桥接返回的 fileId（一体式厂商留空） |
+| `file_id_expires_at` | INTEGER | — | fileId 过期时间（epoch ms；空 = 不知过期） |
+| `voice_id` | TEXT | — | 克隆返回的厂商音色 ID |
+| `voice_id_expires_at` | INTEGER | — | voiceId 过期时间（epoch ms；空 = 不知过期） |
+| `status` | TEXT | `NOT NULL` | 状态机：cloning / ready / failed / expired（抢占靠它，只建一次） · 默认 `'cloning'` |
+| `error` | TEXT | — | 失败原因（原样带上游 code/message） |
+| `attempts` | INTEGER | `NOT NULL` | 尝试次数（重建上限判据） · 默认 `0` |
+| `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
+| `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
+
+#### task — 异步任务：唯一价值是跨重启续跑（关窗口、刷新页面都不丢在途任务）
+
+**职责**：异步任务：跨重启续跑（提交 / 查询 / 当场落素材 / 回填字幕）　**前端**：字幕生成的逐条状态 + 顶栏在途任务浮层；调度在主进程扫库
+
+17 列 · 主键 `task_id`
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `task_id` | TEXT | `PK` | 本地任务 id（与厂商的 provider_task_id 无关） |
+| `batch_id` | TEXT | `NOT NULL` | 批次 id（一次「全部生成配音」= 一个 batchId + N 条 task） |
+| `provider_id` | TEXT | `NOT NULL` `FK → provider CASCADE` | 用哪个实例发的 |
+| `project_id` | TEXT | `FK → project CASCADE` | 回填到哪个项目（删项目连带删它的在途任务） |
+| `entry_id` | TEXT | `FK → narration_entry CASCADE` | 回填到哪条字幕（字幕条本就是表行，故为真外键而非弱引用） |
+| `category` | TEXT | `NOT NULL` | 任务种类：tts / image（llm 不进表，同步一把梭） |
+| `status` | TEXT | `NOT NULL` | 本地状态：submitting / querying / success / failed / canceled（厂商状态值不入库） · 默认 `'submitting'` |
+| `input_json` | TEXT | — | 提交参数快照（重试 = 取原值重新调生成接口） · `CHECK (input_json IS NULL OR json_valid(input_json))` |
+| `provider_task_id` | TEXT | — | 厂商任务 id（只在一次调用内有意义，几十分钟后过期） |
+| `artifact_id` | TEXT | `FK → asset SET NULL` | 最终产物（时效链接当场下载后落 asset） |
+| `error` | TEXT | — | 失败原因（原样带上游 code/message） |
+| `query_count` | INTEGER | `NOT NULL` | 已查询次数（超 maxAttempts 判失败） · 默认 `0` |
+| `rebuild_count` | INTEGER | `NOT NULL` | 音色重建次数（上限 1，避免死循环） · 默认 `0` |
+| `next_query_at` | INTEGER | — | 下次查询时间（epoch ms；调度器靠它错峰，不做每任务独立循环） |
+| `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
+| `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
+| `finished_at` | INTEGER | — | 结束时间（epoch ms，成功或失败的时刻） |
 
 ### 组 11 · 公共图层与公共元素（跨项目图库）
 

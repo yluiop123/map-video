@@ -1081,66 +1081,88 @@ CREATE INDEX IF NOT EXISTS ix_music_track ON music_track(project_id, start_sec);
 -- 8. 应用配置聚合（与项目内容解耦，Key 只存本机）
 -- -----------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS provider_template_group (  -- 接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口（共享数据，实例只引用）
-  tpl_group TEXT PRIMARY KEY,  -- 模板组 id（一个功能一条）：openai-chat / dashscope-image / custom-tts-1 …
-  kind       TEXT NOT NULL,  -- 组所属能力：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK）
-  label      TEXT NOT NULL DEFAULT '',  -- 组显示名（用户自定义的单个字符串，不做中英两份）
-  note       TEXT,  -- 组说明（接谁家的哪套端点、有什么坑）
-  base_url   TEXT NOT NULL DEFAULT '',  -- 新建实例时预填的建议 Base URL
-  models_json TEXT CHECK (models_json IS NULL OR json_valid(models_json)),  -- 候选模型列表 JSON（实例页下拉用）
-  default_model TEXT NOT NULL DEFAULT '',  -- 新建实例时预填的模型
-  default_voice TEXT,  -- 新建实例时预填的音色
-  ord        INTEGER NOT NULL DEFAULT 0,  -- 组列表排序
+CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板：一行 = 一个完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这一行的 JSON 列里）
+  tpl_id      TEXT PRIMARY KEY,  -- 模板 id（一行 = 一份完整模板）：deepseek-chat / qwen-image / qwen-tts / custom-1 …
+  name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
+  category    TEXT NOT NULL,  -- 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK）
+  note        TEXT,  -- 说明：接谁家的哪套端点、有什么坑
+  use_clone   INTEGER NOT NULL DEFAULT 0 CHECK (use_clone IN (0,1)),  -- 有没有克隆音色接口（只有 tts 用得上）
+  upload      INTEGER NOT NULL DEFAULT 0 CHECK (upload IN (0,1)),  -- 克隆前要不要先上传拿 fileId（use_clone=1 才有意义；0 = 直接塞 base64）
+  headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 模板级请求头 JSON（这一行的所有请求共用一份）
+  instance_params_json TEXT CHECK (instance_params_json IS NULL OR json_valid(instance_params_json)),  -- 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json）
+  sync_json   TEXT CHECK (sync_json IS NULL OR json_valid(sync_json)),  -- 同步接法 { submit }（一条请求直接拿产物）
+  async_json  TEXT CHECK (async_json IS NULL OR json_valid(async_json)),  -- 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举）
+  download_json TEXT CHECK (download_json IS NULL OR json_valid(download_json)),  -- 桥接请求：fileId → 最终下载地址（同步异步共用；不配 = 上一步直接给产物）
+  upload_json TEXT CHECK (upload_json IS NULL OR json_valid(upload_json)),  -- 桥接请求：本地文件 → fileId（仅克隆用）
+  clone_json  TEXT CHECK (clone_json IS NULL OR json_valid(clone_json)),  -- 克隆音色请求：参考音频 → voiceId
+  ref_sample_rate INTEGER,  -- 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k，写死过一次就出事）
+  ord        INTEGER NOT NULL DEFAULT 0,  -- 列表排序（同分类内）
   created_at INTEGER,  -- 创建时间（epoch ms，审计用）
   updated_at INTEGER  -- 最后修改时间（epoch ms，审计用）
 );
-CREATE INDEX IF NOT EXISTS ix_tg_kind ON provider_template_group(kind, ord);
+-- 模板按分类列给界面（一行一模板，不再有「组 + 每 role 一行」，也就没有跨行一致性要防）
+CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, name);
 
-CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板行：一条接口怎么发、返回从哪取（含异步查询与克隆；共享数据）
-  tpl_id      TEXT PRIMARY KEY,  -- 接口行 id，形如 <tpl_group>:<role>:<mode>
-  tpl_group   TEXT NOT NULL REFERENCES provider_template_group(tpl_group) ON DELETE CASCADE,  -- 所属模板组
-  role       TEXT NOT NULL,  -- 组内用途：generate / synthesize / query / clone（不写 CHECK）
-  mode       TEXT NOT NULL DEFAULT 'sync',  -- 这条变体服务哪种方式：sync / async（query·clone 恒 sync）
-  ord        INTEGER NOT NULL DEFAULT 0,  -- 组内展示顺序
-  method     TEXT NOT NULL DEFAULT 'POST',  -- HTTP 方法
-  url        TEXT NOT NULL DEFAULT '',  -- 地址模板，{baseUrl} 出现在哪由占位符决定
-  headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 请求头模板 JSON
-  query_json TEXT CHECK (query_json IS NULL OR json_valid(query_json)),  -- 查询串参数模板 JSON
-  body_json  TEXT CHECK (body_json IS NULL OR json_valid(body_json)),  -- 请求体模板 JSON（值是 {name} 占位）
-  inst_params_json TEXT CHECK (inst_params_json IS NULL OR json_valid(inst_params_json)),  -- 实例参数声明表 JSON（建实例时在 ⚙ 配：名字 / 类型 / 默认 / 候选值）
-  req_params_json TEXT CHECK (req_params_json IS NULL OR json_valid(req_params_json)),  -- 额外调用参数声明表 JSON（只在需要类型 / 元素子模板时声明；{text} {prompt} {wavB64} 等正文占位符由程序给值，不必声明）
-  resp_json  TEXT CHECK (resp_json IS NULL OR json_valid(resp_json)),  -- 返回槽位 JSON（content/image/audio/voiceId/taskId/status/success/fail/pending/errorCode/error）
-  decode_kind TEXT,  -- 产物解码：NULL 响应体即产物 / hex / base64 / url 远端链接
-  fetch_headers_json TEXT CHECK (fetch_headers_json IS NULL OR json_valid(fetch_headers_json)),  -- 下载产物时附带的请求头（空 = 裸 GET 签名链接）
-  poll_interval_ms INTEGER NOT NULL DEFAULT 1500,  -- 异步轮询间隔（离散步长，存原值 ms；只有 query 行读）
-  poll_timeout_ms  INTEGER NOT NULL DEFAULT 120000,  -- 异步轮询超时（ms；只有 query 行读）
-  ref_sample_rate INTEGER,  -- 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k）
+CREATE TABLE IF NOT EXISTS provider (  -- 实例：一个模板可以配几套账号，调用处选实例（取值全在 values_json，密钥不占具名列）
+  provider_id TEXT PRIMARY KEY,  -- 实例 id：prov_tts_minimax …
+  tpl_id      TEXT NOT NULL REFERENCES provider_template(tpl_id),  -- 用哪一份模板（真外键）
+  name        TEXT NOT NULL DEFAULT '',  -- 实例名（界面与任务列表用它认，如「MiniMax-TTS-生产」）
+  sync        INTEGER NOT NULL DEFAULT 1 CHECK (sync IN (0,1)),  -- 走同步还是异步：决定用模板里 sync_json 还是 async_json 那套
+  values_json TEXT CHECK (values_json IS NULL OR json_valid(values_json)),  -- 全部取值 JSON：{ instance: { baseUrl, apiKey, timeoutMs… }, requests: { "async.submit": { model, size… } } }（密钥是声明成 secret 的普通参数，不占具名列）
   created_at INTEGER,  -- 创建时间（epoch ms，审计用）
   updated_at INTEGER  -- 最后修改时间（epoch ms，审计用）
 );
--- 一个组里同一个 role+mode 只能有一条（异步配对与「查询接口唯一」都由这条索引保证）
-CREATE UNIQUE INDEX IF NOT EXISTS ux_tpl_role ON provider_template(tpl_group, role, mode);
-CREATE INDEX IF NOT EXISTS ix_tpl_group ON provider_template(tpl_group, ord);
+-- 按分类列实例时要 JOIN 模板表取 category，所以 tpl_id 这条外键列必须有索引
+CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 
-CREATE TABLE IF NOT EXISTS provider (  -- 能力配置：一个能力一行（llm / tts / image 共三行），选用的模板组 + 这一处的 Base URL / Key / 参数（Key 只存本机）
-  kind        TEXT PRIMARY KEY,  -- 能力 = 主键：llm 文案生成 / tts 语音（含克隆）/ image 图片生成（全表最多三行，一处一套凭证）
-  tpl_group   TEXT NOT NULL REFERENCES provider_template_group(tpl_group),  -- 这个能力当前用哪一组接口模板（真外键）
-  base_url    TEXT NOT NULL DEFAULT '',  -- 接口基础地址（一个能力一份，不跨能力共享）
-  api_key     TEXT NOT NULL DEFAULT '',  -- 主密钥（模板里写 {apiKey}）
-  api_key2    TEXT,  -- 第二凭证（模板里写 {apiKey2}，火山 TTS 的 Access Key）
-  mode        TEXT NOT NULL DEFAULT 'sync',  -- 这个能力走同步还是异步：决定用哪条生成变体、要不要查询接口
-  model       TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型（合成与克隆共用同一个值）
-  voice       TEXT,  -- 音色 / 说话人 ID
-  speed       REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
-  params_json TEXT CHECK (params_json IS NULL OR json_valid(params_json)),  -- 实例参数取值 JSON（对模板 inst_params_json 声明的那些名字）
-  max_concurrency INTEGER NOT NULL DEFAULT 1,  -- 批量并发上限（1 = 串行；账号限额，属实例不属模板）
-  retry_times     INTEGER NOT NULL DEFAULT 2,  -- 限流 / 网络错的退避重试次数（业务错不重试）
-  extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),  -- 附加请求参数（JSON，深合并进请求体的兜底口）
+CREATE TABLE IF NOT EXISTS voice (  -- 克隆音色账本：同一份参考音频在同一实例 + 同一目标模型下只建一次
+  voice_row_id TEXT PRIMARY KEY,  -- 行 id（不是厂商的 voiceId，那个在 voice_id 列）
+  provider_id  TEXT NOT NULL REFERENCES provider(provider_id) ON DELETE CASCADE,  -- 属于哪个实例（音色池按实例隔离）
+  source_hash  TEXT NOT NULL,  -- 参考音频内容哈希（幂等键的一维）
+  target_model TEXT NOT NULL,  -- 绑定的模型（实测：voiceId 换模型即失效，所以它必须进唯一键）
+  source_asset_id TEXT NOT NULL REFERENCES asset(asset_id) ON DELETE RESTRICT,  -- 参考音频原件（失效时靠它重建；删素材会被拦）
+  label        TEXT NOT NULL DEFAULT '',  -- 界面显示名（如「男声·内置」「客服音色」）
+  file_id      TEXT,  -- 上传桥接返回的 fileId（一体式厂商留空）
+  file_id_expires_at INTEGER,  -- fileId 过期时间（epoch ms；空 = 不知过期）
+  voice_id     TEXT,  -- 克隆返回的厂商音色 ID
+  voice_id_expires_at INTEGER,  -- voiceId 过期时间（epoch ms；空 = 不知过期）
+  status       TEXT NOT NULL DEFAULT 'cloning',  -- 状态机：cloning / ready / failed / expired（抢占靠它，只建一次）
+  error        TEXT,  -- 失败原因（原样带上游 code/message）
+  attempts     INTEGER NOT NULL DEFAULT 0,  -- 尝试次数（重建上限判据）
   created_at INTEGER,  -- 创建时间（epoch ms，审计用）
   updated_at INTEGER  -- 最后修改时间（epoch ms，审计用）
 );
--- kind 是主键（自带索引），只给外键列补索引
-CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_group);
+-- 「只克隆一次」由这条唯一键保证（不含 target_model 就会把跨模型的音色混用成 418）
+CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_hash, target_model);
+CREATE INDEX IF NOT EXISTS ix_voice_provider ON voice(provider_id, status);
+CREATE INDEX IF NOT EXISTS ix_voice_asset ON voice(source_asset_id);
+
+CREATE TABLE IF NOT EXISTS task (  -- 异步任务：唯一价值是跨重启续跑（关窗口、刷新页面都不丢在途任务）
+  task_id      TEXT PRIMARY KEY,  -- 本地任务 id（与厂商的 provider_task_id 无关）
+  batch_id     TEXT NOT NULL,  -- 批次 id（一次「全部生成配音」= 一个 batchId + N 条 task）
+  provider_id  TEXT NOT NULL REFERENCES provider(provider_id) ON DELETE CASCADE,  -- 用哪个实例发的
+  project_id   TEXT REFERENCES project(project_id) ON DELETE CASCADE,  -- 回填到哪个项目（删项目连带删它的在途任务）
+  entry_id     TEXT REFERENCES narration_entry(entry_id) ON DELETE CASCADE,  -- 回填到哪条字幕（字幕条本就是表行，故为真外键而非弱引用）
+  category     TEXT NOT NULL,  -- 任务种类：tts / image（llm 不进表，同步一把梭）
+  status       TEXT NOT NULL DEFAULT 'submitting',  -- 本地状态：submitting / querying / success / failed / canceled（厂商状态值不入库）
+  input_json   TEXT CHECK (input_json IS NULL OR json_valid(input_json)),  -- 提交参数快照（重试 = 取原值重新调生成接口）
+  provider_task_id TEXT,  -- 厂商任务 id（只在一次调用内有意义，几十分钟后过期）
+  artifact_id  TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 最终产物（时效链接当场下载后落 asset）
+  error        TEXT,  -- 失败原因（原样带上游 code/message）
+  query_count  INTEGER NOT NULL DEFAULT 0,  -- 已查询次数（超 maxAttempts 判失败）
+  rebuild_count INTEGER NOT NULL DEFAULT 0,  -- 音色重建次数（上限 1，避免死循环）
+  next_query_at INTEGER,  -- 下次查询时间（epoch ms；调度器靠它错峰，不做每任务独立循环）
+  created_at INTEGER,  -- 创建时间（epoch ms，审计用）
+  updated_at INTEGER,  -- 最后修改时间（epoch ms，审计用）
+  finished_at INTEGER  -- 结束时间（epoch ms，成功或失败的时刻）
+);
+-- 调度器每轮就是按 (status, next_query_at) 扫，这条索引是它的命门
+CREATE INDEX IF NOT EXISTS ix_task_due ON task(status, next_query_at);
+CREATE INDEX IF NOT EXISTS ix_task_batch ON task(batch_id);
+CREATE INDEX IF NOT EXISTS ix_task_provider ON task(provider_id);
+CREATE INDEX IF NOT EXISTS ix_task_project ON task(project_id);
+CREATE INDEX IF NOT EXISTS ix_task_entry ON task(entry_id);
+CREATE INDEX IF NOT EXISTS ix_task_artifact ON task(artifact_id);
 
 -- =============================================================================
 -- 9. 外键支撑索引（FK 子表列必须建索引 —— SQLite 上外键唯一的真实成本来源）
@@ -1256,23 +1278,22 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
     AND NOT EXISTS (SELECT 1 FROM json_each(t.countries_json) c
                     WHERE c.value->>'countryId' = e.value->>'toCountryId');
 
--- 12.4 异步配置的配对自检（某个能力选了异步，它引用的模板组里就必须有异步生成接口 + 一条查询接口；
---      配对关系是「同组 + role=query」，没有指针列可填错，但组被改坏时这里能抓到）
+-- 12.4 异步实例的配对自检（实例勾了异步，它引用的模板里 async 就必须有 submit + query + 成功值；
+--      模板是一行一份完整 JSON，所以这里直接 json_extract 查形状，不靠指针列也不会配错到别家）
 CREATE VIEW IF NOT EXISTS v_check_async_pairing AS
-SELECT p.kind      AS ref_id,
-       p.tpl_group AS target,
-       CASE WHEN NOT EXISTS (SELECT 1 FROM provider_template t
-                             WHERE t.tpl_group = p.tpl_group AND t.mode = 'async'
-                               AND t.role IN ('generate','synthesize'))
-            THEN '异步配置：这组模板没有异步的生成接口'
-            ELSE '异步配置：这组模板缺 role=query 的查询接口' END AS problem
+SELECT p.provider_id AS ref_id,
+       p.tpl_id      AS target,
+       CASE WHEN json_extract(t.async_json, '$.submit.path') IS NULL
+            THEN '异步实例：这份模板没有异步的提交接口（async.submit）'
+            WHEN json_extract(t.async_json, '$.query.path') IS NULL
+            THEN '异步实例：这份模板缺查询接口（async.query）'
+            ELSE '异步实例：查询接口没配 successValues（不知道查成什么样算完成）' END AS problem
   FROM provider p
- WHERE p.mode = 'async'
-   AND (NOT EXISTS (SELECT 1 FROM provider_template t
-                    WHERE t.tpl_group = p.tpl_group AND t.mode = 'async'
-                      AND t.role IN ('generate','synthesize'))
-        OR NOT EXISTS (SELECT 1 FROM provider_template t
-                       WHERE t.tpl_group = p.tpl_group AND t.role = 'query'));
+  JOIN provider_template t ON t.tpl_id = p.tpl_id
+ WHERE p.sync = 0
+   AND (json_extract(t.async_json, '$.submit.path') IS NULL
+        OR json_extract(t.async_json, '$.query.path') IS NULL
+        OR json_extract(t.async_json, '$.query.successValues') IS NULL);
 
 -- 用法：SELECT * FROM v_check_dangling;
 --       SELECT * FROM v_check_territory_ref;

@@ -33,19 +33,18 @@ declare global {
         }>;
         remove: (id: string) => Promise<{ ok: boolean }>;
       };
-      /** 接口模板组（一组 = 一个功能要哪几条接口；整组读写） */
+      /** 接口模板（一行 = 一份完整模板；整份读写） */
       templates: {
-        list: () => Promise<import('./request-engine').TemplateGroup[]>;
-        save: (g: import('./request-engine').TemplateGroup) => Promise<{ ok: boolean }>;
-        remove: (tplGroup: string) => Promise<{ ok: boolean }>;
+        list: () => Promise<import('./request-engine').TemplateDef[]>;
+        save: (t: import('./request-engine').TemplateDef) => Promise<{ ok: boolean }>;
+        remove: (tplId: string) => Promise<{ ok: boolean }>;
       };
       providers: {
-        /** 已配置的能力（一个能力至多一行，id = kind） */
-        list: () => Promise<import('../types').ProviderConfig[]>;
-        upsert: (cfg: import('../types').ProviderConfig) => Promise<{ ok: boolean }>;
-        /** 清掉该能力的那一行（界面无此动作；冒烟回归用它清场） */
-        remove: (kind: 'llm' | 'tts' | 'image') => Promise<{ ok: boolean }>;
-        /** 旧形状让位后的一次性搬回，须在模板组铺好后调用 */
+        /** 已配置的实例（一个能力可以多条，调用处选一条用） */
+        list: () => Promise<import('./request-engine').InstanceDef[]>;
+        upsert: (inst: import('./request-engine').InstanceDef) => Promise<{ ok: boolean }>;
+        remove: (providerId: string) => Promise<{ ok: boolean }>;
+        /** 旧形状让位后的一次性搬回，须在模板铺好后调用 */
         migrate: () => Promise<{ moved: number }>;
       };
       /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId 随机；登记在 asset 表） */

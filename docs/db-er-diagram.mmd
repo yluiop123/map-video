@@ -134,32 +134,47 @@ erDiagram
     text type
     text payload_json "custom/person 内容块 + 类型载荷"
   }
-  PROVIDER_TEMPLATE_GROUP {
-    text tpl_group PK "一个功能要哪几条接口"
-    text kind "llm | tts | image（组内每行必然同值，故只存组上）"
-    text label "用户自填的单个字符串"
-    text models_json "候选模型"
-    text default_model
-  }
   PROVIDER_TEMPLATE {
-    text tpl_id PK "<tpl_group>:role:mode"
-    text tpl_group FK
-    text role "generate | synthesize | query | clone"
-    text mode "sync | async（query·clone 恒 sync）"
-    text url "含 {baseUrl} 占位"
-    text inst_params_json "实例参数声明表"
-    text req_params_json "额外调用参数声明表"
-    text resp_json "固定槽位：content/image/audio/taskId/status…"
-    text decode_kind "hex | base64 | url（NULL = 响应体即产物）"
+    text tpl_id PK "一行 = 一份完整模板"
+    text category "llm | tts | image"
+    text name "用户自填的单个字符串"
+    integer use_clone "有没有克隆接口"
+    integer upload "克隆前要不要先传拿 fileId"
+    text instance_params_json "实例级参数声明"
+    text sync_json "同步 submit"
+    text async_json "异步 submit + query（含 successValues / failureValues）"
+    text download_json "桥接：fileId → 下载地址"
+    text upload_json "桥接：本地文件 → fileId"
+    text clone_json "参考音频 → voiceId"
+    integer ref_sample_rate "克隆参考音频采样率 Hz"
   }
   PROVIDER {
-    text kind PK "llm | tts | image —— 一处一份，全表最多三行"
-    text tpl_group FK "当前用哪一组模板"
-    text base_url
-    text api_key "主密钥（{apiKey}）"
-    text api_key2 "第二凭证（{apiKey2}）"
-    text mode "sync | async（在配置上，不在接口行上）"
-    text params_json "实例参数取值"
+    text provider_id PK "一份模板可挂多条实例"
+    text tpl_id FK "引用哪份模板（真外键）"
+    text name "实例名"
+    integer sync "走 sync_json 还是 async_json"
+    text values_json "{ instance：整实例共用取值, requests：按请求各存的取值 }（密钥也在里面）"
+  }
+  VOICE {
+    text voice_row_id PK
+    text provider_id FK "音色池按实例隔离（CASCADE）"
+    text source_hash "参考音频哈希（幂等键一维）"
+    text target_model "voiceId 绑模型（幂等键二维）"
+    text source_asset_id FK "原件（RESTRICT：删素材会被拦）"
+    text voice_id "厂商音色 ID"
+    text status "cloning | ready | failed | expired"
+  }
+  TASK {
+    text task_id PK
+    text batch_id "一次「全部生成配音」= 一批"
+    text provider_id FK
+    text project_id FK "删项目带走在途任务"
+    text entry_id FK "回填到哪条字幕"
+    text category "tts | image"
+    text status "submitting | querying | success | failed | canceled"
+    text provider_task_id "厂商任务 id"
+    text artifact_id FK "产物落 asset 后回填（SET NULL）"
+    integer next_query_at "调度器按它错峰"
   }
   PUBLIC_LAYER {
     text public_layer_id PK
@@ -227,5 +242,10 @@ erDiagram
   PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_TERRITORY : "1:N 疆域副本"
   PUBLIC_LAYER ||--o{ PUBLIC_ELEMENT_IMAGE : "1:N 贴图副本"
   LAYER ||--o{ PUBLIC_LAYER : "整层复制（应用层 INSERT..SELECT，非外键）"
-  PROVIDER_TEMPLATE_GROUP ||--o{ PROVIDER_TEMPLATE : "1:N 一组接口（同组同 role+mode 唯一）"
-  PROVIDER_TEMPLATE_GROUP ||--o| PROVIDER : "1:0..1 这一处配置当前用哪一组（真外键，换组叫「用作本能力」）"
+  PROVIDER_TEMPLATE ||--o{ PROVIDER : "1:N 一份模板配几套账号（tpl_id 真外键，被引用时删不掉）"
+  PROVIDER ||--o{ VOICE : "1:N 音色池按实例隔离（CASCADE）"
+  ASSET ||--o{ VOICE : "1:N 参考音频原件（RESTRICT：被音色引用的素材删不掉）"
+  PROVIDER ||--o{ TASK : "1:N 这条实例发出去的在途任务"
+  PROJECT ||--o{ TASK : "1:N 删项目带走在途任务（CASCADE）"
+  NARRATION_ENTRY ||--o{ TASK : "1:N 回填到哪条字幕（CASCADE）"
+  ASSET ||--o{ TASK : "1:N 产物落 asset 后回填（SET NULL）"

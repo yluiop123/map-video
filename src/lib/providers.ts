@@ -1,110 +1,83 @@
-import type { ProviderConfig } from '../types';
 import { IS_DESKTOP } from './backend';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  buildRequest, callRole, pickRow, redact, EngineError,
-  type CallResult, type ProviderKind, type ReqCtx, type ResolvedRequest, type Role, type SendResult, type TemplateGroup, type TemplateRow,
+  EngineError, buildRequest, redact, runSync, runClone, submitAsync, queryOnce,
+  requestOf, submitKeyOf, secretsOf,
+  type Category, type Deps, type InstanceDef, type ReqKey, type ResolvedRequest, type TemplateDef,
 } from './request-engine';
 
 /**
  * providers.ts — 供应商调用门面（薄壳）
  *
- * 这里没有任何协议分支：一个能力实例引用一组接口模板，怎么发、怎么取回全在模板里
- * （docs/provider-engine.md）。本文件只做三件事 —— 把实例变成引擎上下文、注入传输
- * （桌面走主进程 / 网页走 fetch）、把结果换算成界面要用的形状（dataURL、时长、voice_id…）。
+ * 这里没有任何按厂商名写的分支：一个实例引用一份接口模板，怎么发、怎么取回全在模板里
+ * （docs/provider-engine.md）。本文件只做三件事 —— 注入传输（桌面走主进程 / 网页走 fetch）、
+ * 把结果换算成界面要用的形状（dataURL、时长、voiceId…）、异步时先把「内存轮询」顶着
+ * （task 表 + 调度器在批次 5 接管这一段）。
  * 历史上这里是 renderer 的 6 条 switch + 主进程再来一份，同一条事实四处维护，事故见 AGENTS §6.22 / §6.24。
  */
 
-// ========== 模板取用 ==========
+// ========== 模板与实例的取用 ==========
 
-/** 这个实例用的模板组（共享数据，界面编辑的就是它） */
-export function groupOf(cfg: ProviderConfig | null | undefined): TemplateGroup | undefined {
-  if (!cfg) return undefined;
-  return useProviderStore.getState().groups.find((g) => g.tplGroup === cfg.tplGroup);
+export function templateOf(inst: InstanceDef | null | undefined): TemplateDef | undefined {
+  if (!inst) return undefined;
+  return useProviderStore.getState().templates.find((t) => t.id === inst.tplId);
 }
 
-/** 这个供应商能不能做某件事（例：VoicePicker 用它决定「克隆音色」区显示与否） */
-export function supports(cfg: ProviderConfig | null | undefined, role: Role): boolean {
-  return !!groupOf(cfg)?.rows.some((r) => r.role === role);
+export const categoryOf = (inst: InstanceDef | null | undefined): Category | undefined => templateOf(inst)?.category;
+
+/** 这份模板有没有某条请求（VoicePicker 用它决定「克隆音色」区显示与否） */
+export function supports(inst: InstanceDef | null | undefined, key: 'clone' | 'upload' | 'download' | 'async'): boolean {
+  const t = templateOf(inst);
+  if (!t) return false;
+  return key === 'async' ? !!t.async?.submit : !!t[key];
 }
 
-/** 该组建议的候选模型（界面下拉用） */
-export function modelsOf(cfg: ProviderConfig | null | undefined): string[] {
-  return groupOf(cfg)?.models ?? [];
-}
-
-/** 参考音频转码采样率：CosyVoice 16k、Qwen-TTS ≥24k，各家不同，写死过一次就出事 */
-export function refSampleRateOf(cfg: ProviderConfig | null | undefined): number {
-  return groupOf(cfg)?.rows.find((r) => r.role === 'clone')?.refSampleRateHz ?? 16000;
-}
-
-/** 这组模板要不要第二凭证 */
-export function needsSecret2(cfg: ProviderConfig | null | undefined): boolean {
-  return JSON.stringify(groupOf(cfg)?.rows ?? []).includes('{apiKey2}');
-}
-
-/** 实例页要渲染的参数：该组各接口的 instParams（同名合并成一个控件） */
-export function instanceVars(cfg: ProviderConfig | null | undefined) {
-  const seen = new Map<string, NonNullable<TemplateRow['instParams']>[number]>();
-  for (const r of groupOf(cfg)?.rows ?? []) {
-    for (const v of r.instParams ?? []) if (!seen.has(v.name)) seen.set(v.name, v);
+/** 该实例这次该走哪条提交接口（实例的同步开关决定） */
+export function submitKeyOfInstance(inst: InstanceDef): ReqKey {
+  const t = templateOf(inst);
+  if (!t) throw new EngineError(`没找到实例引用的模板「${inst.tplId}」（去接口模板页检查）`);
+  const key = submitKeyOf(inst.sync);
+  if (!requestOf(t, key)) {
+    if (key === 'sync.submit') throw new EngineError('这份模板没有同步提交接口，把实例改成异步');
+    throw new EngineError('这份模板没有异步提交接口（或没配查询接口），把实例改成同步');
   }
-  return [...seen.values()];
+  return key;
 }
 
-// ========== 引擎上下文 ==========
-
-function isObj(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
+/** 参考音频要求采样率：CosyVoice 16k、Qwen-TTS ≥24k，各家不同，写死过一次就出事 */
+export function refSampleRateOf(inst: InstanceDef | null | undefined): number {
+  return templateOf(inst)?.refSampleRateHz ?? 16000;
 }
 
-function deepMerge(target: unknown, patch: unknown): unknown {
-  if (!isObj(patch)) return target;
-  const base = isObj(target) ? { ...target } : {};
-  for (const [k, v] of Object.entries(patch)) base[k] = isObj(v) && isObj(base[k]) ? deepMerge(base[k], v) : v;
-  return base;
+/** 需要第二把 Key 吗（实例页据此决定那一格出不出现） */
+export function needsSecret2(inst: InstanceDef | null | undefined): boolean {
+  return JSON.stringify(templateOf(inst)?.headers ?? {}).includes('${apiKey2}');
 }
 
-function ctxOf(cfg: ProviderConfig): ReqCtx {
-  return {
-    baseUrl: cfg.baseUrl,
-    apiKey: cfg.apiKey ?? '',
-    apiKey2: cfg.apiKey2 ?? '',
-    model: cfg.model,
-    voice: cfg.voice,
-    speed: cfg.speed ?? 1,
-    mode: cfg.mode,
-    params: cfg.params ?? {},
-  };
+/** 查询节奏（实例级：账号限额，不属模板形状） */
+function pacing(inst: InstanceDef) {
+  const v = inst.values.instance ?? {};
+  const n = (k: string, d: number) => (typeof v[k] === 'number' ? (v[k] as number) : Number(v[k]) || d);
+  return { intervalMs: n('queryIntervalMs', 1500), maxAttempts: n('queryMaxAttempts', 120), timeoutMs: n('timeoutMs', 30000) };
 }
 
-function safeExtra(s?: string): Record<string, unknown> | null {
-  if (!s?.trim()) return null;
-  try { return JSON.parse(s) as Record<string, unknown>; } catch { return null; }
-}
+// ========== 传输 ==========
 
-async function runRole(cfg: ProviderConfig, role: Role, inputs: Record<string, unknown> = {}): Promise<CallResult> {
-  const group = groupOf(cfg);
-  if (!group) throw new EngineError(`没找到模板组「${cfg.tplGroup}」（去接口模板页检查）`);
-  const extra = safeExtra(cfg.extra);
-  const send = async (req: ResolvedRequest): Promise<SendResult> =>
-    rawSend(extra ? { ...req, body: deepMerge(req.body, extra) } : req);
-  return callRole(group, ctxOf(cfg), role, inputs, { send, fetchBytes });
-}
-
-// ========== 传输（桌面走主进程，网页直连） ==========
-
-async function rawSend(req: ResolvedRequest): Promise<SendResult> {
+async function rawSend(r: ResolvedRequest): Promise<{ status: number; contentType?: string; json?: unknown; text?: string; bytes?: Uint8Array }> {
   if (IS_DESKTOP) {
-    const r = await window.mapvideo!.net.request(req);
-    if (r.error) throw new EngineError(r.error);
-    return { status: r.status ?? 0, contentType: r.contentType, bytes: r.bytes ? new Uint8Array(r.bytes) : undefined, json: r.json, text: r.text };
+    const res = await window.mapvideo!.net.request(r);
+    if (res.error) throw new EngineError(res.error);
+    return {
+      status: res.status ?? 0, contentType: res.contentType, json: res.json, text: res.text,
+      bytes: res.bytes ? new Uint8Array(res.bytes) : undefined,
+    };
   }
-  const url = new URL(req.url);
-  for (const [k, v] of Object.entries(req.query)) url.searchParams.set(k, String(v));
   let res: Response;
   try {
-    res = await fetch(url.href, { method: req.method, headers: req.headers, body: req.method === 'GET' ? undefined : JSON.stringify(req.body ?? {}) });
+    res = await fetch(r.url, {
+      method: r.method, headers: r.headers,
+      body: r.method === 'GET' ? undefined : JSON.stringify(r.body ?? {}),
+    });
   } catch {
     throw new EngineError('请求失败（可能被 CORS 拦截）——桌面版无此限制，或把 Base URL 换成自己的代理地址');
   }
@@ -114,7 +87,7 @@ async function rawSend(req: ResolvedRequest): Promise<SendResult> {
   return { status: res.status, contentType: ct, bytes: new Uint8Array(await res.arrayBuffer()) };
 }
 
-async function fetchBytes(url: string, headers?: Record<string, string>): Promise<{ bytes: Uint8Array; mime?: string }> {
+async function fetchBytes(url: string, headers?: Record<string, string>) {
   if (IS_DESKTOP) {
     const r = await window.mapvideo!.net.fetchUrl(url, headers);
     if (r.error) throw new EngineError(r.error);
@@ -125,31 +98,63 @@ async function fetchBytes(url: string, headers?: Record<string, string>): Promis
   return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get('content-type') || undefined };
 }
 
+const deps: Deps = { send: rawSend, fetchBytes };
+
+const tplOf = (inst: InstanceDef): TemplateDef => {
+  const t = templateOf(inst);
+  if (!t) throw new EngineError(`没找到实例引用的模板「${inst.tplId}」（去接口模板页检查）`);
+  return t;
+};
+
 /**
- * 「预览请求」：只跑模板求值 + 密钥打码，**一个字节都不发出去**。
- * 有了它，改完模板先看实际会长成什么样，再决定要不要花一次真调用。
+ * 一条调用：同步就一把梭；异步在这里**内存轮询**顶着（跨重启续跑等批次 5 的 task 表 + 调度器）。
+ * 失败一律抛 EngineError，把上游 code/message 原样带上（界面不翻译，否则查不到根因）。
  */
-export function previewRequest(cfg: ProviderConfig, role: Role, inputs: Record<string, unknown> = {}): ResolvedRequest {
-  const group = groupOf(cfg);
-  const r = group ? pickRow(group, role, cfg.mode) : undefined;
-  if (!r) throw new EngineError(`这组模板没配 ${role} 接口`);
-  const ctx = { ...ctxOf(cfg), ...inputs };
-  const extra = safeExtra(cfg.extra);
-  const req = buildRequest(r, ctx);
-  return redact(extra ? { ...req, body: deepMerge(req.body, extra) } : req, ctx);
+async function run(inst: InstanceDef, callArgs: Record<string, unknown>): Promise<{ values: Record<string, unknown>; bytes?: Uint8Array; mime?: string }> {
+  const tpl = tplOf(inst);
+  const key = submitKeyOfInstance(inst);
+  if (key === 'sync.submit') return runSync(tpl, inst, deps, 'sync.submit', callArgs);
+  const first = await submitAsync(tpl, inst, deps, callArgs);
+  const { intervalMs, maxAttempts } = pacing(inst);
+  let upstream = first.values;
+  for (let i = 0; i < maxAttempts; i += 1) {
+    await sleep(intervalMs);
+    const one = await queryOnce(tpl, inst, deps, upstream);
+    upstream = one.values;
+    if (one.outcome === 'success') return { values: one.values, bytes: one.bytes, mime: one.mime };
+    if (one.outcome === 'failed') throw new EngineError('上游报任务失败');
+  }
+  throw new EngineError(`查询超过 ${maxAttempts} 次还没完成（上游任务可能还在排队）`);
 }
 
-/** 「试调用」：走完整引擎（含异步轮询），把 steps / 取到的字段 / 字节数原样交回界面 */
-export function runRoleDebug(cfg: ProviderConfig, role: Role, inputs: Record<string, unknown> = {}): Promise<CallResult> {
-  return runRole(cfg, role, inputs);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** 「预览请求」：只跑模板求值 + 密钥打码，**一个字节都不发出去** */
+export function previewRequest(inst: InstanceDef, key: ReqKey, callArgs: Record<string, unknown> = {}): ResolvedRequest {
+  return redact(buildRequest(tplOf(inst), inst, key, callArgs).req, secretsOf(tplOf(inst), inst));
 }
 
-// ========== 对外四个动作 ==========
+/** 「试调用」：真发一条，把 steps / 取到的字段 / 字节数原样交回界面 */
+export async function trialCall(inst: InstanceDef, key: ReqKey, callArgs: Record<string, unknown> = {}) {
+  const tpl = tplOf(inst);
+  if (key === 'clone' || key === 'upload') {
+    const r = await runClone(tpl, inst, deps, callArgs);
+    return { values: r.values, bytes: undefined as Uint8Array | undefined, mime: undefined as string | undefined, steps: r.steps };
+  }
+  if (key === 'async.query') {
+    const one = await queryOnce(tpl, inst, deps, callArgs);
+    return { values: one.values, bytes: one.bytes, mime: one.mime, steps: [one.step] };
+  }
+  const r = await runSync(tpl, inst, deps, key, callArgs);
+  return { values: r.values, bytes: r.bytes, mime: r.mime, steps: r.steps };
+}
 
-export async function callLLM(cfg: ProviderConfig, systemPrompt: string, userPrompt: string): Promise<string> {
-  const r = await runRole(cfg, 'generate', { systemPrompt, userPrompt });
+// ========== 对外几个动作 ==========
+
+export async function callLLM(inst: InstanceDef, systemPrompt: string, userPrompt: string): Promise<string> {
+  const r = await run(inst, { systemPrompt, userPrompt });
   const text = r.values.content;
-  if (typeof text !== 'string') throw new EngineError('响应里没取到文本，检查接口模板的「返回内容」路径');
+  if (typeof text !== 'string') throw new EngineError('响应里没取到文本，检查模板 sync.submit 的 outputs.content 路径');
   return text;
 }
 
@@ -159,34 +164,37 @@ export interface TtsResult {
   durationSec: number;
 }
 
-export async function callTTS(cfg: ProviderConfig, text: string, voice?: string): Promise<TtsResult> {
-  const r = await runRole(cfg, 'synthesize', { text, reqId: `mv-${Date.now()}`, ...(voice ? { voice } : {}) });
-  if (!r.bytes?.length) throw new EngineError('没拿到音频：检查接口模板的音频路径 / 解码方式');
+/** 合成一段配音；voiceId 传了就用它（内置 / 克隆音色都是厂商的 voice id），不传用实例的默认音色 */
+export async function callTTS(inst: InstanceDef, text: string, voiceId?: string, extra: Record<string, unknown> = {}): Promise<TtsResult> {
+  const r = await run(inst, { text, reqId: `mv-${Date.now()}`, ...(voiceId ? { voice: voiceId } : {}), ...extra });
+  if (!r.bytes?.length) throw new EngineError('没拿到音频：检查模板的产物路径与 outputFormat');
   const dataUrl = await blobToDataUrl(new Blob([r.bytes], { type: r.mime || 'audio/mpeg' }));
   return { dataUrl, durationSec: await decodeAudioDuration(dataUrl, text) };
 }
 
 /** 文生图：产物一律当场下载后转 dataURL（上游给的是带时效的链接） */
-export async function callImage(cfg: ProviderConfig, prompt: string): Promise<string> {
-  const r = await runRole(cfg, 'generate', { prompt });
+export async function callImage(inst: InstanceDef, prompt: string, extra: Record<string, unknown> = {}): Promise<string> {
+  const r = await run(inst, { prompt, ...extra });
   if (r.bytes?.length) return `data:${r.mime || 'image/png'};base64,${bytesToBase64(r.bytes)}`;
-  const url = r.values.image;
+  const url = r.values.url ?? r.values.image;
   if (typeof url === 'string' && url) return normalizeImage(url);
-  throw new EngineError('响应里没取到图片，检查接口模板的图片路径');
+  throw new EngineError('响应里没取到图片，检查模板 outputs 里的产物路径');
 }
 
-/** 参考音频 → 音色 ID。targetModel 必须与之后合成用的 model 一致。 */
-export async function cloneVoice(cfg: ProviderConfig, refBytes: ArrayBuffer, targetModel: string, prefix = 'mv'): Promise<string> {
-  const wav = await toWavMono(refBytes, refSampleRateOf(cfg));
+/** 参考音频 → 音色 ID。targetModel 必须与之后合成用的 model 一致（换模型 voiceId 即失效） */
+export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targetModel: string, label = 'mv'): Promise<string> {
+  const tpl = tplOf(inst);
+  if (!tpl.clone) throw new EngineError('这份模板没配克隆接口');
+  const wav = await toWavMono(refBytes, refSampleRateOf(inst));
   if (wav.length > 10 * 1024 * 1024) throw new EngineError('参考音频超过 10MB');
-  const r = await runRole(cfg, 'clone', {
-    wavB64: bytesToBase64(wav),
-    prefix,
-    preferredName: String(prefix || 'mv').replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv',
-    model: targetModel || cfg.model,
+  const one: InstanceDef = { ...inst, values: { ...inst.values, instance: { ...inst.values.instance, model: targetModel || inst.values.instance?.model } } };
+  const r = await runClone(tpl, one, deps, {
+    file: wav,
+    audioDataUri: `data:audio/wav;base64,${bytesToBase64(wav)}`,
+    prefix: label, preferredName: label.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv',
   });
-  const vid = r.values.voiceId;
-  if (typeof vid !== 'string' || !vid) throw new EngineError('克隆响应里没取到音色 ID，检查「音色 ID」路径');
+  const vid = r.values.voiceId ?? r.values.voice;
+  if (typeof vid !== 'string' || !vid) throw new EngineError('克隆响应里没取到音色 ID，检查 clone.outputs.voiceId 路径');
   return vid;
 }
 
@@ -222,7 +230,7 @@ function normalizeImage(s: string): string {
   return `data:image/png;base64,${v}`;
 }
 
-/** 任意音频 → 单声道 WAV（各家要求的采样率不同，见 clone 行的 refSampleRateHz） */
+/** 任意音频 → 单声道 WAV（各家要求的采样率不同，见模板的 refSampleRateHz） */
 async function toWavMono(bytes: ArrayBuffer, rateHz: number): Promise<Uint8Array> {
   const AC: typeof AudioContext = window.AudioContext
     || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -246,14 +254,14 @@ async function toWavMono(bytes: ArrayBuffer, rateHz: number): Promise<Uint8Array
   dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
   ws(36, 'data'); dv.setUint32(40, len * 2, true);
   let off = 44;
-  for (let i = 0; i < len; i++, off += 2) {
+  for (let i = 0; i < len; i += 1, off += 2) {
     const s = Math.max(-1, Math.min(1, ch[i]));
     dv.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
   return new Uint8Array(buf);
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
+export function bytesToBase64(bytes: Uint8Array): string {
   let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) {
     bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -294,4 +302,4 @@ export function parseSrt(content: string): string[] {
     .filter((x) => x);
 }
 
-export type { ProviderKind };
+export type { Category, InstanceDef, ReqKey, ResolvedRequest, TemplateDef };

@@ -105,10 +105,16 @@ export const QWEN_TTS_VOICES: SystemVoice[] = [
  * 按模板包取可用系统音色（协议列已随「模板即数据」改版删掉，音色目录挂在 recipe 上）
  * Qwen 侧再按模型收窄：旧模型 qwen-tts 只带 4 个系统音色。
  */
-export function systemVoicesFor(recipeId?: string, model?: string): SystemVoice[] {
-  if (recipeId !== 'dashscope-qwen-tts') return COSYVOICE_VOICES;
-  if ((model || '').trim() === 'qwen-tts') return QWEN_TTS_VOICES.filter((v) => v.legacy);
-  return QWEN_TTS_VOICES;
+/**
+ * 这个模板自带的系统音色表。名字一律逐字抄官方表 —— 认的是**模板 id**
+ * （自定义模板没有官方表可抄，返回空，界面退化成手填音色 ID）。
+ */
+export function systemVoicesFor(tplId?: string, model?: string): SystemVoice[] {
+  if (tplId === 'dashscope-qwen-tts') {
+    return (model || '').trim() === 'qwen-tts' ? QWEN_TTS_VOICES.filter((v) => v.legacy) : QWEN_TTS_VOICES;
+  }
+  if (tplId === 'dashscope-cosyvoice') return COSYVOICE_VOICES;
+  return [];
 }
 
 /**

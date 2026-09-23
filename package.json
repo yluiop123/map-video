@@ -29,6 +29,7 @@
     "earcut": "^3.2.3",
     "express": "^5.2.1",
     "gifuct-js": "^2.1.2",
+    "jsonpath-plus": "^10.4.0",
     "lucide-react": "^0.468.0",
     "maplibre-gl": "^5.24.0",
     "milsymbol": "^3.0.4",

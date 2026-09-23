@@ -14,6 +14,7 @@ import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './
 import { callLLM, callTTS, parseSrt, srtTime } from '../lib/providers';
 import { runBatch } from '../lib/provider-queue';
 import { VoicePicker } from './VoicePicker';
+import type { InstanceDef } from '../lib/request-engine';
 import { estimateTextDurationFrames, generateId, defaultNarrationStyle, type NarrationEntry } from '../types';
 
 /** 一行 = 一条字幕 + 它自己的配音（可单独生成 / 覆盖） */
@@ -101,9 +102,12 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 一个能力一份配置；订阅它 = 改完服务立刻反映到本弹窗
-  const llm = useProviderStore((s) => s.llm);
-  const tts = useProviderStore((s) => s.tts);
+  // 一个能力一条实例（选了哪条就订阅哪条）；改完服务立刻反映到本弹窗
+  const llm = useProviderStore((s) => s.current('llm'));
+  const tts = useProviderStore((s) => s.current('tts'));
+  /** 音色是调用级参数：随每次合成传下去，不写进实例配置 */
+  const [voice, setVoice] = useState('');
+  const ready = (i: InstanceDef | null) => !!i && !!String(i.values.instance?.baseUrl ?? '');
   const fps = project?.globalConfig.defaultFPS || 30;
   const hasContent = rows.some((r) => r.text.trim());
   const style = project?.narration?.style || defaultNarrationStyle();
@@ -149,7 +153,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
     if (!r?.text.trim() || !tts) return;
     setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'pending' } : x)));
     try {
-      const { dataUrl, durationSec } = await callTTS(tts, r.text);
+      const { dataUrl, durationSec } = await callTTS(tts, r.text, voice || undefined);
       setRows((rs) => resequenceRows(rs.map((x, i) => (
         i === idx
           ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const }
@@ -164,7 +168,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   /** 单行生成配音（已有音频即覆盖） */
   const genRow = async (idx: number) => {
     if (!rows[idx]?.text.trim()) { setError(t('请先填写字幕文本', 'Fill in this line first')); return; }
-    if (!tts?.baseUrl) { setError(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS provider configured')); return; }
+    if (!tts || !ready(tts)) { setError(t('未配置配音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
     setGenIdx(idx); setError(null);
     try { await synthesizeInto(idx); }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
@@ -179,15 +183,15 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
    * 每行成功即刻写回，中途取消或失败都不影响已完成的行 —— 下次点它天然只补剩下的。
    */
   const genAllMissing = async () => {
-    if (!tts?.baseUrl) { setError(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS provider configured')); return; }
+    if (!tts || !ready(tts)) { setError(t('未配置配音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
     const todo = rows.map((_, i) => i).filter((i) => rows[i].text.trim() && !rows[i].audioUrl);
     if (!todo.length) return;
     cancelBatch.current = false;
     setBatch({ done: 0, total: todo.length });
     setError(null);
     const res = await runBatch(todo.map((i) => () => synthesizeInto(i)), {
-      concurrency: tts.maxConcurrency ?? 1,
-      retries: tts.retryTimes ?? 0,
+      concurrency: Number(tts.values.instance?.batchConcurrency ?? 1) || 1,
+      retries: Number(tts.values.instance?.retryTimes ?? 2),
       isCancelled: () => cancelBatch.current,
       onProgress: (done, total) => setBatch({ done, total }),
     });
@@ -208,7 +212,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
 
   const genText = async () => {
     if (!topic.trim()) { setError(t('请先填写你的需求', 'Enter your requirements first')); return; }
-    if (!llm?.baseUrl) { setError(t('未配置文案生成服务（顶栏 ⚙ 设置）', 'No LLM provider configured')); return; }
+    if (!llm || !ready(llm)) { setError(t('未配置文案生成服务（顶栏 ⚙ 设置）', 'No LLM instance configured')); return; }
     setBusy(true); setError(null);
     try {
       const sys = '你是「地图讲解视频」的文案策划。按用户需求与参考资料，写出可直接播报的连续口播稿。';
@@ -345,9 +349,9 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           {!IS_DESKTOP && <p className="w-full text-[11px] text-muted-foreground">{t('网页版不含 AI：文案请用「粘贴文本 / 导入 SRT」或逐行手写。AI 生成与配音在桌面版可用。', 'Web build has no AI: paste text, import an SRT, or type lines. AI lives in the desktop app.')}</p>}
           {IS_DESKTOP && <button
             onClick={genText}
-            disabled={busy || !topic.trim() || !llm?.baseUrl}
+            disabled={busy || !topic.trim() || !ready(llm)}
             className="h-7 px-2.5 rounded-md bg-white text-black text-[11px] font-medium hover:bg-white/90 disabled:opacity-40"
-            title={llm?.baseUrl
+            title={ready(llm)
               ? t('按上面的需求与参考生成整篇文案（覆盖当前行）', 'Generate the script from the prompt (replaces lines)')
               : t('未配置文案生成服务（顶栏 ⚙ 设置）', 'No LLM provider configured')}
           >
@@ -371,7 +375,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           <button onClick={addRow} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10" title={t('在末尾加一行字幕', 'Append a line')}>＋ {t('加一行', 'Add')}</button>
           {IS_DESKTOP && <button
             onClick={genAllMissing}
-            disabled={busy || genIdx !== null || !tts?.baseUrl || !rows.some((r) => r.text.trim() && !r.audioUrl)}
+            disabled={busy || genIdx !== null || !ready(tts) || !rows.some((r) => r.text.trim() && !r.audioUrl)}
             className="h-7 px-2 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
             title={t('给所有还没有配音的行生成语音（已有配音的行不动）', 'Generate voice for every line without audio')}
           >
@@ -417,7 +421,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
         {IS_DESKTOP && (
           <div className="mb-2">
             <p className="text-[11px] text-muted-foreground mb-1.5">{t('配音音色', 'Voice')}</p>
-            <VoicePicker />
+            <VoicePicker inst={tts} voice={voice} onPick={setVoice} />
           </div>
         )}
 

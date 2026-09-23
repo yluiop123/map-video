@@ -1,422 +1,305 @@
-# 供应商配置设计：模板组 · 接口模板 · 实例 · 取回管线 · 调度
+# 供应商配置设计：接口模板 · 实例 · 音色 · 任务 · 取回管线
 
-> 一句话：**模板组 = 一个功能有哪几条接口、各自怎么发怎么取回（共享数据）；实例 = 选哪组模板 + 账号（base_url / Key）+ 同步还是异步 + 实例期参数；调用期正文与 `taskId` 不落库；一次动作发多条请求走内存队列。**
+> 一句话：**模板 = 一份完整接法（一行存下同步 / 异步 / 桥接 / 克隆的全部形状，纯数据）；实例 = 选哪份模板 + 一组取值（密钥也只是取值）；音色与异步任务是两份账本；调用正文与产物 URL 不落库。**
 
 ## 一、四层职责
 
 | 层 | 存哪 | 装什么 | 谁编辑 |
 |---|---|---|---|
-| **模板** | `provider_template_group` + `provider_template` | 一个功能需要哪几条接口（组）+ 每条接口怎么发、返回从哪取（行） | 接口模板页（专家） |
-| **实例** | `provider` | 用哪组模板、Base URL、密钥、同步还是异步、模板要求实例填的参数值、并发与重试 | ⚙ 实例设置页（日常） |
-| **调用** | **不落库** | 一次动作的正文（字幕文本、图片描述、参考音频字节）与在途 `taskId` | 代码调用点 |
-| **调度** | **内存队列** | 批量动作的并发上限、退避重试、取消、逐条进度 | 代码，不给界面 |
+| **模板** | `provider_template`（**一行 = 一份完整模板**） | 这一家这个功能怎么发、返回从哪取、产物怎么变成字节 | 接口模板页（专家） |
+| **实例** | `provider` | 引用哪份模板 + 同步还是异步 + 全部取值（地址 / 密钥 / 模型 / 尺寸…） | ⚙ 实例设置页（日常） |
+| **音色** | `voice` | 参考音频 → 厂商 voiceId 的账本（幂等、绑模型、可重建） | 字幕生成里的音色区 |
+| **任务** | `task` | 在途异步任务（跨重启续跑、逐条进度与产物） | 无界面写入，调度器读写 |
 
-**一个能力 = 一行实例 = 一份 base_url + 一个 Key。** 组里那几条接口（生成 / 查询 / 克隆）都是模板行，它们没有 Key 这一格可填，求值时从实例行取 —— 所以异步图片不会让你填两次凭证。
+没有「模板组」这一层：一份模板就是一行，同步异步桥接克隆都是它 JSON 列里的键，所以不存在跨行一致性要防，也不需要组表与唯一索引。
 
-## 二、模板：组表 + 接口表
+**一份模板可以配多条实例**（两套账号 = 两条实例），调用处显式选一条用 —— 没有 `active` 标记，也不存在「哪条生效」这种第二处真相。
+
+## 二、`provider_template`（一行一份）
 
 ```sql
-CREATE TABLE IF NOT EXISTS provider_template_group (
-  tpl_group TEXT PRIMARY KEY,                       -- 组 id：openai-chat / dashscope-image …
-  kind      TEXT NOT NULL,                          -- llm / tts / image
-  label     TEXT NOT NULL DEFAULT '',               -- 显示名「通义图片生成」
-  note      TEXT,                                   -- 说明（L 的 JSON）
-  ord       INTEGER NOT NULL DEFAULT 0,             -- 组列表排序
-  created_at INTEGER, updated_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS ix_tg_kind ON provider_template_group(kind, ord);
-
 CREATE TABLE IF NOT EXISTS provider_template (
-  tpl_id      TEXT PRIMARY KEY,                     -- 接口行 id
-  tpl_group   TEXT NOT NULL REFERENCES provider_template_group(tpl_group) ON DELETE CASCADE,
-  role        TEXT NOT NULL,                        -- generate / synthesize / query / clone
-  mode        TEXT NOT NULL DEFAULT 'sync',         -- 这条变体服务哪种方式：sync / async
-  ord         INTEGER NOT NULL DEFAULT 0,           -- 组内展示顺序
-  method      TEXT NOT NULL DEFAULT 'POST',
-  url         TEXT NOT NULL DEFAULT '',             -- 地址模板，占位符决定 {baseUrl} 出现在哪
-  headers_json TEXT,  query_json TEXT,  body_json TEXT,  resp_json TEXT,
-  inst_params_json TEXT,  req_params_json TEXT,
-  decode      TEXT,                                 -- 产物解码：NULL / hex / base64 / url
-  fetch_headers_json TEXT,                          -- 下载产物时附带的请求头（NULL = 裸 GET 签名链接）
-  poll_interval_ms INTEGER NOT NULL DEFAULT 1500,   -- 离散步长类参数，存原值
-  poll_timeout_ms  INTEGER NOT NULL DEFAULT 120000,
-  created_at INTEGER, updated_at INTEGER,
-  CHECK (headers_json IS NULL OR json_valid(headers_json))   /* 其余 JSON 列同理 */
+  tpl_id      TEXT PRIMARY KEY,          -- deepseek-chat / qwen-image / qwen-tts / custom-1 …
+  name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
+  category    TEXT NOT NULL,             -- llm / tts / image（不加 CHECK，取值由 TS 联合类型管）
+  note        TEXT,
+  use_clone   INTEGER NOT NULL DEFAULT 0 CHECK (use_clone IN (0,1)),  -- 有没有克隆接口
+  upload      INTEGER NOT NULL DEFAULT 0 CHECK (upload IN (0,1)),     -- 克隆前要不要先上传拿 fileId
+  headers_json TEXT,     instance_params_json TEXT,     -- 模板级请求头 / 实例级参数声明
+  sync_json    TEXT,     async_json    TEXT,            -- 同步 {submit} / 异步 {submit,query}
+  download_json TEXT,    upload_json   TEXT,   clone_json TEXT,   -- 三条桥接 / 核心请求
+  ref_sample_rate INTEGER,                              -- 克隆参考音频采样率 Hz（各家不同）
+  ord INTEGER NOT NULL DEFAULT 0,  created_at INTEGER,  updated_at INTEGER
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_tpl_role ON provider_template(tpl_group, role, mode);
-CREATE INDEX IF NOT EXISTS ix_tpl_group ON provider_template(tpl_group, ord);
+CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, name);
 ```
 
-- **组级信息（`kind` / `label` / `note`）只在组表一份**，接口表只剩「一个接口怎么发怎么取」。同组不一致这类 bug 结构上不可能出现，也不需要自检视图去盯。
-- `kind` / `role` / `mode` / `decode` **不写 DDL CHECK**：取值由 TS 联合类型 + 保存前 `validateTemplate()` 管，接一家新供应商不改表结构。
-- 内置模板由 seed 目录在首次建库时铺成两张表的行；之后就是普通可编辑数据。`恢复默认` = 用 seed 覆盖该组及其行；`另存为副本` = 复制组行 + 其下接口行为新 `tpl_group`。
-- 一个组里的 role 组合：
-  - `llm`：`generate`
-  - `image`：`generate·sync` ｜ `generate·async` + `query`（两种变体可并存，实例选）
-  - `tts`：`synthesize·sync` ｜ `synthesize·async` + `query`，外加独立的 `clone`（恒 `sync`，与同步/异步无关）
+所有 JSON 列都带 `CHECK (… IS NULL OR json_valid(…))`；`category` 不写 CHECK —— 接一家新供应商不改表、不加 switch。
 
-## 三、`provider`（一处一份）
+内置模板由 seed（`src/lib/template-seed.ts`）在首次建库时铺成行，之后就是普通可编辑数据；「恢复默认」= 用 seed 覆盖那一行。
 
-**一个能力一行，`kind` 就是主键**：文案 / 语音 / 图片各一处，填一次就够。没有"同一能力配两套账号来回切"，也没有"哪条生效" —— 那套 `provider_id` + `active` 的形状已作废（旧库靠启动让位压平，见第七节末）。
+## 三、请求形状：`ReqKey` 六格
+
+一份模板的 JSON 列展开成六个**接口槽**（界面上每格一张卡片，空的不渲染）：
+
+| ReqKey | 存哪列 | 干什么 | 出现条件 |
+|---|---|---|---|
+| `sync.submit` | `sync_json.submit` | 一把梭：发出去就拿到产物或结果字段 | 恒有（llm 必填） |
+| `async.submit` | `async_json.submit` | 只负责提交并交出中间变量（`taskId`） | 该家有异步接法 |
+| `async.query` | `async_json.query` | 怎么查、什么算成/败、产物在哪、怎么变字节 | 配了 `async.submit` 就**必须**配 |
+| `download` | `download_json` | 桥接：`fileId` → 最终下载地址 | 产物地址要再问一次才给（同步异步共用） |
+| `upload` | `upload_json` | 桥接：本地文件 → `fileId` | 分离式厂商（先传后建） |
+| `clone` | `clone_json` | 核心：参考音频 → `voiceId` | 该家支持建音色 |
+
+每个接口槽的结构（`RequestDef`）：
+
+```jsonc
+{ "path": "${baseUrl}/services/aigc/image-generation/generation",  // 查询串直接拼在串上
+  "method": "POST",
+  "headers": { "X-DashScope-Async": "enable" },        // 与模板级 headers 合并，这一层的赢
+  "requestParams": [ /* 这个请求专属的参数声明：model / size… */ ],
+  "callParams":    [ /* 每次调用由界面或程序给的参数：text / prompt / 文件… */ ],
+  "body": { "model": "${model}", "input": { "text": "${text}" } },
+  "form": { "file": "${file}" },                        // multipart（上传那步用）
+  "outputs": { "taskId": "output.task_id", "error": "message" },  // 从响应取字段，取出的**名字**进作用域
+  "outputFormat": "url",                                // binary｜hex｜base64｜url（缺省 = 响应体即产物）
+  "successValues": ["SUCCEEDED"], "failureValues": ["FAILED","CANCELED","UNKNOWN"],  // 只有 query 用
+  "timeoutMs": 60000 }
+```
+
+- **产出槽位不再是固定的十来个键**：`outputs` 是 `{ 想要的名字: 相对路径 }`，取出来就叫这个名字，下游 `${taskId}` `${fileId}` 直接用。所以接一家「图片在 `data.result.imgUrl`」的服务不需要改代码。
+- **两个枚举而不是三个**：`successValues` / `failureValues`，都没命中 = 中间态继续查。省掉 `pendingValues` 是因为它没法穷举（`PENDING`/`RUNNING`/`QUEUING`/…），漏一个就把在途任务判成失败。
+- 路径写法用**方括号下标**（`output.choices[0].message.content[0].image`），与上游文档、jq 逐字一致；纯点号 `output.results.0.url` 同样收，库存原样。只支持 `[数字]`，不做 `$..` / `[*]` / 过滤表达式 —— 模板里一旦能写表达式，「看模板就知道实际发了什么」这个前提就没了。
+
+## 四、`provider`（实例）：只有五个业务列
 
 ```sql
 CREATE TABLE IF NOT EXISTS provider (
-  kind        TEXT PRIMARY KEY,                  -- llm / tts / image（全表最多三行）
-  tpl_group   TEXT NOT NULL REFERENCES provider_template_group(tpl_group),
-  base_url    TEXT NOT NULL DEFAULT '',
-  api_key     TEXT NOT NULL DEFAULT '',          -- 主密钥（{apiKey}）
-  api_key2    TEXT,                              -- 第二凭证（{apiKey2}）：火山 TTS 的 Access Key
-  mode        TEXT NOT NULL DEFAULT 'sync',      -- 这个能力走同步还是异步
-  model       TEXT NOT NULL DEFAULT '',
-  voice       TEXT,
-  speed       REAL NOT NULL DEFAULT 1,
-  params_json TEXT,                              -- 只存模板 inst_params_json 声明的那些名字的取值
-  max_concurrency INTEGER NOT NULL DEFAULT 1,    -- 批量并发上限（1 = 串行）
-  retry_times     INTEGER NOT NULL DEFAULT 2,    -- 限流/网络错的退避重试次数
-  extra       TEXT                               -- 兜底：深合并进 body 的附加 JSON
+  provider_id TEXT PRIMARY KEY,
+  tpl_id      TEXT NOT NULL REFERENCES provider_template(tpl_id),  -- 真外键：模板被引用时删不掉
+  name        TEXT NOT NULL DEFAULT '',   -- 实例名（界面与任务列表用它认）
+  sync        INTEGER NOT NULL DEFAULT 1 CHECK (sync IN (0,1)),
+  values_json TEXT CHECK (values_json IS NULL OR json_valid(values_json)),
+  created_at INTEGER, updated_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_group);
+CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 ```
 
-- **行身份 = 能力**，所以界面标题就是「文案生成 / 语音克隆 / 图片生成」，不再有一个可以被改出两份的实例 `label`。
-- **两个密钥就是两个具名列**（`api_key` / `api_key2`），不用 JSON 槽位表：槽数固定，拆列之后界面一格对一列、读写两端少一次序列化，`json_valid` 检查也不必了。两列都是 `type=password` 输入框，**永不回显原文**，预览里只显 `Bearer sk-****（长度 35）`。
-- **只装凭证**：MiniMax 的 `group_id` 是 query 串上的账号标识（`POST {base}?group_id=…`），由模板声明成普通实例参数、存 `params_json`、界面正常显示 —— 借住在密钥列会让"这列都是敏感值"的语义失效，将来做导出脱敏时说不清。
-- **`mode` 在这一处**：选完就决定用组里哪条 `generate` 变体、要不要 `query`。该组没有 async 变体时界面上不给这个选项（**显式不可用，不做隐式降级**）。
-- `max_concurrency` / `retry_times` 是账号/上游限额属性，属这一处配置，不属模板。
-- `params_json` 的键 = 该组各接口 `inst_params_json` 里入参名的并集；同名跨接口共用一个值（`synthesize` 与 `clone` 天然共用 `model`，这就是「克隆产出的音色绑同款 target_model」的落法）。
-- **用哪一组模板是这一行的一个字段**（`tpl_group`，真外键），改它叫「用作本能力」，入口在接口模板页的组头上；已填的 Base URL / Key 跟着走，不必重填（换组 ≠ 换账号是常态：同一家换了端点形状）。
-- 取值优先级：**调用端显式传入 > 这一处的 `params_json` > 模板 `default`**。
-- **凭证按能力各配一份**：llm / tts / image 三处各自填 `base_url` + `api_key`，**不抽公共凭证表**（也不做"账号"父实体）。代价是同一家厂商（如通义一个 Key 打通三类）的 Key 要填三遍 —— 这个代价明确接受：换来的是三处互不牵连，改一处不会意外影响另两处。
-
-## 四、入参声明：`inst_params_json` 与 `req_params_json`
-
-两类参数**各存一个 JSON 列**，界面上也是两块独立的表（不再用一个 `stage` 判别字段区分）：
-
-- **实例参数**（`inst_params_json`）：建实例时在 ⚙ 配的值 —— `size` / `format` / `sampleRate` / `prefix`…
-- **请求参数**（`req_params_json`）：**额外**声明的调用期参数，只在需要类型或候选值时才写（见本节末）；正文类占位符不算在内。
-
-两份结构完全相同（下面的字段表），只是归属不同：实例页只渲染前者。
-**名字与说明都是用户自己填的单个字符串，不做中英两份**（自定义的东西没法自动翻译）。
+**实例不内置任何字段**：`baseUrl`、密钥、模型、音色、超时、并发、查询节奏全是模板声明出来的参数，取值统一存在 `values_json`：
 
 ```jsonc
-// inst_params_json —— 实例页渲染成控件
-[ { "name": "size", "type": "string",
-    "label": "出图尺寸", "default": "1024*1024",
-    "options": [ { "value": "1024*1024", "label": "方图" },
-                 { "value": "2048*1152", "label": "2048×1152" } ], "allowCustom": true } ]
-
-// req_params_json —— 只在需要类型 / 元素子模板时才写（正文类占位符不声明）
-[ { "name": "history", "type": "list", "omitIfEmpty": true,
-    "item": { "body": { "role": "{role}", "content": "{content}" } } } ]
+{ "instance": { "baseUrl": "https://api.deepseek.com", "apiKey": "sk-…", "timeoutMs": 60000,
+                 "queryIntervalMs": 5000, "queryMaxAttempts": 360 },     // 整实例共用
+  "requests": { "sync.submit": { "model": "deepseek-flash", "temperature": 0.7 } } }  // 按请求各存各的
 ```
+
+- **密钥 = `valueType:'secret'` 的普通参数**，不占具名列、不建密钥表：界面上渲染成密码框、永不回显原文，预览与日志里按声明打码（`Bearer sk-****（长度 35）`）。哪些名字算密钥只有一处答案 —— 模板本身。
+- `sync` 在这一处：决定这次走 `sync.submit` 还是 `async.submit` + `async.query`。该模板没有 async 时界面上这一格直接不出现（**显式不可用，不做隐式降级**）。
+- 同一份模板挂两条实例 = 两套账号；界面在 ⚙ 里以芯片列出，调用处选一条。
+
+## 五、三层参数与取值优先级
+
+| 层 | 声明在哪 | 取值存哪 | 界面 |
+|---|---|---|---|
+| **实例级** | `instance_params_json`（所有请求共用一份） | `values.instance[key]` | ⚙ 实例设置页 |
+| **请求级** | 该接口槽的 `requestParams` | `values.requests[<ReqKey>][key]` | ⚙ 实例设置页，按请求分区 |
+| **调用级** | 该接口槽的 `callParams` | **不落库**，每次调用由代码给 | 业务界面（字幕行文本、出图描述、上传的文件） |
+
+求值时一个 `${name}` 的取值顺序：**声明的默认值 → `values.instance` → `values.requests[<本槽>]` → 上游 `outputs` 产出的同名变量 → 调用参数**。
+
+- 三层**不是三张表**，就是上面那几个 JSON 字段里的键。
+- 谁都没给的占位符 = 直接**点名报错**（`这些占位符没有任何来源给值：${size}`），不发半个请求。
+- 声明了但这次没填值 → **删键**（父对象被删空则连父键一起删）。这是「可选参数」的正确形态：不少上游拒绝 `"thinking":{}` 但接受不含该键。
+- `${x}` 用在整串位置保留原类型（`${n}` 是数字就发数字）；嵌在字符串里就是插值。
+- 参数字段表（`ParamSpec`）：
 
 | 字段 | 含义 |
 |---|---|
-| `name` | 占位符名（body / url / headers 里写 `{name}`） |
-| `type` | `int`｜`string`｜`bool`｜`list`｜`json`（模板页是**下拉框**，不给自由输入） |
+| `key` | 占位符名（`${key}`） |
 | `label` | 显示名，**单个字符串**（纯显示，不进请求体） |
-| `default` | 模板给的默认值（实例没填就用它） |
-| `options` | 候选值：裸值或 `{value,label}`；有候选 → `OptionBlocks`，不写原生 `<select>` |
-| `allowCustom` | 才给「其它值」输入框；默认只能选 |
-| `when` | 等值门控（`"mode == async"`），不成立则该槽不参与求值、界面也不显示 |
-| `omitIfEmpty` | 没给值时**连父键一起删**（不少上游拒绝空数组 / 空 `parameters`，但"键不存在"合法） |
-| `item` | `list` 的元素子模板：`body` + `fields[]`，界面是行编辑器 |
+| `valueType` | `string`｜`text`｜`number`｜`boolean`｜`enum`｜`secret`｜`file`｜`list`｜`json`（模板页是下拉框） |
+| `defaultValue` | 模板给的默认值（实例没填就用它） |
+| `required` | 没值时报错而不是删键 |
+| `options` | 候选值：裸值或 `{value,label}`；有候选 → `OptionBlocks`，**不写原生 `<select>`** |
+| `min`/`max`/`step` | number 控件范围 |
+| `accept`/`maxSize` | file 控件：接受类型与体积上限 |
+| `itemType`/`item` | list 的行编辑器（`item` 可给元素子模板） |
+| `transform` | 数据驱动的取值加工：`base64DataUri`｜`json`｜`hotFixArray`（**不按厂商名写分支**） |
 
-- 控件由 `options` 决定、与 `type` 正交；`bool` 隐含开/关两个选项。
-- **不必声明的保留占位符**分两拨：配置里就有值的 `{baseUrl}` `{apiKey}` `{apiKey2}` `{model}` `{voice}` `{speed}` `{mode}` `{params}`，每次调用由程序给的 `{text}` `{prompt}` `{systemPrompt}` `{userPrompt}` `{wavB64}` `{reqId}`（`CALL_VARS`），以及 ② 之后引擎自注的 `{taskId}`。其中 `voice` 默认取实例列、调用端可逐行覆盖。
-- 候选值由模板写死，**不运行时从上游拉**（各家没有统一 list 接口，顺序/文案不可控）。
-- **调用期的正文不声明**：`{text}`（待合成文本）`{prompt}`（出图描述）`{systemPrompt}` / `{userPrompt}`（对话）`{wavB64}`（参考音频）`{reqId}`（火山每次调用的请求号）由调用点直接给值，和 `{model}` 一样是**保留占位符**（引擎里叫 `CALL_VARS`）。声明它们没有任何可配的东西，只会在模板页长出一排没人能填的灰字 —— 所以内置 seed 一条都不写。试调用的输入框由 `callVarsOf` **从占位符反推**（引用到的、既不是配置保留字也不是实例参数的名字），不依赖声明。
-- 那 `req_params_json` 还有用吗：有，但**只用于需要类型或候选值的额外调用参数** —— 典型是 `type='list'` 的多轮历史（要 `item` 子模板给行编辑器）。不声明也能发出去，声明了只是给界面多一点信息。
-- 界面规则：实例页只渲染该组各接口 `inst_params_json` 里 `when` 成立的参数（写回 `provider.params_json`）；模板页两张表都在，初始都是空的，「＋ 参数」自己加。
+- **内置 seed 只声明真正引用到的参数**，并且只到「该请求用得上」为止；`{text}` `{prompt}` 这类正文由调用点给值，要渲染成输入框就从占位符反推，不靠声明。
+- 候选值由模板写死，**不运行时从上游拉**（各家没有统一的 list 接口，顺序与文案不可控）。
 
-## 五、返回槽位 `resp_json`
+## 六、取回管线
 
-固定键，界面按 role+mode 只渲染该填的那几格：
-
-```jsonc
-{ "content":"", "image":"", "audio":"", "voiceId":"", "taskId":"",
-  "status":"", "success":[], "fail":[], "pending":[],
-  "errorCode":"code", "error":"message" }
-```
-
-| 槽位 | 含义 | 出现在哪条接口 |
+| 步 | 做什么 | 由哪格决定 |
 |---|---|---|
-| `content` | 文案正文路径 | `generate`（llm） |
-| `image` / `audio` | 产物路径；**留空 = 响应体本身即产物字节** | `generate` / `synthesize` / `query` |
-| `voiceId` | 新建音色的 id 路径 | `clone` |
-| `taskId` | 任务 id 路径 | `generate·async` |
-| `status` + `success[]` / `fail[]` / `pending[]` | 状态路径与三组枚举值 | `query` |
-| `errorCode` / `error` | 失败时要点名的上游错误码/错误信息路径 | 所有行 |
-
-- **路径写法用方括号下标**：`output.choices[0].message.content[0].image`、`audios[0].url` —— 与上游文档、jq、JSONPath 的写法逐字一致，抄过来就能用。求值前一行归一化：`path.replace(/\[(\d+)\]/g, '.$1').split('.')`，**存库存原样**（不做"存进去跟输入不一样"的把戏）。`output.choices.0.message.content` 这种纯点号写法同样收，但不是界面与文档的写法。
-- **只支持 `[数字]`**，不做完整 JSONPath（`$..`、`[*]`、`[?(@.x=='y')]`）：那要引依赖或写解析器，而且模板里一旦能写表达式，「看模板就知道实际发了什么」这个前提就没了。上游是 batch 接口（一个请求回多条）时，按下标取就够了。
-- 三枚举用标签编辑器（可增删多个值），因为上游状态名不止一个（`FAILED` / `CANCELED` / `UNKNOWN`）。
-- `decode` 描述"拿到的东西怎么变成字节"：`NULL`（响应体即字节 / 槽位里就是 data URI）｜`hex`（MiniMax 音频）｜`base64`｜`url`（槽位取到的是远端链接 → 走第⑤步下载）。
-
-## 六、产物取回管线与异步的组装规则
-
-### 五步管线（引擎固定动作，模板只给每步的参数）
-
-| 步 | 做什么 | 由哪些列决定 |
-|---|---|---|
-| ① **提交** | 按 `generate` / `synthesize` 行发请求 | `url` / `method` / `headers_json` / `body_json` / 两份参数声明 |
-| ② **取任务 id** | 从 ① 的响应读 `taskId`（仅异步） | `generate·async` 行的 `resp.taskId` |
-| ③ **轮询状态** | 用 `query` 行反复查，直到命中三枚举之一 | `query` 行的 `url`（含 `{taskId}`）+ `resp.status` + 三枚举 + `poll_interval_ms` / `poll_timeout_ms` |
-| ④ **取产物** | 按产物槽取值；槽为空则整个响应体即产物 | `query`（异步）或 `generate`（同步）行的 `resp.image` / `resp.audio` |
-| ⑤ **下载并落库** | `decode='url'` 时当场 GET 成字节，**立刻落 `asset`** | 同一行的 `fetch_headers_json`（默认裸 GET；私有 CDN 要带 `Authorization` 才填） |
-
-**列的归属**：`poll_interval_ms` / `poll_timeout_ms` / `decode` / `fetch_headers_json` 四列**只有 `role=query` 的行读**（异步时产物出自 query 行）；同步出图/出音没有 query 行，才落在 `generate·sync` / `synthesize·sync` 行上。在 generate 行上调轮询间隔不生效 —— 界面按 mode 只渲染真正被读的那一行。
-
-### 查询接口怎么和生成接口组装在一块
-
-**靠"同组 + role"，不靠指针**：组装键是 `(tpl_group, role='query')`，唯一索引 `ux_tpl_role` 保证一个组最多一条 query，所以「该找谁查」没有歧义、也没有可填错的字段。
+| ① 求值 | 三层取值 + 上游变量拼出真实请求；有占位符没来源 → 当场点名 | `path` / `headers` / `body` / `form` + 三层声明 |
+| ② 发送 | 桌面走主进程 `net:request`（无 CORS、Key 不出本机），网页走 `fetch` | 该槽的 `timeoutMs` |
+| ③ 取字段 | 按 `outputs` 从响应里取名字，取到的进作用域 | `outputs` |
+| ④ 判状态 | `classify(status, successValues, failureValues)`；中间态就再来一轮 | `async.query` 两个枚举 |
+| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从槽位解；`url` **当场下载**（可能先走 `download` 桥接拿地址） | `outputFormat` + `download` |
 
 ```
-实例 mode=async  →  组内取两行：generate·async（提交） + query（查询）
-① 用 generate 行发请求
-② 按 generate 行的 resp.taskId 读出 id  →  注入求值上下文 {taskId}
-③ 用 query 行：url "{baseUrl}/api/v1/tasks/{taskId}" 求值后发请求
-     状态 = readPath(json, query.resp.status)
-       ∈ query.resp.pending → 等 query.poll_interval_ms 再来一次
-       ∈ query.resp.success → 进 ④
-       ∈ query.resp.fail    → 报错，点名状态原文 + errorCode / error
-       超过 query.poll_timeout_ms → 超时
-④ 产物路径取 query 行的 resp.image / resp.audio（不是 generate 行的）
-⑤ 下载用 query 行的 decode + fetch_headers_json
+同步：sync.submit →（配了 download 再问一次）→ 字节
+异步：async.submit 交出 taskId → 调度器/内存轮询按节奏打 async.query → SUCCEEDED → 字节
+克隆：(upload 拿 fileId) → clone 交出 voiceId
 ```
 
-即异步这一组的分工是：**`generate·async` 只负责「提交 + 交出 taskId」，`query` 负责「怎么查、什么算成功、产物在哪、怎么下载」**。
+两条硬规矩：
 
-不用 `poll.statusRole = "image.query"` 那种显式指针：v1 是指针，实测造出过「指向自己」的脏行（切异步时自动补一条 query，状态下拉里只有它自己，调用才报错）。代价是一个组只能有一条 query —— 目前没有「同组两条异步 generate 各配不同查询接口」的上游，真出现再加回指针列。
+- **⑤ 是当场下载并立刻落 `asset`**：异步查询给的链接带时效，跨会话必失效。项目数据里**绝不存远端产物 URL**，只存 `assetId`。
+- **产物取不到时必须点名这一步实际取到了什么**（错误消息里列出 `outputs` 取到的键与值前缀）—— 这类毛病九成是路径写错，不列出来只能瞎猜。
 
-### 两条硬规矩
+异步的配对靠**同一行模板内的两个键**（`async.submit` ↔ `async.query`），不是指针列，所以没有「查询接口指向自己」这种脏行的可能。
 
-- **⑤ 是当场下载**：异步查询返回的链接带时效，跨会话必失效。项目数据里**绝不存远端产物 URL**，只存 `asset` id —— 否则第二天导出是一片空图。
-- 下载不单独建 `download` 接口行：它没有业务语义、没有出参槽位，做成行会让人以为要配两条查询接口；唯一需要配的"能不能带鉴权头"由 `fetch_headers_json` 一列承担。`clone` 只走 ①④（返回 json，不产字节）。
+## 七、`voice`（克隆音色账本）与 `task`（在途任务）
 
-## 七、配对与保存前校验
+```sql
+CREATE TABLE IF NOT EXISTS voice (
+  voice_row_id TEXT PRIMARY KEY,
+  provider_id  TEXT NOT NULL REFERENCES provider(provider_id) ON DELETE CASCADE,  -- 音色池按实例隔离
+  source_hash  TEXT NOT NULL,          -- 参考音频内容哈希
+  target_model TEXT NOT NULL,          -- voiceId 绑模型，换模型即另一条音色
+  source_asset_id TEXT NOT NULL REFERENCES asset(asset_id) ON DELETE RESTRICT,  -- 失效靠原件重建；删素材会被拦
+  label TEXT NOT NULL DEFAULT '',  file_id TEXT,  file_id_expires_at INTEGER,
+  voice_id TEXT,  voice_id_expires_at INTEGER,
+  status TEXT NOT NULL DEFAULT 'cloning',   -- cloning / ready / failed / expired
+  error TEXT,  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER, updated_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_hash, target_model);
+```
 
-**组内 role 齐备性**：
+- **「只克隆一次」由这条唯一键保证**：同一实例 + 同一份音频 + 同一目标模型只有一行，`status` 就是抢占标志（并发点两次不会在建音色上打两次）。
+- 早先这份账本在 `localStorage`，换浏览器就丢、也没地方记 fileId 与失效时间。
 
-| kind | 必填 | 条件必填 | 可选 |
-|---|---|---|---|
-| `llm` | `generate·sync`（`content` 非空） | — | — |
-| `image` | `generate`（sync / async 至少一条） | 实例 `mode=async` → `generate·async`（`taskId`）+ `query`（产物 + `status` + `success`） | `generate` 的另一条变体 |
-| `tts` | `synthesize`（sync / async 至少一条） | 实例 `mode=async` → `synthesize·async`（`taskId`）+ `query`（产物 + `status` + `success`） | `clone`（缺则「克隆音色」区显示「该供应商不支持克隆」，不摆死按钮） |
+`task` 的唯一价值是**跨重启续跑**（关窗口、刷新页面都不丢在途任务）：`batch_id`（一次「全部生成配音」= 一个批次 + N 条）、`status`（`submitting`/`querying`/`success`/`failed`/`canceled`）、`input_json`（提交参数快照，重试 = 取原值重发）、`provider_task_id`、`artifact_id`（产物落 `asset` 后回填）、`query_count`/`rebuild_count`/`next_query_at`（调度器按它错峰，不做每任务独立循环）。`project_id` 与 `entry_id` 都是真外键 `ON DELETE CASCADE` —— 删项目或删字幕条连带删它的在途任务，不需要自检视图。
 
-**其余规则**：
+**llm 不进 `task`**：文案生成是同步一把梭，没有跨重启续跑的语义。
 
-1. 实例 `mode=sync` → 该 `generate` 行**不允许**出现 `taskId` / `status` / 三枚举；组里若有 `query` 行也不参与求值（界面提示「本实例走同步，查询接口未使用」）。
-2. `decode='url'` 的行必须有产物槽位（`image` / `audio`），否则第⑤步没有可下载的东西。
-3. `url` / `headers` / `body` 引用的占位符必须**在两份声明表之一里**，或属保留占位符（`{baseUrl}` `{apiKey}` `{model}` `{voice}` `{speed}` `{taskId}` 由实例或引擎给，不必声明）。
-4. `list` 变量必须给 `item`；`bool` 变量不必给 `options`（给了即报错）。
-5. 缺必填 role → 实例行标红不可用；缺项**当场点名**，不留到运行时。
-6. 引用完整性由**真外键**保证：`provider.tpl_group` → 组表（删组会拦住或级联，按外键策略定），`provider_template.tpl_group` → 组表 `ON DELETE CASCADE`（删组连带删接口行）。只有 `poll` 关系（generate ↔ query）是隐式的，不需要自检视图。
-7. 模板行被实例引用时允许改（模板是共享数据），但界面顶部显式提示「N 个实例正在使用这组模板」，并给「另存为副本」。
-
-## 八、调度层（`src/lib/provider-queue.ts`，内存，不是表）
-
-一次用户动作会发多条请求：逐行配音（30 行字幕 = 30 次 `synthesize`，异步的每次还要轮询十几秒）、批量出图、整片重配音。
-
-| 项 | 规则 |
-|---|---|
-| 并发 | 按实例 `max_concurrency` 取任务，默认 1（串行）；同一实例的单行配音 / 试听与批量走**同一个队列**，否则两条路会同时打上游 |
-| 重试 | 只重试 **429 / 5xx**（`EngineError` 带上游状态码），500ms 起指数退避；**业务错（模型名不存在、参数非法）与不带状态码的错（CORS、缺变量）不重试**，直接点名。`Retry-After` 要主进程回传该响应头，暂未做 |
-| 取消 | 每次取下一条前检查取消标志 —— **在途的那条会跑完**，未开始的行不再发起，已完成条目保留。（真中断要把 abort signal 一路透传到主进程 fetch，IPC 通道得带会话 id，暂未做） |
-| 进度 | 逐条回调 → 字幕生成显示 `7/30 · 已用 2:10 · ✕ 取消` |
-| 落库 | **产物一拿到就逐条落 `asset`**，不等整批：30 行跑到第 20 行失败，前 19 行不能白跑；失败行下次被「只补没配音的」自然重跑 |
-
-不建任务表：`taskId` 只在一次调用内有意义（上游任务几十分钟过期），而「哪几行还没配音」项目数据本身就是清单（`narration_entry` 有没有音频），再存一份就是第二处真相。
-
-## 九、界面：两页分工
+## 八、界面：两页 + 一处选实例
 
 | 页面 | 装什么 |
 |---|---|
-| **⚙ 能力配置**（`ProviderPanel`，三个能力各一屏） | **一处一份**：当前模板组（只读芯片，换组去左侧）→ Base URL / API Key / 第二凭证 → **同步 / 异步** → 该组声明的**实例参数** → 并发数 / 重试次数。**没有 ＋添加 / ✕删除 / 模板组下拉** |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧第 4 个独立入口） | 模板组列表（当前那组标「● 使用中」，组头一个「用作本能力」按钮）→ **每个 role 一张接口卡片**：url / method / headers / body / **实例参数**表 / **请求参数**表（名字 · 类型下拉 · 默认 · 说明 · 候选值）/ **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用；底部一排「＋」补接口 |
+| **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数**。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组）；中：六个接口槽的卡片（path/method/headers/body/form/三层参数表/outputs 行编辑器/两个枚举/`outputFormat`）；右：实例级参数表。每格都有**预览请求（零网络，密钥打码）**与**试调用（真发一次，回 steps + 取到的字段 + 字节数）** |
+| **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
-### 查询接口与音色克隆在哪配
+- 「试调用」是这套设计的验收口：改完模板先看实际会长成什么样，再决定要不要花一次真调用。
+- 缺配项**当场点名**（`validateTemplate`）：有 `async.submit` 没 `async.query`、查询没 `successValues`、勾了克隆没配 `clone`、实例参数同名重复、占位符没人给值 —— 不留到运行时。
+- 新界面用 shadcn 原子（`src/components/ui/`），旧面板沿用 `ui/primitives.tsx`；两边都不写原生 `<select>`。
+- **AI 功能只有桌面端有**：网页端不配 Key、不显示字幕生成里的 AI 区（浏览器直连必然 CORS，且 Key 没地方安全存）。
 
-**一个组里每个 role 一张卡片**，seed 铺组时就把该有的行铺上；手工接一家时靠底部那排「＋」补：
+## 九、内容示例（照抄可用）
 
-| kind | 卡片（role·mode） | 出现条件 | 新增入口 |
+> 权威副本是 `src/lib/template-seed.ts`，这里是同样三份的形状说明。
+> `${baseUrl}` `${apiKey}` `timeoutMs` 是每份模板都声明的三条实例级参数（密钥就是 `valueType:'secret'` 的普通参数）。
+
+### 9.1 文案 · `deepseek-chat`
+
+```jsonc
+{ "id":"deepseek-chat", "name":"DeepSeek 对话", "category":"llm",
+  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer ${apiKey}" },
+  "instanceParams":[ { "key":"baseUrl","label":"服务地址","valueType":"string","defaultValue":"https://api.deepseek.com" },
+                     { "key":"apiKey","label":"API Key","valueType":"secret" },
+                     { "key":"timeoutMs","label":"单次超时 ms","valueType":"number","defaultValue":60000 } ],
+  "sync":{ "submit":{
+    "path":"${baseUrl}/chat/completions", "method":"POST",
+    "requestParams":[ { "key":"model","valueType":"enum","options":["deepseek-flash","deepseek-v4-pro"],"defaultValue":"deepseek-flash" },
+                      { "key":"reasoningEffort","valueType":"enum","options":["high","medium","low"] },
+                      { "key":"thinking","valueType":"enum","options":["enabled","disabled"] },
+                      { "key":"temperature","valueType":"number","min":0,"max":2,"step":0.1 } ],
+    "callParams":[ { "key":"systemPrompt","valueType":"text","required":true },
+                   { "key":"userPrompt","valueType":"text","required":true } ],
+    "body":{ "model":"${model}",
+             "messages":[ { "role":"system","content":"${systemPrompt}" }, { "role":"user","content":"${userPrompt}" } ],
+             "stream":false, "reasoning_effort":"${reasoningEffort}",
+             "thinking":{ "type":"${thinking}" }, "temperature":"${temperature}" },
+    "outputs":{ "content":"choices[0].message.content", "errorCode":"error.code", "error":"error.message" } } } }
+```
+
+`thinking` 不填 → `{"type":"${thinking}"}` 取不到值 → 整个 `thinking` 键被删，上游收不到半成品。
+
+### 9.2 图片 · `qwen-image`（同步 + 异步 + 查询，一行装下）
+
+```jsonc
+{ "id":"qwen-image", "category":"image",
+  "instanceParams":[ /* baseUrl(默认 https://maas.qianwenaiapi.com/api/v1)、apiKey、timeoutMs */
+                     { "key":"queryIntervalMs","valueType":"number","defaultValue":5000 },
+                     { "key":"queryMaxAttempts","valueType":"number","defaultValue":360 } ],
+  "sync":{ "submit":{ "path":"${baseUrl}/services/aigc/multimodal-generation/generation",
+    "requestParams":[ { "key":"model","valueType":"enum","options":["qwen-image-3.0-pro"] },
+                      { "key":"size","defaultValue":"2048*2048" }, { "key":"watermark","valueType":"boolean" } ],
+    "callParams":[ { "key":"prompt","valueType":"text","required":true } ],
+    "body":{ "model":"${model}", "input":{ "messages":[ { "role":"user","content":[ { "text":"${prompt}" } ] } ] },
+             "parameters":{ "size":"${size}", "watermark":"${watermark}" } },
+    "outputs":{ "url":"output.choices[0].message.content[0].image", "errorCode":"code", "error":"message" },
+    "outputFormat":"url" } },
+  "async":{
+    "submit":{ "path":"${baseUrl}/services/aigc/image-generation/generation",
+      "headers":{ "X-DashScope-Async":"enable" },
+      "requestParams":[ /* model、size、n */ ],
+      "callParams":[ { "key":"prompt","valueType":"text","required":true } ],
+      "body":{ "model":"${model}", "input":{ "messages":[ { "role":"user","content":[ { "text":"${prompt}" } ] } ] },
+               "parameters":{ "size":"${size}", "n":"${n}" } },
+      "outputs":{ "taskId":"output.task_id", "errorCode":"code", "error":"message" } },
+    "query":{ "path":"${baseUrl}/tasks/${taskId}", "method":"GET",
+      "outputs":{ "status":"output.task_status", "url":"output.choices[0].message.content[0].image" },
+      "successValues":["SUCCEEDED"], "failureValues":["FAILED","CANCELED","UNKNOWN"],
+      "outputFormat":"url" } } }
+```
+
+**实测（2026-09-23）**：异步查询回的产物路径与同步**同一条**（`output.choices[0].message.content[0].image`），文档写的 `output.results[].url` 是这个模型不再用的旧形状；一次 1024×1024 出图排队 52 秒～9 分钟不等，所以查询节奏是实例级参数、默认给到 30 分钟预算。
+
+### 9.3 语音 · `qwen-tts`（合成 + 声音复刻）
+
+```jsonc
+{ "id":"qwen-tts", "category":"tts", "useClone":true, "refSampleRateHz":24000,
+  "sync":{ "submit":{ "path":"${baseUrl}/services/aigc/multimodal-generation/generation",
+    "requestParams":[ { "key":"model","valueType":"enum","options":["qwen3-tts-flash","qwen3-tts-vc-2026-01-22"] },
+                      { "key":"languageType","valueType":"enum","options":["Chinese","English","Auto"] } ],
+    "callParams":[ { "key":"text","valueType":"text","required":true }, { "key":"voice" } ],
+    "body":{ "model":"${model}", "input":{ "text":"${text}", "voice":"${voice}" },
+             "parameters":{ "language_type":"${languageType}" } },
+    "outputs":{ "url":"output.audio.url" },           // 带时效 → outputFormat=url 当场下载
+    "outputFormat":"url" } },
+  "clone":{ "path":"${baseUrl}/services/audio/tts/customization",
+    "requestParams":[ { "key":"model","valueType":"enum","options":["qwen3-tts-vc-2026-01-22"] },
+                      { "key":"preferredName","defaultValue":"mapvideo" } ],
+    "callParams":[ { "key":"audioDataUri","valueType":"file","transform":"base64DataUri","accept":".mp3,.wav,.m4a" } ],
+    "body":{ "model":"qwen-voice-enrollment",
+             "input":{ "action":"create","target_model":"${model}","preferred_name":"${preferredName}",
+                       "audio":{ "data":"${audioDataUri}" } } },
+    "outputs":{ "voiceId":"output.voice" } } }
+```
+
+- 合成与复刻**共用实例的同一份地址与 Key**（模板行的两份 JSON，密钥只填一次）。
+- 复刻产出的 `voiceId` **绑 `target_model`**：换合成模型即另一条音色（实测报 418），所以 `voice` 表的唯一键含 `target_model`，界面上克隆时会把模型一并切过去并在提示里说明。
+- 参考音频要求 ≥24kHz（`refSampleRateHz` 是模板数据，不是代码常量 —— CosyVoice 那条要 16k）。
+
+## 十、内置模板清单（seed）
+
+| `tpl_id` | category | 接口槽 | 真实上游实测 |
 |---|---|---|---|
-| `llm` | 文案生成 `generate·sync` | 恒有 | 唯一必需行，不给删 |
-| `image` | 图片生成·同步 `generate·sync` | 该家有同步接法 | 「＋ 生成接口·同步」 |
-| `image` | 图片生成·异步 `generate·async` | 该家有异步接法 | 「＋ 生成接口·异步」 |
-| `image` | **状态查询 `query`** | 组里有 async 生成行时才有意义 | 「＋ 查询接口」 |
-| `tts` | 语音合成 `synthesize·sync` / `·async` | 同图片两行 | 「＋ 合成接口·同步 / ·异步」 |
-| `tts` | **状态查询 `query`** | 同上 | 「＋ 查询接口」 |
-| `tts` | **音色克隆 `clone`** | 该家支持建音色 | 「＋ 音色克隆」 |
+| `deepseek-chat` | llm | `sync.submit` | ✅ 2026-09-23 |
+| `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条路径均通过 |
+| `qwen-tts` | tts | `sync.submit` + `clone` | 合成 ✅；复刻未跑（会在账号下建音色资源） |
 
-- 成对关系写在两处，谁都不必猜：`query` 卡片顶部一行「↑ 供 `generate·async` 轮询使用」；`generate·async` 卡片顶部一行「轮询用：`query` ✓」或「轮询用：**缺查询接口** → 点下方「＋ 查询接口」」。
-- 同一 role 只能有一张（唯一索引 `(tpl_group, role, mode)`），所以已有 `query` 时「＋ 查询接口」不出现 —— 不给配出两条查询接口的机会。
-- 「✕ 删接口」走二次确认，说清「模板组的默认形状不受影响，可再点＋加回来，但你在模板里改过的内容会丢」。
-- 缺必填 role 时实例页顶部红字点名（第七节），并给「＋ 去补」直接跳到模板页。
-- 两页不混在同一屏；⚙ 是唯一入口（`VoicePicker` 只留选音色 + 试听）。
-- 实例页每个控件都要对得上库里某一列（`api_key` 一格对 `api_key` 一列，参数一格对 `params_json` 的一个键）；空值写成「删键」而不是存 `null`。
-- 两张入参表**初始都是空的**：内置 seed 只写请求形状，不替你声明参数。`{text}` / `{prompt}` / `{systemPrompt}` / `{userPrompt}` / `{wavB64}` 由程序给值（保留占位符，声明了也没东西可配），实例要什么参数就点「＋ 参数」加一条、再去 body 里写 `{名字}` 引用它。
-- **试调用**是这套设计的验收口：每张接口卡片给「实际发出的请求」（密钥打码）+「响应摘要」（状态码、按槽位取到的值、音频给播放键、异步逐次显示轮询过程与状态原文、失败原样带上游 `code/message`）。
-- 模板里**不做循环 / 条件表达式**（只有 `when` 等值门控）。一旦能写表达式，配置就从填表变成写程序，出错时看模板也看不出实际发了什么，试调用就失去意义。
+按用户要求只留这三份。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
 
-## 十、内容示例
-
-> 权威副本是 `src/lib/template-seed.ts`（seed 就是这些行）；这里挑三组说明读法。
-> 名字与说明都是**单个字符串**；`reqParams` = 每次调用由程序给，`instParams` = 建实例时在 ⚙ 配。
-
-### 10.1 文案生成 · `openai-chat`（一组一行）
-
-`{systemPrompt}` / `{userPrompt}` 是保留占位符（`callLLM` 每次调用直接给），所以这一行**两张声明表都是空的**；
-要 `temperature` 就自己点「＋ 参数」加一条实例参数，再把 `"temperature":"{temperature}"` 写进 body。
-
-```jsonc
-// provider_template_group
-{ "tpl_group":"openai-chat", "kind":"llm", "label":"OpenAI 兼容对话",
-  "note":"DeepSeek / 通义 / Kimi 等一切 /chat/completions 兼容服务",
-  "base_url":"https://api.deepseek.com", "models":["deepseek-chat","deepseek-v4-pro"],
-  "default_model":"deepseek-chat" }
-
-// provider_template
-{ "tpl_group":"openai-chat", "role":"generate", "mode":"sync", "method":"POST",
-  "url":"{baseUrl}/chat/completions",
-  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}" },
-  "body":{ "model":"{model}",
-           "messages":[ { "role":"system", "content":"{systemPrompt}" },
-                        { "role":"user",   "content":"{userPrompt}" } ] },
-  "inst_params_json":"[]",  "req_params_json":"[]",   // 两张声明表初始都是空的
-  "resp":{ "content":"choices[0].message.content", "errorCode":"error.code", "error":"error.message" } }
-
-// provider（实例）
-{ "kind":"llm", "label":"DeepSeek", "tpl_group":"openai-chat",
-  "base_url":"https://api.deepseek.com", "api_key":"sk-…", "mode":"sync",
-  "model":"deepseek-chat", "params":{},
-  "max_concurrency":1, "retry_times":2 }
-```
-
-### 10.2 语音 · `dashscope-cosyvoice`（合成 + 克隆，没有查询接口）
-
-```jsonc
-// ① synthesize·sync —— 实测：回的是 JSON，音频在 output.audio.url（带时效）→ 当场下载
-{ "tpl_group":"dashscope-cosyvoice", "role":"synthesize", "mode":"sync", "method":"POST",
-  "url":"{baseUrl}/services/audio/tts/SpeechSynthesizer",
-  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}" },
-  "body":{ "model":"{model}",
-           "input":{ "text":"{text}", "voice":"{voice}", "format":"{format}", "sample_rate":"{sampleRate}" } },
-  "inst_params":[ { "name":"format","type":"string","default":"mp3","label":"音频格式","options":["mp3","wav","pcm"] },
-                  { "name":"sampleRate","type":"int","default":24000,"label":"采样率","options":[16000,24000,48000] } ],
-  "resp":{ "audio":"output.audio.url", "errorCode":"code", "error":"message" },
-  "decode":"url" }
-
-// ② clone·sync —— 建音色各家都是同步，恒 mode=sync；与 synthesize 共用实例的 model
-{ "tpl_group":"dashscope-cosyvoice", "role":"clone", "mode":"sync", "method":"POST",
-  "url":"{baseUrl}/services/audio/tts/customization",
-  "body":{ "model":"voice-enrollment",
-           "input":{ "action":"create_voice", "target_model":"{model}", "prefix":"{prefix}",
-                     "url":"data:audio/wav;base64,{wavB64}" } },
-  "inst_params":[ { "name":"prefix", "type":"string", "default":"mv", "label":"音色名前缀" } ],
-  "resp":{ "voiceId":"output.voice_id", "errorCode":"code", "error":"message" },
-  "ref_sample_rate":16000 }
-
-// provider（实例）—— 合成与克隆共用这一份 base_url + Key + model
-{ "kind":"tts", "label":"通义配音", "tpl_group":"dashscope-cosyvoice",
-  "base_url":"https://dashscope.aliyuncs.com/api/v1", "api_key":"sk-…", "mode":"sync",
-  "model":"cosyvoice-v3-flash", "voice":"longanyang", "speed":1,
-  "params":{ "format":"mp3", "sampleRate":24000, "prefix":"mv" } }
-```
-
-响应体本身就是音频的（OpenAI /audio/speech、火山），把 `audio` 槽**留空串**即可 —— 引擎按 `Content-Type` 判定，`resp.audio === ''` 就是"整个响应体是产物"。
-
-### 10.3 图片 · `dashscope-image`（同步与异步两种变体并存，实例选一种）
-
-```jsonc
-{ "tpl_group":"dashscope-image", "kind":"image", "label":"通义图片生成",
-  "base_url":"https://dashscope.aliyuncs.com/api/v1",
-  "models":["z-image-turbo","qwen-image","wan2.6-t2i"], "default_model":"z-image-turbo" }
-
-// ① generate·sync —— 实测形状（照本机 gen_images.py 在用那份）
-{ "role":"generate", "mode":"sync", "method":"POST",
-  "url":"{baseUrl}/services/aigc/multimodal-generation/generation",
-  "body":{ "model":"{model}", "input":{ "messages":[ { "role":"user", "content":[ { "text":"{prompt}" } ] } ] },
-           "parameters":{ "size":"{size}", "prompt_extend":"{promptExtend}", "watermark":"{watermark}" } },
-  "inst_params":[ { "name":"size","type":"string","default":"2048*1152","allowCustom":true,"label":"出图尺寸",
-                    "options":["1024*1024","2048*1152","2688*1536"] },
-                  { "name":"promptExtend","type":"bool","default":false,"label":"提示词改写" },
-                  { "name":"watermark","type":"bool","default":false,"label":"水印" } ],
-  "resp":{ "image":"output.choices[0].message.content[0].image", "errorCode":"code", "error":"message" },
-  "decode":"url" }
-
-// ② generate·async —— 多一个异步头，只登记 taskId；参数与 ① 同（多个 count 张数）
-{ "role":"generate", "mode":"async", "method":"POST",
-  "url":"{baseUrl}/services/aigc/image-generation/generation",
-  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer {apiKey}", "X-DashScope-Async":"enable" },
-  "body":{ "model":"{model}", "input":{ "messages":[ { "role":"user", "content":[ { "text":"{prompt}" } ] } ] },
-           "parameters":{ "size":"{size}", "n":"{count}", "watermark":"{watermark}" } },
-  "resp":{ "taskId":"output.task_id", "errorCode":"code", "error":"message" } }
-
-// ③ query·sync —— 轮询节奏 / 产物 / 下载都在这条行上
-{ "role":"query", "mode":"sync", "method":"GET",
-  "url":"{baseUrl}/tasks/{taskId}",              // baseUrl 已含 /api/v1，不能再写一遍（实测 404）
-  "headers":{ "Authorization":"Bearer {apiKey}" },
-  "resp":{ "image":"output.choices[0].message.content[0].image", "status":"output.task_status",
-           "success":["SUCCEEDED"], "pending":["PENDING","RUNNING"],
-           "fail":["FAILED","CANCELED","UNKNOWN"], "errorCode":"code", "error":"message" },
-  "decode":"url", "poll_interval_ms":1500, "poll_timeout_ms":180000 }
-
-// provider（实例，选异步）—— 三条接口共用这一份 base_url + Key
-{ "kind":"image", "label":"通义出图", "tpl_group":"dashscope-image",
-  "base_url":"https://dashscope.aliyuncs.com/api/v1", "api_key":"sk-…",
-  "mode":"async", "model":"wan2.6-t2i",
-  "params":{ "size":"1024*1024", "count":1, "watermark":false },
-  "max_concurrency":2, "retry_times":3 }
-```
-
-**一次异步调用的完整走查**（实例 `mode=async`，prompt=「一只戴宇航员头盔的橘猫」）：
-
-```
-① 提交   取 generate·async 行
-         POST https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/generation
-         headers Authorization: Bearer sk-****（长度 35） / X-DashScope-Async: enable
-         body   {"model":"wan2.6-t2i","input":{"messages":[{"role":"user","content":[{"text":"一只戴宇航员头盔的橘猫"}]}]},
-                 "parameters":{"size":"1024*1024","n":1,"watermark":false}}
-② 取 id  resp.taskId = "output.task_id" → 8c1b…      （注入 {taskId}）
-③ 轮询   取 query 行  GET …/api/v1/tasks/8c1b…  → "RUNNING"(pending) …1.5s… → "SUCCEEDED"(success)
-④ 取产物 query 行 resp.image → https://…-signed-expires-in-24h.png
-⑤ 下载   query 行 decode='url' + fetch_headers 为空 → 裸 GET → 落 asset（kind='image'）
-         项目里只存 assetId，不存这条 URL
-```
-
-## 十一、内置模板组清单（seed）
-
-| `tpl_group` | kind | 组内接口 |
-|---|---|---|
-| `openai-chat` | llm | `generate·sync` |
-| `dashscope-cosyvoice` | tts | `synthesize·sync` + `clone` |
-| `dashscope-qwen-tts` | tts | `synthesize·sync`（产物是链接）+ `clone`（`qwen-voice-enrollment` / `action:'create'` / `output.voice`） |
-| `openai-speech` | tts | `synthesize·sync`（响应体即音频；无 `clone` → 界面显式提示不支持克隆） |
-| `minimax-t2a` | tts | `synthesize·sync`（`data.audio` 是 **hex**；`group_id` 是普通入参，进 query 串） |
-| `volc-tts` | tts | `synthesize·sync`（headers 三个 `X-Api-*`；`api_key2` 填 Access Key） |
-| `dashscope-image` | image | `generate·sync` + `generate·async` + `query` |
-| `openai-image` | image | `generate·sync` + `generate·async` + `query` |
-| `custom-*` | 三类各一 | 单条空白 `generate`，供手工接一家没预置的服务 |
-
-> **实测状态（2026-09-22，`tools/try-real-calls.mjs`，走的就是引擎这份代码）**：
-> 语音合成 CosyVoice（`cosyvoice-v3-flash` + `longanyang`）、语音合成 Qwen-TTS（产物是带时效链接 → 当场下载）、
-> 图片同步（`z-image-turbo`）、图片异步（`wan2.6-t2i`：提交 → 轮询 → 取产物 → 下载）四条真实调用全通过。
-> 实测改掉的三处形状：CosyVoice 回的是 JSON（音频在 `output.audio.url`，不是响应体字节）、
-> 异步出图走 `image-generation/generation` 且只认万相模型、查询地址是 `{baseUrl}/tasks/{id}`（baseUrl 已含 `/api/v1`）。
-> **仍未实测**：声音克隆（会在账号下建音色资源）、MiniMax hex、火山、OpenAI 两家。
-
-## 十二、实现落点
+## 十一、实现落点
 
 | 文件 | 职责 |
 |---|---|
-| `docs/db-schema-v2.sql` | 组表 + 接口表 + 实例表 DDL（含真外键）与索引 |
-| `src/lib/request-engine.ts` | 纯函数：模板求值（`{var}` 保类型 / `{@var}` 展开 / `when` 门控 / `omitIfEmpty` 级联剪枝）、出参按槽位取值、解码、五步管线编排、`validateTemplate`、密钥打码 |
-| `src/lib/template-seed.ts` | 内置模板组 seed（铺两张表 + 「恢复默认」的覆盖源） |
-| `src/lib/provider-queue.ts` | 队列：并发 / 退避重试 / 取消 / 进度回调 |
-| `src/lib/providers.ts` | `callLLM` / `callTTS` / `callImage` / `cloneVoice` 薄壳：实例 → 解析组模板 → 走引擎 → 产物落 `asset` |
-| `src/stores/providerStore.ts` | 三份实体（模板组 / 接口行 / 实例）的读写与持久化；`activeProvider()` 返回带解析后的组模板 |
-| `electron/db-v2.mjs` / `main.mjs` | 表映射与 IPC（`templateGroups:*`、`templates:*`、`providers:*`）；通用 `net:request`（带 abort signal） |
-| `src/components/ProviderPanel.tsx` | ⚙ 实例设置页 |
-| `src/components/EndpointTemplatesPage.tsx` | 接口模板整屏页（query 作为异步卡片的子块） |
-| `src/components/GenerateDialog.tsx` | 逐行 / 全部配音走队列（进度 + 取消），产物即时落 asset |
+| `docs/db-schema-v2.sql` | 四张表 DDL（模板 / 实例 / 音色 / 任务）与索引，含真外键 |
+| `src/lib/request-engine.ts` | 纯函数：三层取值、`${x}` 求值与删键级联、`outputs` 取名、`classify`、字节还原、`validateTemplate`、按声明打码 |
+| `src/lib/template-seed.ts` | 内置模板 seed（铺表 + 「恢复默认」的覆盖源） |
+| `src/lib/provider-queue.ts` | 内存队列：并发 / 只重试 429·5xx / 取消 / 逐条进度 |
+| `src/lib/providers.ts` | `callLLM` / `callTTS` / `callImage` / `cloneVoice` 薄壳：实例 → 模板 → 引擎 → 产物落 `asset` |
+| `src/stores/providerStore.ts` | 模板与实例两份实体的读写与持久化；`currentInstance(category)` 取调用处选中的实例 |
+| `electron/db-v2.mjs` / `main.mjs` | 表映射与 IPC（`templates:*` / `providers:*`）、通用 `net:request`（含 multipart 与超时） |
+| `src/components/ProviderPanel.tsx` `TemplatesPane.tsx` | 实例设置页 / 接口模板页 |
+| `src/components/VoicePicker.tsx` `GenerateDialog.tsx` | 音色区（含克隆）/ 逐行配音与批量队列 |
+| `tools/verify-request-engine.mjs` | 引擎离线回归（真机抓到的响应原样留桩） |
+| `tools/verify-provider-templates.mjs` | 四张表 + 旧形状让位的库侧回归 |
+| `tools/try-real-calls.mjs` | 真实上游验证（会花配额，只在明确要求时跑） |

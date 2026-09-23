@@ -1,301 +1,200 @@
 /**
- * template-seed.ts — 内置模板组 seed（首次建库时铺成 provider_template_group / provider_template 的行）
+ * template-seed.ts — 内置接口模板 seed（首次建库铺成 provider_template 的行）
  *
- * 这里是**数据**，不是运行时分支：铺进库之后，接口模板就是普通可编辑行；
- * 「恢复默认」= 用本文件的对应组覆盖回去。加一家新供应商 = 在这里加一条，不改 DDL、不加 switch。
+ * 按用户要求只留这三份（= 四个接口形状）：
+ *   deepseek-chat   文案生成                —— https://api-docs.deepseek.com/zh-cn/
+ *   qwen-image      图片生成（同步 + 异步 + 任务查询）
+ *                   —— platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image{,-30-async,-task-query}
+ *   qwen-tts        语音：非流式合成 + 声音复刻
+ *                   —— platform.qianwenai.com/docs/developer-guides/speech/voice-cloning
  *
- * 每行的字段都照实际能跑的形状搬：
- *   文案 / 语音 / 图片的形状 = 2026-09-22 用 `tools/try-real-calls.mjs` 真实调用确认过的响应
- *
- * 内置 seed 只声明**必需的形状**：`instParams` 只放各家确实要人定的参数（size / format / sampleRate…），
- * 调用期正文（`{text}` / `{prompt}` / `{systemPrompt}` / `{userPrompt}` / `{wavB64}` / `{reqId}`）是保留占位符、
- * **一行都不声明** —— 每张卡片的「实例参数 / 请求参数」初始都是空的，要什么由用户自己加。
- * 名字与说明都是单个字符串（自定义的东西没有自动翻这回事）。
+ * 这里是**数据**：铺进库后模板就是普通可编辑行，「恢复默认」用本文件覆盖回去；
+ * 要接别家 = 界面上「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）。
+ * 只声明到「该请求真引用到的那几个参数」为止，其余留给用户自己加。
  */
-import type { Mode, ProviderKind, RespSlots, Role, TemplateGroup, TemplateRow, VarSpec } from './request-engine';
+import type { Category, ParamSpec, RequestDef, TemplateDef } from './request-engine';
 
-const AUTH = { 'Content-Type': 'application/json', Authorization: 'Bearer {apiKey}' };
+const AUTH = { Authorization: 'Bearer ${apiKey}' };
+const JSON_CT = { 'Content-Type': 'application/json' };
 
-/** 实例参数（会出现在 ⚙ 实例页的参数表里） */
-function ip(name: string, extra: Partial<VarSpec> = {}): VarSpec {
-  return { name, type: 'string', ...extra };
-}
+const req = (path: string, o: Partial<RequestDef> = {}): RequestDef => ({ path, method: 'POST', ...o });
+const p = (key: string, label: string, extra: Partial<ParamSpec> = {}): ParamSpec => ({ key, label, valueType: 'string', ...extra });
+const secret = (key: string, label: string): ParamSpec => ({ key, label, valueType: 'secret' });
+const num = (key: string, label: string, extra: Partial<ParamSpec> = {}): ParamSpec => ({ key, label, valueType: 'number', ...extra });
+const en = (key: string, label: string, options: string[], extra: Partial<ParamSpec> = {}): ParamSpec =>
+  ({ key, label, valueType: 'enum', options, ...extra });
+const bool = (key: string, label: string, defaultValue = false): ParamSpec => ({ key, label, valueType: 'boolean', defaultValue });
+const text = (key: string, label: string): ParamSpec => ({ key, label, valueType: 'text', required: true });
 
-function row(role: Role, mode: Mode, o: Partial<TemplateRow> & { url: string }): TemplateRow {
-  return { role, mode, method: 'POST', headers: AUTH, instParams: [], reqParams: [], resp: {}, ...o } as TemplateRow;
-}
+/** 实例级共用的三样：地址、密钥、超时（密钥就是 valueType=secret 的普通参数，界面渲染成密码框） */
+const net = (baseUrl: string): ParamSpec[] => [p('baseUrl', '服务地址', { defaultValue: baseUrl }), secret('apiKey', 'API Key'), num('timeoutMs', '单次超时 ms', { defaultValue: 60000 })];
 
-function group(tplGroup: string, kind: ProviderKind, label: string, o: Partial<TemplateGroup> & { rows: TemplateRow[] }): TemplateGroup {
-  return { tplGroup, kind, label, ord: 0, ...o };
-}
-
-// ========== 文案 ==========
-
-const openaiChatRows: TemplateRow[] = [
-  row('generate', 'sync', {
-    url: '{baseUrl}/chat/completions',
-    body: {
-      model: '{model}',
-      messages: [
-        { role: 'system', content: '{systemPrompt}' },
-        { role: 'user', content: '{userPrompt}' },
-      ],
-    },
-    resp: { content: 'choices[0].message.content', errorCode: 'error.code', error: 'error.message' } as RespSlots,
-  }),
+/** 异步任务的查询节奏（实例级：账号排队时长差很多，所以给默认值也给人改） */
+const pacing = (intervalMs: number, attempts: number): ParamSpec[] => [
+  num('queryIntervalMs', '查询间隔 ms', { defaultValue: intervalMs }),
+  num('queryMaxAttempts', '查询次数上限', { defaultValue: attempts }),
 ];
 
-// ========== 语音 ==========
+// ========== 文案：DeepSeek ==========
 
-/** CosyVoice 系克隆：voice-enrollment + action=create_voice + prefix → output.voice_id */
-const cosyClone = row('clone', 'sync', {
-  url: '{baseUrl}/services/audio/tts/customization',
-  body: {
-    model: 'voice-enrollment',
-    input: { action: 'create_voice', target_model: '{model}', prefix: '{prefix}', url: 'data:audio/wav;base64,{wavB64}' },
+const deepseekChat: TemplateDef = {
+  id: 'deepseek-chat', name: 'DeepSeek 对话', category: 'llm',
+  note: 'OpenAI 兼容形状：POST ${baseUrl}/chat/completions；reasoning_effort / thinking 控制思考强度',
+  headers: { ...JSON_CT, ...AUTH },
+  instanceParams: net('https://api.deepseek.com'),
+  sync: {
+    submit: req('${baseUrl}/chat/completions', {
+      requestParams: [
+        en('model', '模型', ['deepseek-flash', 'deepseek-v4-pro'], { defaultValue: 'deepseek-flash' }),
+        en('reasoningEffort', '思考强度', ['high', 'medium', 'low']),
+        en('thinking', '深度思考', ['enabled', 'disabled']),
+        num('temperature', '温度', { min: 0, max: 2, step: 0.1 }),
+        num('maxTokens', '最大输出 token'),
+      ],
+      callParams: [text('systemPrompt', '系统提示词'), text('userPrompt', '用户提示词')],
+      body: {
+        model: '${model}',
+        messages: [{ role: 'system', content: '${systemPrompt}' }, { role: 'user', content: '${userPrompt}' }],
+        stream: false,
+        reasoning_effort: '${reasoningEffort}',
+        thinking: { type: '${thinking}' },
+        temperature: '${temperature}',
+        max_tokens: '${maxTokens}',
+      },
+      // thinking 没勾时 {type:${thinking}} 取不到值 → 整个 thinking 键一起删（上游就不会收到半成品）
+      outputs: { content: 'choices[0].message.content', errorCode: 'error.code', error: 'error.message' },
+    }),
   },
-  instParams: [ip('prefix', { default: 'mv', label: '音色名前缀' })],
-  resp: { voiceId: 'output.voice_id', errorCode: 'code', error: 'message' } as RespSlots,
-  refSampleRateHz: 16000,
-});
+};
 
-const formatParam = (opts: (string | { value: string; label?: string })[]) =>
-  ip('format', { default: 'mp3', label: '音频格式', options: opts });
+// ========== 图片：千问 文生图（同步 + 异步 + 任务查询） ==========
 
-const dashscopeCosyvoice = group('dashscope-cosyvoice', 'tts', '通义语音（CosyVoice）', {
-  note: '走 SpeechSynthesizer；音色是 long* 那一套，也承载 qwen-audio-3.0-tts-flash',
-  baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
-  models: ['cosyvoice-v3-flash', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v2', 'qwen-audio-3.0-tts-flash'],
-  defaultModel: 'cosyvoice-v3-flash',
-  defaultVoice: 'longanyang',
-  rows: [
-    row('synthesize', 'sync', {
-      url: '{baseUrl}/services/audio/tts/SpeechSynthesizer',
-      body: {
-        model: '{model}',
-        input: { text: '{text}', voice: '{voice}', format: '{format}', sample_rate: '{sampleRate}' },
-      },
-      instParams: [
-        formatParam(['mp3', 'wav', 'pcm']),
-        ip('sampleRate', { type: 'int', default: 24000, label: '采样率', options: [16000, 24000, 48000] }),
+const imageCall: ParamSpec[] = [text('prompt', '画面描述')];
+const imageOutputs = { url: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' };
+
+const qwenImage: TemplateDef = {
+  id: 'qwen-image', name: '千问 文生图', category: 'image',
+  note: '同步走 multimodal-generation 直接回图片链接；异步走 image-generation + 异步头，再按 ${taskId} 查 /tasks/{taskId}',
+  headers: { ...JSON_CT, ...AUTH },
+  instanceParams: [...net('https://maas.qianwenaiapi.com/api/v1'), ...pacing(5000, 360)],
+  sync: {
+    submit: req('${baseUrl}/services/aigc/multimodal-generation/generation', {
+      requestParams: [
+        en('model', '模型', ['qwen-image-3.0-pro'], { defaultValue: 'qwen-image-3.0-pro' }),
+        p('size', '出图尺寸', { defaultValue: '2048*2048' }),
+        bool('watermark', '水印'),
       ],
-      // 实测（2026-09-22）：这个端点回的是 JSON，output.audio.url 是带时效的 OSS 链接 → 当场下载
-      resp: { audio: 'output.audio.url', errorCode: 'code', error: 'message' } as RespSlots,
-      decode: 'url',
-    }),
-    cosyClone,
-  ],
-});
-
-const dashscopeQwenTts = group('dashscope-qwen-tts', 'tts', '通义语音（Qwen-TTS）', {
-  note: '走 multimodal-generation；音色是 Cherry / Ethan 那一套，与 long* 不通用',
-  baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
-  models: ['qwen3-tts-flash', 'qwen3-tts-vc-2026-01-22', 'qwen-tts'],
-  defaultModel: 'qwen3-tts-flash',
-  defaultVoice: 'Cherry',
-  rows: [
-    row('synthesize', 'sync', {
-      url: '{baseUrl}/services/aigc/multimodal-generation/generation',
-      body: { model: '{model}', input: { text: '{text}', voice: '{voice}' } },
-      // 实测：这一族的响应给的是远端音频 URL（带时效）→ 当场下载
-      resp: { audio: 'output.audio.url', errorCode: 'code', error: 'message' } as RespSlots,
-      decode: 'url',
-    }),
-    row('clone', 'sync', {
-      url: '{baseUrl}/services/audio/tts/customization',
-      // 与 CosyVoice 同一端点、不同形状：action=create / preferred_name / audio.data → output.voice
+      callParams: imageCall,
       body: {
-        model: 'qwen-voice-enrollment',
-        input: {
-          action: 'create',
-          target_model: '{model}',
-          preferred_name: '{preferredName}',
-          audio: { data: 'data:audio/wav;base64,{wavB64}' },
-        },
+        model: '${model}',
+        input: { messages: [{ role: 'user', content: [{ text: '${prompt}' }] }] },
+        parameters: { size: '${size}', watermark: '${watermark}' },
       },
-      instParams: [ip('preferredName', { default: 'mapvideo', label: '音色名' })],
-      resp: { voiceId: 'output.voice', errorCode: 'code', error: 'message' } as RespSlots,
-      refSampleRateHz: 24000,
+      outputs: imageOutputs,
+      outputFormat: 'url',
     }),
-  ],
-});
-
-const openaiSpeech = group('openai-speech', 'tts', 'OpenAI /audio/speech', {
-  baseUrl: 'https://api.openai.com/v1',
-  rows: [row('synthesize', 'sync', {
-    url: '{baseUrl}/audio/speech',
-    body: { model: '{model}', voice: '{voice}', input: '{text}', speed: '{speed}', response_format: '{format}' },
-    instParams: [formatParam(['mp3', 'wav', 'flac', 'pcm'])],
-    // 这一家响应体本身就是音频，所以音频路径留空
-    resp: { audio: '', errorCode: 'error.code', error: 'error.message' } as RespSlots,
-  })],
-});
-
-const minimaxT2a = group('minimax-t2a', 'tts', 'MiniMax t2a_v2', {
-  note: 'group_id 走 query（实例参数）；响应里的音频是 hex 字符串',
-  baseUrl: 'https://api.minimax.chat/v1/t2a_v2',
-  rows: [row('synthesize', 'sync', {
-    url: '{baseUrl}',
-    query: { group_id: '{groupId}' },
-    body: {
-      model: '{model}',
-      text: '{text}',
-      voice_setting: { voice_id: '{voice}', speed: '{speed}', vol: 1, format: '{format}' },
-      audio_setting: { format: '{format}' },
-    },
-    instParams: [ip('groupId', { label: 'group_id', default: '' }), formatParam(['mp3', 'wav', 'pcm', 'flac'])],
-    resp: { audio: 'data.audio', errorCode: 'status_code', error: 'status_msg' } as RespSlots,
-    decode: 'hex',
-  })],
-});
-
-const volcTts = group('volc-tts', 'tts', '火山 TTS', {
-  note: '鉴权两个 header：App Key + Access Key（第二凭证填 Access Key）',
-  baseUrl: 'https://openspeech.bytedance.com/api/v1/tts',
-  rows: [row('synthesize', 'sync', {
-    url: '{baseUrl}',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Api-App-Key': '{apiKey}',
-      'X-Api-Access-Key': '{apiKey2}',
-      'X-Api-Resource-Id': 'volc.service_type.10029',
-    },
-    body: {
-      user: { uid: 'mapvideo' },
-      audio: { voice_type: '{voice}', encoding: 'mp3', speed_ratio: '{speed}' },
-      request: { reqid: '{reqId}', text: '{text}', operation: 'query' },
-    },
-    resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
-  })],
-});
-
-const customTts = group('custom-tts', 'tts', '自定义语音', {
-  rows: [row('synthesize', 'sync', {
-    url: '{baseUrl}',
-    body: { model: '{model}', voice: '{voice}', text: '{text}', speed: '{speed}' },
-    resp: { audio: '', errorCode: 'code', error: 'message' } as RespSlots,
-  })],
-});
-
-// ========== 图片 ==========
-
-const imageInstParams: VarSpec[] = [
-  ip('size', { default: '2048*1152', allowCustom: true, label: '出图尺寸', options: ['1024*1024', '2048*1152', '2688*1536'] }),
-  ip('promptExtend', { type: 'bool', default: false, label: '提示词改写' }),
-  ip('watermark', { type: 'bool', default: false, label: '水印' }),
-];
-
-/**
- * 一组两变体：同步一次到位（形状照本机 gen_images.py 在用那份，已实测），
- * 异步 = image-generation 提交 + /tasks/{id} 轮询（实测：只认万相模型，产物在 choices[0]…）。
- */
-const dashscopeImage = group('dashscope-image', 'image', '通义图片生成', {
-  note: '同步 multimodal-generation（z-image-turbo / qwen-image）；异步 image-generation + /tasks/{id} 轮询，只认万相模型',
-  baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
-  models: ['z-image-turbo', 'qwen-image', 'wan2.6-t2i'],
-  defaultModel: 'z-image-turbo',
-  rows: [
-    row('generate', 'sync', {
-      url: '{baseUrl}/services/aigc/multimodal-generation/generation',
+  },
+  async: {
+    submit: req('${baseUrl}/services/aigc/image-generation/generation', {
+      headers: { 'X-DashScope-Async': 'enable' },
+      requestParams: [
+        en('model', '模型', ['qwen-image-3.0-pro'], { defaultValue: 'qwen-image-3.0-pro' }),
+        p('size', '出图尺寸', { defaultValue: '2048*2048' }),
+        num('n', '张数', { defaultValue: 1, min: 1, max: 4 }),
+      ],
+      callParams: imageCall,
       body: {
-        model: '{model}',
-        input: { messages: [{ role: 'user', content: [{ text: '{prompt}' }] }] },
-        parameters: { size: '{size}', prompt_extend: '{promptExtend}', watermark: '{watermark}' },
+        model: '${model}',
+        input: { messages: [{ role: 'user', content: [{ text: '${prompt}' }] }] },
+        parameters: { size: '${size}', n: '${n}' },
       },
-      instParams: imageInstParams,
-      resp: { image: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' } as RespSlots,
-      decode: 'url',
+      outputs: { taskId: 'output.task_id', errorCode: 'code', error: 'message' },
     }),
-    row('generate', 'async', {
-      url: '{baseUrl}/services/aigc/image-generation/generation',
-      headers: { ...AUTH, 'X-DashScope-Async': 'enable' },
-      body: {
-        model: '{model}',
-        input: { messages: [{ role: 'user', content: [{ text: '{prompt}' }] }] },
-        parameters: { size: '{size}', n: '{count}', watermark: '{watermark}' },
-      },
-      instParams: [...imageInstParams, ip('count', { type: 'int', default: 1, label: '张数' })],
-      resp: { taskId: 'output.task_id', errorCode: 'code', error: 'message' } as RespSlots,
-    }),
-    row('query', 'sync', {
-      // baseUrl 已经带 /api/v1，这里不能再写一遍（实测写过就是 404）
-      url: '{baseUrl}/tasks/{taskId}',
+    query: req('${baseUrl}/tasks/${taskId}', {
       method: 'GET',
-      headers: { Authorization: 'Bearer {apiKey}' },
-      resp: {
-        // 实测：产物在 output.choices[0].message.content[0].image（带时效的签名链接）
-        image: 'output.choices[0].message.content[0].image',
-        status: 'output.task_status',
-        success: ['SUCCEEDED'],
-        pending: ['PENDING', 'RUNNING'],
-        fail: ['FAILED', 'CANCELED', 'UNKNOWN'],
-        errorCode: 'code',
-        error: 'message',
-      } as RespSlots,
-      decode: 'url',
-      pollIntervalMs: 1500,
-      pollTimeoutMs: 180000,
+      // 实测（2026-09-23）：异步产物与同步同一路径 output.choices[0].message.content[0].image，
+      // 文档写的 output.results[].url 是这个模型不再用的旧形状；任务要排几分钟，queryMaxAttempts 得给够
+      outputs: { status: 'output.task_status', url: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' },
+      successValues: ['SUCCEEDED'],
+      failureValues: ['FAILED', 'CANCELED', 'UNKNOWN'],
+      outputFormat: 'url',
     }),
-  ],
-});
+  },
+};
 
-const customImage = group('custom-image', 'image', '自定义图片', {
-  rows: [row('generate', 'sync', {
-    url: '{baseUrl}',
-    body: { model: '{model}', prompt: '{prompt}', size: '{size}' },
-    instParams: [ip('size', { default: '1024*1024', allowCustom: true, label: '出图尺寸', options: ['1024*1024', '2048*1152'] })],
-    resp: { image: 'data[0].url', errorCode: 'code', error: 'message' } as RespSlots,
-    decode: 'url',
-  })],
-});
+// ========== 语音：千问 TTS（非流式合成 + 声音复刻） ==========
 
-export const SEED_GROUPS: TemplateGroup[] = [
-  group('openai-chat', 'llm', 'OpenAI 兼容对话', {
-    note: 'DeepSeek / 通义 / Kimi 等一切 /chat/completions 兼容服务',
-    baseUrl: 'https://api.deepseek.com',
-    models: ['deepseek-chat', 'deepseek-v4-pro'],
-    defaultModel: 'deepseek-chat',
-    rows: openaiChatRows,
+const qwenTts: TemplateDef = {
+  id: 'qwen-tts', name: '千问 TTS', category: 'tts',
+  note: '非流式合成回 output.audio.url（带时效 → 当场下载）；复刻音色绑 target_model，换模型即另一条音色',
+  useClone: true,
+  headers: { ...JSON_CT, ...AUTH },
+  instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
+  sync: {
+    submit: req('${baseUrl}/services/aigc/multimodal-generation/generation', {
+      requestParams: [
+        en('model', '模型', ['qwen3-tts-flash', 'qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-flash' }),
+        en('languageType', '语种', ['Chinese', 'English', 'Auto'], { defaultValue: 'Chinese' }),
+      ],
+      callParams: [text('text', '合成文本'), p('voice', '音色 ID')],
+      body: {
+        model: '${model}',
+        input: { text: '${text}', voice: '${voice}' },
+        parameters: { language_type: '${languageType}' },
+      },
+      outputs: { url: 'output.audio.url', errorCode: 'code', error: 'message' },
+      outputFormat: 'url',
+    }),
+  },
+  clone: req('${baseUrl}/services/audio/tts/customization', {
+    requestParams: [
+      en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
+      p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
+    ],
+    callParams: [{ key: 'audioDataUri', label: '参考音频', valueType: 'file', transform: 'base64DataUri', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
+    body: {
+      model: 'qwen-voice-enrollment',
+      input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${audioDataUri}' } },
+    },
+    outputs: { voiceId: 'output.voice', errorCode: 'code', error: 'message' },
   }),
-  group('custom-llm', 'llm', '自定义（对话形状）', { rows: openaiChatRows }),
-  dashscopeCosyvoice, dashscopeQwenTts, openaiSpeech, minimaxT2a, volcTts, customTts,
-  dashscopeImage, customImage,
-];
+  refSampleRateHz: 24000,
+};
 
-export function seedGroup(tplGroup: string): TemplateGroup | undefined {
-  return SEED_GROUPS.find((g) => g.tplGroup === tplGroup);
+export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts];
+
+export const seedTemplate = (id: string): TemplateDef | undefined => SEED_TEMPLATES.find((t) => t.id === id);
+
+export const templatesFor = (category: Category): TemplateDef[] => SEED_TEMPLATES.filter((t) => t.category === category);
+
+/** 「＋ 模板」的空壳：只带地址与密钥两条声明，接口与参数全由用户自己填 */
+export function blankTemplate(category: Category): TemplateDef {
+  return {
+    id: '', name: '', category,
+    headers: { ...JSON_CT, ...AUTH },
+    instanceParams: net(''),
+    sync: {
+      submit: req('${baseUrl}', {
+        callParams: [text(category === 'image' ? 'prompt' : 'text', category === 'image' ? '画面描述' : '文本')],
+        body: { model: '${model}' },
+      }),
+    },
+  };
 }
 
-export function seedGroupsFor(kind: ProviderKind): TemplateGroup[] {
-  return SEED_GROUPS.filter((g) => g.kind === kind);
+/** seed 深拷贝（界面编辑绝不能改到常量本身） */
+export function seedCopy(): TemplateDef[] {
+  return structuredClone(SEED_TEMPLATES);
 }
 
-/** 深拷贝一份，避免界面编辑改到 seed 常量本身 */
-export function cloneRow(r: TemplateRow): TemplateRow {
-  return JSON.parse(JSON.stringify(r)) as TemplateRow;
+/** 这份模板有没有某条请求（界面据此决定那一区显不显示） */
+export function supports(t: TemplateDef | undefined, key: 'clone' | 'upload' | 'download' | 'async'): boolean {
+  if (!t) return false;
+  return key === 'async' ? !!t.async?.submit : !!t[key];
 }
 
-/**
- * 新建一条接口行的种子：同类任一 seed 组里有这个 role+mode 的现成形状就照它来，
- * 否则给一个最小骨架（异步查询行连状态槽一起给，省得从零手打）。
- */
-export function seedRow(kind: ProviderKind, role: Role, mode: Mode = 'sync'): TemplateRow {
-  for (const g of SEED_GROUPS) {
-    if (g.kind !== kind) continue;
-    const hit = g.rows.find((r) => r.role === role && r.mode === mode) ?? g.rows.find((r) => r.role === role);
-    if (hit) return cloneRow(hit);
-  }
-  return row(role, mode, {
-    url: '{baseUrl}/',
-    body: { model: '{model}' },
-    resp: (role === 'query'
-      ? { status: '', success: [], pending: [], fail: [] }
-      : role === 'clone' ? { voiceId: '' } : mode === 'async' ? { taskId: '' } : {}) as RespSlots,
-  });
-}
-
-/** 这组模板要不要第二凭证（有行引用 {apiKey2} 就要 —— 不再写死厂商名单） */
-export function needsSecret2(g: TemplateGroup | undefined): boolean {
-  if (!g) return false;
-  return JSON.stringify(g.rows).includes('{apiKey2}');
+/** 需要第二把 Key 吗（判断依据仍是模板声明，不写死厂商名） */
+export function needsSecret2(t: TemplateDef | undefined): boolean {
+  return !!t && (JSON.stringify(t.headers ?? {}).includes('${apiKey2}')
+    || (t.instanceParams ?? []).some((x) => x.valueType === 'secret' && x.key !== 'apiKey'));
 }

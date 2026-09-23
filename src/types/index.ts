@@ -1,4 +1,3 @@
-import type { Mode, ProviderKind } from '../lib/request-engine';
 
 // ========== 项目类型 ==========
 
@@ -909,39 +908,6 @@ export interface MusicTrack {
   /** 淡入/淡出（秒） */
   fadeIn: number;
   fadeOut: number;
-}
-
-/**
- * AI 服务的一个「能力实例」（密钥只存本机，不入项目文件）
- *
- * 一个能力 = 一行实例 = 一份 base_url + 一个 Key；「怎么发请求」在它引用的模板组里
- * （`provider_template_group` + `provider_template`，见 docs/provider-engine.md）。
- */
-export interface ProviderConfig {
-  /** llm=文案生成 / tts=语音（含克隆）/ image=图片生成 —— 能力就是身份（provider 表以 kind 为主键，一处一套） */
-  kind: ProviderKind;
-  /** 这个能力当前引用哪一组模板 */
-  tplGroup: string;
-  baseUrl: string;
-  apiKey: string;
-  /** 第二凭证：只有组里有行引用 {apiKey2} 时才出现（火山 Access Key） */
-  apiKey2?: string;
-  /** 这个能力走同步还是异步 —— 决定用组里哪条生成变体、要不要查询接口 */
-  mode: Mode;
-  /** LLM 模型名 / TTS 音色模型 / 图片模型 */
-  model: string;
-  /** TTS 音色 / 说话人 ID */
-  voice?: string;
-  /** 语速 0.5–2 */
-  speed?: number;
-  /** 实例参数取值：模板 inst_params_json 里那些名字的取值（size / format / sampleRate…） */
-  params: Record<string, unknown>;
-  /** 附加 JSON 参数（深合并进请求体的兜底口） */
-  extra?: string;
-  /** 批量时的并发上限，1 = 串行 */
-  maxConcurrency?: number;
-  /** 限流 / 网络错的退避重试次数 */
-  retryTimes?: number;
 }
 
 /** 无音频时按字数估算字幕时长：0.28s/字 + 0.3s 尾巴 */
