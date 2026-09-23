@@ -281,8 +281,10 @@ export function saveProjectV2(db, project) {
       created_at: new Date(project.createdAt || now).getTime(), updated_at: now,
       projection: project.globalConfig?.projection || 'mercator',
       active_base_map_id: n(project.activeBaseMapId), active_elevation_map_id: n(project.activeElevationMapId),
-      // 帧 → 秒：defaultDuration 运行时是帧，列是秒（§10「时间一律存秒」）
-      default_duration_sec: n(f2s(gc.defaultDuration)) ?? 5, default_fps: fps,
+      // 帧 → 秒：defaultDuration 运行时是帧，列是秒（§10「时间一律存秒」）。
+      // **不能走 f2s 的「没给值算 0」分支** —— 这一列有 CHECK (>0)，0 会让整笔保存崩掉，
+      // 而「没配过时长」的正确落法是列默认值 5 秒。
+      default_duration_sec: typeof gc.defaultDuration === 'number' ? f2s(gc.defaultDuration) : 5, default_fps: fps,
       resolution_w: n(gc.defaultResolution?.width) ?? 1920, resolution_h: n(gc.defaultResolution?.height) ?? 1080,
       default_easing: gc.defaultEasing || 'easeInOut',
     });
@@ -819,18 +821,26 @@ export function retireProviderIfStale(db) {
    * 所以改名前必须临时关掉：否则父表（provider_template_group / provider）一让位，
    * 子表引用就被写成 `…__stale` 那份死表。命名索引也要先摘掉 —— 索引跟表走且名字不变，
    * 新建的同名表会被 DDL 的 CREATE INDEX IF NOT EXISTS 静默跳过，唯一约束就这么丢了。
+   *
+   * **归档槽位可能已经被上一代占着**（用户连着经历过两次形状漂移），所以名字要往后让一位
+   * （`__stale2`、`__stale3`…）—— 直接跳过就等于**不把当前这代让位**，新表建不出来，
+   * 启动体检报 true 却什么都没搬（实测在真库里撞上过）。
    */
+  const staleName = (t) => {
+    if (!has(`${t}__stale`)) return `${t}__stale`;
+    for (let n = 2; ; n += 1) if (!has(`${t}__stale${n}`)) return `${t}__stale${n}`;
+  };
   const retire = (...tables) => {
     const fkWasOn = !!db.prepare('PRAGMA foreign_keys').get().foreign_keys;
     db.exec('PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;');
     try {
       for (const t of tables) {
-        if (!has(t) || has(`${t}__stale`)) continue;
+        if (!has(t)) continue;
         for (const ix of db.prepare(`PRAGMA index_list(${t})`).all()) {
           if (ix.origin === 'pk' || String(ix.name).startsWith('sqlite_autoindex_')) continue;
           db.exec(`DROP INDEX IF EXISTS ${ix.name}`);
         }
-        db.exec(`ALTER TABLE ${t} RENAME TO ${t}__stale`);
+        db.exec(`ALTER TABLE ${t} RENAME TO ${staleName(t)}`);
       }
     } finally {
       db.exec(`PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ${fkWasOn ? 'ON' : 'OFF'};`);
@@ -864,49 +874,55 @@ const RECIPE_TO_TPL = { 'dashscope-image-async': 'dashscope-image' };
  * 把让位出去的旧行搬回新表：Base URL / 密钥 / 模型 / 音色 / 语速 全部并进 `values.instance`
  * （新形状里它们就是模板声明的普通参数，不再有具名列），v1 散在接口副本里的 overrides 一并汇总。
  * **必须在模板铺好之后调用**（provider.tpl_id 是真外键）。
+ * 归档可能有多份（用户连着经历过几次形状漂移 → `provider__stale`、`provider__stale2` …），逐份搬、逐份清。
  */
 export function migrateProvidersFromStale(db) {
-  const has = (t) => !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t);
-  if (!has('provider__stale')) return 0;
+  const archives = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'provider__stale*'")
+    .all().map((r) => r.name);
+  if (!archives.length) return 0;
+  const epTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'provider_endpoint__stale*'")
+    .all().map((r) => r.name);
+  // 表名一律来自 sqlite_master，不是用户输入
+  const eps = epTables.flatMap((t) => db.prepare(`SELECT * FROM ${t}`).all());
   const tplIds = new Set(db.prepare('SELECT tpl_id FROM provider_template').all().map((r) => r.tpl_id ?? r.tplId));
-  // rowid 排序：三代旧形状里 provider_id / ord 都不保证存在
-  const rows = db.prepare('SELECT rowid AS __row, * FROM provider__stale ORDER BY __row').all();
-  const eps = has('provider_endpoint__stale') ? db.prepare('SELECT * FROM provider_endpoint__stale').all() : [];
   const ins = db.prepare(`INSERT OR IGNORE INTO provider
     (provider_id, tpl_id, name, sync, values_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`);
   const now = Date.now();
   let n = 0;
   let skipped = 0;
-  for (const r of rows) {
-    const v1 = 'recipe' in r;                       // v1：recipe + secrets_json + 每实例接口副本
-    const secrets = v1 ? parseCol(r.secrets_json, {}) : {};
-    const mine = v1 ? eps.filter((e) => e.provider_id === r.provider_id) : [];
-    const instance = v1 ? {} : (parseCol(r.params_json, {}) ?? {});
-    for (const e of mine) Object.assign(instance, parseCol(e.overrides_json, {}) ?? {});
-    const tplId = v1 ? (RECIPE_TO_TPL[r.recipe] || r.recipe || `custom-${r.kind}`) : (r.tpl_group ?? r.tpl_id);
-    if (!tplId || !tplIds.has(tplId)) { skipped += 1; continue; }
-    // 旧的具名列并进 values.instance（那里已有值就不覆盖）
-    const merge = (key, val) => {
-      if (val !== undefined && val !== null && val !== '' && instance[key] === undefined) instance[key] = val;
-    };
-    merge('baseUrl', r.base_url);
-    merge('apiKey', secrets.apiKey ?? r.api_key);
-    merge('apiKey2', secrets.secret2 ?? r.api_key2);
-    merge('model', r.model);
-    merge('voice', r.voice);
-    // 语速旧表默认 1（跟没填一样），搬过去会在 values.instance 里留一个没人声明过的键
-    if (r.speed != null && r.speed !== 1) merge('speed', r.speed);
-    const asyncish = v1 ? mine.some((e) => e.mode === 'async') : (r.mode === 'async' || r.sync === 0);
-    const id = r.provider_id ?? `prov_${tplId}_${Math.random().toString(36).slice(2, 8)}`;
-    ins.run(id, tplId, r.label ?? r.name ?? '', asyncish ? 0 : 1, jsonCol({ instance, requests: {} }), now, now);
-    n += 1;
+  for (const table of archives) {
+    let left = 0;
+    // rowid 排序：三代旧形状里 provider_id / ord 都不保证存在
+    for (const r of db.prepare(`SELECT rowid AS __row, * FROM ${table} ORDER BY __row`).all()) {
+      const v1 = 'recipe' in r;                       // v1：recipe + secrets_json + 每实例接口副本
+      const secrets = v1 ? parseCol(r.secrets_json, {}) : {};
+      const mine = v1 ? eps.filter((e) => e.provider_id === r.provider_id) : [];
+      const instance = v1 ? {} : (parseCol(r.params_json, {}) ?? {});
+      for (const e of mine) Object.assign(instance, parseCol(e.overrides_json, {}) ?? {});
+      const tplId = v1 ? (RECIPE_TO_TPL[r.recipe] || r.recipe || `custom-${r.kind}`) : (r.tpl_group ?? r.tpl_id);
+      if (!tplId || !tplIds.has(tplId)) { left += 1; continue; }
+      // 旧的具名列并进 values.instance（那里已有值就不覆盖）
+      const merge = (key, val) => {
+        if (val !== undefined && val !== null && val !== '' && instance[key] === undefined) instance[key] = val;
+      };
+      merge('baseUrl', r.base_url);
+      merge('apiKey', secrets.apiKey ?? r.api_key);
+      merge('apiKey2', secrets.secret2 ?? r.api_key2);
+      merge('model', r.model);
+      merge('voice', r.voice);
+      // 语速旧表默认 1（跟没填一样），搬过去会在 values.instance 里留一个没人声明过的键
+      if (r.speed != null && r.speed !== 1) merge('speed', r.speed);
+      const asyncish = v1 ? mine.some((e) => e.mode === 'async') : (r.mode === 'async' || r.sync === 0);
+      const id = r.provider_id ?? `prov_${tplId}_${Math.random().toString(36).slice(2, 8)}`;
+      ins.run(id, tplId, r.label ?? r.name ?? '', asyncish ? 0 : 1, jsonCol({ instance, requests: {} }), now, now);
+      n += 1;
+    }
+    // **搬不动的行留着归档表**（Key 是用户资产，宁可下次再搬也不能删）
+    skipped += left;
+    if (!left) db.exec(`DROP TABLE ${table}`);
+    else console.warn(`[db-v2] ${table} 里有 ${left} 行找不到对应模板，留在库里等下次（未删除）`);
   }
-  if (skipped) {
-    console.warn(`[db-v2] 有 ${skipped} 行旧配置找不到对应模板，留在 provider__stale 里等下次（未删除）`);
-    return n;
-  }
-  db.exec('DROP TABLE provider__stale');
-  if (has('provider_endpoint__stale')) db.exec('DROP TABLE provider_endpoint__stale');
+  if (!skipped) for (const t of epTables) db.exec(`DROP TABLE ${t}`);
   if (n) console.log(`[db-v2] 旧接口配置已搬回新形状：${n} 条实例（密钥并入 values.instance，模板改成一行一份）`);
   return n;
 }

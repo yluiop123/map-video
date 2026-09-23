@@ -233,5 +233,34 @@ console.log('\n[5] 旧形状让位 → 密钥搬进 values.instance');
   db.close();
 }
 
+// ---------- 6. 连着漂移两次：归档槽已被上一代占着 ----------
+console.log('\n[6] 二次让位（__stale 已被上一代占名）');
+{
+  const db = new DatabaseSync(':memory:');
+  // 上一次的归档（还在等对应模板，没搬走）
+  db.exec(`CREATE TABLE provider__stale (provider_id TEXT PRIMARY KEY, tpl_group TEXT, kind TEXT,
+      base_url TEXT, api_key TEXT, mode TEXT, model TEXT, params_json TEXT);`);
+  db.prepare(`INSERT INTO provider__stale VALUES ('old-1','qwen-tts','tts','https://old/v1','sk-老-别丢','sync','m','{}')`).run();
+  // 当前这一代又是旧形状（真库里就是这个局面：组表 + kind 主键 + 具名 Key 列）
+  db.exec(`CREATE TABLE provider (kind TEXT PRIMARY KEY, tpl_group TEXT NOT NULL, base_url TEXT DEFAULT '',
+      api_key TEXT DEFAULT '', mode TEXT DEFAULT 'sync', model TEXT DEFAULT '', params_json TEXT);`);
+  db.prepare(`INSERT INTO provider VALUES ('llm','deepseek-chat','https://api.deepseek.com','sk-新-也别丢','sync','deepseek-flash','{}')`).run();
+  check('6.1 让位照样发生（旧代码这里有 __stale 就跳过 = 新表根本建不出来）',
+    retireProviderIfStale(db) === true);
+  ensureV2Schema(db);
+  db.exec('PRAGMA foreign_keys = ON');
+  upsertTemplateV2(db, { id: 'deepseek-chat', name: 'DeepSeek', category: 'llm', instanceParams: [], sync: { submit: { path: '${baseUrl}/chat/completions', body: {} } } });
+  const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'provider__stale*'").all().map((r) => r.name).sort();
+  eq('6.2 两份归档并存（新的让到 __stale2，谁也没被覆盖）', names, ['provider__stale', 'provider__stale2']);
+  eq('6.3 搬回的是当前这一代（找不到模板的那份留着）', migrateProvidersFromStale(db), 1);
+  const moved = listProvidersV2(db)[0];
+  eq('6.4 新一代的 Key 进了 values.instance', moved && moved.values.instance.apiKey, 'sk-新-也别丢');
+  check('6.5 搬不动的旧归档仍留着（Key 是资产，宁可下次再搬）',
+    !!db.prepare("SELECT 1 FROM provider__stale WHERE provider_id='old-1'").get());
+  check('6.6 搬干净的那份才删掉',
+    !db.prepare("SELECT name FROM sqlite_master WHERE name='provider__stale2'").get());
+  db.close();
+}
+
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);
 process.exit(failed ? 1 : 0);

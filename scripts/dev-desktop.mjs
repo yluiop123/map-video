@@ -66,7 +66,9 @@ await waitVite();
 // 2. Electron（渲染进程加载 vite；保留默认 electron 用户数据目录以便真机一致性）
 // 直接起 electron.exe（由 electron 包导出的真实二进制路径），避免 .cmd + EINVAL
 const electronBin = require('electron');
-const electron = spawn(electronBin, ['.'], {
+// MV_CDP=9223 时给 Electron 开调试端口，供 tools/smoke-desktop.mjs 接管（默认不开，行为不变）
+const electronArgs = ['.'].concat(process.env.MV_CDP ? [`--remote-debugging-port=${process.env.MV_CDP}`] : []);
+const electron = spawn(electronBin, electronArgs, {
   stdio: 'pipe',
   env: {
     ...process.env,

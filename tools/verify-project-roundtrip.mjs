@@ -99,5 +99,17 @@ console.log('\n[3] 同名内置 id 可跨项目共存（复合主键）');
   check('3.2 互不覆盖', a.baseMaps[0].name === 'OSM' && b.activeBaseMapId === 'sat');
 }
 
+console.log('\n[4] globalConfig 缺字段也得存得下去（写入端不得把「没配」写成 0）');
+{
+  const db4 = open();
+  const bare = { id: 'bare', name: '没配时长', collectionId: 'default', layers: [], elements: [], camera: [], fx: [], overlays: [], music: [], narration: { entries: [], style: {} } };
+  let err = null;
+  try { saveProjectV2(db4, bare); } catch (e) { err = e; }
+  check('4.1 缺 defaultDuration 不撞 CHECK (default_duration_sec > 0)', err === null, err && String(err.message));
+  const g4 = err ? null : getProjectV2(db4, 'bare');
+  check('4.2 落的是列默认 5 秒（30fps 下 = 150 帧）', g4?.globalConfig?.defaultDuration === 150,
+    g4 && JSON.stringify(g4.globalConfig));
+}
+
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);
 process.exit(failed ? 1 : 0);
