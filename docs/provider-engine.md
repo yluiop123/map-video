@@ -55,39 +55,38 @@ CREATE INDEX IF NOT EXISTS ix_tpl_group ON provider_template(tpl_group, ord);
   - `image`：`generate·sync` ｜ `generate·async` + `query`（两种变体可并存，实例选）
   - `tts`：`synthesize·sync` ｜ `synthesize·async` + `query`，外加独立的 `clone`（恒 `sync`，与同步/异步无关）
 
-## 三、`provider`（实例表）
+## 三、`provider`（一处一份）
+
+**一个能力一行，`kind` 就是主键**：文案 / 语音 / 图片各一处，填一次就够。没有"同一能力配两套账号来回切"，也没有"哪条生效" —— 那套 `provider_id` + `active` 的形状已作废（旧库靠启动让位压平，见第七节末）。
 
 ```sql
 CREATE TABLE IF NOT EXISTS provider (
-  provider_id TEXT PRIMARY KEY,
-  kind        TEXT NOT NULL,                     -- llm / tts / image
-  label       TEXT NOT NULL DEFAULT '',
+  kind        TEXT PRIMARY KEY,                  -- llm / tts / image（全表最多三行）
   tpl_group   TEXT NOT NULL REFERENCES provider_template_group(tpl_group),
   base_url    TEXT NOT NULL DEFAULT '',
   api_key     TEXT NOT NULL DEFAULT '',          -- 主密钥（{apiKey}）
   api_key2    TEXT,                              -- 第二凭证（{apiKey2}）：火山 TTS 的 Access Key
-  mode        TEXT NOT NULL DEFAULT 'sync',      -- 这个账号走同步还是异步
+  mode        TEXT NOT NULL DEFAULT 'sync',      -- 这个能力走同步还是异步
   model       TEXT NOT NULL DEFAULT '',
   voice       TEXT,
   speed       REAL NOT NULL DEFAULT 1,
-  params_json TEXT,                              -- 只存模板声明的那些入参的取值
+  params_json TEXT,                              -- 只存模板 inst_params_json 声明的那些名字的取值
   max_concurrency INTEGER NOT NULL DEFAULT 1,    -- 批量并发上限（1 = 串行）
   retry_times     INTEGER NOT NULL DEFAULT 2,    -- 限流/网络错的退避重试次数
-  extra       TEXT,                              -- 兜底：深合并进 body 的附加 JSON
-  active      INTEGER NOT NULL DEFAULT 0,        -- 每个 kind 至多一条为 1
-  ord         INTEGER NOT NULL DEFAULT 0
+  extra       TEXT                               -- 兜底：深合并进 body 的附加 JSON
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_active ON provider(kind) WHERE active = 1;
-CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
+CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_group);
 ```
 
+- **行身份 = 能力**，所以界面标题就是「文案生成 / 语音克隆 / 图片生成」，不再有一个可以被改出两份的实例 `label`。
 - **两个密钥就是两个具名列**（`api_key` / `api_key2`），不用 JSON 槽位表：槽数固定，拆列之后界面一格对一列、读写两端少一次序列化，`json_valid` 检查也不必了。两列都是 `type=password` 输入框，**永不回显原文**，预览里只显 `Bearer sk-****（长度 35）`。
-- **只装凭证**：MiniMax 的 `group_id` 是 query 串上的账号标识（`POST {base}?group_id=…`），由模板声明成普通入参、存 `params_json`、界面正常显示 —— 借住在密钥列会让"这列都是敏感值"的语义失效，将来做导出脱敏时说不清。
-- **`mode` 在实例上**：选完就决定用组里哪条 `generate` 变体、要不要 `query`。该组没有 async 变体时界面上不给这个选项（**显式不可用，不做隐式降级**）。
-- `max_concurrency` / `retry_times` 是账号/上游限额属性（同一家不同账号额度不同），所以属实例层。
-- `params_json` 的键 = 该组各接口声明表里入参名的并集；同名跨接口共用一个值（`synthesize` 与 `clone` 天然共用 `model`，这就是「克隆产出的音色绑同款 target_model」的落法）。
-- 取值优先级：**调用端显式传入 > 实例 `params_json` > 模板 `default`**。
-- **凭证按能力各配一份**：llm / tts / image 三处各自填 `base_url` + `api_key`，**不抽公共凭证表**。一次配置只管一个能力，删改互不影响，界面也不必多一层「账号」概念。代价是同一家厂商（如通义一个 Key 打通三类）的 Key 要填三遍 —— 这个代价明确接受。
+- **只装凭证**：MiniMax 的 `group_id` 是 query 串上的账号标识（`POST {base}?group_id=…`），由模板声明成普通实例参数、存 `params_json`、界面正常显示 —— 借住在密钥列会让"这列都是敏感值"的语义失效，将来做导出脱敏时说不清。
+- **`mode` 在这一处**：选完就决定用组里哪条 `generate` 变体、要不要 `query`。该组没有 async 变体时界面上不给这个选项（**显式不可用，不做隐式降级**）。
+- `max_concurrency` / `retry_times` 是账号/上游限额属性，属这一处配置，不属模板。
+- `params_json` 的键 = 该组各接口 `inst_params_json` 里入参名的并集；同名跨接口共用一个值（`synthesize` 与 `clone` 天然共用 `model`，这就是「克隆产出的音色绑同款 target_model」的落法）。
+- **用哪一组模板是这一行的一个字段**（`tpl_group`，真外键），改它叫「用作本能力」，入口在接口模板页的组头上；已填的 Base URL / Key 跟着走，不必重填（换组 ≠ 换账号是常态：同一家换了端点形状）。
+- 取值优先级：**调用端显式传入 > 这一处的 `params_json` > 模板 `default`**。
+- **凭证按能力各配一份**：llm / tts / image 三处各自填 `base_url` + `api_key`，**不抽公共凭证表**（也不做"账号"父实体）。代价是同一家厂商（如通义一个 Key 打通三类）的 Key 要填三遍 —— 这个代价明确接受：换来的是三处互不牵连，改一处不会意外影响另两处。
 
 ## 四、入参声明：`inst_params_json` 与 `req_params_json`
 
@@ -233,8 +232,8 @@ CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
 
 | 页面 | 装什么 |
 |---|---|
-| **⚙ 实例设置**（`ProviderPanel`） | 模板组下拉（查组表，按 kind 过滤）→ Base URL / API Key / 第二凭证 → **同步 / 异步** → 该组的**实例参数**表 → 并发数 / 重试次数 |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧第 4 个独立入口） | 模板组列表（含「N 个实例在用」）→ **每个 role 一张接口卡片**：url / method / headers / body / **实例参数**表 / **请求参数**表（名字 · 类型下拉 · 默认 · 说明 · 候选值）/ **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用；底部一排「＋」补接口 |
+| **⚙ 能力配置**（`ProviderPanel`，三个能力各一屏） | **一处一份**：当前模板组（只读芯片，换组去左侧）→ Base URL / API Key / 第二凭证 → **同步 / 异步** → 该组声明的**实例参数** → 并发数 / 重试次数。**没有 ＋添加 / ✕删除 / 模板组下拉** |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧第 4 个独立入口） | 模板组列表（当前那组标「● 使用中」，组头一个「用作本能力」按钮）→ **每个 role 一张接口卡片**：url / method / headers / body / **实例参数**表 / **请求参数**表（名字 · 类型下拉 · 默认 · 说明 · 候选值）/ **返回槽位表单** / 解码 / 下载头 / 轮询节奏 + 预览请求 · 试调用；底部一排「＋」补接口 |
 
 ### 查询接口与音色克隆在哪配
 

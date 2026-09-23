@@ -40,11 +40,12 @@ declare global {
         remove: (tplGroup: string) => Promise<{ ok: boolean }>;
       };
       providers: {
+        /** 已配置的能力（一个能力至多一行，id = kind） */
         list: () => Promise<import('../types').ProviderConfig[]>;
         upsert: (cfg: import('../types').ProviderConfig) => Promise<{ ok: boolean }>;
-        remove: (id: string) => Promise<{ ok: boolean }>;
-        setActive: (kind: 'llm' | 'tts' | 'image', id: string | null) => Promise<{ ok: boolean }>;
-        /** 旧形状（provider_endpoint 那套副本）让位后的一次性搬回，须在模板组铺好后调用 */
+        /** 清掉该能力的那一行（界面无此动作；冒烟回归用它清场） */
+        remove: (kind: 'llm' | 'tts' | 'image') => Promise<{ ok: boolean }>;
+        /** 旧形状让位后的一次性搬回，须在模板组铺好后调用 */
         migrate: () => Promise<{ moved: number }>;
       };
       /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId 随机；登记在 asset 表） */

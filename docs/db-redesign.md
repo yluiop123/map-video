@@ -133,7 +133,7 @@
 | **7. 疆域类元素** | `element_territory` | type = territory；势力 / 地块 / 兼并事件 JSON 内联 |
 | **8. 贴图类元素** | `element_image` | type = geo_image；地理配准图片（控制点网格 JSON 内联），图片本体走全局素材库 |
 | **9. 叠加层** | `overlay` | 弹窗本体；custom / person 的内容块内联在 `payload_json`（原 overlay_block / person_block 已删除） |
-| **10. 应用配置** | `provider`、`provider_endpoint` | 与项目内容解耦；「每 kind 至多一条 active」由部分唯一索引保证。**2026-09-21 改版**：`protocol` / `api_key` 列删除，换成 `recipe` + `secrets_json`，并把「每家怎么发请求」下沉成 `provider_endpoint` 的接口模板行（含异步轮询规则）—— 同一事实原先散在 renderer switch、主进程 switch、白名单断言、DDL CHECK 四处，现在只有模板这一处 |
+| **10. 应用配置** | `provider_template_group`、`provider_template`、`provider` | 与项目内容解耦。「一家怎么发请求」只有模板这一处真相（原先散在 renderer switch、主进程 switch、白名单断言、DDL CHECK 四处）；**2026-09-23 定稿**：`provider` 以 `kind` 为主键（一处一份，全表最多三行，没有 active / provider_id），组表说一个功能要哪几条接口、接口表说每条怎么发与返回从哪取、配置表只装凭证与取值。详见 `docs/provider-engine.md` |
 | **11. 公共图层库** | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image` | 跨项目复用的图层图库：把某个图层连元素**整体复制**为一份独立副本，导入到任意项目。与项目侧同构，但**不属于任何项目** —— 故 `asset_id` 降级为弱引用（建不了外键），代价见 2.6「副本自洽」条 |
 
 ### 2.3 元素建模：按工具栏聚合的 5 张类别宽表
@@ -274,7 +274,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 | `asset` 表承担 P4 外置 | base64 内嵌是当前最大的性能问题；assetId 与文件名解耦，随机 id + 时间戳命名（不做内容寻址去重，代价是同文件传两次会存两份） |
 | 同域约束按删除行为二分 | 能配合 CASCADE 的用复合外键；必须 SET NULL 的（跟随机位）退回单列外键，「同章节」由应用层校验 —— SQLite 复合外键 SET NULL 会连带清空 NOT NULL 的 `project_id` |
 | 样式标量走 P3 JSON | 固定形状、整体读写、不参与检索；列化它们会产生 100+ 张无意义的表 |
-| `provider` 加部分唯一索引 | 「每 kind 至多一条 active」从应用层两步写（先全清后置位）升级为数据库保证 |
+| `provider` 用 `kind` 做主键 | 「一个能力一处配置」由数据库直接保证 —— 不再有「同 kind 多行 + 哪条生效」，也就不需要部分唯一索引与先清后置的两步写 |
 | 布尔统一 INTEGER 0/1 + CHECK | SQLite 无布尔类型，显式 CHECK 防止写入 `'true'`/`2` 之类的脏值 |
 | 所有 JSON 列加 `json_valid()` | 保留 P3 灵活性的同时，至少保证「是合法 JSON」，避免半截字符串入库 |
 
@@ -325,7 +325,7 @@ DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执�
 | 10 | `v_check_territory_ref` 抓到「地块归属 / 兼并目标势力不存在」 | 通过 2 行 |
 | 11 | `v_element_index` 汇总 5 类元素 | 通过 |
 | 12 | `v_check_dangling` 在干净库上返回 0 行 | 通过 |
-| 13 | `provider` 每 kind 至多一条 active | 通过 被拒 |
+| 13 | `provider` 每 kind 只有一行（kind 是主键） | 通过 被拒 |
 
 完整可执行 DDL：`docs/db-schema-v2.sql`（含分节注释与自检视图，无触发器）。
 

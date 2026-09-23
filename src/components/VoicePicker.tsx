@@ -8,7 +8,7 @@
  */
 import { useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
-import { activeProvider, useProviderStore } from '../stores/providerStore';
+import { useProviderStore } from '../stores/providerStore';
 import { callTTS, cloneVoice, groupOf, supports } from '../lib/providers';
 import {
   CLIP_PRESETS, findCloned, forgetClonedVoice, fetchClipBytes, listClonedVoices,
@@ -19,9 +19,7 @@ const SAMPLE_LABELS: string[] = CLIP_PRESETS.map((p) => p.label);
 
 export function VoicePicker() {
   const t = useT();
-  const tts = activeProvider('tts');
-  const providerList = useProviderStore((s) => s.tts);
-  void providerList; // 订阅：改完音色后这里要反映选中态
+  const tts = useProviderStore((s) => s.tts);
   const [cloned, setCloned] = useState<ClonedVoice[]>(() => listClonedVoices());
   const [busy, setBusy] = useState<'clone' | 'audition' | null>(null);
   const [busyLabel, setBusyLabel] = useState('');
@@ -46,7 +44,7 @@ export function VoicePicker() {
 
   const pick = (voiceId: string) => {
     if (!tts) return;
-    useProviderStore.getState().update(tts.id, { voice: voiceId });
+    useProviderStore.getState().saveConfig('tts', { voice: voiceId });
     setMsg('');
   };
 
@@ -57,7 +55,7 @@ export function VoicePicker() {
     const done = (s: string) => (alsoModel ? `${s} · ${t('配音模型已切成', 'model switched to')} ${bindModel}` : s);
     const hit = findCloned(label, bindModel);
     if (hit) {
-      useProviderStore.getState().update(tts.id, { voice: hit.voiceId, ...(alsoModel ? { model: alsoModel } : {}) });
+      useProviderStore.getState().saveConfig('tts', { voice: hit.voiceId, ...(alsoModel ? { model: alsoModel } : {}) });
       setMsg(done(t(`已复用之前的克隆 ${hit.voiceId}`, `Reused previous clone ${hit.voiceId}`)));
       return;
     }
@@ -65,7 +63,7 @@ export function VoicePicker() {
     try {
       const vid = await cloneVoice(tts, bytes, bindModel, prefix);
       setCloned(rememberClonedVoice({ label, voiceId: vid, model: bindModel, createdAt: Date.now() }));
-      useProviderStore.getState().update(tts.id, { voice: vid, ...(alsoModel ? { model: alsoModel } : {}) });
+      useProviderStore.getState().saveConfig('tts', { voice: vid, ...(alsoModel ? { model: alsoModel } : {}) });
       setMsg(done(`✓ ${vid}`));
     } catch (e) {
       setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`);

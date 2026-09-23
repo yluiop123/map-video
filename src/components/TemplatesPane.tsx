@@ -39,9 +39,9 @@ const ADDABLE: Record<ProviderKind, { role: Role; mode: Mode }[]> = {
   tts: [{ role: 'synthesize', mode: 'sync' }, { role: 'synthesize', mode: 'async' }, { role: 'query', mode: 'sync' }, { role: 'clone', mode: 'sync' }],
 };
 
-/** 试调用要拿一个真实账号提供 Key，没账号时只能零网络预览 */
-function instanceOf(list: ProviderConfig[], tplGroup: string): ProviderConfig | undefined {
-  return list.find((c) => c.tplGroup === tplGroup);
+/** 试调用要拿一份真实账号才能拼出/发出请求：这个能力的那一份配置就是它（没配过就没得调） */
+function instanceOf(cfg: ProviderConfig | null, tplGroup: string): ProviderConfig | undefined {
+  return cfg && cfg.tplGroup === tplGroup ? cfg : undefined;
 }
 
 export function TemplatesPane() {
@@ -53,7 +53,8 @@ export function TemplatesPane() {
   const tts = useProviderStore((s) => s.tts);
   const image = useProviderStore((s) => s.image);
   const [kind, setKind] = useState<ProviderKind>('llm');
-  const listOf = kind === 'llm' ? llm : kind === 'tts' ? tts : image;
+  /** 这个能力当前那一份配置（一个能力一处；用它指向哪组来判断"哪组在用"） */
+  const cfg = kind === 'llm' ? llm : kind === 'tts' ? tts : image;
   const kindGroups = useMemo(() => groups.filter((g) => g.kind === kind), [groups, kind]);
   const [sel, setSel] = useState('openai-chat');
   const group = kindGroups.find((g) => g.tplGroup === sel) ?? kindGroups[0] ?? null;
@@ -72,9 +73,9 @@ export function TemplatesPane() {
   };
   const dropGroup = async () => {
     if (!group) return;
-    const used = listOf.filter((c) => c.tplGroup === group.tplGroup).length;
+    const inUse = cfg?.tplGroup === group.tplGroup;
     const ok = await confirm({
-      message: t(`删除模板组「${group.label}」？${used ? `还有 ${used} 个实例在用它，删掉后这些实例不可用。` : ''}`, `Delete this group? ${used ? `${used} instance(s) use it.` : ''}`),
+      message: t(`删除模板组「${group.label}」？${inUse ? `本能力正在用它，删掉后这处配置会指向别组。` : ''}`, `Delete this group? ${inUse ? 'This capability uses it now.' : ''}`),
       danger: true,
     });
     if (!ok) return;
@@ -86,7 +87,7 @@ export function TemplatesPane() {
     <div className="space-y-2">
       <h3 className="text-sm font-semibold">{t('🧩 接口模板', '🧩 Endpoint templates')}</h3>
       <p className="text-[11px] text-muted-foreground">
-        {t('一组 = 一个功能要哪几条接口；一行 = 一条接口怎么发、返回从哪取。模板是共享的，改完所有引用它的实例都跟着变。', 'A group = the endpoints one capability needs; a row = how it is sent and where results are read. Groups are shared by every instance using them.')}
+        {t('一组 = 一个功能要哪几条接口；一行 = 一条接口怎么发、返回从哪取。哪一组在用由 ⚙ 那个能力的那一处配置决定（一处一份），改这里立刻反映到那一处。', 'A group = the endpoints one capability needs; a row = how it sends and where results are read. Which group is live is decided once per capability in Settings.')}
       </p>
       <div className="flex flex-wrap gap-1.5">
         {(['llm', 'tts', 'image'] as ProviderKind[]).map((k) => (
@@ -97,23 +98,34 @@ export function TemplatesPane() {
       </div>
       <div className="flex flex-wrap gap-1.5">
         {kindGroups.map((g) => {
-          const used = listOf.filter((c) => c.tplGroup === g.tplGroup).length;
+          const inUse = cfg?.tplGroup === g.tplGroup;
           return (
             <button key={g.tplGroup} onClick={() => setSel(g.tplGroup)} title={g.tplGroup}
               className={`h-7 px-2 rounded-md border text-[11px] ${g.tplGroup === group?.tplGroup ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
-              {g.label}{used ? ` · ${used}` : ''}
+              {g.label}{inUse ? ` · ${t('使用中', 'in use')}` : ''}
             </button>
           );
         })}
         <button onClick={addGroup} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10">＋ {t('模板组', 'Group')}</button>
       </div>
 
-      {group && <GroupEditor key={group.tplGroup} group={group} instances={listOf} onDelete={() => void dropGroup()} />}
+      {group && (
+        <GroupEditor
+          key={group.tplGroup}
+          group={group}
+          cfg={cfg}
+          inUse={cfg?.tplGroup === group.tplGroup}
+          onUse={() => useProviderStore.getState().useGroup(group.kind, group.tplGroup)}
+          onDelete={() => void dropGroup()}
+        />
+      )}
     </div>
   );
 }
 
-function GroupEditor({ group, instances, onDelete }: { group: TemplateGroup; instances: ProviderConfig[]; onDelete: () => void }) {
+function GroupEditor({ group, cfg, inUse, onUse, onDelete }: {
+  group: TemplateGroup; cfg: ProviderConfig | null; inUse: boolean; onUse: () => void; onDelete: () => void;
+}) {
   const t = useT();
   const lang = useEditorStore((s) => (s.lang === 'en' ? 'en' : 'zh'));
   const store = useProviderStore.getState();
@@ -127,6 +139,12 @@ function GroupEditor({ group, instances, onDelete }: { group: TemplateGroup; ins
       <div className="flex flex-wrap items-center gap-2">
         <input value={group.label} onChange={(e) => patch({ ...group, label: e.target.value })} className="input h-7 text-xs w-40" placeholder={t('组名称', 'Group name')} />
         <input value={group.baseUrl ?? ''} onChange={(e) => patch({ ...group, baseUrl: e.target.value })} className="input h-7 text-xs flex-1 min-w-40 font-mono" placeholder="https://…/api/v1" />
+        <button
+          onClick={onUse}
+          disabled={inUse}
+          title={inUse ? t('本能力已经用这一组', 'This capability already uses it') : t('这处配置改用它（Base URL / Key 不重填）', 'Point this capability here (credentials stay)')}
+          className={`h-7 px-2 rounded-md border text-[10px] ${inUse ? 'border-[var(--brand)] text-[var(--brand)]' : 'border-white/15 hover:bg-white/10'}`}
+        >{inUse ? t('● 本能力使用中', '● In use') : t('用作本能力', 'Use for this capability')}</button>
         <button
           onClick={() => store.restoreGroup(group.tplGroup)}
           disabled={!seed} title={t('丢弃本地改动，取回内置默认形状', 'Restore the built-in shape')}
@@ -146,7 +164,7 @@ function GroupEditor({ group, instances, onDelete }: { group: TemplateGroup; ins
       {problems.length > 0 && <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>}
 
       {group.rows.map((row) => (
-        <RowEditor key={`${row.role}:${row.mode}`} group={group} row={row} instance={instanceOf(instances, group.tplGroup)} lang={lang} />
+        <RowEditor key={`${row.role}:${row.mode}`} group={group} row={row} instance={instanceOf(cfg, group.tplGroup)} lang={lang} />
       ))}
 
       {missing.length > 0 && (

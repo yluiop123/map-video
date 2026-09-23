@@ -160,12 +160,13 @@
 
 ### 组 10 · 应用配置 2 张
 
-「一家供应商怎么发请求」只有这一处真相（模板即数据，见 `docs/provider-engine.md`）：`provider` 存身份与密钥，`provider_endpoint` 存它的各个接口模板。协议列与代码里的两处 `switch` 一并删掉。
+「一家供应商怎么发请求」只有这一处真相（模板即数据，见 `docs/provider-engine.md`）：**组表**说一个功能要哪几条接口，**接口表**说每条怎么发、返回从哪取，**配置表**只装这一处配置的凭证与取值。协议列与代码里的 `switch` 一并删掉。
 
 | 表 | 职责 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
-| `provider` | AI 服务商配置：文案生成 / 语音（含克隆）/ 图片生成 | `provider_id` | `recipe` 记模板包（内置形态由它定，改 label 不影响）；`secrets_json` 是命名密钥槽 `{apiKey, secret2}`（火山 Access Key / MiniMax group_id 不再拼字符串）；`ux_provider_active` 保证每个 kind 至多一条生效 | 顶栏「设置 · AI」弹窗（`SettingsDialog.tsx`） |
-| `provider_endpoint` | 该供应商配齐的接口模板：每个 role 一行（怎么发 / 怎么取回 / 同步还是异步） | `endpoint_id`（`<provider_id>:<role>`） | `role`·`mode` 等枚举**不写 CHECK**（取值由 TS 类型 + `validateTemplate()` 管，加供应商不改表）；`ux_pe_role` 保证同供应商同 role 唯一；`poll_json.$.statusRole` 是**弱引用** → `v_check_async_pairing` 自检 | 同上 →「接口模板」页签（批次 3） |
+| `provider_template_group` | 接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口 | `tpl_group` | `kind` 在组上（组内每行必然同值，故不重复存）；`label` / `note` 是用户自填的单个字符串；`models_json` / `default_*` 是新建这处配置时的建议值 | ⚙ →「接口模板」（`TemplatesPane.tsx`） |
+| `provider_template` | 一条接口怎么发、返回从哪取（含异步查询与音色克隆） | `tpl_id`（`<tpl_group>:<role>:<mode>`） | 两类入参各一列（`inst_params_json` / `req_params_json`）；`resp_json` 是**固定槽位**不是自由 map；`role`·`mode`·`kind` **不写 CHECK**（TS 类型 + 保存前 `validateRow` 管）；`ux_tpl_role` 保证同组同 role+mode 唯一 | 同上 → 每 role 一张接口卡片 |
+| `provider` | 一处一份的 AI 配置（文案 / 语音 / 图片） | **`kind`**（全表最多三行） | `tpl_group` 是**真外键**（引用哪一组模板，改它叫「用作本能力」）；两把 Key 两个具名列，不塞 JSON 槽位；`mode` 在这里（不属接口行）；同步/异步配错了由 `v_check_async_pairing` 体检 | ⚙ →「文案生成 / 语音克隆 / 图片生成」（`ProviderPanel.tsx`） |
 
 ### 组 11 · 公共图层与公共元素（跨项目图库） 6 张
 
@@ -186,7 +187,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **26 张表 / 698 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，698 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **26 张表 / 694 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，694 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -887,22 +888,20 @@
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
 
-#### provider — 能力实例：用哪组模板 + 这个账号的 Base URL / Key / 同步异步 / 参数（Key 只存本机）
+#### provider — 能力配置：一个能力一行（llm / tts / image 共三行），选用的模板组 + 这一处的 Base URL / Key / 参数（Key 只存本机）
 
 **职责**：能力实例：用哪组模板 + 账号（Base URL / 两把 Key / 同步异步 / 参数 / 并发重试）　**前端**：⚙ 设置 · AI → 左侧文案 / 语音 / 图片（ProviderPanel.tsx）
 
-19 列 · 主键 `provider_id`
+15 列 · 主键 `kind`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `provider_id` | TEXT | `PK` | 能力实例 id |
-| `kind` | TEXT | `NOT NULL` | 能力：llm 文案生成 / tts 语音（含克隆）/ image 图片生成 |
-| `label` | TEXT | `NOT NULL` | 显示名 · 默认 `''` |
-| `tpl_group` | TEXT | `NOT NULL` `FK → provider_template_group` | 引用哪一组接口模板（真外键） |
+| `kind` | TEXT | `PK` | 能力 = 主键：llm 文案生成 / tts 语音（含克隆）/ image 图片生成（全表最多三行，一处一套凭证） |
+| `tpl_group` | TEXT | `NOT NULL` `FK → provider_template_group` | 这个能力当前用哪一组接口模板（真外键） |
 | `base_url` | TEXT | `NOT NULL` | 接口基础地址（一个能力一份，不跨能力共享） · 默认 `''` |
 | `api_key` | TEXT | `NOT NULL` | 主密钥（模板里写 {apiKey}） · 默认 `''` |
 | `api_key2` | TEXT | — | 第二凭证（模板里写 {apiKey2}，火山 TTS 的 Access Key） |
-| `mode` | TEXT | `NOT NULL` | 这个账号走同步还是异步：决定用哪条生成变体、要不要查询接口 · 默认 `'sync'` |
+| `mode` | TEXT | `NOT NULL` | 这个能力走同步还是异步：决定用哪条生成变体、要不要查询接口 · 默认 `'sync'` |
 | `model` | TEXT | `NOT NULL` | 模型名 / TTS 音色模型（合成与克隆共用同一个值） · 默认 `''` |
 | `voice` | TEXT | — | 音色 / 说话人 ID |
 | `speed` | REAL | `NOT NULL` | 语速（0.5–2） · 默认 `1` · `CHECK (speed BETWEEN 0.5 AND 2)` |
@@ -910,8 +909,6 @@
 | `max_concurrency` | INTEGER | `NOT NULL` | 批量并发上限（1 = 串行；账号限额，属实例不属模板） · 默认 `1` |
 | `retry_times` | INTEGER | `NOT NULL` | 限流 / 网络错的退避重试次数（业务错不重试） · 默认 `2` |
 | `extra` | TEXT | — | 附加请求参数（JSON，深合并进请求体的兜底口） · `CHECK (extra IS NULL OR json_valid(extra))` |
-| `active` | INTEGER | `NOT NULL` | 是否生效（每个 kind 至多一条为 1） · 默认 `0` · `CHECK (active IN (0,1))` |
-| `ord` | INTEGER | `NOT NULL` | 同类内排序 · 默认 `0` |
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
 

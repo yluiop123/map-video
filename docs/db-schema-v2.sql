@@ -1122,30 +1122,24 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板行：一条接�
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tpl_role ON provider_template(tpl_group, role, mode);
 CREATE INDEX IF NOT EXISTS ix_tpl_group ON provider_template(tpl_group, ord);
 
-CREATE TABLE IF NOT EXISTS provider (  -- 能力实例：用哪组模板 + 这个账号的 Base URL / Key / 同步异步 / 参数（Key 只存本机）
-  provider_id TEXT PRIMARY KEY,  -- 能力实例 id
-  kind       TEXT NOT NULL,  -- 能力：llm 文案生成 / tts 语音（含克隆）/ image 图片生成
-  label      TEXT NOT NULL DEFAULT '',  -- 显示名
-  tpl_group  TEXT NOT NULL REFERENCES provider_template_group(tpl_group),  -- 引用哪一组接口模板（真外键）
-  base_url   TEXT NOT NULL DEFAULT '',  -- 接口基础地址（一个能力一份，不跨能力共享）
-  api_key    TEXT NOT NULL DEFAULT '',  -- 主密钥（模板里写 {apiKey}）
-  api_key2   TEXT,  -- 第二凭证（模板里写 {apiKey2}，火山 TTS 的 Access Key）
-  mode       TEXT NOT NULL DEFAULT 'sync',  -- 这个账号走同步还是异步：决定用哪条生成变体、要不要查询接口
-  model      TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型（合成与克隆共用同一个值）
-  voice      TEXT,  -- 音色 / 说话人 ID
-  speed      REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
+CREATE TABLE IF NOT EXISTS provider (  -- 能力配置：一个能力一行（llm / tts / image 共三行），选用的模板组 + 这一处的 Base URL / Key / 参数（Key 只存本机）
+  kind        TEXT PRIMARY KEY,  -- 能力 = 主键：llm 文案生成 / tts 语音（含克隆）/ image 图片生成（全表最多三行，一处一套凭证）
+  tpl_group   TEXT NOT NULL REFERENCES provider_template_group(tpl_group),  -- 这个能力当前用哪一组接口模板（真外键）
+  base_url    TEXT NOT NULL DEFAULT '',  -- 接口基础地址（一个能力一份，不跨能力共享）
+  api_key     TEXT NOT NULL DEFAULT '',  -- 主密钥（模板里写 {apiKey}）
+  api_key2    TEXT,  -- 第二凭证（模板里写 {apiKey2}，火山 TTS 的 Access Key）
+  mode        TEXT NOT NULL DEFAULT 'sync',  -- 这个能力走同步还是异步：决定用哪条生成变体、要不要查询接口
+  model       TEXT NOT NULL DEFAULT '',  -- 模型名 / TTS 音色模型（合成与克隆共用同一个值）
+  voice       TEXT,  -- 音色 / 说话人 ID
+  speed       REAL NOT NULL DEFAULT 1 CHECK (speed BETWEEN 0.5 AND 2),  -- 语速（0.5–2）
   params_json TEXT CHECK (params_json IS NULL OR json_valid(params_json)),  -- 实例参数取值 JSON（对模板 inst_params_json 声明的那些名字）
   max_concurrency INTEGER NOT NULL DEFAULT 1,  -- 批量并发上限（1 = 串行；账号限额，属实例不属模板）
   retry_times     INTEGER NOT NULL DEFAULT 2,  -- 限流 / 网络错的退避重试次数（业务错不重试）
   extra      TEXT CHECK (extra IS NULL OR json_valid(extra)),  -- 附加请求参数（JSON，深合并进请求体的兜底口）
-  active     INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0,1)),  -- 是否生效（每个 kind 至多一条为 1）
-  ord        INTEGER NOT NULL DEFAULT 0,  -- 同类内排序
   created_at INTEGER,  -- 创建时间（epoch ms，审计用）
   updated_at INTEGER  -- 最后修改时间（epoch ms，审计用）
 );
--- 每个 kind 至多一条生效（部分唯一索引，替代旧的「先清后置」两步写法）
-CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_active ON provider(kind) WHERE active = 1;
-CREATE INDEX IF NOT EXISTS ix_provider_kind ON provider(kind, ord);
+-- kind 是主键（自带索引），只给外键列补索引
 CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_group);
 
 -- =============================================================================
@@ -1262,16 +1256,16 @@ SELECT t.element_id, e.value->>'toCountryId', '兼并事件目标势力不存在
     AND NOT EXISTS (SELECT 1 FROM json_each(t.countries_json) c
                     WHERE c.value->>'countryId' = e.value->>'toCountryId');
 
--- 12.4 异步实例的配对自检（实例选了异步，它引用的模板组里就必须有异步生成接口 + 一条查询接口；
+-- 12.4 异步配置的配对自检（某个能力选了异步，它引用的模板组里就必须有异步生成接口 + 一条查询接口；
 --      配对关系是「同组 + role=query」，没有指针列可填错，但组被改坏时这里能抓到）
 CREATE VIEW IF NOT EXISTS v_check_async_pairing AS
-SELECT p.provider_id AS ref_id,
-       p.tpl_group   AS target,
+SELECT p.kind      AS ref_id,
+       p.tpl_group AS target,
        CASE WHEN NOT EXISTS (SELECT 1 FROM provider_template t
                              WHERE t.tpl_group = p.tpl_group AND t.mode = 'async'
                                AND t.role IN ('generate','synthesize'))
-            THEN '异步实例：这组模板没有异步的生成接口'
-            ELSE '异步实例：这组模板缺 role=query 的查询接口' END AS problem
+            THEN '异步配置：这组模板没有异步的生成接口'
+            ELSE '异步配置：这组模板缺 role=query 的查询接口' END AS problem
   FROM provider p
  WHERE p.mode = 'async'
    AND (NOT EXISTS (SELECT 1 FROM provider_template t

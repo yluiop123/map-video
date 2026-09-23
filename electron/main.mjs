@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2,
   listTemplateGroupsV2, upsertTemplateGroupV2, removeTemplateGroupV2, migrateProvidersFromStale,
-  listProvidersV2, upsertProviderV2, removeProviderV2, setActiveProviderV2 } from './db-v2.mjs';
+  listProvidersV2, upsertProviderV2, removeProviderV2 } from './db-v2.mjs';
 
 const DIST = path.join(app.getAppPath(), 'dist');
 
@@ -127,11 +127,10 @@ function registerIpc() {
 
   // 能力实例（Key 存本地库；「怎么发请求」在它引用的模板组里）
   // SQL 全在 db-v2.mjs —— 与项目/素材同一层，才能离线跑迁移回归
+  ipcMain.handle('db:providers:remove', (_e, kind) => { removeProviderV2(db, kind); return { ok: true }; });
   ipcMain.handle('db:providers:migrate', () => ({ moved: migrateProvidersFromStale(db) }));
   ipcMain.handle('db:providers:list', () => listProvidersV2(db));
   ipcMain.handle('db:providers:upsert', (_e, cfg) => { upsertProviderV2(db, cfg); return { ok: true }; });
-  ipcMain.handle('db:providers:remove', (_e, id) => { removeProviderV2(db, id); return { ok: true }; });
-  ipcMain.handle('db:providers:setActive', (_e, { kind, id }) => { setActiveProviderV2(db, kind, id); return { ok: true }; });
 
   // 网络管道：渲染进程算好请求，主进程只管发与收（无 CORS，Key 不出本机）
   ipcMain.handle('net:request', async (_e, req) => {

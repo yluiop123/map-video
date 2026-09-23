@@ -33,8 +33,8 @@ contextBridge.exposeInMainWorld('mapvideo', {
     migrate: () => ipcRenderer.invoke('db:providers:migrate'),
     list: () => ipcRenderer.invoke('db:providers:list'),
     upsert: (cfg) => ipcRenderer.invoke('db:providers:upsert', cfg),
-    remove: (id) => ipcRenderer.invoke('db:providers:remove', id),
-    setActive: (kind, id) => ipcRenderer.invoke('db:providers:setActive', { kind, id }),
+    /** 清掉该能力的那一行（界面无此动作；冒烟回归用它清场） */
+    remove: (kind) => ipcRenderer.invoke('db:providers:remove', kind),
   },
   assets: {
     save: (p) => ipcRenderer.invoke('assets:save', p),   // p: { mime, bytes, name?, kind? }

@@ -8,7 +8,7 @@
  */
 import { useState, useRef, useEffect, type ComponentProps } from 'react';
 import { useProjectStore } from '../stores/projectStore';
-import { useProviderStore, activeProvider } from '../stores/providerStore';
+import { useProviderStore } from '../stores/providerStore';
 import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
 import { callLLM, callTTS, parseSrt, srtTime } from '../lib/providers';
 import { runBatch } from '../lib/provider-queue';
@@ -87,8 +87,6 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const setNarrationEntries = useProjectStore((s) => s.setNarrationEntries);
   const setProjectEndFrame = useProjectStore((s) => s.setProjectEndFrame);
   const setStyle = useProjectStore((s) => s.setNarrationStyle);
-  const llmList = useProviderStore((s) => s.llm);
-  const ttsList = useProviderStore((s) => s.tts);
 
   const [topic, setTopic] = useState('');
   const [reference, setReference] = useState('');
@@ -102,10 +100,10 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  void llmList; void ttsList; // 订阅服务配置变化
+  // 一个能力一份配置；订阅它 = 改完服务立刻反映到本弹窗
+  const llm = useProviderStore((s) => s.llm);
+  const tts = useProviderStore((s) => s.tts);
   const fps = project?.globalConfig.defaultFPS || 30;
-  const llm = activeProvider('llm');
-  const tts = activeProvider('tts');
   const hasContent = rows.some((r) => r.text.trim());
   const style = project?.narration?.style || defaultNarrationStyle();
 

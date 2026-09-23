@@ -33,7 +33,7 @@ export const TABLE_DESC = {
   overlay: '叠加层（弹窗）：本体一张，custom / person 内容块内联在 payload_json',
   provider_template_group: '接口模板组：一个功能（文案 / 语音 / 图片）要哪几条接口（共享数据，实例只引用）',
   provider_template: '接口模板行：一条接口怎么发、返回从哪取（含异步查询与克隆；共享数据）',
-  provider: '能力实例：用哪组模板 + 这个账号的 Base URL / Key / 同步异步 / 参数（Key 只存本机）',
+  provider: '能力配置：一个能力一行（llm / tts / image 共三行），选用的模板组 + 这一处的 Base URL / Key / 参数（Key 只存本机）',
   public_layer: '公共图层：跨项目图库（把项目图层连元素整体复制过来，导入到任意项目）',
   public_element_marker: '公共标记元素：public_layer 内的标记副本（与 element_marker 同构）',
   public_element_route: '公共路线元素：public_layer 内的路线副本（与 element_route 同构）',
@@ -501,14 +501,12 @@ const NOTES = {
     "updated_at": "最后修改时间（epoch ms，审计用）"
   },
   "provider": {
-    "provider_id": "能力实例 id",
-    "kind": "能力：llm 文案生成 / tts 语音（含克隆）/ image 图片生成",
-    "label": "显示名",
-    "tpl_group": "引用哪一组接口模板（真外键）",
+    "kind": "能力 = 主键：llm 文案生成 / tts 语音（含克隆）/ image 图片生成（全表最多三行，一处一套凭证）",
+    "tpl_group": "这个能力当前用哪一组接口模板（真外键）",
     "base_url": "接口基础地址（一个能力一份，不跨能力共享）",
     "api_key": "主密钥（模板里写 {apiKey}）",
     "api_key2": "第二凭证（模板里写 {apiKey2}，火山 TTS 的 Access Key）",
-    "mode": "这个账号走同步还是异步：决定用哪条生成变体、要不要查询接口",
+    "mode": "这个能力走同步还是异步：决定用哪条生成变体、要不要查询接口",
     "model": "模型名 / TTS 音色模型（合成与克隆共用同一个值）",
     "voice": "音色 / 说话人 ID",
     "speed": "语速（0.5–2）",
@@ -516,8 +514,6 @@ const NOTES = {
     "max_concurrency": "批量并发上限（1 = 串行；账号限额，属实例不属模板）",
     "retry_times": "限流 / 网络错的退避重试次数（业务错不重试）",
     "extra": "附加请求参数（JSON，深合并进请求体的兜底口）",
-    "active": "是否生效（每个 kind 至多一条为 1）",
-    "ord": "同类内排序",
     "created_at": "创建时间（epoch ms，审计用）",
     "updated_at": "最后修改时间（epoch ms，审计用）"
   }
