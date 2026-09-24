@@ -109,12 +109,19 @@ export function removeElementLayers(map: maplibregl.Map, elementId: string): voi
   geoTileSig.delete(elementId);
 }
 
+/**
+ * 整份 style 的图层 id 列表。`map.getStyle()` 会把所有图层**深序列化**一遍，
+ * 压测项目（340 元素 / 835 图层）实测单次 ~1ms，而原来每个不可见元素都要读一次
+ * —— 一半元素不可见时就是每帧 170 次（帧时从 150ms 被顶到 300ms）。
+ * 所以 renderElements 开头读一次，整帧共用。
+ */
+function styleLayerIds(map: maplibregl.Map): string[] {
+  return map.getStyle()?.layers?.map((l) => l.id) ?? [];
+}
+
 /** 隐藏元素的所有图层（显示时间之外时调用，避免图层残留） */
-export function hideElementLayers(map: maplibregl.Map, elementId: string): void {
-  const style = map.getStyle();
-  if (!style?.layers) return;
-  for (const layer of style.layers) {
-    const id = layer.id;
+export function hideElementLayers(map: maplibregl.Map, elementId: string, ids?: string[]): void {
+  for (const id of ids ?? styleLayerIds(map)) {
     if (id.includes(elementId) && id !== elementId) {
       try { map.setLayoutProperty(id, 'visibility', 'none'); } catch { /* 非 symbol/line 层或已隐藏 */ }
     }
@@ -122,11 +129,8 @@ export function hideElementLayers(map: maplibregl.Map, elementId: string): void 
 }
 
 /** 恢复元素所有图层可见性（hideElementLayers 的逆操作；个别渲染函数随后会按条件重新修正） */
-export function showElementLayers(map: maplibregl.Map, elementId: string): void {
-  const style = map.getStyle();
-  if (!style?.layers) return;
-  for (const layer of style.layers) {
-    const id = layer.id;
+export function showElementLayers(map: maplibregl.Map, elementId: string, ids?: string[]): void {
+  for (const id of ids ?? styleLayerIds(map)) {
     if (id.includes(elementId) && id !== elementId) {
       try { map.setLayoutProperty(id, 'visibility', 'visible'); } catch { /* */ }
     }
@@ -210,17 +214,20 @@ export function renderElements(
 
   const hiddenEls = hiddenElByMap.get(map) || new Set<string>();
   hiddenElByMap.set(map, hiddenEls);
+  // 图层 id 列表整帧只读一次（见 styleLayerIds 注释）。本帧内不可见的元素不会被任何渲染函数
+  // 碰到，所以这份快照不会漏掉「属于隐藏元素的新图层」；新图层只会来自下一帧。
+  const layerIds = styleLayerIds(map);
   for (const element of elements) {
     if (!isVisible(element, frame)) {
       // 不可见：隐藏该元素所有图层（避免上一帧残留导致"显示时间之外仍显示"）
-      hideElementLayers(map, element.id);
+      hideElementLayers(map, element.id, layerIds);
       hiddenEls.add(element.id);
       continue;
     }
     if (hiddenEls.delete(element.id)) {
       // 曾被隐藏过（时间窗瞬时越界，如播放首帧负 dt）：先整体恢复可见，
       // 渲染函数随后按条件修正（否则渲染器不逐帧重设 visibility 的层如 terr 填充会永久消失）
-      showElementLayers(map, element.id);
+      showElementLayers(map, element.id, layerIds);
     }
 
     switch (element.type) {
