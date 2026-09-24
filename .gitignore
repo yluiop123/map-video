@@ -11,6 +11,8 @@ flyarch-config.json
 
 # 真实调用回归的产物（不入库）
 tools/.tmp-real/
+# 预览性能基线的采样结果（不入库）
+tools/.bench/
 
 # 本地密钥（不要提交）
 key.txt

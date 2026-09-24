@@ -29,7 +29,12 @@ npm run dist:win       # 打 Windows 包 → release/
 - **`release/` 产物说明**：`MapVideo Setup <v>.exe`（NSIS 安装版）与 `MapVideo <v>.exe`（Portable 免安装版）功能相同，二选一即可；`latest.yml` / `*.blockmap` 供 electron-updater 差分更新；`win-unpacked/` 是**中间产物**（内含真正的 `MapVideo.exe`），可删；只需留一份时删其余。
 
 - 无测试框架。回归验证靠：`npx tsc -b` + `npm run build` + `tools/*.mjs` 自动化（需本机 Chrome 开 `--remote-debugging-port=9222`，临时 profile：`C:\Users\23659\AppData\Local\Temp\opencode\mv-studio-profile`，配合 `playwright-core`）。
-- `tools/` 下脚本为自动化回归（test-* / verify-*），读文件头注释即可用；`pw-page.mjs` 是标签页复用助手（避免每次开新标签）。
+- `tools/` 只留**跑得动、还会再跑**的东西，读文件头注释即可用，四类：
+  ① 文档生成链：`db-field-notes.mjs`（702 字段中文说明词表，`gen-db-field-dict` 的**必需输入**，漏一条直接报错）→ `gen-db-field-dict.mjs`（注入 `docs/db-tables.md`，`--check` 只校验）→ `comment-ddl.mjs`（把说明写成 DDL 行尾注释）；
+  ② 离线回归（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `verify-provider-queue` / `audit-fk-indexes`；
+  ③ 浏览器自动化（Chrome 9222，或桌面端 `MV_CDP=9223`）：`smoke-desktop` / `smoke-backend` / `test-fx` / `test-overlays` / `test-timeline` / `test-import`，公共助手 `pw-page.mjs`（标签页复用，避免每次开新标签）；
+  ④ 会花配额 / 改数据的：`try-real-calls.mjs`（真发上游）、`bench-preview.mjs`（预览性能基线，采样结果存 `tools/.bench/`，不入库）。
+  **一次性验证脚本用完就删**，别留在目录里当考古（2026-09-24 清掉 13 个：验「疆域蚕食」「飞行拖尾」那两版实现的探帧脚本、`verify-dot`、`verify-dark-ui`、`bench-fk-indexes.cjs`、头注释写着「用完即删」的 `smoke-fx-tabs`）。
 
 ## 4. 目录结构（src/）
 
@@ -226,13 +231,14 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   4. `node --experimental-sqlite tools/gen-db-field-dict.mjs` 重跑，把字段字典注入 `docs/db-tables.md`
   4.5 `node tools/comment-ddl.mjs`：把字段中文说明写成 DDL 行尾 `-- 中文`（SQLite 不存储注释，靠 DDL 自文档；幂等，改完字段说明后重跑）
   5. 手工同步文档中**标记外**的部分：表数 / 列数（`db-tables.md`、`db-redesign.md`、`AGENTS.md` 本节的规模行）、`db-tables.md` 第二节字段归属表与第三节逐表速查、`db-redesign.md` 2.2 实体清单与资源层说明、`docs/db-er-diagram.mmd` E-R 图
-  6. 验证（六条全绿才算完）：
+  6. 验证（七条全绿才算完）：
      `node --experimental-sqlite tools/gen-db-field-dict.mjs --check`（结构一致 + 说明全覆盖）·
      `node --experimental-sqlite tools/audit-fk-indexes.mjs`（外键索引缺口）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs`（**存进去 = 取出来**：输入原值逐字往返、falsy 合法值不被 `||` 吞、帧↔秒互逆、发音修正 JSON）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`（公共图层副本）·
      `node --experimental-sqlite tools/verify-provider-templates.mjs`（**四张配置表 + 三代旧形状让位**：模板/实例逐字往返、真外键拦删、音色唯一键含 target_model、任务读写与错峰查询、异步配对自检视图、让位不删表且把 Key 并进 values.instance、task 换代后行不丢）·
-     `node --experimental-strip-types tools/verify-request-engine.mjs`（模板求值 / 出参解码 / 异步轮询，全离线）
+     `node --experimental-strip-types tools/verify-request-engine.mjs`（模板求值 / 出参解码 / 异步轮询，全离线）·
+     `node --experimental-strip-types tools/verify-provider-queue.mjs`（批量调度：并发上限、只重试 429/5xx、业务错不重试、取消后不开新行、逐条落库钩子）
 
 - **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
   - 地形夸张系数可调节、底图可增删改 → 打破了「底图/高程图是代码常量，配置不入库」的前提，2026-09-19 补了 `base_map` / `elevation_map` 两张表（**每项目一份**，内置项在创建项目时作为普通行复制进来，夸张系数直接落在 `elevation_map.exaggeration`）；
