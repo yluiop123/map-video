@@ -35,9 +35,11 @@ await page.bringToFront();
 
 const ready = await page.evaluate(() => {
   const s = window.__editorStore;
-  if (!s) return { ok: false, why: 'window.__editorStore 不在（不在编辑器页？）' };
+  if (!s) return { ok: false, why: 'window.__editorStore 不在（页面没加载完？）' };
   const st = s.getState();
-  return { ok: true, hasPlayRate: typeof st.playRate === 'number', frame: st.currentFrame, playing: st.isPlaying };
+  // 项目列表页也有这个 store，但那里没有编辑器：没有画布与播放条就等于没东西可测
+  const hasEditor = !!document.querySelector('canvas') && !!document.querySelector('button[title="字幕 / 配音 / 字幕样式"]');
+  return { ok: hasEditor, frame: st.currentFrame, playing: st.isPlaying, why: hasEditor ? '' : '当前不在编辑器页（项目列表？）—— 先打开一个项目再跑' };
 });
 if (!ready.ok) { console.error('前置不满足：', ready.why); process.exit(2); }
 
@@ -111,6 +113,9 @@ for (const id of profile.samples) {
 const selfMs = (c) => (total ? (c / total) * (SECS * 1000) : 0);
 const top = [...byFn.entries()].sort((a, b) => b[1] - a[1]).slice(0, 18)
   .map(([fn, c]) => ({ fn, ms: Math.round(selfMs(c)) }));
+// idle 占比是判别依据：接近 100% = 根本没在干活（被节流），接近 0 = 主线程真的忙不过来
+const idleMs = top.find((t) => t.fn.startsWith('(idle)'))?.ms ?? 0;
+const idleShare = +(idleMs / (SECS * 1000) * 100).toFixed(1);
 
 const probe = await page.evaluate(() => {
   const b = window.__bench; clearTimeout(b.timer);
@@ -128,26 +133,33 @@ const result = {
   at: new Date().toISOString(), rate: RATE, secs: SECS, endFrame: Math.round(endFrame), windowState,
   fps: +(probe.rafCount / SECS).toFixed(1), ...probe,
   mutationsPerSec: +(probe.mutations / SECS).toFixed(1),
-  topSelf: top,
+  idleShare, topSelf: top,
 };
-// 护栏：rAF 明显不到 60Hz 就是被节流了（窗口遮挡/最小化），这种数字存进基线会害了后面的对比
-result.valid = result.fps >= 30;
+// 两道护栏：rAF 不到 60Hz = 被后台节流；播放头没推进 = 根本没在播（不在编辑器页 / 被打断）。
+// 这两种数字存进基线都会害了后面的对比，所以直接判无效、不落盘。
+result.valid = result.fps >= 30 && result.endFrame >= 10;
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const file = path.join(OUT_DIR, `${LABEL}.json`);
 
-const K = ['fps', 'medianMs', 'p95Ms', 'maxMs', 'janky', 'mutationsPerSec', 'longtasks', 'endFrame'];
+const K = ['fps', 'medianMs', 'p95Ms', 'maxMs', 'janky', 'mutationsPerSec', 'longtasks', 'endFrame', 'idleShare'];
 console.log(`\n== 预览基线 ${LABEL}（${SECS}s @ ${RATE}×，播到第 ${result.endFrame} 帧，窗口状态 ${result.windowState}）`);
 for (const k of K) console.log(`  ${k.padEnd(16)} ${result[k]}`);
+// 先给自耗时排行再判有效与否：数字无效时，这张表正是判断「被节流」还是「真忙」的依据
+console.log(`  函数自耗时 top（采样 ${total} 个，按 ${SECS}s 折算）:`);
+for (const t of top.slice(0, 12)) console.log(`    ${String(t.ms).padStart(5)}ms  ${t.fn}`);
 if (!result.valid) {
-  console.log(`\n!! rAF 只有 ${result.fps} fps —— 页面被后台节流了（窗口被遮挡/最小化），这份数字无效，不写文件。`);
-  console.log('   把 MapVideo 窗口切到前台并保持可见后重跑。');
+  if (result.fps < 30) {
+    console.log(`\n!! rAF 只有 ${result.fps} fps —— 页面被后台节流了。用 MV_BENCH=1 重启桌面端（关掉 Chromium 后台节流），或把窗口切到前台。`);
+  }
+  if (result.endFrame < 10) {
+    console.log(`\n!! 6 秒里播放头只走到第 ${result.endFrame} 帧 —— 根本没在播（不在编辑器页？播放被打断？）。这份数字无效。`);
+  }
+  console.log('   不写文件，避免脏数据进基线。');
   await browser.close();
   process.exit(3);
 }
 fs.writeFileSync(file, JSON.stringify(result, null, 1));
-console.log(`  函数自耗时 top（采样 ${total} 个，按 ${SECS}s 折算）:`);
-for (const t of top.slice(0, 12)) console.log(`    ${String(t.ms).padStart(5)}ms  ${t.fn}`);
 console.log(`  存 → ${path.relative(process.cwd(), file)}`);
 
 const against = arg('against');

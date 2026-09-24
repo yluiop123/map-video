@@ -16,6 +16,18 @@ import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, lis
 
 const DIST = path.join(app.getAppPath(), 'dist');
 
+/**
+ * 跑预览性能基线时（`MV_BENCH=1`）关掉 Chromium 的后台节流。
+ * 窗口被最小化或遮挡时 rAF 会被压到 ~1Hz，`tools/bench-preview.mjs` 测出来的帧率与
+ * 函数自耗时全是假的（Electron 不支持 CDP 的 Browser.getWindowBounds，脚本自己拉不回窗口）。
+ * 不设这个变量就是平时的开发行为，一点不变。
+ */
+if (process.env.MV_BENCH) {
+  app.commandLine.appendSwitch('disable-background-timer-throttling');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+}
+
 // ---------- SQLite ----------
 let db;
 function initDb() {
