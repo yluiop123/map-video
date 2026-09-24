@@ -168,8 +168,8 @@ erDiagram
     text task_id PK
     text batch_id "一次「全部生成配音」= 一批"
     text provider_id FK
-    text project_id FK "删项目带走在途任务"
-    text entry_id FK "回填到哪条字幕"
+    text project_id "弱引用：删项目由 removeProjectV2 显式清"
+    text entry_id "弱引用：字幕行每次保存都重写，不能挂 CASCADE"
     text category "tts | image"
     text status "submitting | querying | success | failed | canceled"
     text provider_task_id "厂商任务 id"
@@ -246,6 +246,6 @@ erDiagram
   PROVIDER ||--o{ VOICE : "1:N 音色池按实例隔离（CASCADE）"
   ASSET ||--o{ VOICE : "1:N 参考音频原件（RESTRICT：被音色引用的素材删不掉）"
   PROVIDER ||--o{ TASK : "1:N 这条实例发出去的在途任务"
-  PROJECT ||--o{ TASK : "1:N 删项目带走在途任务（CASCADE）"
-  NARRATION_ENTRY ||--o{ TASK : "1:N 回填到哪条字幕（CASCADE）"
+  PROJECT ||..o{ TASK : "1:N 弱引用（删项目时应用层清掉在途任务）"
+  NARRATION_ENTRY ||..o{ TASK : "1:N 弱引用（回填目标；字幕行没了就跳过）"
   ASSET ||--o{ TASK : "1:N 产物落 asset 后回填（SET NULL）"

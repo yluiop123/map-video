@@ -176,7 +176,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 ```
 
 - **「只克隆一次」由这条唯一键保证**：同一实例 + 同一份音频 + 同一目标模型只有一行，`status` 就是抢占标志（并发点两次不会在建音色上打两次）。
-- 早先这份账本在 `localStorage`，换浏览器就丢、也没地方记 fileId 与失效时间。
+- 参考音频原件走 `asset`（`RESTRICT`：删素材会被拦），音色失效时靠原件重建 —— 界面上不记「手填音色 ID」。
 
 `task` 的唯一价值是**跨重启续跑**（关窗口、刷新页面都不丢在途任务）：`batch_id`（一次「全部生成配音」= 一个批次 + N 条）、`status`（`submitting`/`querying`/`success`/`failed`/`canceled`）、`input_json`（提交参数快照，重试 = 取原值重发）、`provider_task_id`、`artifact_id`（产物落 `asset` 后回填）、`query_count`/`rebuild_count`/`next_query_at`（调度器按它错峰，不做每任务独立循环）。`project_id` 与 `entry_id` 都是**弱引用**：保存项目是「删掉项目那一行 + 连子表整批重写」，挂成 `ON DELETE CASCADE` 真外键就等于让用户每次自动保存都 CASCADE 掉自己正在跑的任务（实测踩过）。所以删项目由 `removeProjectV2` 显式清掉它的在途任务，字幕行没了就是「没地方放」，调度器当场跳过；`provider_id` 仍是真外键 `CASCADE`（删实例连带删它的任务）。
 

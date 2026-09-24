@@ -99,7 +99,7 @@
 |---|---|---|---|---|
 | `camera_keyframe` | `camera[]` | `kf_id` | `frame` 是**到达时间**，`move_duration` 是起飞提前量；`follow_route_element_id` 删路线后 `SET NULL`（退化为固定视角） | 「视角」面板（`KeyframePanel.tsx` / `CameraEditor.tsx`） |
 | `screen_fx` | `fx[]` | `fx_id` | 屏幕空间特效窗口（天气/画面），与地图元素分离 | 「特效」面板（`FxPanelBody.tsx`）+ 时间轴特效轨道 |
-| `narration` | `narration` 的样式部分 | `project_id` | 1:1，主键即外键 | 「字幕」面板（`FxPanelBody.tsx`） |
+| `narration` | `narration` 的样式 + 发音修正 | `project_id` | 1:1，主键即外键 | 顶栏「字幕生成」弹窗（`GenerateDialog.tsx`） |
 | `narration_entry` | `narration.entries[]` | `entry_id` | 一条字幕 = 一行；音频走 `asset` | 时间轴「🎙 配音」轨道 + 字幕面板（TTS / 导入 SRT） |
 | `music_track` | `music[]`（项目级） | `track_id` | 项目单轨多段（项目绝对时间）；音频走 `asset` | 时间轴「音乐」轨道 + 音乐面板（内置/导入） |
 
@@ -390,7 +390,7 @@
 
 #### narration — 字幕 / 配音档：样式部分，与项目 1:1
 
-**职责**：字幕 / 配音档（样式部分，1:1）　**前端**：顶栏「字幕生成」弹窗的字幕样式区（GenerateDialog.tsx）
+**职责**：字幕 / 配音档（样式 + 项目级发音修正，1:1）　**前端**：顶栏「字幕生成」弹窗的字幕样式区与「发音修正」区（GenerateDialog.tsx / HotFixField.tsx）
 
 11 列 · 主键 `project_id`
 

@@ -1,6 +1,6 @@
 # MapVideo
 
-基于 Remotion + MapLibre GL 的「地图视频」编辑器：用军事态势符号、路线动画、区域高亮、相机关键帧、弹出元素制作分章节的地图讲解视频，浏览器/桌面端内直接导出 MP4（含配音/背景音乐混流）。
+基于 Remotion + MapLibre GL 的「地图视频」编辑器：用军事态势符号、路线动画、区域高亮、相机关键帧、弹出元素制作地图讲解视频（一个项目 = 一条连续时间线），浏览器/桌面端内直接导出 MP4（含配音/背景音乐混流）。
 
 **同一份前端代码，两种形态**：
 
@@ -54,15 +54,16 @@ npm run dist:win       # 打 Windows 安装包/portable exe → release/
 ## 桌面端架构
 
 ```
-┌ 渲染进程（现有前端，零改动复用）─┐       ┌ 主进程 electron/main.mjs ─┐
-│  window.mapvideo.* (preload)  │◀─IPC─▶│ • node:sqlite: projects/providers │
-│  providerStore → 写穿 SQLite   │       │ • AI/TTS 管道（协议转发，无 CORS） │
-│  callLLM/callTTS → IPC 通道    │       │ • app:// 协议托管 dist            │
-└──────────────────────────────┘       └──────────────────────────┘
+┌ 渲染进程（与网页版同一套前端）───┐       ┌ 主进程 electron/main.mjs ──────
+│  window.mapvideo.* (preload)  │◀─IPC─▶│ • node:sqlite：SQL 全在 db-v2.mjs │
+│  stores/* 写穿库               │       │ • httpRequest 代理（绕 CORS）      │
+│  lib/request-engine.ts 求值模板 │       │ • app:// 协议托管 dist + media     │
+└──────────────────────────────┘       └─────────────────────────────────┘
 ```
 
-- **数据位置**：`%APPDATA%/map-video/mapvideo.db`（项目 + AI/配音配置含 Key，均在本机）
-- **AI 配置**：特效弹窗「字幕」页签 → 配音服务设置；内置 千问/MiMo/MiniMax/豆包/DeepSeek/GLM/Kimi/GPT 预设，可自定义扩展；四种 TTS 协议（OpenAI speech / MiniMax / 火山 / CosyVoice / custom）
+- **数据位置**：`%APPDATA%/map-video/mapvideo.db`（项目 + AI 配置含 Key 都在本机），素材文件在 `userData/media/`
+- **AI 配置只有一个入口**：顶栏 ⚙「设置 · AI」——右侧「实例设置」（几套账号 = 几条实例，含试调用）与左侧「接口模板」（怎么发请求）两处；**代码里没有厂商名分支**，端点、参数、产物路径全是模板数据（`docs/provider-engine.md`）
+- **AI 功能只在桌面端**：网页版隐藏 ⚙ 与配音入口
 - **导出 MP4 带声音**：字幕逐条生成配音（或导入音频）→ 导出即混流（WebCodecs + AAC）
 
 ## 网页 Lite（GH Pages）
@@ -72,46 +73,42 @@ npm run dist:win       # 打 Windows 安装包/portable exe → release/
 
 ## 数据库设计
 
+> 唯一事实源是 `docs/db-schema-v2.sql`（可直接 `node --experimental-sqlite` 执行验证）；
+> 逐表职责与逐列字典见 `docs/db-tables.md`，设计依据见 `docs/db-redesign.md`。本节只给个形状。
+
 ### 桌面端（SQLite）
 
-- **引擎**：Electron 内置 `node:sqlite`（DatabaseSync），零原生模块、零安装
-- **文件**：`%APPDATA%/map-video/mapvideo.db`——单文件库，**拷走即备份**，换机恢复放回同路径即可
-- **建表**：`electron/main.mjs → initDb()`（幂等 `CREATE TABLE IF NOT EXISTS`，升级时按列补齐）
+- **引擎**：Electron 内置 `node:sqlite`（`DatabaseSync`），零原生模块、零安装；外键默认开启
+- **文件**：`%APPDATA%/map-video/mapvideo.db` —— 单文件库，**拷走即备份**，换机恢复放回同路径即可
+- **建表**：`ensureV2Schema()`（幂等 `CREATE TABLE IF NOT EXISTS` + 缺列自动补 + 旧形状启动让位）
+- **规模**：27 张表 · 4 个视图 · **0 个触发器** · 704 列
 
-**projects 表（项目库）**
+三条贯穿全库的约定：
 
-| 列 | 类型 | 说明 |
-|---|---|---|
-| id | TEXT PRIMARY KEY | 项目 ID |
-| name | TEXT NOT NULL | 项目名 |
-| data | TEXT NOT NULL | 完整项目 JSON（章节/元素/镜头/特效/字幕/音乐/底图/自定义符号全部内嵌其中） |
-| size | INTEGER | JSON 字节数 |
-| updated_at | INTEGER | 保存时间（epoch ms），列表按此倒序 |
+| 约定 | 意思 |
+|---|---|
+| **时间一律存秒（REAL）** | 存用户在界面上输入的原值，帧是渲染时按 `default_fps` 派生的量，不入库 |
+| **只存输入原值** | 凡能从别处算出来的都不入库（片长、字幕时长…），改帧率时时长语义才不会失真 |
+| **不用触发器** | 网页端（IndexedDB）没有触发器，同一条规则两套真相；规则要么在表定义里（外键 / CHECK），要么在应用层 + 自检视图 |
 
-**providers 表（AI/配音配置，Key 存本机不出库）**
+内容侧的归属链是 **项目 ▸ 图层 ▸ 元素**：`project` → 单类型 `layer`（标记 / 路线 / 形状 / 疆域 / 图片）→ 五张按工具聚合的类别宽表（`element_marker` / `_route` / `_shape` / `_territory` / `_image`，表内 `type` 判别子类型）。素材（图片 / GIF / 模型 / 图标 / 音频）统一登记在 `asset` 一张表，桌面端文件落 `userData/media/<类>/`。
 
-| 列 | 类型 | 说明 |
-|---|---|---|
-| id | TEXT PRIMARY KEY | 配置 ID（预设复制或自定义） |
-| kind | TEXT | `llm` \| `tts` |
-| label / base_url / api_key / model | TEXT | 厂商连接信息 |
-| protocol | TEXT | TTS 协议：`openai-speech` / `minimax-t2a` / `volc-tts` / `qwen-tts` / `custom`；LLM 统一 OpenAI 兼容 chat/completions |
-| voice | TEXT | 音色/说话人 ID |
-| speed | REAL | 语速 0.5–2 |
-| extra | TEXT | 附加 JSON 参数（合并进请求体） |
-| active | INTEGER | 生效标记（每 kind 仅一条 =1） |
-| sort | INTEGER | 列表排序 |
+AI 配置层四张表，**接一家新供应商不改表、不加代码分支**（模板行就是数据）：
 
-**访问边界**：SQLite 仅主进程读写；渲染进程通过 `window.mapvideo.projects / providers` IPC CRUD（contextIsolation 开启，渲染进程摸不到库文件）。
+| 表 | 一行是什么 |
+|---|---|
+| `provider_template` | 一份完整接口模板：六个接口槽（同步 / 异步提交 / 异步查询 / 下载 / 上传 / 克隆）+ 三层参数声明 |
+| `provider` | 一条实例：引用哪份模板 + 名字 + 同步异步 + `values_json{instance,requests}`（一份模板可挂多条 = 几套账号） |
+| `voice` | 一个克隆音色：唯一键 `(实例, 参考音频哈希, 目标模型)`，参考音频原件存 `asset` |
+| `task` | 一条在途异步任务：关窗口、刷新页面、换进程都不丢，重启续跑 |
+
+**访问边界**：SQLite 只在主进程读写（SQL 全在 `electron/db-v2.mjs`，因此可离线用 `node --experimental-sqlite` 回归）；渲染进程经 `window.mapvideo.*` IPC，contextIsolation 开启，摸不到库文件。
 
 ### 网页端（GH Pages Lite）
 
-| 介质 | 内容 |
-|---|---|
-| IndexedDB `MapVideoDB`（Dexie v1，表 projects：`id, name, createdAt, updatedAt`） | 完整项目 JSON（结构同桌面端 data 列） |
-| localStorage `mapvideo-providers` | AI/配音配置（仅本地开发直连模式用，GH Pages 不展示入口） |
+整项目 JSON 存 Dexie（IndexedDB），**没有 V2 的多表与秒约定**，也不含任何 AI 功能（⚙ 设置与配音入口按 `IS_DESKTOP` 隐藏）。
 
-**跨端迁移**：桌面 ⇄ 网页统一走「导出配置 JSON / 导入」（`ProjectExport` 格式，两端数据结构相同）。
+**跨端迁移**：桌面 ⇄ 网页统一走「导出配置 JSON / 导入」（`ProjectExport` 格式，素材以 base64 内嵌，文件自包含）。
 
 ## 技术
 

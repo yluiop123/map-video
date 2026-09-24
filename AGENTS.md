@@ -57,7 +57,7 @@ components/
   ui/                  # 共享原子两处：primitives.tsx（本项目自研：Section/Field/StyleGrid/Toggle/ColorPicker/OptionBlocks/PanelHeader）
                        #   + shadcn 原子（button/input/textarea/label/select/dialog/popover/tooltip/tabs/switch/slider/progress/badge/collapsible/radio-group…）
                        #   新界面优先用 shadcn 那批；旧面板沿用 primitives，别为用而用；配置见根目录 components.json（`npx shadcn add <名字>` 追加）
-  RegionPickerDialog.tsx / FrameTimeField.tsx / Storyboard.tsx(已废弃文件仍存在) 等
+  RegionPickerDialog.tsx / FrameTimeField.tsx / TaskTray.tsx(顶栏「在途 N」浮层) / ImageGenerateField.tsx / HotFixField.tsx 等
 compositions/          # Remotion 导出端：MapVideo(单轴渲染) / MapScene / OverlayRenderer
 lib/
   map-renderer.ts      # ★ 核心：所有地图元素的渲染（点7样式/路线/形状/标签位图/动画）
@@ -67,7 +67,10 @@ lib/
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
   request-engine.ts    # ★ 接口模板求值：三层取值 + `${x}` 求值与删键级联 / readPath / applyOutputs / runSync·submitAsync·queryOnce·runClone / validateTemplate；不碰网络不碰 DOM
   template-seed.ts     # 内置接口模板 seed（3 份 = 四个上游形状，一行一份完整模板）；首次建库铺成表行，之后是普通可编辑数据；接新供应商改这里或界面上自己填
-  providers.ts         # 供应商调用薄壳：callLLM/callTTS/callImage/cloneVoice → 走引擎；**没有协议分支了**
+  providers.ts         # 供应商调用薄壳：callLLM/callTTS/callImage/cloneVoice + declaredOptions/declaredDefault（界面按声明长控件）→ 全走引擎；**没有协议分支**
+  provider-queue.ts    # retriable(e)：只有 429/5xx 才算「重试有用」，业务错不重试
+  audition.ts          # 全应用**一路**声音（试听配音 / 音色）：playAudition / stopAudition，播新的必先停旧的
+  backend.ts           # IS_DESKTOP 与 window.mapvideo.* 的类型门面（projects/assets/voices/tasks/providers…）
   i18n.ts              # 显示文案类型 L = string | {zh,en}（只有 value 进请求体）
   tw-colors.ts         # Tailwind 官方色板（22 族 × 11 阶，ColorPicker 的唯一取色来源，数值由 tailwindcss/colors 导出后落盘；族顺序跟 docs/colors 页一致）
   voices.ts            # 配音音色目录（系统音色名一律抄官方表）+ 内置参考样本清单；克隆音色账本在 `voice` 表 / `stores/voiceStore.ts`
@@ -75,6 +78,9 @@ stores/
   projectStore.ts      # 项目数据全部操作 + 撤销/重做 + IndexedDB(dexie) 持久化
   editorStore.ts       # 播放头 currentFrame / isPlaying / 选中元素 / currentCamera / cameraSeek / elementsOpen
   interactionStore.ts  # 绘制模式 + pendingPlace(一键中心放置) + focusReq
+  providerStore.ts     # 接口模板 + 实例（两张表的全量状态，current(category) 给调用处选实例）
+  voiceStore.ts        # 克隆音色账本（voice 表）：clone() 命中唯一键就复用，不重复建音色
+  taskStore.ts         # 在途异步任务的调度器（状态全在 task 表；渲染端 1s 一轮 tick，跨重启续跑）
 types/index.ts         # 全部数据模型（改数据结构先看这里）
 ```
 
@@ -135,7 +141,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 24. **枚举白名单不要写进 DDL，接口形状也不要写进 switch**（2026-09-21 两条相关教训，同日已一并解决）：
     - 起因：`provider.protocol` 的 `CHECK (… IN (五项))` 是「一家供应商怎么发请求」的第四份真相（另三份是 renderer 的 switch、主进程的 switch、`assertTtsPairing`）。拆出 `cosyvoice` 协议时只改了三处，DDL 那份漏了 → 新行插库报 `CHECK constraint failed`；而 `providerStore.dbSync()` 只 `console.warn`，渲染端读的是 zustand 内存态，所以**当场全好、重启即丢**（`hydrate()` 用库里的行覆盖状态）。
     - 现在的做法（2026-09-23 定稿）：**四张表**（`docs/provider-engine.md`）——`provider_template`（**一行 = 一份完整模板**：category / 是否克隆 / 是否先上传 / 模板级 headers / **实例级参数声明** / `sync_json`·`async_json`·`download_json`·`upload_json`·`clone_json` 六个接口槽 / 参考音频采样率）、`provider`（**只有五个业务列**：引用哪份模板 + 名字 + 同步异步 + `values_json{instance,requests}`；一份模板可挂多条实例，调用处选实例，没有 `active`）、`voice`（克隆音色账本，唯一键 `(provider_id, source_hash, target_model)`）、`task`（在途异步任务，跨重启续跑）。**实例不内置任何字段**：`baseUrl` / 密钥 / 模型 / 尺寸全是模板声明的参数，密钥 = 声明成 `valueType:'secret'` 的普通参数（渲染成密码框 + 按声明打码），所以「哪些名字算敏感值」只有一处答案。**category·role 一律不加 CHECK**，取值由 TS 联合类型 + 保存前 `validateTemplate()` 管；接新供应商不改表、不加 switch、不改代码（模板行就是数据）。**模板名 / 参数 label 是用户自己填的单个字符串，不做中英两份**（自定义的东西没法自动翻；界面自身的标题才走 `t()`）。
-    - 旧库的形状漂移仍走启动体检：`retireProviderIfStale()` 认**正标志**（不能认「缺了新列」——补列那步 `ensureAllColumns` 会先把新列名塞进旧表，把漂移盖住，实测踩过）：实例侧「带 recipe·secrets_json·protocol / `tpl_group` / `kind` / `base_url`·`api_key`·`params_json` 等具名列 / 还有 `provider_endpoint` 表」，模板侧「`provider_template` 还带 `tpl_group`·`role`·`vars_json`·行级 `label`（= 组表那版的形状）」。让位是**改名不删**（用户的模板改动与 Key 都是资产）→ DDL 建新表 → 渲染端 hydrate 先按 seed 铺模板、再调 `providers.migrate()` 把旧具名列并进 `values.instance`（`overrides_json`/`params_json` 一并汇总；有 async 行则实例 `sync=0`；`speed` 是旧表默认值 1 就别搬，会在 values 里留一个没人声明的键；搬不动的行留在 stale 表等下次，搬干净才 DROP 归档表）。**改名前要临时 `PRAGMA foreign_keys = OFF`**：外键条款的改写跟这个开关走，开着改父表名会把子表（`provider.tpl_id`）永远指向 `…__stale` 那份死表；同理改名前要把**命名索引**先 DROP（否则新表的 `CREATE INDEX IF NOT EXISTS` 会被静默跳过，丢掉唯一约束）。回归 `node --experimental-sqlite tools/verify-provider-templates.mjs`（[1][2] 测两代新表逐字往返与真外键、[3] 测音色唯一键与任务级联、[4] 测异步配对自检、[5] 测三代旧形状让位搬回）。
+    - 旧库的形状漂移仍走启动体检：`retireProviderIfStale()` 认**正标志**（不能认「缺了新列」——补列那步 `ensureAllColumns` 会先把新列名塞进旧表，把漂移盖住，实测踩过）：实例侧「带 recipe·secrets_json·protocol / `tpl_group` / `kind` / `base_url`·`api_key`·`params_json` 等具名列 / 还有 `provider_endpoint` 表」，模板侧「`provider_template` 还带 `tpl_group`·`role`·`vars_json`·行级 `label`（= 组表那版的形状）」。让位是**改名不删**（用户的模板改动与 Key 都是资产）→ DDL 建新表 → 渲染端 hydrate 先按 seed 铺模板、再调 `providers.migrate()` 把旧具名列并进 `values.instance`（`overrides_json`/`params_json` 一并汇总；有 async 行则实例 `sync=0`；`speed` 是旧表默认值 1 就别搬，会在 values 里留一个没人声明的键；搬不动的行留在 stale 表等下次，搬干净才 DROP 归档表）。**改名前要临时 `PRAGMA foreign_keys = OFF`**：外键条款的改写跟这个开关走，开着改父表名会把子表（`provider.tpl_id`）永远指向 `…__stale` 那份死表；同理改名前要把**命名索引**先 DROP（否则新表的 `CREATE INDEX IF NOT EXISTS` 会被静默跳过，丢掉唯一约束）。回归 `node --experimental-sqlite tools/verify-provider-templates.mjs`（[1][2] 两代新表逐字往返与真外键、[3] 音色唯一键与任务读写、[4] 异步配对自检、[5][6] 三代旧形状让位搬回、[7] 作废列清理、[8] `task` 表换代）。
     - 推广开一句：**凡是「用户能改、又能从别处推不出来」的值才入库；同一条事实只允许一处真相，宁可让它是一张表，也不要多处 if**。
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
@@ -172,7 +178,9 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 ## 9. 已知待办 / 弱项
 
 - ORIENTATION/点动画/移动点高亮圈等仅在编辑端验证过，导出端 MapScene 未逐项回归。
-- docs/ARCHITECTURE.md 已删除；数据库设计见 `docs/db-schema-v2.sql`（唯一事实源）+ `docs/db-tables.md`（速查与字段字典）+ `docs/db-redesign.md`（设计依据）；README「数据库设计」仍是 V1 描述，待重写。
+- docs/ARCHITECTURE.md 已删除；数据库设计见 `docs/db-schema-v2.sql`（唯一事实源）+ `docs/db-tables.md`（速查与字段字典）+ `docs/db-redesign.md`（设计依据）+ README「数据库设计」（简版，已按 V2 重写）。
+- **配音 / BGM / 弹窗音频还没落 `asset`**：现在整段音频以 dataURL 塞在 `narration_entry.url` / `overlay.audio` 里（一条 6 秒配音 ≈ 400KB 文本进项目 JSON）。要做的是「音频走 `asset`（`kind='audio'`），项目里只存 assetId」，见任务「批次 6」。
+- 预览倍速下配音 / BGM 与播放头会失步（预览场景，可接受）。
 - 3D(globe) 下 `pixelsToDegrees` 为墨卡托近似，高纬度箭头宽度略有偏差。
 - Region 数据源为世界国家级（英文属性名，内置 ~100 国中英映射）；省级需换 `setRegionSources` 数据源。
 
@@ -213,9 +221,9 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   6. 验证（六条全绿才算完）：
      `node --experimental-sqlite tools/gen-db-field-dict.mjs --check`（结构一致 + 说明全覆盖）·
      `node --experimental-sqlite tools/audit-fk-indexes.mjs`（外键索引缺口）·
-     `node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs`（**存进去 = 取出来**：输入原值逐字往返、falsy 合法值不被 `||` 吞、帧↔秒互逆）·
+     `node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs`（**存进去 = 取出来**：输入原值逐字往返、falsy 合法值不被 `||` 吞、帧↔秒互逆、发音修正 JSON）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`（公共图层副本）·
-     `node --experimental-sqlite tools/verify-provider-templates.mjs`（**四张配置表 + 三代旧形状让位**：模板/实例逐字往返、真外键拦删、音色唯一键含 target_model、任务随项目级联、异步配对自检视图、让位不删表且把 Key 并进 values.instance）·
+     `node --experimental-sqlite tools/verify-provider-templates.mjs`（**四张配置表 + 三代旧形状让位**：模板/实例逐字往返、真外键拦删、音色唯一键含 target_model、任务读写与错峰查询、异步配对自检视图、让位不删表且把 Key 并进 values.instance、task 换代后行不丢）·
      `node --experimental-strip-types tools/verify-request-engine.mjs`（模板求值 / 出参解码 / 异步轮询，全离线）
 
 - **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
