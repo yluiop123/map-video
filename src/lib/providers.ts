@@ -195,11 +195,15 @@ export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targe
   if (!tpl.clone) throw new EngineError('这份模板没配克隆接口');
   const wav = await toWavMono(refBytes, refSampleRateOf(inst));
   if (wav.length > 10 * 1024 * 1024) throw new EngineError('参考音频超过 10MB');
+  // 音色名优先用实例在 ⚙ 里填的那条，没填才用样本名兜底；两者都要过滤 ——
+  // 实测上游对 `preferred_name` 只收字母数字（带连字符直接 InvalidParameter）
+  const declared = String(inst.values.requests?.clone?.preferredName ?? '').trim();
+  const preferred = (declared || label).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv';
   const one: InstanceDef = { ...inst, values: { ...inst.values, instance: { ...inst.values.instance, model: targetModel || inst.values.instance?.model } } };
   const r = await runClone(tpl, one, deps, {
     file: wav,
     audioDataUri: `data:audio/wav;base64,${bytesToBase64(wav)}`,
-    prefix: label, preferredName: label.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv',
+    prefix: preferred, preferredName: preferred,
   });
   const vid = r.values.voiceId ?? r.values.voice;
   if (typeof vid !== 'string' || !vid) throw new EngineError('克隆响应里没取到音色 ID，检查 clone.outputs.voiceId 路径');

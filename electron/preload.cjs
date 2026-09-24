@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld('mapvideo', {
     save: (g) => ipcRenderer.invoke('db:templates:save', g),
     remove: (tplGroup) => ipcRenderer.invoke('db:templates:remove', tplGroup),
   },
+  voices: {
+    list: (providerId) => ipcRenderer.invoke('db:voices:list', providerId),
+    save: (v) => ipcRenderer.invoke('db:voices:save', v),
+    remove: (rowId) => ipcRenderer.invoke('db:voices:remove', rowId),
+  },
   providers: {
     migrate: () => ipcRenderer.invoke('db:providers:migrate'),
     list: () => ipcRenderer.invoke('db:providers:list'),

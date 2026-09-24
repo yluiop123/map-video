@@ -47,6 +47,12 @@ declare global {
         /** 旧形状让位后的一次性搬回，须在模板铺好后调用 */
         migrate: () => Promise<{ moved: number }>;
       };
+      /** 克隆音色账本（voice 表）：同实例 + 同参考音频 + 同目标模型只有一行 */
+      voices: {
+        list: (providerId?: string) => Promise<import('../types').VoiceRow[]>;
+        save: (v: import('../types').VoiceRow) => Promise<{ rowId: string }>;
+        remove: (rowId: string) => Promise<{ ok: boolean }>;
+      };
       /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId 随机；登记在 asset 表） */
       assets: {
         save: (p: { mime: string; bytes: Uint8Array; name?: string; kind?: string }) => Promise<{ assetId: string; relPath: string; byteSize: number }>;

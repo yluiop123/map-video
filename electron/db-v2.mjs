@@ -1044,6 +1044,64 @@ export function removeProviderV2(db, providerId) {
   return { ok: true };
 }
 
+// ========== 克隆音色账本（voice）：同实例 + 同音频 + 同模型只建一次 ==========
+
+const VOICE_COLS = `voice_row_id AS rowId, provider_id AS providerId, source_hash AS sourceHash,
+  target_model AS targetModel, source_asset_id AS sourceAssetId, label,
+  file_id AS fileId, file_id_expires_at AS fileIdExpiresAt,
+  voice_id AS voiceId, voice_id_expires_at AS voiceIdExpiresAt,
+  status, error, attempts, created_at AS createdAt, updated_at AS updatedAt`;
+
+const voiceRow = (r) => ({
+  rowId: r.rowId, providerId: r.providerId, sourceHash: r.sourceHash, targetModel: r.targetModel,
+  sourceAssetId: r.sourceAssetId ?? undefined, label: r.label ?? '',
+  fileId: r.fileId ?? undefined, fileIdExpiresAt: r.fileIdExpiresAt ?? undefined,
+  voiceId: r.voiceId ?? undefined, voiceIdExpiresAt: r.voiceIdExpiresAt ?? undefined,
+  status: r.status, error: r.error ?? undefined, attempts: r.attempts ?? 0,
+  createdAt: r.createdAt ?? undefined, updatedAt: r.updatedAt ?? undefined,
+});
+
+/** 某实例的音色池（按实例隔离：voiceId 是厂商发给某个账号 + 某个模型的） */
+export function listVoicesV2(db, providerId) {
+  return (providerId
+    ? db.prepare(`SELECT ${VOICE_COLS} FROM voice WHERE provider_id = ? ORDER BY created_at, voice_row_id`).all(String(providerId))
+    : db.prepare(`SELECT ${VOICE_COLS} FROM voice ORDER BY created_at, voice_row_id`).all()
+  ).map(voiceRow);
+}
+
+/**
+ * 存一条音色记录。幂等键是 `(provider_id, source_hash, target_model)`，
+ * 所以按这个键 upsert —— 并发点两次同一份样本只会有一行（`status` 就是抢占标志）。
+ */
+export function saveVoiceV2(db, v) {
+  const now = Date.now();
+  const rowId = String(v.rowId || `vc_${Math.random().toString(36).slice(2, 10)}`);
+  db.prepare(`
+    INSERT INTO voice (voice_row_id, provider_id, source_hash, target_model, source_asset_id, label,
+      file_id, file_id_expires_at, voice_id, voice_id_expires_at, status, error, attempts, created_at, updated_at)
+    VALUES (@rowId,@providerId,@sourceHash,@targetModel,@sourceAssetId,@label,
+      @fileId,@fileIdExpiresAt,@voiceId,@voiceIdExpiresAt,@status,@error,@attempts,@now,@now)
+    ON CONFLICT(provider_id, source_hash, target_model) DO UPDATE SET
+      label=@label, source_asset_id=@sourceAssetId, file_id=@fileId, file_id_expires_at=@fileIdExpiresAt,
+      voice_id=COALESCE(excluded.voice_id, voice.voice_id),
+      voice_id_expires_at=COALESCE(excluded.voice_id_expires_at, voice.voice_id_expires_at),
+      status=excluded.status, error=excluded.error, attempts=excluded.attempts, updated_at=@now
+  `).run({
+    rowId, providerId: String(v.providerId), sourceHash: String(v.sourceHash),
+    targetModel: String(v.targetModel ?? ''), sourceAssetId: v.sourceAssetId ?? null,
+    label: v.label ?? '', fileId: v.fileId ?? null, fileIdExpiresAt: v.fileIdExpiresAt ?? null,
+    voiceId: v.voiceId ?? null, voiceIdExpiresAt: v.voiceIdExpiresAt ?? null,
+    status: v.status || 'cloning', error: v.error ?? null, attempts: v.attempts ?? 0, now,
+  });
+  return { rowId };
+}
+
+/** 从列表移除（**不删服务端音色** —— 那要另一条接口，各家形状不同，没配就别假装能删） */
+export function removeVoiceV2(db, rowId) {
+  db.prepare('DELETE FROM voice WHERE voice_row_id = ?').run(String(rowId));
+  return { ok: true };
+}
+
 /**
  * 启动体检：把解析不到素材的引用清空（v_check_dangling 的写入侧对应物）。
  * 素材是全局资源，删掉它时 assets:remove 会一并清空副本引用；但老库里可能还留着

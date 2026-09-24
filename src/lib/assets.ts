@@ -31,7 +31,7 @@ export interface MediaItem {
 }
 
 /** 素材类别：与标记设置的资源形态一一对应（落盘目录与素材库分类由此确定） */
-export type AssetKind = 'image' | 'gif' | 'model' | 'icon';
+export type AssetKind = 'image' | 'gif' | 'model' | 'icon' | 'audio';
 
 const urlCache = new Map<string, string>();
 

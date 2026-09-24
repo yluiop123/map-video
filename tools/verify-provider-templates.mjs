@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ensureV2Schema, listTemplatesV2, upsertTemplateV2, removeTemplateV2,
   listProvidersV2, upsertProviderV2, removeProviderV2, migrateProvidersFromStale, retireProviderIfStale,
+  listVoicesV2, saveVoiceV2, removeVoiceV2,
 } from '../electron/db-v2.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -123,6 +124,20 @@ console.log('\n[3] voice 幂等键 / task 随项目级联');
     try { mkVoice('v2', 'h1', 'cosyvoice-v3-flash'); return false; } catch (e) { return /UNIQUE/i.test(String(e.message)); }
   })());
   mkVoice('v3', 'h1', 'cosyvoice-v3.5-flash');
+  // 走 saveVoiceV2 时按幂等键 upsert，不该撞唯一索引
+  const saved = saveVoiceV2(db, { rowId: 's1', providerId: 'prov_t', sourceHash: 'h9', targetModel: 'm1', sourceAssetId: 'as_ref', label: '样本', status: 'cloning' });
+  saveVoiceV2(db, { rowId: 's2', providerId: 'prov_t', sourceHash: 'h9', targetModel: 'm1', sourceAssetId: 'as_ref', label: '样本', voiceId: 'voice-abc', status: 'ready' });
+  check('3.2a 幂等键相同 → 覆盖那一行而不是撞唯一索引', (() => {
+    const rows = listVoicesV2(db, 'prov_t').filter((x) => x.sourceHash === 'h9');
+    return rows.length === 1 && rows[0].voiceId === 'voice-abc' && rows[0].status === 'ready' && rows[0].rowId === saved.rowId;
+  })(), JSON.stringify(listVoicesV2(db, 'prov_t').filter((x) => x.sourceHash === 'h9')));
+  check('3.2b 读回来字段齐（label / 模型 / 状态 / 原件）', (() => {
+    const v = listVoicesV2(db, 'prov_t').find((x) => x.sourceHash === 'h9');
+    return v.label === '样本' && v.targetModel === 'm1' && v.providerId === 'prov_t' && v.sourceAssetId === 'as_ref';
+  })());
+  removeVoiceV2(db, saved.rowId);
+  check('3.2c 从列表移除只删这一行（服务端音色不动 —— 没配删除接口就不假装能删）',
+    !listVoicesV2(db, 'prov_t').some((x) => x.sourceHash === 'h9') && !!listVoicesV2(db, 'prov_t').length);
   check('3.2 换个目标模型 = 另一条音色（voiceId 绑模型，实测踩过 418）',
     db.prepare('SELECT COUNT(*) c FROM voice').get().c === 2);
   check('3.3 参考音频是 RESTRICT：素材被音色引用时删不掉', (() => {

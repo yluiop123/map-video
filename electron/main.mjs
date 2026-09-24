@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2,
   listTemplatesV2, upsertTemplateV2, removeTemplateV2, migrateProvidersFromStale,
-  listProvidersV2, upsertProviderV2, removeProviderV2 } from './db-v2.mjs';
+  listProvidersV2, upsertProviderV2, removeProviderV2, listVoicesV2, saveVoiceV2, removeVoiceV2 } from './db-v2.mjs';
 
 const DIST = path.join(app.getAppPath(), 'dist');
 
@@ -144,6 +144,11 @@ function registerIpc() {
   ipcMain.handle('db:providers:remove', (_e, providerId) => { removeProviderV2(db, providerId); return { ok: true }; });
   ipcMain.handle('db:providers:migrate', () => ({ moved: migrateProvidersFromStale(db) }));
   ipcMain.handle('db:providers:list', () => listProvidersV2(db));
+
+  // 克隆音色账本（voice 表）：同实例 + 同参考音频 + 同目标模型只有一行
+  ipcMain.handle('db:voices:list', (_e, providerId) => listVoicesV2(db, providerId));
+  ipcMain.handle('db:voices:save', (_e, v) => saveVoiceV2(db, v));
+  ipcMain.handle('db:voices:remove', (_e, rowId) => removeVoiceV2(db, rowId));
   ipcMain.handle('db:providers:upsert', (_e, cfg) => { upsertProviderV2(db, cfg); return { ok: true }; });
 
   // 网络管道：渲染进程算好请求，主进程只管发与收（无 CORS，Key 不出本机）

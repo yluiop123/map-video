@@ -3,19 +3,18 @@
  * 下「克隆音色」（内置男声 / 女声样本格 + ⬆ 上传其它参考音频克隆）。
  *
  * **音色是调用级参数**（不写进实例配置）：这个组件受控 —— 选择结果交给调用方（字幕生成）保存并随每次合成传下去。
- * 克隆出的 voiceId 绑在克隆时的模型上，所以账本连模型一起记，换模型即视为另一条音色
- * （批次 4 会把这份账本搬进 voice 表，键 = 实例 + 参考音频哈希 + 目标模型）。
+ * 克隆出的 voiceId 绑在「哪个实例 + 哪个目标模型」上，所以账本（`voice` 表 / `useVoiceStore`）
+ * 三样一起记，换模型即视为另一条音色；参考音频原件也存着，音色失效时靠它重建。
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
 import { useProviderStore } from '../stores/providerStore';
-import { callTTS, cloneVoice, supports, templateOf } from '../lib/providers';
+import { callTTS, supports, templateOf } from '../lib/providers';
 import { playAudition, stopAudition } from '../lib/audition';
 import { requestOf, type InstanceDef, type ParamSpec } from '../lib/request-engine';
-import {
-  CLIP_PRESETS, adoptClonedModel, findCloned, forgetClonedVoice, fetchClipBytes, listClonedVoices,
-  rememberClonedVoice, systemVoicesFor, type ClonedVoice, type VoiceGender,
-} from '../lib/voices';
+import { CLIP_PRESETS, fetchClipBytes, systemVoicesFor, type VoiceGender } from '../lib/voices';
+import { useVoiceStore } from '../stores/voiceStore';
+import type { VoiceRow } from '../types';
 
 const SAMPLE_LABELS: string[] = CLIP_PRESETS.map((pr) => pr.label);
 
@@ -41,7 +40,10 @@ export function VoicePicker({ inst, voice, onPick }: {
 }) {
   const t = useT();
   const updateInstance = useProviderStore((s) => s.updateInstance);
-  const [cloned, setCloned] = useState<ClonedVoice[]>(() => listClonedVoices());
+  const voiceRows = useVoiceStore((s) => s.rows);
+  const cloneLedger = useVoiceStore((s) => s.clone);
+  const forgetVoice = useVoiceStore((s) => s.remove);
+  const usableVoice = useVoiceStore((s) => s.usable);
   const [busy, setBusy] = useState<'clone' | 'audition' | null>(null);
   const [busyLabel, setBusyLabel] = useState('');
   const [openGender, setOpenGender] = useState<Record<VoiceGender, boolean>>({ male: false, female: false });
@@ -77,30 +79,26 @@ export function VoicePicker({ inst, voice, onPick }: {
     });
   };
 
-  // 老账本里没记模型的条目，等模型能算出来时补一次（否则同样本会被重复克隆）
-  useEffect(() => { if (bindModel) setCloned(adoptClonedModel(bindModel)); }, [bindModel]);
-
   const pick = (voiceId: string) => { onPick(voiceId); setMsg(''); };
 
+  /** 该实例 + 当前模型下能用的音色（含别人在别的机器上建好后同步过来的） */
+  const cloned: VoiceRow[] = inst
+    ? voiceRows.filter((x) => x.providerId === inst.id && x.targetModel === bindModel && usableVoice(x))
+    : [];
+  /** 按内置样本名找：样本格要能认出「这条就是那个样本克隆出来的」 */
+  const cloneOfLabel = (label: string) => cloned.find((x) => x.label === label);
+
   /** 参考音频 → 音色 ID；同样本同模型已克隆过就直接复用，不在服务端反复建音色 */
-  const cloneFrom = async (bytes: ArrayBuffer, label: string, prefix: string) => {
+  const cloneFrom = async (bytes: ArrayBuffer, label: string, prefix: string, mime = 'audio/wav', name = `${prefix}.wav`) => {
     if (!inst || !strOf(inst.values.instance?.baseUrl)) { setMsg(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
     const alsoModel = bindModel !== model ? bindModel : undefined;
     const done = (s: string) => (alsoModel ? `${s} · ${t('配音模型已切成', 'model switched to')} ${bindModel}` : s);
-    const hit = findCloned(label, bindModel);
-    if (hit) {
-      pick(hit.voiceId);
-      if (alsoModel) setModel(alsoModel);
-      setMsg(done(t(`已复用之前的克隆 ${hit.voiceId}`, `Reused previous clone ${hit.voiceId}`)));
-      return;
-    }
     setBusy('clone'); setBusyLabel(label); setMsg(t('克隆中…（约几秒）', 'Cloning…'));
     try {
-      const vid = await cloneVoice(inst, bytes, bindModel, prefix);
-      setCloned(rememberClonedVoice({ label, voiceId: vid, model: bindModel, createdAt: Date.now() }));
-      pick(vid);
+      const row = await cloneLedger({ inst, bytes, mime, name, label, targetModel: bindModel, prefix });
+      if (row.voiceId) pick(row.voiceId);
       if (alsoModel) setModel(alsoModel);
-      setMsg(done(`✓ ${vid}`));
+      setMsg(done(`✓ ${row.voiceId ?? ''}`));
     } catch (e) {
       setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -152,27 +150,27 @@ export function VoicePicker({ inst, voice, onPick }: {
 
   /** 内置样本格：没克隆过的那一格是虚线（点下去 = 先克隆再选中），克隆过就与寻常音色无异 */
   const sampleCells = CLIP_PRESETS.map((pr) => {
-    const hit = findCloned(pr.label, bindModel);
+    const hit = cloneOfLabel(pr.label);
     return cell({
       id: hit?.voiceId,
       title: `${pr.label}·内置`,
       sub: hit
-        ? t(`已克隆为 ${hit.voiceId}（模型 ${hit.model}）`, `Cloned as ${hit.voiceId} (model ${hit.model})`)
+        ? t(`已克隆为 ${hit.voiceId}（模型 ${hit.targetModel}）`, `Cloned as ${hit.voiceId} (model ${hit.targetModel})`)
         : t(`用内置样本 ${pr.file} 克隆一个${pr.label}（目标模型 ${bindModel || '未设'}）`, `Clone from bundled sample ${pr.file} (target ${bindModel || 'unset'})`),
       dashed: !hit,
       busy: busy === 'clone' && busyLabel === pr.label,
       onClick: hit ? undefined : async () => {
-        try { await cloneFrom(await fetchClipBytes(pr.file), pr.label, `mv${pr.key === 'male' ? 'm' : 'f'}`); }
-        catch (e) { setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`); }
+        try {
+          const bytes = await fetchClipBytes(pr.file);
+          await cloneFrom(bytes, pr.label, `mv${pr.key === 'male' ? 'm' : 'f'}`,
+            pr.file.endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav', pr.file.split('/').pop() ?? 'sample');
+        } catch (e) { setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`); }
       },
     });
   });
 
-  const myClones = cloned.filter((c) => !SAMPLE_LABELS.includes(c.label) && (!bindModel || c.model === bindModel));
-  const known = new Set<string>([
-    ...system.map((v) => v.id),
-    ...cloned.filter((c) => !bindModel || c.model === bindModel).map((c) => c.voiceId),
-  ]);
+  const myClones = cloned.filter((c) => !SAMPLE_LABELS.includes(c.label));
+  const known = new Set<string>([...system.map((v) => v.id), ...cloned.map((c) => c.voiceId ?? '')]);
   /** 当前值既不在系统表也不在克隆记录里（如换模型后失效的 voiceId）：显示出来，别让它凭空消失 */
   const orphan = voice && !known.has(voice);
   const groups: { key: VoiceGender; label: string }[] = [
@@ -226,10 +224,10 @@ export function VoicePicker({ inst, voice, onPick }: {
             {myClones.map((c) => cell({
               id: c.voiceId,
               title: c.label,
-              sub: t(`上传样本克隆 · ${c.voiceId}（模型 ${c.model}）`, `Uploaded clone · ${c.voiceId} (model ${c.model})`),
+              sub: t(`上传样本克隆 · ${c.voiceId}（模型 ${c.targetModel}）`, `Uploaded clone · ${c.voiceId} (model ${c.targetModel})`),
               extra: (
                 <button
-                  onClick={() => setCloned(forgetClonedVoice(c.voiceId))}
+                  onClick={() => void forgetVoice(c.rowId)}
                   className="h-7 w-5 rounded-r-md border border-l-0 border-white/15 text-[10px] text-muted-foreground hover:text-red-400 hover:bg-white/10"
                   title={t('从列表移除（不删服务端音色）', 'Remove from list (keeps the server-side voice)')}
                 >✕</button>

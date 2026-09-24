@@ -1,9 +1,10 @@
 /**
- * voices.ts — 配音音色目录 + 「我的克隆音色」账本
+ * voices.ts — 配音音色目录（系统音色）与内置参考音频清单
  *
- * ★ 系统音色名一律取自阿里云百炼官方音色表（CosyVoice 与 Qwen-TTS 是两套端点，
- *   名字互串上游就回 HTTP 400 "Model not exist."），不要在界面上现编。
- * 克隆出的 voice_id 绑在「克隆时用的模型」上，换模型即失效 —— 所以账本里连模型一起存。
+ * ★ 系统音色名一律取自上游官方音色表（按模板 id 取，见 systemVoicesFor；
+ *   两套端点的名字互串上游就回 HTTP 400 "Model not exist."），不要在界面上现编。
+ * **克隆音色的账本不在这里** —— 那是 `voice` 表的事（stores/voiceStore.ts）：
+ * voiceId 绑「实例 + 目标模型」，还要记住参考音频原件，localStorage 担不住。
  */
 
 export type VoiceGender = 'male' | 'female';
@@ -128,64 +129,6 @@ export const CLIP_PRESETS = [
 
 export type ClipKey = (typeof CLIP_PRESETS)[number]['key'];
 
-/** 一次克隆的结果：voice_id 只在克隆时用的那个模型下有效 */
-export interface ClonedVoice {
-  /** 展示名（男声 / 女声 / 文件名） */
-  label: string;
-  voiceId: string;
-  model: string;
-  createdAt: number;
-}
-
-const KEY = 'mapvideo.clonedVoices';
-
-export function listClonedVoices(): ClonedVoice[] {
-  try {
-    const raw = localStorage.getItem(KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCloned(list: ClonedVoice[]): void {
-  try { localStorage.setItem(KEY, JSON.stringify(list)); } catch { /* 容量不足等 */ }
-}
-
-/** 记住一次克隆结果（同 voiceId 覆盖，不堆重复条目） */
-export function rememberClonedVoice(v: ClonedVoice): ClonedVoice[] {
-  const rest = listClonedVoices().filter((x) => x.voiceId !== v.voiceId);
-  const next = [v, ...rest];
-  writeCloned(next);
-  return next;
-}
-
-export function forgetClonedVoice(voiceId: string): ClonedVoice[] {
-  const next = listClonedVoices().filter((x) => x.voiceId !== voiceId);
-  writeCloned(next);
-  return next;
-}
-
-/**
- * 早期账本没记模型（那时界面取到的模型是空串）→ 这些条目按当前绑定的克隆目标模型补上。
- * 不补的话 findCloned 永不命中，同一份样本会在服务端被反复新建音色。
- */
-export function adoptClonedModel(model: string): ClonedVoice[] {
-  const list = listClonedVoices();
-  if (!model || !list.some((x) => !x.model)) return list;
-  const next = list.map((x) => (x.model ? x : { ...x, model }));
-  writeCloned(next);
-  return next;
-}
-
-/**
- * 同一份样本 + 同一个目标模型已经克隆过就直接复用：
- * 每次重新克隆都会在服务端新建一条音色，既慢也可能触到额度上限。
- */
-export function findCloned(label: string, model: string): ClonedVoice | undefined {
-  return listClonedVoices().find((x) => x.label === label && x.model === model);
-}
 
 /** 取应用内参考音频的字节（相对 BASE_URL 解析） */
 export async function fetchClipBytes(file: string): Promise<ArrayBuffer> {

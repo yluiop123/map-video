@@ -15,6 +15,7 @@ import { FxPreviewLayer } from './components/fx/FxRender';
 import { screenFxCombinedAt } from './lib/screenfx';
 import { mountPreviewAudio } from './lib/preview-audio';
 import { useProviderStore } from './stores/providerStore';
+import { useVoiceStore } from './stores/voiceStore';
 import { ConfirmHost } from './components/ui/ConfirmHost';
 import { PanelHeader } from './components/ui/primitives';
 
@@ -88,6 +89,7 @@ export default function App() {
   // 桌面端：启动时从 SQLite 加载 AI/配音配置
   useEffect(() => {
     useProviderStore.getState().hydrate();
+    void useVoiceStore.getState().hydrate();
   }, []);
 
   // 预览音频（配音/BGM）随播放头同步（订阅式，挂载一次）

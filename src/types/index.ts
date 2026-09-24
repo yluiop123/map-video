@@ -858,6 +858,30 @@ export function generateId(): string {
 // ========== 字幕 / 配音 / 背景音乐（章级轨道） ==========
 
 /** 字幕/配音条：显示时长 = 配音音频时长（frames），无音频按字数估算 */
+/**
+ * 一行克隆音色（`voice` 表）：voiceId 只在「克隆时用的实例 + 目标模型」下有效，
+ * 所以这三样一起构成幂等键；参考音频原件也留着（失效时靠它重建）。
+ */
+export interface VoiceRow {
+  rowId: string;
+  providerId: string;
+  /** 参考音频内容哈希（幂等键的一维） */
+  sourceHash: string;
+  targetModel: string;
+  /** 参考音频原件（asset；被本行 RESTRICT 住，删素材会被拦） */
+  sourceAssetId?: string;
+  label: string;
+  fileId?: string;
+  fileIdExpiresAt?: number;
+  voiceId?: string;
+  voiceIdExpiresAt?: number;
+  status: 'cloning' | 'ready' | 'failed' | 'expired';
+  error?: string;
+  attempts: number;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 export interface NarrationEntry {
   id: string;
   /** 字幕文本 = 配音朗读文本 */
