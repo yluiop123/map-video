@@ -43,6 +43,7 @@ components/
   MapSearchBox.tsx     # 地名/坐标搜索，内嵌顶栏（项目芯片右侧）；地图实例经 lib/shared-map.ts 共享，EditableMap load/unload 时 set
   FxPanelBody.tsx      # 特效面板主体：天气/画面/弹窗/音乐 四页签（**无字幕页签**，字幕已迁到 GenerateDialog）；服务配置弹窗已搬去 ProviderPanel
   ImageGenerateField.tsx # 「描述 → 一张图」输入区（现在只有弹窗·人物的照片区在用）：尺寸/模型按模板声明长控件，产物 dataURL 交给调用方
+  HotFixField.tsx    # 字幕生成里的「发音修正」：词 → 读音 / 原文 → 换成 两组行编辑器（存的就是上游 hot_fix 那份形状）
   ProviderPanel.tsx    # ⚙ 设置 · AI 的「实例设置」页：实例芯片一排 + ＋实例 / 模板下拉 / 同步异步 / 实例级参数 / 按请求分区的请求级参数（密钥按声明渲染成密码框）
   TemplatesPane.tsx    # ⚙ 左侧独立的「接口模板」入口：一行一份模板（三栏：模板列表 · 六个接口槽卡片 · 实例级参数表）+ 每槽「预览请求（零网络，密钥打码）」+ 三层参数表与 outputs 行编辑器
   SettingsDialog.tsx   # ⚙ 设置 · AI 外壳：左侧文案 / 语音 / 图片三类，右侧嵌 ProviderPanel（唯一入口，内联那份已删）
@@ -94,6 +95,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   **单页布局**（2026-09-20 改版）：需求 + 参考资料在上、字幕行在中、样式在下，一屏到底；**没有步骤①/②，也没有「手动填写文案」与「返回重写」**。文案有三个来源：🤖 AI 生成、📥 粘贴文本（`splitScript` 认 SRT 序号/时间轴/行首编号与引号）、📥 导入 SRT；也可在行内直接贴整篇（含换行即按行拆分）。
   **配音音色在弹窗内选**（`VoicePicker`，两段式，受控：`{inst, voice, voiceModel, onPick}`）：上段「配音音色」= 系统音色，分**男声 / 女声两组，默认折叠**（折叠时标题带条数与当前选中的音色名，别改成默认展开 —— 一组就有 19 个色块，展开会把字幕区挤走）；名字全部逐字取自官方音色表（`lib/voices.ts` 的 `systemVoicesFor(tplId, model)`，**按模板 id 认不认协议字符串**，改表前先核对官方，别凭印象加）。下段「克隆音色」= 内置样本格（**男声·内置 / 女声·内置**，对应 `public/voices/male.mp3`/`female.mp3`，即用户提供的历史-男/女）+ ⬆ 上传其它音色；样本格没克隆过时是**虚线**，点它=先克隆再选中，克隆过即与寻常音色无异。
   **音色与它绑的模型都是调用级参数**（`onPick(voiceId, voiceModel)` → 随每次合成进 callArgs），**一个都不写进实例配置**：克隆出的 voice_id 只在克隆时那条模型上有效（拿系统音色 `Ethan` 去喂 `-vc` 模型，上游回 `InvalidParameter`，2026-09-24 实测；反方向按上游文档同样不通），所以「哪条模型吃克隆音色」从模板给 `model` 参数配的候选值里找带 `-vc` 的那条，**只作为这一次调用的 `model`**（早先的做法是把实例模型一并切过去，结果系统音色在那条实例上再也合成不了 —— 已改）。「克隆音色」区在不在看**这份模板有没有配 `clone` 接口**（`supports(inst, 'clone')`），不认协议字符串；克隆账本 = **`voice` 表**（`useVoiceStore`，唯一键 `(provider_id, source_hash, target_model)`，同样本同模型直接复用不在服务端反复建音色，参考音频原件存 `asset`，音色失效靠它重建），**不在 localStorage 记第二份**。只有模板没有官方音色表（自建模板）时才长出「手填音色 ID」输入框。`voiceModelOf` 取不到实例值时回落到模板声明的默认值，与引擎三层取值同一条规则。音色与克隆**只在这里**，⚙ 里只有实例的取值与模板。
+  **发音修正（项目级）在字幕生成弹窗里**（`HotFixField`，紧跟「配音音色」下面，`IS_DESKTOP` 门禁）：两组行编辑器 —— 词 → 读音、原文 → 换成，存进 `project.narration.hotFix` → `narration.hot_fix_json`。保存的形状**就是上游 `hot_fix` 那一份**（一条 = 单键对象），所以调用时零转换：`genVoice` 把它塞进 task 的 `input.hotFix`，试听也带（`VoicePicker` 的 `extra`），要数组形状的供应商由模板给这个参数选 `transform: hotFixArray`。空 = 不传这个参数（整键消失）。哪条端点吃它见 `docs/provider-engine.md` 第五条末（按官方 API 参考核对：seed 那条 `qwen3-tts` **没有** hot_fix，界面上填了要等换成 CosyVoice 那类端点才看得到效果 —— 这一段未实测）。
   **打开即载入项目现有字幕继续编辑**（不再有 `editOnly` 分支）；「应用字幕与配音」只写 `setNarrationEntries`（字幕比片长久时补一次 `setProjectEndFrame`），**不动元素 / 弹窗 / 特效 / 相机**。
   原「AI 顺带生成地图元素」的整条链路已删除：`lib/generate-elements.ts` / `lib/gazetteer.ts` / `lib/geocode.ts` / `lib/camera-plan.ts` / `projectStore.applyGeneratedProject` / 类型 `GeneratedChapterPlan`·`GeneratedOverlaySpec`，以及弹窗里的地名解析与「待填坐标」区块。
 - **时间线配音块只能整体平移**：`beginBlockDrag` 的 kind 多了一支 `'narration'`，块上只挂 `onPointerDown(mode:'move')`、**不给 `DragHandles`**（所以两端拉不出），拖动写 `setNarrationEntries` 且置 `locked: true`（顺排不再把它拉回）。时长始终由音频/字数估算决定，与其它轨道（fx/弹窗/图层可拉伸）不同。
@@ -176,7 +178,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2：桌面端已落地，网页端仍为简化实现）
 
-**规模**：27 张表 / 4 视图 / **0 触发器** / 703 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：27 张表 / 4 视图 / **0 触发器** / 704 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 片长（`project.endFrame`）不入库**（2026-09-19）：`project.end_sec` 列已删——它是纯派生量且**没有任何 UI 能改它**（`setProjectEndFrame` 零调用）。读取端 `getProjectV2` 现按内容实际结束推导：`endFrame = max(60s × fps, 元素/特效/弹窗/机位/字幕/音乐的结束帧)`，与时间线口径一致；空项目从原来的「100 秒幽灵容器」变成 60 秒。新增任何「容器长度」类字段前先问它是不是派生值。
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
@@ -223,7 +225,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **能力矩阵三处联动，改一处必须同步另两处**：**只有 `emoji` 不可着色**（表情字符自带颜色）、`model` 不可贴地（位图贴片）——其余 9 种形态都可着色（multiply 染色，白色=原色）。① DDL 的 CHECK（**不要**再给 model/gif 加 `color IS NULL` 约束，2026-09-19 已删）② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键（**不要为性能删外键**，强制检查 ≈1µs/行），但不使用触发器（见上一条）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
-- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（703 字段中文说明词表，**新增字段漏补说明会直接报错**）。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（704 字段中文说明词表，**新增字段漏补说明会直接报错**）。
 - **文档一律 Markdown**（2026-09-11 起）：`docs/` 下不再有 HTML，也不要用脚本生成 HTML；图用 ```mermaid 代码块内嵌（E-R 图源 `docs/db-er-diagram.mmd`），不再预渲染 SVG。
 
 ## 11. 标记（Pin）形态扩展的代码落点

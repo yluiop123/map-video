@@ -111,5 +111,22 @@ console.log('\n[4] globalConfig 缺字段也得存得下去（写入端不得把
     g4 && JSON.stringify(g4.globalConfig));
 }
 
+console.log('\n[5] 发音修正（narration.hot_fix_json）逐字往返');
+{
+  const db5 = open();
+  const hotFix = { pronunciation: [{ 重庆: 'chong2 qing4' }, { 六安: 'lu4 an1' }], replace: [{ AI: '人工智能' }] };
+  const p5 = { ...project('hf', FPS), narration: { entries: [], style: {}, hotFix } };
+  saveProjectV2(db5, p5);
+  const g5 = getProjectV2(db5, 'hf');
+  check('5.1 存进去 = 取出来（一条 = 单键对象，顺序也不变）',
+    JSON.stringify(g5?.narration?.hotFix) === JSON.stringify(hotFix), JSON.stringify(g5?.narration?.hotFix));
+  const p5b = { ...project('hf2', FPS), narration: { entries: [], style: {} } };
+  saveProjectV2(db5, p5b);
+  check('5.2 没填修正 → 列存 NULL，读出来也不带假空对象', (() => {
+    const row = db5.prepare('SELECT hot_fix_json FROM narration WHERE project_id=?').get('hf2');
+    return row.hot_fix_json === null && getProjectV2(db5, 'hf2').narration?.hotFix == null;
+  })());
+}
+
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);
 process.exit(failed ? 1 : 0);

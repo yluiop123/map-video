@@ -127,6 +127,12 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 
 - **内置 seed 只声明真正引用到的参数**，并且只到「该请求用得上」为止；`{text}` `{prompt}` 这类正文由调用点给值，要渲染成输入框就从占位符反推，不靠声明。
 - 候选值由模板写死，**不运行时从上游拉**（各家没有统一的 list 接口，顺序与文案不可控）。
+- **发音修正（`hotFix`）是这条规则的样例**：界面（`HotFixField`，项目级，存进 `narration.hot_fix_json`）保存的就是
+  上游那份对象形状 `{pronunciation:[{词:读音}], replace:[{原:换}]}`，模板在 `input` 里写 `hot_fix: '${hotFix}'` 即可（不选 transform → 原样发出）；
+  要数组形状的供应商（`"词/读音"`）给这个参数选 `transform: hotFixArray`，由引擎摊平 —— 差别只在模板，代码里没有厂商名分支。
+  没填修正时那个键整个消失，不会发半个空对象给上游（回归 `verify-request-engine` 3.9 / 3.10）。
+  注意**不是每条端点都吃这个参数**：非实时 CosyVoice / Qwen-Audio-TTS（`/services/audio/tts/SpeechSynthesizer`）有 `hot_fix`（`cosyvoice-v2` 除外），
+  而 seed 里那条 `qwen3-tts`（`/services/aigc/multimodal-generation/generation`）**没有**（两条都按 2026-09-24 官方 API 参考逐字核对，未实测）—— 自建 CosyVoice 模板时才用得上。
 
 ## 六、取回管线
 

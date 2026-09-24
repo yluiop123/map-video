@@ -4,7 +4,7 @@ import type {
   MapVideoProject, MapElement, GlobalConfig, BaseMapConfig,
   ElevationMapConfig, OverlayItem, CameraKeyframe,
   ProjectExport, ScreenFxItem, ExportedAsset,
-  NarrationEntry, NarrationStyle, MusicTrack,
+  NarrationEntry, NarrationStyle, MusicTrack, HotFix,
   Layer, LayerType,
 } from '../types';
 import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
@@ -258,6 +258,7 @@ interface ProjectState {
 
   // 字幕/配音轨道
   setNarrationStyle: (patch: Partial<NarrationStyle>) => void;
+  setNarrationHotFix: (patch: Partial<HotFix>) => void;
   setNarrationEntries: (entries: NarrationEntry[]) => void;
   updateNarrationEntry: (entryId: string, patch: Partial<NarrationEntry>) => void;
 
@@ -571,6 +572,11 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     // ----- 字幕/配音 -----
     setNarrationStyle: (patchStyle: Partial<NarrationStyle>) =>
       patch((p) => { const cur = normalizeNarrationTrack(p.narration); return { ...p, narration: { ...cur, style: { ...cur.style, ...patchStyle } } }; }),
+    setNarrationHotFix: (patchFix: Partial<HotFix>) =>
+      patch((p) => {
+        const cur = normalizeNarrationTrack(p.narration);
+        return { ...p, narration: { ...cur, hotFix: { ...cur.hotFix!, ...patchFix } } };
+      }),
     setNarrationEntries: (entries: NarrationEntry[]) =>
       patch((p) => ({ ...p, narration: { ...normalizeNarrationTrack(p.narration), entries } })),
     updateNarrationEntry: (entryId: string, entryPatch: Partial<NarrationEntry>) =>

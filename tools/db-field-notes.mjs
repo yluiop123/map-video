@@ -148,7 +148,8 @@ const NOTES = {
     "bg": "字幕背景：none 无 / bar 底部条带",
     "bg_color": "字幕背景色",
     "pos_y": "字幕距底百分比（0–40）",
-    "max_pct": "字幕最大宽度百分比"
+    "max_pct": "字幕最大宽度百分比",
+    "hot_fix_json": "发音修正（{pronunciation:[{词:音}],replace:[{原:换}]}，随每次配音带下去）"
   },
   "narration_entry": {
     "entry_id": "字幕条 id",

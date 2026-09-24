@@ -109,6 +109,14 @@ console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
   check('3.7 没给 hotFix 时整键消失（只这一个键时连 body 都不发）', buildRequest(t2, inst('x'), 'sync.submit', {}).req.body === undefined);
   const t3 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { n: '${n}' }, callParams: [{ key: 'n', label: '个数', valueType: 'number' }] } } };
   eq('3.8 字符串数字按声明转成数字', buildRequest(t3, inst('x'), 'sync.submit', { n: '3' }).req.body.n, 3);
+  // 千问 CosyVoice 端点（/services/audio/tts/SpeechSynthesizer）要的就是上游那份对象形状：
+  // 界面存进项目 hotFix 的就是它，模板**不选 transform** 时原样进 body（选了才摊平）
+  const t4 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { input: { text: '${text}', hot_fix: '${hotFix}' } }, callParams: [{ key: 'text', label: '文本' }, { key: 'hotFix', label: '发音修正', valueType: 'json' }] } } };
+  eq('3.9 不选 transform 时 hotFix 原样进 body（上游对象形状）',
+    buildRequest(t4, inst('x'), 'sync.submit', { text: '重庆', hotFix: { pronunciation: [{ 重庆: 'chong2 qing4' }], replace: [] } }).req.body.input.hot_fix,
+    { pronunciation: [{ 重庆: 'chong2 qing4' }], replace: [] });
+  check('3.10 没填修正 → hot_fix 这个键整个消失（不发给上游）',
+    buildRequest(t4, inst('x'), 'sync.submit', { text: '重庆' }).req.body.input.hot_fix === undefined);
 }
 
 // ========== 4. 产物四种封装与桥接 ==========

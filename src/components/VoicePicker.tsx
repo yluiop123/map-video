@@ -28,11 +28,13 @@ export function voiceModelOf(inst: InstanceDef | null | undefined): string {
 
 const strOf = (v: unknown) => (typeof v === 'string' ? v : '');
 
-export function VoicePicker({ inst, voice, voiceModel, onPick }: {
+export function VoicePicker({ inst, voice, voiceModel, extra, onPick }: {
   inst: InstanceDef | null;
   voice: string;
   /** 选中音色绑定的模型：克隆音色有值，系统音色为空（= 用实例配的模型） */
   voiceModel: string;
+  /** 试听也要带下去的调用级参数（如项目级发音修正）；模板没引用的键引擎自会忽略 */
+  extra?: Record<string, unknown>;
   onPick: (voiceId: string, voiceModel?: string) => void;
 }) {
   const t = useT();
@@ -93,7 +95,7 @@ export function VoicePicker({ inst, voice, voiceModel, onPick }: {
     setBusy('audition'); setMsg('');
     try {
       const { dataUrl } = await callTTS(inst, t('这段旁白用来试听音色。', 'This line previews the voice.'), voice,
-        voiceModel ? { model: voiceModel } : {});
+        { ...(voiceModel ? { model: voiceModel } : {}), ...(extra ?? {}) });
       setAuditioning(true);
       // 播不出去（浏览器拦自动播放）就当没在播，别让按钮一直显示在响
       if (!await playAudition(dataUrl, () => setAuditioning(false))) setAuditioning(false);

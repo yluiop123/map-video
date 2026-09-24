@@ -1039,7 +1039,8 @@ CREATE TABLE IF NOT EXISTS narration (  -- 字幕 / 配音档：样式部分，�
   bg           TEXT NOT NULL CHECK (bg IN ('none','bar')),  -- 字幕背景：none 无 / bar 底部条带
   bg_color     TEXT NOT NULL,  -- 字幕背景色
   pos_y        REAL NOT NULL CHECK (pos_y BETWEEN 0 AND 40),  -- 字幕距底百分比（0–40）
-  max_pct      REAL NOT NULL CHECK (max_pct > 0 AND max_pct <= 100)  -- 字幕最大宽度百分比
+  max_pct      REAL NOT NULL CHECK (max_pct > 0 AND max_pct <= 100),  -- 字幕最大宽度百分比
+  hot_fix_json TEXT CHECK (hot_fix_json IS NULL OR json_valid(hot_fix_json))  -- 发音修正（{pronunciation:[{词:音}],replace:[{原:换}]}，随每次配音带下去）
 );
 
 CREATE TABLE IF NOT EXISTS narration_entry (  -- 字幕条：文本 + 配音音频 + 显示时长

@@ -18,9 +18,13 @@ import { callLLM, defaultVoiceOf, parseSrt, srtTime } from '../lib/providers';
 import { useTaskStore } from '../stores/taskStore';
 import { playAudition, stopAudition } from '../lib/audition';
 import { VoicePicker } from './VoicePicker';
+import { HotFixField } from './HotFixField';
 import type { InstanceDef } from '../lib/request-engine';
 import type { TaskRow } from '../types';
-import { estimateTextDurationFrames, generateId, defaultNarrationStyle, type NarrationEntry } from '../types';
+import { estimateTextDurationFrames, generateId, defaultNarrationStyle, hotFixPayload, type HotFix, type NarrationEntry } from '../types';
+
+/** 没填修正时的稳定空值（selector / prop 每帧给新引用会让组件白重渲染） */
+const NO_HOT_FIX: HotFix = { pronunciation: [], replace: [] };
 
 /** 一行 = 一条字幕 + 它自己的配音（可单独生成 / 覆盖） */
 interface SubRow {
@@ -117,6 +121,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const t = useT();
   const project = useProjectStore((s) => s.project);
   const setNarrationEntries = useProjectStore((s) => s.setNarrationEntries);
+  const setNarrationHotFix = useProjectStore((s) => s.setNarrationHotFix);
   const saveProject = useProjectStore((s) => s.saveProject);
   const setProjectEndFrame = useProjectStore((s) => s.setProjectEndFrame);
   const setStyle = useProjectStore((s) => s.setNarrationStyle);
@@ -140,6 +145,9 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const [voice, setVoice] = useState(() => defaultVoiceOf(useProviderStore.getState().current('tts')));
   /** 克隆音色绑一条模型，合成时得一起传（系统音色为空 = 用实例配的） */
   const [voiceModel, setVoiceModel] = useState('');
+  /** 项目级发音修正（存进配音档，每次合成原样带下去）；没填完的行在这一步被滤掉，全空 = 不传这个参数 */
+  const hotFix = hotFixPayload(project?.narration?.hotFix);
+  const hotFixRows = project?.narration?.hotFix ?? NO_HOT_FIX;
   const ready = (i: InstanceDef | null) => !!i && !!String(i.values.instance?.baseUrl ?? '');
   const fps = project?.globalConfig.defaultFPS || 30;
   const hasContent = rows.some((r) => r.text.trim());
@@ -236,7 +244,12 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       await startTask({
         category: 'tts', providerId: tts.id, projectId: project?.id, entryId: r.id,
         batchId: batch,
-        input: { text: r.text, ...(voice ? { voice } : {}), ...(voiceModel ? { model: voiceModel } : {}) },
+        input: {
+          text: r.text,
+          ...(voice ? { voice } : {}),
+          ...(voiceModel ? { model: voiceModel } : {}),
+          ...(hotFix ? { hotFix } : {}),
+        },
       });
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
@@ -509,7 +522,18 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           <div className="mb-2">
             <p className="text-[11px] text-muted-foreground mb-1.5">{t('配音音色', 'Voice')}</p>
             <VoicePicker inst={tts} voice={voice} voiceModel={voiceModel}
+              extra={hotFix ? { hotFix } : undefined}
               onPick={(id, m) => { setVoice(id); setVoiceModel(m ?? ''); }} />
+          </div>
+        )}
+
+        {IS_DESKTOP && (
+          <div className="mb-2">
+            <p className="text-[11px] text-muted-foreground mb-1.5">
+              {t('发音修正', 'Pronunciation fixes')}
+              <span className="text-muted-foreground/60"> · {t('项目级，随每次配音带下去（模板声明了 hotFix 参数才生效）', 'project-wide; applies when the template declares a hotFix parameter')}</span>
+            </p>
+            <HotFixField value={hotFixRows} onChange={setNarrationHotFix} />
           </div>
         )}
 

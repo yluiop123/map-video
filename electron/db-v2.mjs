@@ -369,8 +369,8 @@ export function saveProjectV2(db, project) {
       @offset_x,@offset_y,@z_index,@bg_color,@bg_opacity,@bg_blur,@bg_radius,@bg_border,
       @payload_json,@person_layout_json,@audio_asset_id,@parent_overlay_id,@ord)`);
     const insNarration = db.prepare(`INSERT INTO narration (
-      project_id, font_size, font_family, color, stroke_color, stroke_width, bg, bg_color, pos_y, max_pct
-    ) VALUES (@project_id,@font_size,@font_family,@color,@stroke_color,@stroke_width,@bg,@bg_color,@pos_y,@max_pct)`);
+      project_id, font_size, font_family, color, stroke_color, stroke_width, bg, bg_color, pos_y, max_pct, hot_fix_json
+    ) VALUES (@project_id,@font_size,@font_family,@color,@stroke_color,@stroke_width,@bg,@bg_color,@pos_y,@max_pct,@hot_fix_json)`);
     const insEntry = db.prepare(`INSERT INTO narration_entry (
       entry_id, project_id, text, audio_asset_id, url, duration_sec, start_sec, locked, ord
     ) VALUES (@entry_id,@project_id,@text,@audio_asset_id,@url,@duration_sec,@start_sec,@locked,@ord)`);
@@ -423,6 +423,7 @@ export function saveProjectV2(db, project) {
       project_id: project.id, font_size: st.fontSize ?? 40, font_family: n(st.fontFamily), color: st.color ?? '#E9DEC4',
       stroke_color: st.strokeColor ?? '#000000', stroke_width: st.strokeWidth ?? 0, bg: st.bg ?? 'none',
       bg_color: st.bgColor ?? '#000000', pos_y: st.posY ?? 2, max_pct: st.maxPct ?? 92,
+      hot_fix_json: j(nar.hotFix),
     });
     (nar.entries || []).forEach((e, i) => insEntry.run({
       entry_id: e.id, project_id: project.id, text: e.text || '', audio_asset_id: null, url: n(e.audioUrl),
@@ -708,7 +709,7 @@ export function getProjectV2(db, id) {
     startFrame: 0,
     endFrame,
     layers, elements, camera, fx, overlays,
-    narration: { entries, style: st ? { fontSize: st.font_size, fontFamily: st.font_family ?? undefined, color: st.color, strokeColor: st.stroke_color, strokeWidth: st.stroke_width, bg: st.bg, bgColor: st.bg_color, posY: st.pos_y, maxPct: st.max_pct } : undefined },
+    narration: { entries, style: st ? { fontSize: st.font_size, fontFamily: st.font_family ?? undefined, color: st.color, strokeColor: st.stroke_color, strokeWidth: st.stroke_width, bg: st.bg, bgColor: st.bg_color, posY: st.pos_y, maxPct: st.max_pct } : undefined, hotFix: J(st?.hot_fix_json, undefined) },
     music,
     baseMaps, elevationMaps,
     activeBaseMapId: p.active_base_map_id ?? 'osm', activeElevationMapId: p.active_elevation_map_id ?? 'none',

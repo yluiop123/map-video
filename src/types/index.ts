@@ -940,9 +940,36 @@ export interface NarrationStyle {
   maxPct: number;
 }
 
+/**
+ * 发音修正（TTS 的 `hot_fix`）：**形状就是上游那一份** —— 一条 = 单键对象 `{词: 读音}` / `{原: 换}`。
+ * 要数组形状的供应商（MiniMax / 字节）由模板给这个参数选 `transform: 'hotFixArray'`，界面上不再另立一套模型。
+ */
+export interface HotFix {
+  pronunciation: Record<string, string>[];
+  replace: Record<string, string>[];
+}
+
+export const emptyHotFix = (): HotFix => ({ pronunciation: [], replace: [] });
+
+/**
+ * 要发给上游的那一份：滤掉没填完的行（界面上允许半截行存在，否则敲第二个框时那一行会消失），
+ * 全空返回 undefined —— 调用点据此**根本不传** hotFix 这个参数，而不是传个空对象。
+ */
+export function hotFixPayload(h?: HotFix): HotFix | undefined {
+  if (!h) return undefined;
+  const keep = (list?: Record<string, string>[]) => (list ?? []).filter((o) => {
+    const [k, v] = Object.entries(o)[0] ?? [];
+    return !!k?.trim() && !!v?.trim();
+  });
+  const out: HotFix = { pronunciation: keep(h.pronunciation), replace: keep(h.replace) };
+  return out.pronunciation.length || out.replace.length ? out : undefined;
+}
+
 export interface NarrationTrack {
   entries: NarrationEntry[];
   style: NarrationStyle;
+  /** 项目级发音修正：每次合成都带着走（支持的端点才有用，见 AGENTS §6.22） */
+  hotFix?: HotFix;
 }
 
 /** 背景音乐段（项目级单轨的一段）：项目绝对帧区间，段内可循环 */
@@ -987,7 +1014,9 @@ export function normalizeNarrationTrack(t?: NarrationTrack | null): NarrationTra
     ...e,
     durationFrames: Math.max(1, e.durationFrames || estimateTextDurationFrames(e.text || '', 30)),
   }));
-  return { style, entries };
+  const src = t?.hotFix;
+  const hotFix: HotFix = { pronunciation: src?.pronunciation ?? [], replace: src?.replace ?? [] };
+  return { style, entries, hotFix };
 }
 
 // ========== 导出/导入格式 ==========
