@@ -638,6 +638,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       if (history.length === 0 || !project) return;
       const prev = history[history.length - 1];
       set({ project: prev, history: history.slice(0, -1), future: [...future, project] });
+      useEditorStore.getState().pruneSelectionTo(prev);
     },
 
     redo: () => {
@@ -645,6 +646,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       if (future.length === 0 || !project) return;
       const next = future[future.length - 1];
       set({ project: next, history: [...history, project], future: future.slice(0, -1) });
+      useEditorStore.getState().pruneSelectionTo(next);
     },
   };
 });

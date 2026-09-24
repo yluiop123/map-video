@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { LayerType } from '../types';
+import type { LayerType, MapVideoProject } from '../types';
 import type { TargetLayers } from '../lib/layers';
 
 export type FxTab = 'weather' | 'screen' | 'popup' | 'music';
@@ -86,6 +86,8 @@ interface EditorState {
   focusLayer: (id: string | null) => void;
   /** 切项目 / 新建项目时清掉所有指向旧项目对象的选中态 */
   resetSelection: () => void;
+  /** 撤销 / 重做换掉整份快照后，按新快照丢掉指向已消失对象的选中 id */
+  pruneSelectionTo: (project: MapVideoProject | null) => void;
   setPanelMode: (mode: 'element' | 'keyframe' | 'fx' | 'none') => void;
   /** 选中镜头关键帧（进入右侧视角属性面板） */
   selectKeyframe: (idx: number | null) => void;
@@ -121,6 +123,22 @@ export const useEditorStore = create<EditorState>()((set) => ({
   resetSelection: () => set({
     selectedElementId: null, selectedLayerId: null, selectedKeyframeIdx: null,
     fxSelId: null, panelMode: 'element',
+  }),
+  // 撤销 / 重做只是换掉 project 引用（不经 patch，也就不会走上面那条「换项目才清」的路），
+  // 但选中 id 可能正指向上一次编辑里刚被删掉的元素 / 图层 / 关键帧：属性面板拿空 id 去
+  // find、时间线高亮错位、Del 打到不存在的东西。按新快照逐个校验，没了就清。
+  pruneSelectionTo: (project) => set((s) => {
+    const alive = (list: { id: string }[] | undefined, id: string | null) =>
+      id !== null && !!list?.some((x) => x.id === id);
+    const out: Partial<EditorState> = {};
+    if (!alive(project?.elements, s.selectedElementId)) out.selectedElementId = null;
+    if (!alive(project?.layers, s.selectedLayerId)) out.selectedLayerId = null;
+    if (!alive(project?.fx, s.fxSelId) && !alive(project?.overlays, s.fxSelId)) out.fxSelId = null;
+    if (s.selectedKeyframeIdx != null && s.selectedKeyframeIdx >= (project?.camera.length ?? 0)) {
+      out.selectedKeyframeIdx = null;
+      if (s.panelMode === 'keyframe') out.panelMode = 'none';
+    }
+    return out;
   }),
   setPanelMode: (mode) => set({ panelMode: mode }),
   selectKeyframe: (idx) => set({ selectedKeyframeIdx: idx, panelMode: idx !== null ? 'keyframe' : 'none' }),
