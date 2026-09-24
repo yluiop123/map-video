@@ -6,13 +6,14 @@
  * 克隆出的 voiceId 绑在克隆时的模型上，所以账本连模型一起记，换模型即视为另一条音色
  * （批次 4 会把这份账本搬进 voice 表，键 = 实例 + 参考音频哈希 + 目标模型）。
  */
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
 import { useProviderStore } from '../stores/providerStore';
 import { callTTS, cloneVoice, supports, templateOf } from '../lib/providers';
+import { playAudition, stopAudition } from '../lib/audition';
 import { requestOf, type InstanceDef, type ParamSpec } from '../lib/request-engine';
 import {
-  CLIP_PRESETS, findCloned, forgetClonedVoice, fetchClipBytes, listClonedVoices,
+  CLIP_PRESETS, adoptClonedModel, findCloned, forgetClonedVoice, fetchClipBytes, listClonedVoices,
   rememberClonedVoice, systemVoicesFor, type ClonedVoice, type VoiceGender,
 } from '../lib/voices';
 
@@ -22,7 +23,13 @@ const SAMPLE_LABELS: string[] = CLIP_PRESETS.map((pr) => pr.label);
 export function voiceModelOf(inst: InstanceDef | null | undefined): string {
   if (!inst) return '';
   const v = inst.values;
-  return String(v.requests?.['sync.submit']?.model ?? v.requests?.['async.submit']?.model ?? v.instance?.model ?? '');
+  const given = v.requests?.['sync.submit']?.model ?? v.requests?.['async.submit']?.model ?? v.instance?.model;
+  if (typeof given === 'string' && given.trim()) return given.trim();
+  // 实例没显式填过就走模板声明的默认值 —— 与引擎三层取值同一条规则，别在这儿另起一套
+  const tpl = templateOf(inst);
+  const spec = [...(tpl?.instanceParams ?? []), ...(tpl ? requestOf(tpl, 'sync.submit')?.requestParams ?? [] : [])]
+    .find((x) => x.key === 'model');
+  return String(spec?.defaultValue ?? '');
 }
 
 const strOf = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -40,7 +47,8 @@ export function VoicePicker({ inst, voice, onPick }: {
   const [openGender, setOpenGender] = useState<Record<VoiceGender, boolean>>({ male: false, female: false });
   const [msg, setMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  /** 试听中（全应用只有一路声音，见 lib/audition） */
+  const [auditioning, setAuditioning] = useState(false);
 
   const tpl = templateOf(inst);
   const model = voiceModelOf(inst);
@@ -58,7 +66,8 @@ export function VoicePicker({ inst, voice, onPick }: {
     return (all.find((x) => x.key === key)?.options ?? []).map((o) => String(typeof o === 'object' && o !== null ? o.value : o));
   };
   const vcModel = modelOptions('model').find((m) => m.includes('-vc')) ?? '';
-  const bindModel = tpl?.id === 'dashscope-qwen-tts' && vcModel && !model.includes('-vc') ? vcModel : model;
+  // 「哪条模型吃克隆音色」看模板给 model 配的候选值（-vc 是上游的命名），不认模板 id —— 换一家也不用改这里
+  const bindModel = canClone && vcModel && !model.includes('-vc') ? vcModel : model;
 
   const setModel = (m: string) => {
     if (!inst) return;
@@ -67,6 +76,9 @@ export function VoicePicker({ inst, voice, onPick }: {
       requests: { 'sync.submit': { ...(inst.values.requests?.['sync.submit'] ?? {}), model: m } },
     });
   };
+
+  // 老账本里没记模型的条目，等模型能算出来时补一次（否则同样本会被重复克隆）
+  useEffect(() => { if (bindModel) setCloned(adoptClonedModel(bindModel)); }, [bindModel]);
 
   const pick = (voiceId: string) => { onPick(voiceId); setMsg(''); };
 
@@ -96,15 +108,16 @@ export function VoicePicker({ inst, voice, onPick }: {
     }
   };
 
+  useEffect(() => () => stopAudition(), []);
+
   const audition = async () => {
     if (!inst || !voice) { setMsg(t('先选一个音色', 'Pick a voice first')); return; }
     setBusy('audition'); setMsg('');
     try {
       const { dataUrl } = await callTTS(inst, t('这段旁白用来试听音色。', 'This line previews the voice.'), voice);
-      audioRef.current?.pause();
-      const el = new Audio(dataUrl);
-      audioRef.current = el;
-      el.play().catch(() => { /* 自动播放被拦时忽略 */ });
+      setAuditioning(true);
+      // 播不出去（浏览器拦自动播放）就当没在播，别让按钮一直显示在响
+      if (!await playAudition(dataUrl, () => setAuditioning(false))) setAuditioning(false);
     } catch (e) {
       setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -248,11 +261,14 @@ export function VoicePicker({ inst, voice, onPick }: {
         )}
         <div className="flex items-center gap-1.5 mt-1.5">
           <button
-            onClick={() => void audition()}
-            disabled={busy !== null || !voice}
+            onClick={() => {
+              if (auditioning) { stopAudition(); setAuditioning(false); return; }
+              void audition();
+            }}
+            disabled={busy !== null || (!auditioning && !voice)}
             className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
-            title={t('用当前音色合成一句试听', 'Synthesize one preview line with the current voice')}
-          >{busy === 'audition' ? '⏳' : '▶'} {t('试听', 'Audition')}</button>
+            title={auditioning ? t('停止试听', 'Stop') : t('用当前音色合成一句试听', 'Synthesize one preview line with the current voice')}
+          >{busy === 'audition' ? '⏳' : auditioning ? '⏸' : '▶'} {auditioning ? t('停止', 'Stop') : t('试听', 'Audition')}</button>
           <span className="text-[10px] text-muted-foreground/70 truncate" title={voice}>
             {t('音色随每次合成传下去（不写进实例配置）', 'The voice goes with each call, not the instance')}
             {voice ? ` · ${voice}` : ''}

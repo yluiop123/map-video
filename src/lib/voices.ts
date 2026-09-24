@@ -168,6 +168,18 @@ export function forgetClonedVoice(voiceId: string): ClonedVoice[] {
 }
 
 /**
+ * 早期账本没记模型（那时界面取到的模型是空串）→ 这些条目按当前绑定的克隆目标模型补上。
+ * 不补的话 findCloned 永不命中，同一份样本会在服务端被反复新建音色。
+ */
+export function adoptClonedModel(model: string): ClonedVoice[] {
+  const list = listClonedVoices();
+  if (!model || !list.some((x) => !x.model)) return list;
+  const next = list.map((x) => (x.model ? x : { ...x, model }));
+  writeCloned(next);
+  return next;
+}
+
+/**
  * 同一份样本 + 同一个目标模型已经克隆过就直接复用：
  * 每次重新克隆都会在服务端新建一条音色，既慢也可能触到额度上限。
  */

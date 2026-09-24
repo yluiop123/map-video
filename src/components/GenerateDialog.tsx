@@ -8,11 +8,14 @@
  */
 import { useState, useRef, useEffect, type ComponentProps } from 'react';
 import { useProjectStore } from '../stores/projectStore';
+import { useEditorStore } from '../stores/editorStore';
 import { IS_DESKTOP } from '../lib/backend';
 import { useProviderStore } from '../stores/providerStore';
 import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
+import { Badge } from './ui/badge';
 import { callLLM, callTTS, parseSrt, srtTime } from '../lib/providers';
 import { runBatch } from '../lib/provider-queue';
+import { playAudition, stopAudition } from '../lib/audition';
 import { VoicePicker } from './VoicePicker';
 import type { InstanceDef } from '../lib/request-engine';
 import { estimateTextDurationFrames, generateId, defaultNarrationStyle, type NarrationEntry } from '../types';
@@ -25,6 +28,8 @@ interface SubRow {
   durationFrames: number;
   startFrame: number;
   status?: 'none' | 'pending' | 'ready' | 'error';
+  /** 失败原因（上游 code/message 原样留着，界面上不翻译） */
+  error?: string;
   /** 在时间线上手动拖过 → 保住起点，不参与顺排 */
   locked?: boolean;
 }
@@ -49,7 +54,7 @@ function resequenceRows(rows: SubRow[]): SubRow[] {
 function rowsFromProject(entries: NarrationEntry[] | undefined): SubRow[] {
   return (entries || []).map((e) => ({
     id: e.id, text: e.text, audioUrl: e.audioUrl, durationFrames: Math.max(1, e.durationFrames),
-    startFrame: e.startFrame, status: e.status, locked: e.locked,
+    startFrame: e.startFrame, status: e.status, error: e.error, locked: e.locked,
   }));
 }
 
@@ -83,6 +88,27 @@ function LineInput(props: ComponentProps<'textarea'>) {
   return <textarea ref={ref} rows={1} {...props} onInput={fit} />;
 }
 
+/**
+ * 这一行的配音到哪一步了。批量 30 行时，只有顶部一个汇总数字根本看不出是哪行卡住、
+ * 哪行失败，所以状态逐行摆：排队中 / 合成中 / 时长 / 失败（原因在 title 里，不翻译）。
+ */
+function RowStatus({ r, running, fps }: { r: SubRow; running: boolean; fps: number }) {
+  const t = useT();
+  const base = 'w-14 justify-center px-1 py-0 text-[9px] font-normal tabular-nums';
+  if (running) return <Badge className={`${base} animate-pulse border-sky-400/40 bg-sky-500/15 text-sky-200`}>{t('合成中', 'synth')}</Badge>;
+  if (r.status === 'error') {
+    return <Badge variant="outline" className={`${base} border-red-400/40 text-red-300`} title={r.error || t('合成失败', 'failed')}>{t('失败', 'failed')}</Badge>;
+  }
+  if (r.audioUrl) {
+    return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground`} title={t('配音时长', 'clip length')}>
+      {(r.durationFrames / fps).toFixed(1)}s
+    </Badge>;
+  }
+  if (r.status === 'pending') return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/70`}>{t('排队中', 'queued')}</Badge>;
+  if (!r.text.trim()) return null;
+  return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/50`}>{t('未配音', 'no audio')}</Badge>;
+}
+
 export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const t = useT();
   const project = useProjectStore((s) => s.project);
@@ -98,7 +124,6 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [genIdx, setGenIdx] = useState<number | null>(null);
-  const [auditingId, setAuditingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -119,10 +144,15 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   /** 用整篇文本替换当前行（AI 生成 / 粘贴 / 导入 SRT 共用） */
   const replaceRows = (texts: string[]) => setRows(resequenceRows(texts.map(mkRow)));
 
-  /** 改文本：已有配音则保住音频时长，否则按字数重估 */
+  /** 改文本：已有配音则保住音频时长，否则按字数重估；改过就把上一次的失败状态清掉（别让徽标说谎） */
   const editText = (id: string, text: string) => setRows((rs) => resequenceRows(rs.map((r) => (
     r.id === id
-      ? { ...r, text, durationFrames: r.audioUrl ? r.durationFrames : estimateTextDurationFrames(text, fps) }
+      ? {
+        ...r, text,
+        durationFrames: r.audioUrl ? r.durationFrames : estimateTextDurationFrames(text, fps),
+        status: r.status === 'error' ? (r.audioUrl ? 'ready' as const : 'none' as const) : r.status,
+        error: r.status === 'error' ? undefined : r.error,
+      }
       : r
   ))));
 
@@ -151,32 +181,39 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const synthesizeInto = async (idx: number) => {
     const r = rows[idx];
     if (!r?.text.trim() || !tts) return;
-    setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'pending' } : x)));
+    setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'pending' as const, error: undefined } : x)));
     try {
       const { dataUrl, durationSec } = await callTTS(tts, r.text, voice || undefined);
       setRows((rs) => resequenceRows(rs.map((x, i) => (
         i === idx
-          ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const }
+          ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const, error: undefined }
           : x
       ))));
     } catch (e) {
-      setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'error' as const } : x)));
+      // 失败原因留在行上：批量 30 行时，只有全局一行汇总根本看不出是哪行、为什么
+      setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'error' as const, error: e instanceof Error ? e.message : String(e) } : x)));
       throw e;
     }
   };
 
   /** 单行生成配音（已有音频即覆盖） */
   const genRow = async (idx: number) => {
-    if (!rows[idx]?.text.trim()) { setError(t('请先填写字幕文本', 'Fill in this line first')); return; }
+    const target = rows[idx];
+    if (!target?.text.trim()) { setError(t('请先填写字幕文本', 'Fill in this line first')); return; }
     if (!tts || !ready(tts)) { setError(t('未配置配音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
     setGenIdx(idx); setError(null);
+    markRunning(target.id, true);
     try { await synthesizeInto(idx); }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-    finally { setGenIdx(null); }
+    finally { markRunning(target.id, false); setGenIdx(null); }
   };
 
   const [batch, setBatch] = useState<{ done: number; total: number } | null>(null);
   const cancelBatch = useRef(false);
+  /** 正在合成的行 id（并发>1 时不止一条）；status=pending 但不在这里 = 还在排队 */
+  const [running, setRunning] = useState<string[]>([]);
+  const markRunning = (id: string, on: boolean) =>
+    setRunning((s) => (on ? [...s, id] : s.filter((x) => x !== id)));
 
   /**
    * 全部生成：只补没有配音的行，走队列（并发上限与重试次数来自这个语音实例）。
@@ -187,9 +224,15 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
     const todo = rows.map((_, i) => i).filter((i) => rows[i].text.trim() && !rows[i].audioUrl);
     if (!todo.length) return;
     cancelBatch.current = false;
+    // 先整批标成排队：从点下去到第一行出结果之间那几秒，界面不能看着像没反应
+    setRows((rs) => rs.map((x, i) => (todo.includes(i) ? { ...x, status: 'pending' as const, error: undefined } : x)));
     setBatch({ done: 0, total: todo.length });
     setError(null);
-    const res = await runBatch(todo.map((i) => () => synthesizeInto(i)), {
+    const res = await runBatch(todo.map((i) => async () => {
+      const id = rows[i].id;
+      markRunning(id, true);
+      try { return await synthesizeInto(i); } finally { markRunning(id, false); }
+    }), {
       concurrency: Number(tts.values.instance?.batchConcurrency ?? 1) || 1,
       retries: Number(tts.values.instance?.retryTimes ?? 2),
       isCancelled: () => cancelBatch.current,
@@ -202,13 +245,27 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
+  /**
+   * 试听：**全局只留一路声音**（见 lib/audition）。
+   * 早先这里每次 `new Audio()` 且不留句柄 —— 播下一条不停上一条、点「停止」也停不掉，
+   * 关掉弹窗还在响。现在再点同一行即停止，播完自动复位。
+   */
+  const [auditingId, setAuditingId] = useState<string | null>(null);
   const audit = (r: SubRow) => {
     if (!r.audioUrl) return;
-    const el = new Audio(r.audioUrl);
+    if (auditingId === r.id) {
+      stopAudition();
+      setAuditingId(null);
+      return;
+    }
     setAuditingId(r.id);
-    el.onended = () => setAuditingId(null);
-    el.play().catch(() => setAuditingId(null));
+    void playAudition(r.audioUrl, () => setAuditingId(null));
   };
+  // 时间线开始播放时停掉试听，否则两路声音叠着响
+  const isPlaying = useEditorStore((s) => s.isPlaying);
+  useEffect(() => { if (isPlaying) { stopAudition(); setAuditingId(null); } }, [isPlaying]);
+  // 弹窗关闭即卸载：留着在播的 Audio 会盖住时间线的声音
+  useEffect(() => () => stopAudition(), []);
 
   const genText = async () => {
     if (!topic.trim()) { setError(t('请先填写你的需求', 'Enter your requirements first')); return; }
@@ -277,7 +334,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       .filter((r) => r.text.trim())
       .map((r) => ({
         id: r.id, text: r.text, audioUrl: r.audioUrl, durationFrames: Math.max(1, r.durationFrames),
-        startFrame: r.startFrame, locked: r.locked, status: r.status,
+        startFrame: r.startFrame, locked: r.locked, status: r.status, error: r.status === 'error' ? r.error : undefined,
       }));
     setNarrationEntries(entries);
     const last = entries.reduce((n, e) => Math.max(n, e.startFrame + e.durationFrames), 0);
@@ -437,6 +494,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                   placeholder={t('一行字幕（可直接贴入整篇文案，按行拆分）', 'One subtitle per line (paste a whole script to split)')}
                 />
                 <div className="shrink-0 flex items-center gap-1 pt-0.5">
+                  {IS_DESKTOP && <RowStatus r={r} running={running.includes(r.id)} fps={fps} />}
                   {IS_DESKTOP && <button
                     onClick={() => genRow(idx)}
                     disabled={genIdx !== null || !r.text.trim()}
@@ -449,7 +507,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                     <button
                       onClick={() => audit(r)}
                       className="w-7 h-7 rounded-md border border-white/15 text-[11px] hover:bg-white/10"
-                      title={t('试听本句配音', 'Preview this clip')}
+                      title={auditingId === r.id ? t('停止试听本句', 'Stop this clip') : t('试听本句配音', 'Preview this clip')}
                     >{auditingId === r.id ? '⏸' : '▶'}</button>
                   )}
                   <button
