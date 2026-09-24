@@ -30,7 +30,7 @@ npm run dist:win       # 打 Windows 包 → release/
 
 - 无测试框架。回归验证靠：`npx tsc -b` + `npm run build` + `tools/*.mjs` 自动化（需本机 Chrome 开 `--remote-debugging-port=9222`，临时 profile：`C:\Users\23659\AppData\Local\Temp\opencode\mv-studio-profile`，配合 `playwright-core`）。
 - `tools/` 只留**跑得动、还会再跑**的东西，读文件头注释即可用，四类：
-  ① 文档生成链：`db-field-notes.mjs`（702 字段中文说明词表，`gen-db-field-dict` 的**必需输入**，漏一条直接报错）→ `gen-db-field-dict.mjs`（注入 `docs/db-tables.md`，`--check` 只校验）→ `comment-ddl.mjs`（把说明写成 DDL 行尾注释）；
+  ① 文档生成链：`db-field-notes.mjs`（701 字段中文说明词表，`gen-db-field-dict` 的**必需输入**，漏一条直接报错）→ `gen-db-field-dict.mjs`（注入 `docs/db-tables.md`，`--check` 只校验）→ `comment-ddl.mjs`（把说明写成 DDL 行尾注释）；
   ② 离线回归（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `audit-fk-indexes`；
   ③ 浏览器自动化（Chrome 9222，或桌面端 `MV_CDP=9223`）：`smoke-desktop` / `smoke-backend` / `test-fx` / `test-overlays` / `test-timeline` / `test-import`，公共助手 `pw-page.mjs`（标签页复用，避免每次开新标签）；
   ④ 会花配额 / 改数据的：`try-real-calls.mjs`（真发上游）、`bench-preview.mjs`（预览性能基线，采样结果存 `tools/.bench/`，不入库）。
@@ -191,7 +191,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 10. 数据库约定（V2：桌面端已落地，网页端仍为简化实现）
 
-**规模**：27 张表 / 4 视图 / **0 触发器** / 702 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：27 张表 / 4 视图 / **0 触发器** / 701 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 片长（`project.endFrame`）不入库**（2026-09-19）：`project.end_sec` 列已删——它是纯派生量且**没有任何 UI 能改它**（`setProjectEndFrame` 零调用）。读取端 `getProjectV2` 现按内容实际结束推导：`endFrame = max(60s × fps, 元素/特效/弹窗/机位/字幕/音乐的结束帧)`，与时间线口径一致；空项目从原来的「100 秒幽灵容器」变成 60 秒。新增任何「容器长度」类字段前先问它是不是派生值。
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
@@ -244,7 +244,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **能力矩阵三处联动，改一处必须同步另两处**：**只有 `emoji` 不可着色**（表情字符自带颜色）、`model` 不可贴地（位图贴片）——其余 9 种形态都可着色（multiply 染色，白色=原色）。① DDL 的 CHECK（**不要**再给 model/gif 加 `color IS NULL` 约束，2026-09-19 已删）② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键（**不要为性能删外键**，强制检查 ≈1µs/行），但不使用触发器（见上一条）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
-- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（702 字段中文说明词表，**新增字段漏补说明会直接报错**）。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（701 字段中文说明词表，**新增字段漏补说明会直接报错**）。
 - **文档一律 Markdown**（2026-09-11 起）：`docs/` 下不再有 HTML，也不要用脚本生成 HTML；图用 ```mermaid 代码块内嵌（E-R 图源 `docs/db-er-diagram.mmd`），不再预渲染 SVG。
 
 ## 11. 标记（Pin）形态扩展的代码落点

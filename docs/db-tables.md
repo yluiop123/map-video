@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 702 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，702 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 701 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，701 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -807,7 +807,7 @@
 
 **职责**：弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）　**前端**：右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView
 
-23 列 · 主键 `overlay_id`
+22 列 · 主键 `overlay_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -829,8 +829,7 @@
 | `bg_blur` | REAL | — | 卡片背景模糊半径 |
 | `bg_radius` | REAL | — | 卡片圆角半径 |
 | `bg_border` | TEXT | — | 卡片边框颜色 |
-| `payload_json` | TEXT | — | 类型专属载荷整体存取：custom 内容块 / person 人物块 / report/quote/compare/chart 等 · `CHECK (payload_json IS NULL OR json_valid(payload_json))` |
-| `person_layout_json` | TEXT | — | 人物卡版式：图片方位/对齐/间距/卡片宽/名言样式/叠图 · `CHECK (person_layout_json IS NULL OR json_valid(person_layout_json))` |
+| `payload_json` | TEXT | — | 类型专属载荷整体存取：custom 内容块 / person 人物块（含照片方位与形状）/ report/quote/compare/chart 等 · `CHECK (payload_json IS NULL OR json_valid(payload_json))` |
 | `audio_asset_id` | TEXT | `FK → asset SET NULL` | 背景语音（卡片可见时播放；导出混流待支持） |
 | `parent_overlay_id` | TEXT | `FK → overlay CASCADE` | 父弹窗（group 嵌套结构） |
 | `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |

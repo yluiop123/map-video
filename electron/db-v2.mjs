@@ -146,6 +146,8 @@ const RETIRED_COLUMNS = [
   // 音频只认 asset 了：内联 dataURL / 站内路径那两列不再承载素材本体（老数据按 §8 不迁移，重做一次配音即可）
   ['narration_entry', 'url'],
   ['music_track', 'url'],
+  // 人物卡版式与内容块从来都整体存在 payload_json 里，这列被写死 null、读取侧也不看它（死列）
+  ['overlay', 'person_layout_json'],
 ];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
@@ -391,10 +393,10 @@ export function saveProjectV2(db, project) {
     const insOverlay = db.prepare(`INSERT INTO overlay (
       overlay_id, project_id, type, name, position, start_sec, end_sec, animation, exit_animation, scale,
       offset_x, offset_y, z_index, bg_color, bg_opacity, bg_blur, bg_radius, bg_border,
-      payload_json, person_layout_json, audio_asset_id, parent_overlay_id, ord
+      payload_json, audio_asset_id, parent_overlay_id, ord
     ) VALUES (@overlay_id,@project_id,@type,@name,@position,@start_sec,@end_sec,@animation,@exit_animation,@scale,
       @offset_x,@offset_y,@z_index,@bg_color,@bg_opacity,@bg_blur,@bg_radius,@bg_border,
-      @payload_json,@person_layout_json,@audio_asset_id,@parent_overlay_id,@ord)`);
+      @payload_json,@audio_asset_id,@parent_overlay_id,@ord)`);
     const insNarration = db.prepare(`INSERT INTO narration (
       project_id, font_size, font_family, color, stroke_color, stroke_width, bg, bg_color, pos_y, max_pct, hot_fix_json
     ) VALUES (@project_id,@font_size,@font_family,@color,@stroke_color,@stroke_width,@bg,@bg_color,@pos_y,@max_pct,@hot_fix_json)`);
@@ -440,7 +442,7 @@ export function saveProjectV2(db, project) {
       start_sec: f2s(o.startFrame), end_sec: f2s(o.endFrame), animation: n(o.animation), exit_animation: n(o.exitAnimation),
       scale: n(o.scale), offset_x: o.offsetX ?? 0, offset_y: o.offsetY ?? 0, z_index: o.zIndex ?? 0,
       bg_color: n(o.bg?.color), bg_opacity: n(o.bg?.opacity), bg_blur: n(o.bg?.blur), bg_radius: n(o.bg?.radius),
-      bg_border: n(o.bg?.border), payload_json: j(stripOverlayAudio(o.content)), person_layout_json: null,
+      bg_border: n(o.bg?.border), payload_json: j(stripOverlayAudio(o.content)),
       audio_asset_id: overlayAudioId(o.content), parent_overlay_id: null, ord: i,
     }));
     // 字幕 / 配音

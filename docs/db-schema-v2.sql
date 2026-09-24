@@ -986,9 +986,8 @@ CREATE TABLE IF NOT EXISTS overlay (  -- 叠加层（弹窗）：本体一张，
   bg_radius    REAL,  -- 卡片圆角半径
   bg_border    TEXT,  -- 卡片边框颜色
   -- P3：类型专属载荷整体存取：custom 的内容块 / person 的人物块 + report/quote/compare/chart 等
-  payload_json TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),  -- 类型专属载荷整体存取：custom 内容块 / person 人物块 / report/quote/compare/chart 等
-  -- person 布局 + 整卡语音
-  person_layout_json TEXT CHECK (person_layout_json IS NULL OR json_valid(person_layout_json)),  -- 人物卡版式：图片方位/对齐/间距/卡片宽/名言样式/叠图
+  payload_json TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),  -- 类型专属载荷整体存取：custom 内容块 / person 人物块（含照片方位与形状）/ report/quote/compare/chart 等
+  -- 整卡语音
   audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 背景语音（卡片可见时播放；导出混流待支持）
   parent_overlay_id TEXT REFERENCES overlay(overlay_id) ON DELETE CASCADE,  -- 父弹窗（group 嵌套结构）
   ord          INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序
@@ -997,8 +996,8 @@ CREATE TABLE IF NOT EXISTS overlay (  -- 叠加层（弹窗）：本体一张，
 CREATE INDEX IF NOT EXISTS ix_overlay_chapter ON overlay(project_id, start_sec);
 CREATE INDEX IF NOT EXISTS ix_overlay_parent  ON overlay(parent_overlay_id);
 
--- 内容块（custom 的 blocks / person 的 5 类块）与 payload、布局一起内联在 overlay.payload_json /
--- person_layout_json 中：弹窗整体读写，内容块不单独寻址，原 overlay_block / person_block 两张中间表已删除。
+-- 内容块（custom 的 blocks / person 的 5 类块）与版式一起内联在 overlay.payload_json 中：
+-- 弹窗整体读写，内容块不单独寻址，原 overlay_block / person_block 两张中间表已删除。
 
 -- -----------------------------------------------------------------------------
 -- 7. 章节级特效 / 字幕 / 配乐
