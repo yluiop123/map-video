@@ -16,7 +16,7 @@ import { useProviderStore } from './providerStore';
 import { useProjectStore } from './projectStore';
 import { decodeAudioDuration, queryStep, submitStep } from '../lib/providers';
 import { putAssetBytes } from '../lib/assets';
-import { retriable } from '../lib/provider-queue';
+import { retriable } from '../lib/request-engine';
 
 /** 一次动作的入参：调用级参数原样存进 input_json，重试 = 取它重发 */
 export interface StartTask {

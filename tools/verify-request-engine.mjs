@@ -11,6 +11,7 @@
 import {
   REQ_KEYS, applyOutputs, buildRequest, callKeysOf, classify, hotFixToArrays, readPath,
   redact, requestOf, runClone, runSync, secretsOf, submitAsync, queryOnce, validateTemplate, EngineError,
+  retriable,
 } from '../src/lib/request-engine.ts';
 import { SEED_TEMPLATES, seedTemplate } from '../src/lib/template-seed.ts';
 
@@ -253,6 +254,13 @@ for (const t of SEED_TEMPLATES) {
   }
   check(`9 ${t.id}：${keys.join(' + ')} 都拼得出请求`, ok, why);
 }
+
+// ========== 10. 重试判据（调度层照它决定要不要再发一次） ==========
+console.log('\n[10] 只有 429 / 5xx 算「重试有用」');
+check('10.1 限流与服务端故障可重试', retriable(new EngineError('x', 429)) && retriable(new EngineError('x', 503)));
+check('10.2 业务错不重试（400 / 404）', !retriable(new EngineError('Model not exist.', 400)) && !retriable(new EngineError('nope', 404)));
+check('10.3 没带状态码的错不重试（CORS / 参数缺失）', !retriable(new EngineError('请求失败（可能被 CORS 拦截）')));
+check('10.4 原始异常与 undefined 不重试', !retriable(new Error('boom')) && !retriable(undefined));
 
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);
 process.exit(failed ? 1 : 0);

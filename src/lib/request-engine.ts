@@ -153,6 +153,21 @@ export class EngineError extends Error {
   }
 }
 
+/** 引擎的 EngineError 带 status；调度层按鸭子类型取，免得为一次 instanceof 把两个模块绑死 */
+function httpStatus(e: unknown): number | undefined {
+  const s = (e as { status?: unknown } | null)?.status;
+  return typeof s === 'number' ? s : undefined;
+}
+
+/**
+ * 只重试「再试一次可能成」的错：限流与服务端故障。
+ * 业务错（模型名不存在、参数非法）重试只是白烧配额；没带状态码的错（CORS、参数缺失）同理。
+ */
+export function retriable(e: unknown): boolean {
+  const status = httpStatus(e);
+  return status === 429 || (status !== undefined && status >= 500 && status < 600);
+}
+
 /**
  * **没有任何内置占位符**：`${baseUrl}` `${apiKey}` 都是模板 instanceParams 里声明出来的参数，
  * 取值落在实例的 values.instance；中间变量（taskId / fileId / voiceId）靠 outputs 流转，也不进声明表。

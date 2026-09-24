@@ -31,7 +31,7 @@ npm run dist:win       # 打 Windows 包 → release/
 - 无测试框架。回归验证靠：`npx tsc -b` + `npm run build` + `tools/*.mjs` 自动化（需本机 Chrome 开 `--remote-debugging-port=9222`，临时 profile：`C:\Users\23659\AppData\Local\Temp\opencode\mv-studio-profile`，配合 `playwright-core`）。
 - `tools/` 只留**跑得动、还会再跑**的东西，读文件头注释即可用，四类：
   ① 文档生成链：`db-field-notes.mjs`（702 字段中文说明词表，`gen-db-field-dict` 的**必需输入**，漏一条直接报错）→ `gen-db-field-dict.mjs`（注入 `docs/db-tables.md`，`--check` 只校验）→ `comment-ddl.mjs`（把说明写成 DDL 行尾注释）；
-  ② 离线回归（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `verify-provider-queue` / `audit-fk-indexes`；
+  ② 离线回归（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `audit-fk-indexes`；
   ③ 浏览器自动化（Chrome 9222，或桌面端 `MV_CDP=9223`）：`smoke-desktop` / `smoke-backend` / `test-fx` / `test-overlays` / `test-timeline` / `test-import`，公共助手 `pw-page.mjs`（标签页复用，避免每次开新标签）；
   ④ 会花配额 / 改数据的：`try-real-calls.mjs`（真发上游）、`bench-preview.mjs`（预览性能基线，采样结果存 `tools/.bench/`，不入库）。
   **一次性验证脚本用完就删**，别留在目录里当考古（2026-09-24 清掉 13 个：验「疆域蚕食」「飞行拖尾」那两版实现的探帧脚本、`verify-dot`、`verify-dark-ui`、`bench-fk-indexes.cjs`、头注释写着「用完即删」的 `smoke-fx-tabs`）。
@@ -71,10 +71,9 @@ lib/
   regions.ts           # 行政区边界加载与点选/按名查找（默认 johan world.geo.json，可换源）
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
   asset-refs.ts      # ★ 项目里所有素材引用位的唯一清单（导出配置 JSON 带字节、导入改 id 都走它；新增引用位只改这里）
-  request-engine.ts    # ★ 接口模板求值：三层取值 + `${x}` 求值与删键级联 / readPath / applyOutputs / runSync·submitAsync·queryOnce·runClone / validateTemplate；不碰网络不碰 DOM
+  request-engine.ts    # ★ 接口模板求值：三层取值 + `${x}` 求值与删键级联 / readPath / applyOutputs / runSync·submitAsync·queryOnce·runClone / validateTemplate / retriable(只有 429·5xx 才算「重试有用」)；不碰网络不碰 DOM
   template-seed.ts     # 内置接口模板 seed（3 份 = 四个上游形状，一行一份完整模板）；首次建库铺成表行，之后是普通可编辑数据；接新供应商改这里或界面上自己填
   providers.ts         # 供应商调用薄壳：callLLM/callTTS/callImage/cloneVoice + declaredOptions/declaredDefault（界面按声明长控件）→ 全走引擎；**没有协议分支**
-  provider-queue.ts    # retriable(e)：只有 429/5xx 才算「重试有用」，业务错不重试
   audition.ts          # 全应用**一路**声音（试听配音 / 音色）：playAudition / stopAudition，播新的必先停旧的
   backend.ts           # IS_DESKTOP 与 window.mapvideo.* 的类型门面（projects/assets/voices/tasks/providers…）
   i18n.ts              # 显示文案类型 L = string | {zh,en}（只有 value 进请求体）
@@ -230,14 +229,13 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   4. `node --experimental-sqlite tools/gen-db-field-dict.mjs` 重跑，把字段字典注入 `docs/db-tables.md`
   4.5 `node tools/comment-ddl.mjs`：把字段中文说明写成 DDL 行尾 `-- 中文`（SQLite 不存储注释，靠 DDL 自文档；幂等，改完字段说明后重跑）
   5. 手工同步文档中**标记外**的部分：表数 / 列数（`db-tables.md`、`db-redesign.md`、`AGENTS.md` 本节的规模行）、`db-tables.md` 第二节字段归属表与第三节逐表速查、`db-redesign.md` 2.2 实体清单与资源层说明、`docs/db-er-diagram.mmd` E-R 图
-  6. 验证（七条全绿才算完）：
+  6. 验证（六条全绿才算完）：
      `node --experimental-sqlite tools/gen-db-field-dict.mjs --check`（结构一致 + 说明全覆盖）·
      `node --experimental-sqlite tools/audit-fk-indexes.mjs`（外键索引缺口）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs`（**存进去 = 取出来**：输入原值逐字往返、falsy 合法值不被 `||` 吞、帧↔秒互逆、发音修正 JSON）·
      `node --experimental-strip-types --experimental-sqlite tools/verify-public-layers.mjs`（公共图层副本）·
      `node --experimental-sqlite tools/verify-provider-templates.mjs`（**四张配置表 + 三代旧形状让位**：模板/实例逐字往返、真外键拦删、音色唯一键含 target_model、任务读写与错峰查询、异步配对自检视图、让位不删表且把 Key 并进 values.instance、task 换代后行不丢）·
-     `node --experimental-strip-types tools/verify-request-engine.mjs`（模板求值 / 出参解码 / 异步轮询，全离线）·
-     `node --experimental-strip-types tools/verify-provider-queue.mjs`（批量调度：并发上限、只重试 429/5xx、业务错不重试、取消后不开新行、逐条落库钩子）
+     `node --experimental-strip-types tools/verify-request-engine.mjs`（模板求值 / 出参解码 / 异步轮询 / 重试判据只认 429·5xx，全离线）
 
 - **★ 给用户新增「可自定义」的字段时，回头检查它是否打破了设计稿的既有前提**（2026-09-12 教训两条）：
   - 地形夸张系数可调节、底图可增删改 → 打破了「底图/高程图是代码常量，配置不入库」的前提，2026-09-19 补了 `base_map` / `elevation_map` 两张表（**每项目一份**，内置项在创建项目时作为普通行复制进来，夸张系数直接落在 `elevation_map.exaggeration`）；
