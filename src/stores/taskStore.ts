@@ -14,7 +14,8 @@ import type { InstanceDef } from '../lib/request-engine';
 import { IS_DESKTOP } from '../lib/backend';
 import { useProviderStore } from './providerStore';
 import { useProjectStore } from './projectStore';
-import { bytesToDataUrl, decodeAudioDuration, queryStep, submitStep } from '../lib/providers';
+import { decodeAudioDuration, queryStep, submitStep } from '../lib/providers';
+import { putAssetBytes } from '../lib/assets';
 import { retriable } from '../lib/provider-queue';
 
 /** 一次动作的入参：调用级参数原样存进 input_json，重试 = 取它重发 */
@@ -30,10 +31,10 @@ export interface StartTask {
 interface TaskState {
   rows: TaskRow[];
   /**
-   * 跑完的产物（dataURL + 时长），**只在内存里**，不落库：
+   * 跑完的产物（assetId + 时长），**只在内存里**，不落库：
    * 弹窗开着时直接从这儿拿（不必等字幕行先落库）；关着时由 applyResult 回填到项目条目上。
    */
-  results: Record<string, { dataUrl: string; durationSec: number }>;
+  results: Record<string, { assetId: string; durationSec: number }>;
   /** 启动时把没跑完的捞回来接着推（顺带清掉很久以前的已结束行） */
   hydrate: () => Promise<void>;
   start: (t: StartTask) => Promise<TaskRow>;
@@ -61,6 +62,13 @@ function pacing(inst: InstanceDef) {
 const isOpen = (t: TaskRow) => t.status === 'submitting' || t.status === 'querying';
 
 let timer: ReturnType<typeof setInterval> | null = null;
+/**
+ * 一轮没跑完就不开下一轮。
+ * setInterval 不会等 await：一条同步合成要 1.4s（比 1s 的轮询间隔长），
+ * 上一轮还挂在 fetch 上，下一轮又从库里捞到同一条 `submitting` 行 —— 于是同一个任务
+ * 发两次请求、拿两份产物（实测：task 表一行，asset 表两行）。
+ */
+let ticking = false;
 function ensureTicking() {
   if (!IS_DESKTOP || timer) return;
   timer = setInterval(() => { void useTaskStore.getState().tick(); }, 1000);
@@ -81,18 +89,21 @@ async function persist(row: TaskRow): Promise<TaskRow> {
 }
 
 async function applyResult(row: TaskRow, bytes: Uint8Array, mime?: string) {
-  const dataUrl = await bytesToDataUrl(bytes, mime || (row.category === 'tts' ? 'audio/mpeg' : 'image/png'));
+  // 产物字节当场进素材库：项目里只留 assetId（一条 6 秒配音 ≈ 400KB 文本，内联会把存档撑爆），
+  // 而异步查询回来的链接是带时效的 —— 不留链接、只留我们自己的这一份
+  const kind = row.category === 'tts' ? 'audio' : 'image';
+  const { assetId } = await putAssetBytes(bytes, mime || (row.category === 'tts' ? 'audio/mpeg' : 'image/png'), row.taskId, kind);
   const text = String(row.input?.text ?? '');
-  const durationSec = await decodeAudioDuration(dataUrl, text);
+  const durationSec = kind === 'audio' ? await decodeAudioDuration(bytes, text) : 0;
   // 先留在内存：字幕弹窗开着时它直接取这一份，不必要求「先生成必须先落库」
-  useTaskStore.setState((s) => ({ results: { ...s.results, [row.taskId]: { dataUrl, durationSec } } }));
+  useTaskStore.setState((s) => ({ results: { ...s.results, [row.taskId]: { assetId, durationSec } } }));
   if (row.category !== 'tts' || !row.entryId) return;
   const project = useProjectStore.getState().project;
   if (!project || project.id !== row.projectId) return;            // 项目没开着：留给下一轮（见 advance 的门禁）
   if (!project.narration?.entries.some((e) => e.id === row.entryId)) return;  // 这条字幕还没落库，等弹窗「应用」
   const fps = project.globalConfig?.defaultFPS || 30;
   useProjectStore.getState().updateNarrationEntry(row.entryId, {
-    audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready', error: undefined,
+    audioId: assetId, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready', error: undefined,
   });
 }
 
@@ -184,22 +195,27 @@ export const useTaskStore = create<TaskState>((set, get) => ({
    * 串行 await 而不是并发 spawn —— 一轮里谁在跑一目了然，也不会有两个循环互相抢行。
    */
   tick: async () => {
-    if (!IS_DESKTOP) return;
-    const due = (await window.mapvideo!.tasks.due()).filter(isOpen);
-    if (!due.length) return;
-    useTaskStore.setState((s) => ({
-      rows: [...s.rows, ...due.filter((d) => !s.rows.some((x) => x.taskId === d.taskId))],
-    }));
-    const perProvider = new Map<string, number>();
-    const limitOf = (providerId: string) => {
-      const inst = useProviderStore.getState().instances.find((x) => x.id === providerId);
-      return Math.max(1, num(inst?.values.instance?.batchConcurrency, 1));
-    };
-    for (const row of due) {
-      const used = perProvider.get(row.providerId) ?? 0;
-      if (used >= limitOf(row.providerId)) continue;
-      perProvider.set(row.providerId, used + 1);
-      await get().advance(row.taskId);
+    if (!IS_DESKTOP || ticking) return;
+    ticking = true;
+    try {
+      const due = (await window.mapvideo!.tasks.due()).filter(isOpen);
+      if (!due.length) return;
+      useTaskStore.setState((s) => ({
+        rows: [...s.rows, ...due.filter((d) => !s.rows.some((x) => x.taskId === d.taskId))],
+      }));
+      const perProvider = new Map<string, number>();
+      const limitOf = (providerId: string) => {
+        const inst = useProviderStore.getState().instances.find((x) => x.id === providerId);
+        return Math.max(1, num(inst?.values.instance?.batchConcurrency, 1));
+      };
+      for (const row of due) {
+        const used = perProvider.get(row.providerId) ?? 0;
+        if (used >= limitOf(row.providerId)) continue;
+        perProvider.set(row.providerId, used + 1);
+        await get().advance(row.taskId);
+      }
+    } finally {
+      ticking = false;
     }
   },
 }));

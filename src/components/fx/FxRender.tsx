@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { AnimationPreset, MapVideoProject, OverlayBlock, OverlayContent, OverlayItem, ScreenFxItem, NarrationTrack } from '../../types';
 import { normalizePersonContent, normalizeNarrationTrack, POS_BASE } from '../../types';
 import { screenFxCombinedAt } from '../../lib/screenfx';
+import { getAssetUrl } from '../../lib/assets';
 import { FxCanvas } from './FxCanvas';
 
 // ========== 工具 ==========
@@ -168,7 +169,7 @@ function isImageOnlyPerson(c: OverlayContent): boolean {
 /** 人物卡：4 种常用样式（简介/名言/海报/纯文字）+ 少量参数；照片形状与方位可调 */
 function PersonView({ content, interactive }: { content: OverlayContent; interactive: boolean }) {
   const p = normalizePersonContent(content.person);
-  const audio = p.audioUrl ? <AutoAudio url={p.audioUrl} interactive={interactive} /> : null;
+  const audio = p.audioId ? <AutoAudio assetId={p.audioId} interactive={interactive} /> : null;
   const radius = p.imageShape === 'circle' ? 999 : 10;
 
   const avatar = (size: number) =>
@@ -234,9 +235,10 @@ function PersonView({ content, interactive }: { content: OverlayContent; interac
 }
 
 /** 语音卡片：确定性律动条 + 标题；编辑端可点播放（导出为纯视觉卡片） */
-function AudioCardView({ audio, frame, interactive }: { audio?: { url: string; title?: string }; frame: number; interactive: boolean }) {
+function AudioCardView({ audio, frame, interactive }: { audio?: { audioId: string; title?: string }; frame: number; interactive: boolean }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
+  const src = useAudioSrc(audio?.audioId);
   const toggle = () => {
     const el = audioRef.current;
     if (!el) return;
@@ -266,7 +268,7 @@ function AudioCardView({ audio, frame, interactive }: { audio?: { url: string; t
           })}
         </div>
       </div>
-      {audio?.url && interactive && <audio ref={audioRef} src={audio.url} onEnded={() => setPlaying(false)} style={{ display: 'none' }} />}
+      {src && interactive && <audio ref={audioRef} src={src} onEnded={() => setPlaying(false)} style={{ display: 'none' }} />}
     </div>
   );
 }
@@ -597,26 +599,38 @@ function VsChart({ chart, color, color2, progress }: { chart: ChartCfg; color: s
 
 // ========== 预设卡片视图 ==========
 
+/** assetId → 可播放地址：项目里只存 id，地址现取（getAssetUrl 按 id 缓存 objectURL；素材没了给空串） */
+function useAudioSrc(assetId?: string): string {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    let on = true;
+    void getAssetUrl(assetId).then((u) => { if (on) setSrc(u ?? ''); });
+    return () => { on = false; };
+  }, [assetId]);
+  return src;
+}
+
 /** 语音自动播放（编辑端）：挂载即播放，卸载即停；导出端不渲染音频 */
-function AutoAudio({ url, interactive }: { url: string; interactive: boolean }) {
+function AutoAudio({ assetId, interactive }: { assetId: string; interactive: boolean }) {
   const ref = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [started, setStarted] = useState(false);
+  const src = useAudioSrc(assetId);
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || !src) return;
     let cancelled = false;
     el.currentTime = 0;
     el.play().then(() => { if (!cancelled) { setPlaying(true); setStarted(true); } }).catch(() => { if (!cancelled) setStarted(false); });
     return () => { cancelled = true; try { el.pause(); } catch { /* noop */ } };
-  }, []);
+  }, [src]);
   const toggle = () => {
     const el = ref.current;
     if (!el) return;
     if (playing) { el.pause(); setPlaying(false); }
     else { el.play().then(() => setPlaying(true)).catch(() => { /* noop */ }); }
   };
-  if (!interactive) return null;
+  if (!interactive || !src) return null;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
       <button
@@ -630,7 +644,7 @@ function AutoAudio({ url, interactive }: { url: string; interactive: boolean }) 
         {playing ? '❚❚' : '▶'}
       </button>
       <span style={{ color: '#a8a29e', fontSize: 11 }}>{started ? (playing ? '语音播放中' : '语音') : '点击播放语音'}</span>
-      <audio ref={ref} src={url} style={{ display: 'none' }} />
+      <audio ref={ref} src={src} style={{ display: 'none' }} />
     </div>
   );
 }
@@ -660,14 +674,14 @@ function CustomView({ content, frame, interactive }: { content: OverlayContent; 
   const cust = content.custom;
   const blocks = cust?.blocks || [];
   if (!blocks.length) {
-    return cust?.audio?.url
+    return cust?.audio?.audioId
       ? <AudioCardView audio={cust.audio} frame={frame} interactive={interactive} />
       : <span style={{ color: '#a8a29e', fontSize: 13 }}>空卡片</span>;
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 160, maxWidth: 460 }}>
       {blocks.map((b) => <BlockView key={b.id} b={b} />)}
-      {cust?.audio?.url && <AutoAudio url={cust.audio.url} interactive={interactive} />}
+      {cust?.audio?.audioId && <AutoAudio assetId={cust.audio.audioId} interactive={interactive} />}
     </div>
   );
 }

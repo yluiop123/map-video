@@ -16,7 +16,7 @@ import {
   type PersonContent, type PersonStyle,
   type MusicTrack,
 } from '../types';
-import { readAudioFile } from '../lib/providers';
+import { getAssetUrl, putAssetBytes, uploadAsset } from '../lib/assets';
 import { ImageGenerateField } from './ImageGenerateField';
 import { projectContentEndFrame } from '../lib/project-duration';
 
@@ -36,8 +36,9 @@ async function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-/** 读取音频真实时长（秒）；失败/超时返回 null */
-function probeAudioDuration(url: string, timeoutMs = 5000): Promise<number | null> {
+/** 读取音频真实时长（秒）；素材没了 / 失败 / 超时都返回 null（调用方按估算兜底） */
+function probeAudioDuration(url: string | null, timeoutMs = 5000): Promise<number | null> {
+  if (!url) return Promise.resolve(null);
   return new Promise((resolve) => {
     const el = new Audio();
     el.preload = 'metadata';
@@ -73,6 +74,30 @@ function UploadButton({ label, accept, onPick }: { label: string; accept: string
         onChange={async (e) => {
           const f = e.target.files?.[0];
           if (f) onPick(await fileToDataUrl(f));
+          e.target.value = '';
+        }}
+      />
+      <span className="sr-only">{t('上传', 'Upload')}</span>
+    </label>
+  );
+}
+
+/**
+ * 音频上传：字节**当场进素材库**，项目里只留 assetId（一条 6 秒配音 ≈ 400KB，内联进项目 JSON 会把存档撑爆）。
+ * 与图片上传分开写：图片那条还在内联 dataURL（本批只收音频），别在这儿混成一个带 mode 的组件。
+ */
+function AudioUploadButton({ label, onPick }: { label: string; onPick: (assetId: string, name: string) => void }) {
+  const t = useT();
+  return (
+    <label className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border bg-white/[0.045] text-xs text-foreground/80 hover:border-white/25 cursor-pointer transition-colors w-fit">
+      ⬆ {label}
+      <input
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={async (e) => {
+          const f = e.target.files?.[0];
+          if (f) onPick((await uploadAsset(f, 'audio')).assetId, f.name.replace(/\.[^.]+$/, ''));
           e.target.value = '';
         }}
       />
@@ -576,14 +601,13 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
           </div>
           <div className="flex items-center gap-2 pt-1 border-t border-white/5">
             <span className="text-[11px] text-muted-foreground shrink-0">🎙️ {t('背景语音', 'Voiceover')}</span>
-            <UploadButton
-              label={cust.audio?.url ? t('更换', 'Change') : t('上传', 'Upload')}
-              accept="audio/*"
-              onPick={(u) => onContent({ ...c, custom: { ...cust, blocks, audio: { url: u, title: cust.audio?.title || t('背景语音', 'Voiceover') } } })}
+            <AudioUploadButton
+              label={cust.audio?.audioId ? t('更换', 'Change') : t('上传', 'Upload')}
+              onPick={(audioId) => onContent({ ...c, custom: { ...cust, blocks, audio: { audioId, title: cust.audio?.title || t('背景语音', 'Voiceover') } } })}
             />
-            {cust.audio?.url && (
+            {cust.audio?.audioId && (
               <>
-                <span className="text-[11px] text-muted-foreground truncate max-w-[90px]">{cust.audio.url.startsWith('data:') ? t('已上传', 'attached') : cust.audio.url}</span>
+                <span className="text-[11px] text-muted-foreground truncate max-w-[90px]">{t('已上传', 'attached')}</span>
                 <button className={mini} onClick={() => onContent({ ...c, custom: { ...cust, blocks, audio: undefined } })} title={t('移除语音', 'Remove')}>✕</button>
               </>
             )}
@@ -648,11 +672,11 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
           </Field>
           <Section title={t('语音（整卡一条）', 'Voice (one per card)')}>
             <div className="flex items-center gap-2">
-              <UploadButton label={t('上传语音', 'Upload voice')} accept="audio/*" onPick={(u) => setP({ audioUrl: u })} />
-              {pc.audioUrl && (
+              <AudioUploadButton label={t('上传语音', 'Upload voice')} onPick={(audioId) => setP({ audioId })} />
+              {pc.audioId && (
                 <>
-                  <span className="text-[11px] text-muted-foreground truncate max-w-[100px]">{pc.audioUrl.startsWith('data:') ? t('已上传', 'attached') : pc.audioUrl}</span>
-                  <button className={rowMini} onClick={() => setP({ audioUrl: undefined })} title={t('移除语音', 'Remove')}>✕</button>
+                  <span className="text-[11px] text-muted-foreground truncate max-w-[100px]">{t('已上传', 'attached')}</span>
+                  <button className={rowMini} onClick={() => setP({ audioId: undefined })} title={t('移除语音', 'Remove')}>✕</button>
                 </>
               )}
             </div>
@@ -839,11 +863,11 @@ function MusicTab({ project }: { project: MapVideoProject }) {
    * 追加一段音乐（单条轨道，接在上一段之后、不重合）：
    * 上一段若循环铺满到片尾，先把它收短为「开始 + 音频时长」腾出位置；新段铺满剩余到片尾。
    */
-  const appendTrack = async (name: string, url: string) => {
+  const appendTrack = async (name: string, audioId: string) => {
     const last = tracks[tracks.length - 1];
     let base = tracks;
     if (last && last.endFrame >= laneMax) {
-      const dur = await probeAudioDuration(last.url);
+      const dur = await probeAudioDuration(await getAssetUrl(last.audioId));
       const shortenTo = dur != null
         ? Math.min(laneMax, last.startFrame + Math.max(1, Math.round(dur * fps)))
         : laneMax;
@@ -860,7 +884,7 @@ function MusicTab({ project }: { project: MapVideoProject }) {
       return;
     }
     const next: MusicTrack = {
-      id: generateId(), name, url,
+      id: generateId(), name, audioId,
       startFrame: start, endFrame: laneMax,
       volume: 0.6, loop: true, fadeIn: 1, fadeOut: 1,
     };
@@ -878,7 +902,7 @@ function MusicTab({ project }: { project: MapVideoProject }) {
       setProjectMusic(list);
       return;
     }
-    const dur = await probeAudioDuration(m.url);
+    const dur = await probeAudioDuration(await getAssetUrl(m.audioId));
     const durF = dur != null ? Math.max(1, Math.round(dur * fps)) : (m.endFrame - m.startFrame);
     const end = Math.max(m.startFrame + 1, Math.min(m.startFrame + durF, laneMax));
     const list = [...tracks];
@@ -905,24 +929,35 @@ function MusicTab({ project }: { project: MapVideoProject }) {
     setProjectMusic(rippleAfter(list, index));
   };
 
-  const pickBuiltin = (b: { name: string; file: string }) => {
-    void appendTrack(b.name, new URL('bgm/' + b.file, document.baseURI).href);
+  /** 内置曲目：选中的那一刻把字节复制进素材库（项目里从此只有 assetId，没有站内路径这第二种表示） */
+  const pickBuiltin = async (b: { name: string; file: string }) => {
+    try {
+      const r = await fetch(new URL('bgm/' + b.file, document.baseURI).href);
+      if (!r.ok) throw new Error(`${r.status}`);
+      const buf = new Uint8Array(await r.arrayBuffer());
+      const { assetId } = await putAssetBytes(buf, r.headers.get('content-type') || 'audio/mpeg', b.file, 'audio');
+      await appendTrack(b.name, assetId);
+    } catch (err) {
+      alert(`${t('内置曲目载入失败', 'Bundled track failed')}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const importMusic = async (file: File) => {
     try {
-      const { dataUrl } = await readAudioFile(file);
-      await appendTrack(file.name.replace(/\.[^.]+$/, ''), dataUrl);
+      const { assetId } = await uploadAsset(file, 'audio');
+      await appendTrack(file.name.replace(/\.[^.]+$/, ''), assetId);
     } catch (err) {
       alert(`${t('音频解析失败', 'Audio parse failed')}: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
-  const audit = (m: MusicTrack) => {
+  const audit = async (m: MusicTrack) => {
     const same = auditingId === m.id;
     stopAudit();
     if (same) { setAuditingId(null); return; }
-    const el = new Audio(m.url);
+    const src = await getAssetUrl(m.audioId);
+    if (!src) { alert(t('音频素材不在了（可能被删了），重新上传一次', 'the audio asset is gone — upload it again')); return; }
+    const el = new Audio(src);
     el.volume = m.volume;
     el.loop = true;
     auditRef.current = el;

@@ -104,13 +104,22 @@ export async function getAssetUrl(assetId?: string | null): Promise<string | nul
 /** 取原始字节（3D 模型解析 / 校验用） */
 export async function getAssetBytes(assetId?: string | null): Promise<Uint8Array | null> {
   if (!assetId) return null;
+  const r = await readAsset(assetId);
+  return r?.bytes ?? null;
+}
+
+/**
+ * 取一份素材的完整登记（字节 + 当初入库的 mime + 原名）。
+ * 导出配置 JSON 走这条：按**登记的** mime 还原，而不是拿魔数字猜（猜错过 webp，音频一律猜成 octet-stream）。
+ */
+export async function readAsset(assetId: string): Promise<{ bytes: Uint8Array; mime: string; name: string } | null> {
   if (IS_DESKTOP) {
     const r = await window.mapvideo!.assets.read(assetId);
-    return r?.bytes ?? null;
+    return r?.bytes ? { bytes: r.bytes, mime: r.mime || 'application/octet-stream', name: r.name ?? '' } : null;
   }
   const row = await dexie.getAsset(assetId);
   if (!row) return null;
-  return new Uint8Array(await row.blob.arrayBuffer());
+  return { bytes: new Uint8Array(await row.blob.arrayBuffer()), mime: row.mime, name: row.name };
 }
 
 export async function removeAsset(assetId: string): Promise<void> {

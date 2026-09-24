@@ -17,6 +17,7 @@ import { Button } from './ui/button';
 import { callLLM, defaultVoiceOf, parseSrt, srtTime } from '../lib/providers';
 import { useTaskStore } from '../stores/taskStore';
 import { playAudition, stopAudition } from '../lib/audition';
+import { getAssetUrl } from '../lib/assets';
 import { VoicePicker } from './VoicePicker';
 import { HotFixField } from './HotFixField';
 import type { InstanceDef } from '../lib/request-engine';
@@ -30,7 +31,7 @@ const NO_HOT_FIX: HotFix = { pronunciation: [], replace: [] };
 interface SubRow {
   id: string;
   text: string;
-  audioUrl?: string;
+  audioId?: string;
   durationFrames: number;
   startFrame: number;
   status?: 'none' | 'pending' | 'ready' | 'error';
@@ -59,7 +60,7 @@ function resequenceRows(rows: SubRow[]): SubRow[] {
 /** 项目里已有的字幕 → 编辑行（重新打开就是继续编辑，配音也一起带回来） */
 function rowsFromProject(entries: NarrationEntry[] | undefined): SubRow[] {
   return (entries || []).map((e) => ({
-    id: e.id, text: e.text, audioUrl: e.audioUrl, durationFrames: Math.max(1, e.durationFrames),
+    id: e.id, text: e.text, audioId: e.audioId, durationFrames: Math.max(1, e.durationFrames),
     startFrame: e.startFrame, status: e.status, error: e.error, locked: e.locked,
   }));
 }
@@ -106,7 +107,7 @@ function RowStatus({ r, task, fps }: { r: SubRow; task?: TaskRow; fps: number })
   if (task?.status === 'failed' || r.status === 'error') {
     return <Badge variant="outline" className={`${base} border-red-400/40 text-red-300`} title={task?.error || r.error || t('合成失败', 'failed')}>{t('失败', 'failed')}</Badge>;
   }
-  if (r.audioUrl) {
+  if (r.audioId) {
     return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground`} title={t('配音时长', 'clip length')}>
       {(r.durationFrames / fps).toFixed(1)}s
     </Badge>;
@@ -165,8 +166,8 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
     r.id === id
       ? {
         ...r, text,
-        durationFrames: r.audioUrl ? r.durationFrames : estimateTextDurationFrames(text, fps),
-        status: r.status === 'error' ? (r.audioUrl ? 'ready' as const : 'none' as const) : r.status,
+        durationFrames: r.audioId ? r.durationFrames : estimateTextDurationFrames(text, fps),
+        status: r.status === 'error' ? (r.audioId ? 'ready' as const : 'none' as const) : r.status,
         error: r.status === 'error' ? undefined : r.error,
       }
       : r
@@ -183,7 +184,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       const first = parts[0] || '';
       return resequenceRows([
         ...rs.slice(0, at),
-        { ...base, text: first, durationFrames: base.audioUrl ? base.durationFrames : estimateTextDurationFrames(first, fps) },
+        { ...base, text: first, durationFrames: base.audioId ? base.durationFrames : estimateTextDurationFrames(first, fps) },
         ...parts.slice(1).map((p) => mkRow(p)),
         ...rs.slice(at + 1),
       ]);
@@ -216,11 +217,11 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
     setNarrationEntries(
       resequenceRows(rows).filter((r) => r.text.trim()).map((r) => {
         const cur = saved.get(r.id);
-        const keep = !r.audioUrl && cur?.audioUrl ? cur : undefined;
+        const keep = !r.audioId && cur?.audioId ? cur : undefined;
         return {
           id: r.id, text: r.text,
-          audioUrl: r.audioUrl ?? keep?.audioUrl,
-          durationFrames: Math.max(1, r.audioUrl ? r.durationFrames : keep?.durationFrames ?? r.durationFrames),
+          audioId: r.audioId ?? keep?.audioId,
+          durationFrames: Math.max(1, r.audioId ? r.durationFrames : keep?.durationFrames ?? r.durationFrames),
           startFrame: r.startFrame, locked: r.locked,
           status: keep?.status ?? r.status, error: keep ? undefined : (r.status === 'error' ? r.error : undefined),
         };
@@ -259,7 +260,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
 
   /** 整批生成：给这一批一个 batchId（进度与取消都按批算），只补没有配音的行 */
   const genAllMissing = async () => {
-    const todo = rows.filter((r) => r.text.trim() && !r.audioUrl);
+    const todo = rows.filter((r) => r.text.trim() && !r.audioId);
     if (!todo.length) return;
     if (!tts || !ready(tts)) { setError(t('未配置配音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
     const id = `bt_${Date.now()}`;
@@ -280,10 +281,10 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       const next = rs.map((r) => {
         const tk = taskOf(r.id);
         const res = tk ? taskResults[tk.taskId] : undefined;
-        if (!tk || tk.status !== 'success' || !res || r.audioUrl === res.dataUrl) return r;
+        if (!tk || tk.status !== 'success' || !res || r.audioId === res.assetId) return r;
         touched = true;
         return {
-          ...r, audioUrl: res.dataUrl,
+          ...r, audioId: res.assetId,
           durationFrames: Math.max(1, Math.round(res.durationSec * fps)),
           status: 'ready' as const, error: undefined,
         };
@@ -298,15 +299,17 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
    * 关掉弹窗还在响。现在再点同一行即停止，播完自动复位。
    */
   const [auditingId, setAuditingId] = useState<string | null>(null);
-  const audit = (r: SubRow) => {
-    if (!r.audioUrl) return;
+  const audit = async (r: SubRow) => {
+    if (!r.audioId) return;
     if (auditingId === r.id) {
       stopAudition();
       setAuditingId(null);
       return;
     }
     setAuditingId(r.id);
-    void playAudition(r.audioUrl, () => setAuditingId(null));
+    const src = await getAssetUrl(r.audioId);
+    if (!src) { setAuditingId(null); return; }   // 素材没了：徽标留着，别把按钮卡在「正在播」
+    void playAudition(src, () => setAuditingId(null));
   };
   // 时间线开始播放时停掉试听，否则两路声音叠着响
   const isPlaying = useEditorStore((s) => s.isPlaying);
@@ -380,7 +383,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
     const entries: NarrationEntry[] = resequenceRows(rows)
       .filter((r) => r.text.trim())
       .map((r) => ({
-        id: r.id, text: r.text, audioUrl: r.audioUrl, durationFrames: Math.max(1, r.durationFrames),
+        id: r.id, text: r.text, audioId: r.audioId, durationFrames: Math.max(1, r.durationFrames),
         startFrame: r.startFrame, locked: r.locked, status: r.status, error: r.status === 'error' ? r.error : undefined,
       }));
     setNarrationEntries(entries);
@@ -475,7 +478,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           <button onClick={addRow} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10" title={t('在末尾加一行字幕', 'Append a line')}>＋ {t('加一行', 'Add')}</button>
           {IS_DESKTOP && <button
             onClick={genAllMissing}
-            disabled={busy || !ready(tts) || !rows.some((r) => r.text.trim() && !r.audioUrl)}
+            disabled={busy || !ready(tts) || !rows.some((r) => r.text.trim() && !r.audioId)}
             className="h-7 px-2 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
             title={t('给所有还没有配音的行生成语音（已有配音的行不动）', 'Generate voice for every line without audio')}
           >
@@ -554,11 +557,11 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                     onClick={() => void genVoice(r)}
                     disabled={!r.text.trim()}
                     className="w-7 h-7 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
-                    title={r.audioUrl ? t('重新生成并覆盖原配音', 'Regenerate (overwrites audio)') : t('生成本句配音', 'Generate voice for this line')}
+                    title={r.audioId ? t('重新生成并覆盖原配音', 'Regenerate (overwrites audio)') : t('生成本句配音', 'Generate voice for this line')}
                   >
-                    {taskOf(r.id) && stillOpen(taskOf(r.id)!) ? '⏳' : r.status === 'error' ? '⚠' : r.audioUrl ? '🔁' : '🔊'}
+                    {taskOf(r.id) && stillOpen(taskOf(r.id)!) ? '⏳' : r.status === 'error' ? '⚠' : r.audioId ? '🔁' : '🔊'}
                   </button>}
-                  {r.audioUrl && (
+                  {r.audioId && (
                     <button
                       onClick={() => audit(r)}
                       className="w-7 h-7 rounded-md border border-white/15 text-[11px] hover:bg-white/10"

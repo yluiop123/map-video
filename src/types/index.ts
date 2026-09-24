@@ -623,8 +623,8 @@ export interface PersonContent {
   intro?: string;
   /** 名言 / 台词 */
   quote?: string;
-  /** 整卡语音（编辑端可试听；导出为纯视觉） */
-  audioUrl?: string;
+  /** 整卡语音（编辑端可试听；导出为纯视觉）：asset 表里 kind='audio' 的那一行 */
+  audioId?: string;
 }
 
 export const PERSON_PRESETS: { id: PersonStyle; zh: string; en: string }[] = [
@@ -677,7 +677,7 @@ export function normalizePersonContent(p: unknown): PersonContent {
     title: (obj.title as string) || '',
     intro: find('intro')?.text || (obj.description as string) || '',
     quote: find('quote')?.text || find('dialogue')?.text || (obj.speech as string) || '',
-    audioUrl: obj.audioUrl,
+    audioId: obj.audioId,
   };
 }
 
@@ -705,7 +705,7 @@ export const POS_BASE: Record<OverlayPosition, [number, number]> = {
 export interface OverlayContent {
   type: OverlayType;
   /** custom：内容块组合（文字/图片/视频任意数量）+ 背景语音（卡片可见时播放，导出音频混流待支持） */
-  custom?: { blocks: OverlayBlock[]; audio?: { url: string; title?: string } };
+  custom?: { blocks: OverlayBlock[]; audio?: { audioId: string; title?: string } };
   /** person：块化人物卡（图片/姓名/介绍/名言/对话，各块开关+语音，布局可配；见 PersonContent） */
   person?: PersonContent;
   chart?: { type: ChartType; title?: string; data: { label: string; value: number }[]; data2?: { label: string; value: number }[]; color?: string; color2?: string };
@@ -792,9 +792,6 @@ export function normalizeOverlayContent(content: OverlayContent): OverlayContent
   }
   if (NEW_OVERLAY_TYPES.has(content.type)) return content;
   const t = content.type as string;
-  if (t === 'audio' && content.audio) {
-    return { type: 'custom', custom: { blocks: [], audio: content.audio } };
-  }
   const blocks: OverlayBlock[] = [];
   const push = (b: Omit<OverlayBlock, 'id'>) => blocks.push({ id: generateId(), ...b });
   if (t === 'text' && content.text) push({ type: 'text', text: content.text });
@@ -912,8 +909,8 @@ export interface NarrationEntry {
   id: string;
   /** 字幕文本 = 配音朗读文本 */
   text: string;
-  /** 配音音频（TTS 生成或导入，dataURL/远程 URL） */
-  audioUrl?: string;
+  /** 配音音频：`asset` 表里 kind='audio' 的那一行（字节不进项目数据，运行时 getAssetUrl 解析） */
+  audioId?: string;
   /** 字幕显示时长（帧） */
   durationFrames: number;
   /** 章内起始帧（自动顺排，手动调整后 locked） */
@@ -976,7 +973,8 @@ export interface NarrationTrack {
 export interface MusicTrack {
   id: string;
   name: string;
-  url: string;
+  /** 曲目音频：`asset` 表里 kind='audio' 的那一行（内置曲目在「选用」那一刻也复制进去） */
+  audioId: string;
   startFrame: number;
   endFrame: number;
   /** 0–1 */
@@ -1024,8 +1022,12 @@ export function normalizeNarrationTrack(t?: NarrationTrack | null): NarrationTra
 /** 导出内嵌素材（base64 dataUrl）：让导出文件自包含，跨设备导入不裂图 */
 export interface ExportedAsset {
   assetId: string;
+  /** 入库时登记的 mime（还原时照它归类别，不再拿魔数字猜） */
   mime: string;
+  /** 原文件名 / 展示名 */
+  name?: string;
   byteSize: number;
+  /** 字节本体（base64 dataURL）：项目里只存 id，跨设备要靠这一份自包含 */
   dataUrl: string;
 }
 

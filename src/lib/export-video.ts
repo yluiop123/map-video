@@ -2,6 +2,7 @@ import { renderMediaOnWeb, canRenderMediaOnWeb, type WebRendererContainer, type 
 import { MapVideo } from '../compositions/MapVideo';
 import type { MapVideoProject } from '../types';
 import { projectContentDuration } from './project-duration';
+import { getAssetUrl } from './assets';
 
 export interface ExportOptions {
   project: MapVideoProject;
@@ -14,6 +15,22 @@ export interface ExportOptions {
   onProgress?: (progress: number) => void;
   onArtifact?: (artifact: unknown) => void;
   signal?: AbortSignal;
+}
+
+/**
+ * 导出前把音频 assetId 一次性水合成可播放地址：项目里只有 id，
+ * 而 Remotion 的 <Audio> 要 src，组件本身不等异步（保持每帧确定性）。
+ */
+async function hydrateAudioSrc(project: MapVideoProject): Promise<Record<string, string>> {
+  const ids = new Set<string>();
+  for (const e of project.narration?.entries ?? []) if (e.audioId) ids.add(e.audioId);
+  for (const m of project.music ?? []) if (m.audioId) ids.add(m.audioId);
+  const out: Record<string, string> = {};
+  for (const id of ids) {
+    const url = await getAssetUrl(id);
+    if (url) out[id] = url;
+  }
+  return out;
 }
 
 /** 常用导出画幅预设 */
@@ -47,6 +64,8 @@ export async function exportVideo(options: ExportOptions): Promise<Blob> {
   const width = options.width ?? project.globalConfig.defaultResolution.width;
   const height = options.height ?? project.globalConfig.defaultResolution.height;
 
+  const audioSrc = await hydrateAudioSrc(project);
+
   const composition = {
     component: MapVideo,
     id: 'MapVideo',
@@ -54,13 +73,13 @@ export async function exportVideo(options: ExportOptions): Promise<Blob> {
     height,
     fps,
     durationInFrames: Math.max(1, totalFrames),
-    defaultProps: { projectId: project.id } as Record<string, unknown>,
+    defaultProps: { projectId: project.id, audioSrc } as Record<string, unknown>,
   };
 
   // 传递项目快照到 composition，避免依赖外部 store
   const result = await renderMediaOnWeb({
     composition,
-    inputProps: { projectId: project.id, project } as Record<string, unknown>,
+    inputProps: { projectId: project.id, project, audioSrc } as Record<string, unknown>,
     container: container ?? 'mp4',
     videoCodec: videoCodec ?? null,
     onProgress: (p) => {

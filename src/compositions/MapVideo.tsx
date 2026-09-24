@@ -9,6 +9,12 @@ import type { MapVideoProject, MusicTrack, NarrationEntry } from '../types';
 interface MapVideoProps {
   projectId?: string;
   project?: MapVideoProject;
+  /**
+   * 音频 assetId → 可播放地址，由导出入口一次水合后传进来。
+   * 项目数据里只有 id（字节在 asset 表 / 素材库），而 Remotion 组件要保持纯渲染 ——
+   * 不等异步、不读库，所以地址只能从外面给。
+   */
+  audioSrc?: Record<string, string>;
 }
 
 /** 音频音量包络：BGM 淡入/淡出（相对帧 → 0..1） */
@@ -27,16 +33,15 @@ function narrationVolumeAt(localFrame: number): number {
 
 /** 配音轨：按条摆放（Remotion 内联音频 → web-renderer 混流） */
 export const NarrationAudio: React.FC<{
-  chapterStart: number;
   narrationEntries: NarrationEntry[];
-  fps: number;
-}> = ({ narrationEntries }) => {
+  audioSrc: Record<string, string>;
+}> = ({ narrationEntries, audioSrc }) => {
   return (
     <>
       {narrationEntries.map((e) =>
-        e.audioUrl && e.durationFrames > 0 ? (
+        e.audioId && audioSrc[e.audioId] && e.durationFrames > 0 ? (
           <Sequence key={`nar-${e.id}`} from={e.startFrame} durationInFrames={e.durationFrames} name={`narration-${e.id}`}>
-            <Audio src={e.audioUrl} volume={(f) => narrationVolumeAt(f)} />
+            <Audio src={audioSrc[e.audioId]} volume={(f) => narrationVolumeAt(f)} />
           </Sequence>
         ) : null
       )}
@@ -48,15 +53,18 @@ export const NarrationAudio: React.FC<{
 export const ProjectMusic: React.FC<{
   music: MusicTrack[];
   fps: number;
-}> = ({ music, fps }) => {
+  audioSrc: Record<string, string>;
+}> = ({ music, fps, audioSrc }) => {
   return (
     <>
       {music.map((m) => {
+        const src = audioSrc[m.audioId];
+        if (!src) return null;
         const len = Math.max(1, m.endFrame - m.startFrame);
         return (
           <Sequence key={`mus-${m.id}`} from={m.startFrame} durationInFrames={len} name={`music-${m.id}`}>
             <Loop durationInFrames={len}>
-              <Audio src={m.url} volume={(f) => musicVolumeAt(m, f, fps)} />
+              <Audio src={src} volume={(f) => musicVolumeAt(m, f, fps)} />
             </Loop>
           </Sequence>
         );
@@ -66,7 +74,7 @@ export const ProjectMusic: React.FC<{
 };
 
 /** 单条连续时间线渲染：地图 + 弹窗 + 字幕 + 屏幕特效 */
-export const MapVideo: React.FC<MapVideoProps> = ({ projectId: _projectId, project: propProject }) => {
+export const MapVideo: React.FC<MapVideoProps> = ({ projectId: _projectId, project: propProject, audioSrc = {} }) => {
   const frame = useCurrentFrame();
   const fps = useProjectStore((s) => s.project?.globalConfig.defaultFPS) ?? 30;
   const storeProject = useProjectStore((s) => s.project);
@@ -95,8 +103,8 @@ export const MapVideo: React.FC<MapVideoProps> = ({ projectId: _projectId, proje
       </AbsoluteFill>
 
       {/* 音频轨：配音（绝对帧）+ 项目级背景音乐 */}
-      <NarrationAudio chapterStart={0} narrationEntries={project.narration?.entries || []} fps={fps} />
-      <ProjectMusic music={project.music || []} fps={fps} />
+      <NarrationAudio narrationEntries={project.narration?.entries || []} audioSrc={audioSrc} />
+      <ProjectMusic music={project.music || []} fps={fps} audioSrc={audioSrc} />
     </AbsoluteFill>
   );
 };

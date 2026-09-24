@@ -6,18 +6,24 @@
  */
 import { useEditorStore } from '../stores/editorStore';
 import { useProjectStore } from '../stores/projectStore';
+import { getAssetUrl } from './assets';
 import type { MapVideoProject } from '../types';
 
 const pool = new Map<string, HTMLAudioElement>();
 
-function getEl(url: string): HTMLAudioElement {
-  let el = pool.get(url);
+/**
+ * 池子按 **assetId** 存（项目里只有 id）：元素先建好、地址异步补。
+ * 地址没到位的那一帧直接跳过（getAssetUrl 带缓存，下一帧就有），不阻塞播放头。
+ */
+function getEl(assetId: string): HTMLAudioElement | null {
+  let el = pool.get(assetId);
   if (!el) {
-    el = new Audio(url);
+    el = new Audio();
     el.preload = 'auto';
-    pool.set(url, el);
+    pool.set(assetId, el);
+    void getAssetUrl(assetId).then((url) => { if (url && pool.get(assetId) === el) el!.src = url; });
   }
-  return el;
+  return el.src || el.currentSrc ? el : null;
 }
 
 function pauseAll(): void {
@@ -39,9 +45,9 @@ function desiredAt(project: MapVideoProject, frame: number, fps: number): Map<st
   const nar = project.narration;
   if (nar) {
     for (const e of nar.entries) {
-      if (!e.audioUrl) continue;
+      if (!e.audioId) continue;
       if (frame >= e.startFrame && frame < e.startFrame + e.durationFrames) {
-        map.set(e.audioUrl, { vol: 1, offset: (frame - e.startFrame) / fps, loop: false });
+        map.set(e.audioId, { vol: 1, offset: (frame - e.startFrame) / fps, loop: false });
       }
     }
   }
@@ -59,7 +65,7 @@ function musicAt(project: MapVideoProject, frame: number, fps: number): Map<stri
     const fadeOutF = Math.max(1, Math.round((m.fadeOut || 0) * fps));
     const inV = m.fadeIn > 0 ? Math.min(1, local / fadeInF) : 1;
     const outV = m.fadeOut > 0 ? Math.min(1, (len - local) / fadeOutF) : 1;
-    map.set(m.url, { vol: (m.volume ?? 0.6) * Math.min(inV, outV), offset: local / fps, loop: !!m.loop });
+    map.set(m.audioId, { vol: (m.volume ?? 0.6) * Math.min(inV, outV), offset: local / fps, loop: !!m.loop });
   }
   return map;
 }
@@ -85,8 +91,9 @@ function sync(): void {
     // 背景音乐：项目级，跨片段连续播放
     for (const [k, v] of musicAt(project, currentFrame, fps)) want.set(k, v);
     // 激活需要的音频
-    for (const [url, d] of want) {
-      const el = getEl(url);
+    for (const [assetId, d] of want) {
+      const el = getEl(assetId);
+      if (!el) continue;                       // 地址还在路上
       el.loop = d.loop;
       el.volume = Math.max(0, Math.min(1, d.vol));
       const target = d.loop && el.duration > 0 ? d.offset % el.duration : d.offset;
@@ -109,8 +116,8 @@ function sync(): void {
       }
     }
     // 停掉不再需要的
-    for (const [url, el] of pool) {
-      if (!want.has(url) && !el.paused) el.pause();
+    for (const [assetId, el] of pool) {
+      if (!want.has(assetId) && !el.paused) el.pause();
     }
   } finally {
     syncing = false;

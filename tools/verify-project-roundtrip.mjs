@@ -128,5 +128,40 @@ console.log('\n[5] 发音修正（narration.hot_fix_json）逐字往返');
   })());
 }
 
+console.log('\n[6] 音频只存 assetId（字节不进项目数据）');
+{
+  const db6 = open();
+  db6.prepare(`INSERT INTO asset (asset_id, kind, name, mime, storage, rel_path, created_at)
+    VALUES ('as_voice','audio','voice.mp3','audio/mpeg','file','media/audio/voice.mp3',1)`).run();
+  db6.prepare(`INSERT INTO asset (asset_id, kind, name, mime, storage, rel_path, created_at)
+    VALUES ('as_bgm','audio','bgm.mp3','audio/mpeg','file','media/audio/bgm.mp3',1)`).run();
+  const withAudio = {
+    ...project('audio', FPS),
+    narration: { entries: [{ id: 'e1', text: '一句', audioId: 'as_voice', durationFrames: 90, startFrame: 0 }], style: {} },
+    music: [{ id: 'm1', name: '铺底', audioId: 'as_bgm', startFrame: 0, endFrame: 300, volume: 0.5, loop: false, fadeIn: 0, fadeOut: 0 }],
+    overlays: [{
+      id: 'o1', type: 'custom', name: '语音卡', position: 'top', startFrame: 0, endFrame: 60,
+      content: { type: 'custom', custom: { blocks: [], audio: { audioId: 'as_voice', title: '旁白' } } },
+    }],
+  };
+  saveProjectV2(db6, withAudio);
+  const g6 = getProjectV2(db6, 'audio');
+  check('6.1 配音 / BGM 的 id 逐字回来', g6.narration?.entries[0]?.audioId === 'as_voice' && g6.music[0]?.audioId === 'as_bgm',
+    JSON.stringify({ n: g6.narration?.entries[0], m: g6.music[0] }));
+  check('6.2 弹窗语音从 audio_asset_id 列装回 payload（标题在 payload 里）',
+    g6.overlays[0]?.content?.custom?.audio?.audioId === 'as_voice' && g6.overlays[0]?.content?.custom?.audio?.title === '旁白',
+    JSON.stringify(g6.overlays[0]?.content));
+  check('6.3 id 不在 payload_json 里留第二份（同一条事实只有列那一处）', (() => {
+    const row = db6.prepare("SELECT payload_json, audio_asset_id FROM overlay WHERE overlay_id='o1'").get();
+    return !String(row.payload_json).includes('as_voice') && row.audio_asset_id === 'as_voice';
+  })());
+  db6.exec('PRAGMA foreign_keys = ON');
+  db6.prepare("DELETE FROM asset WHERE asset_id='as_voice'").run();
+  const after = getProjectV2(db6, 'audio');
+  check('6.4 删素材 → 引用被 FK 置空，不留悬空 id', after.narration?.entries[0]?.audioId === undefined
+    && after.overlays[0]?.content?.custom?.audio?.audioId === undefined, JSON.stringify(after.narration?.entries[0]));
+  db6.close();
+}
+
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);
 process.exit(failed ? 1 : 0);

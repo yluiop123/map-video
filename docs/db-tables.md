@@ -100,7 +100,7 @@
 | `camera_keyframe` | `camera[]` | `kf_id` | `frame` 是**到达时间**，`move_duration` 是起飞提前量；`follow_route_element_id` 删路线后 `SET NULL`（退化为固定视角） | 「视角」面板（`KeyframePanel.tsx` / `CameraEditor.tsx`） |
 | `screen_fx` | `fx[]` | `fx_id` | 屏幕空间特效窗口（天气/画面），与地图元素分离 | 「特效」面板（`FxPanelBody.tsx`）+ 时间轴特效轨道 |
 | `narration` | `narration` 的样式 + 发音修正 | `project_id` | 1:1，主键即外键 | 顶栏「字幕生成」弹窗（`GenerateDialog.tsx`） |
-| `narration_entry` | `narration.entries[]` | `entry_id` | 一条字幕 = 一行；音频走 `asset` | 时间轴「🎙 配音」轨道 + 字幕面板（TTS / 导入 SRT） |
+| `narration_entry` | `narration.entries[]` | `entry_id` | 一条字幕 = 一行；配音只存 `audio_asset_id`（字节在 `asset`） | 时间轴「🎙 配音」轨道 + 顶栏「字幕生成」弹窗（`GenerateDialog.tsx`） |
 | `music_track` | `music[]`（项目级） | `track_id` | 项目单轨多段（项目绝对时间）；音频走 `asset` | 时间轴「音乐」轨道 + 音乐面板（内置/导入） |
 
 ### 组 4 · 标记类元素 1 张 Pin 工具
@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 704 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，704 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 702 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，702 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -390,7 +390,7 @@
 
 #### narration — 字幕 / 配音档：样式部分，与项目 1:1
 
-**职责**：字幕 / 配音档（样式 + 项目级发音修正，1:1）　**前端**：顶栏「字幕生成」弹窗的字幕样式区与「发音修正」区（GenerateDialog.tsx / HotFixField.tsx）
+**职责**：字幕 / 配音档（样式部分，1:1）　**前端**：顶栏「字幕生成」弹窗的字幕样式区（GenerateDialog.tsx）
 
 11 列 · 主键 `project_id`
 
@@ -412,15 +412,14 @@
 
 **职责**：字幕条：文本 + 配音音频 + 显示时长　**前端**：顶栏「字幕生成」弹窗逐条编辑 / TTS / 导入 SRT（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）
 
-9 列 · 主键 `entry_id`
+8 列 · 主键 `entry_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `entry_id` | TEXT | `PK` | 字幕条 id |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `text` | TEXT | `NOT NULL` | 字幕文本（同时也是配音朗读文本） · 默认 `''` |
-| `audio_asset_id` | TEXT | `FK → asset SET NULL` | 配音音频（TTS 生成或导入） |
-| `url` | TEXT | — | 音频地址（asset 不可用时的内联 dataURL / 站内路径） |
+| `audio_asset_id` | TEXT | `FK → asset SET NULL` | 配音音频：TTS 产物或导入，字节在素材库（项目里不留内联地址） |
 | `duration_sec` | REAL | — | 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖 · `CHECK (duration_sec IS NULL OR duration_sec > 0)` |
 | `start_sec` | REAL | `NOT NULL` | 起始时间（秒，项目绝对时间；默认自动顺排） · `CHECK (start_sec >= 0)` |
 | `locked` | INTEGER | `NOT NULL` | 手动定位后锁定，不再参与自动顺排 · 默认 `0` · `CHECK (locked IN (0,1))` |
@@ -430,15 +429,14 @@
 
 **职责**：项目级背景音乐：单轨多段（绝对时间、循环、淡入淡出）　**前端**：时间轴「音乐」轨道（TimelineEditor.tsx）+ 音乐面板（内置/导入）
 
-12 列 · 主键 `track_id`
+11 列 · 主键 `track_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `track_id` | TEXT | `PK` | 音乐段 id |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目（项目级单轨多段） |
 | `name` | TEXT | `NOT NULL` | 曲目名 · 默认 `''` |
-| `audio_asset_id` | TEXT | `FK → asset SET NULL` | 音频素材 |
-| `url` | TEXT | — | 音频地址（asset 不可用时的内联 dataURL / 站内路径） |
+| `audio_asset_id` | TEXT | `FK → asset SET NULL` | 音频素材（内置曲目在「选用」那一刻也复制进素材库，项目里不留站内路径） |
 | `start_sec` | REAL | `NOT NULL` | 起效起始时间（秒，项目绝对时间轴） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | — | 结束时间（秒）：空=随音频长度；非空=手动覆盖 |
 | `volume` | REAL | `NOT NULL` | 音量（0–1） · 默认 `1` · `CHECK (volume BETWEEN 0 AND 1)` |
@@ -1359,7 +1357,7 @@
 | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image` vs 表内 `type` | 五张表按**工具栏**分（标记 / 路线 / 形状 / 疆域 / 图片）；表内的 `type` 才是具体元素类型（point / line / polygon…）。找元素先看它在哪个工具下，再用 `type` 区分 |
 | `label_json` vs `keyframes_json`（都是元素表内的一列） | 前者是**文字气泡内容**，后者是**动画曲线**（8 种属性的关键帧数组）—— 都作为一列 JSON 跟随元素一起读写，不再独立成表 |
 | `narration` vs `narration_entry` | 前者是「全片的配音档」（样式、总开关，与项目 1:1）；后者是「档里的一条条字幕」（1:N） |
-| `overlay` 的内容块 | custom 的内容块 / person 的人物块内联在 `overlay.payload_json`，不再单独建表 |
+| `overlay` 的内容块 | custom 的内容块 / person 的人物块内联在 `overlay.payload_json`，不再单独建表；**唯一的例外是语音** —— 它的 id 从 payload 里摘出来落在 `audio_asset_id` 列上（真外键，删素材即置空） |
 | `layer` vs `public_layer`（字段几乎一样） | `layer` 属于某个项目（`project_id` 外键，删项目 CASCADE）；`public_layer` 是**跨项目图库里的独立副本**，没有项目归属，`element_id` 与源项目**无关**（整层复制时重新加后缀）。导入 = 从副本再复制一份进项目，之后两者互不影响 |
 
 ## 七、一次「打开」与一次「保存」

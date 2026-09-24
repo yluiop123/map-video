@@ -65,6 +65,7 @@ lib/
   military-plots.ts / military-geometry.ts  # 移植自 plot_ol 的军标算法（燕尾/钳形/进攻/集结地）
   regions.ts           # 行政区边界加载与点选/按名查找（默认 johan world.geo.json，可换源）
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
+  asset-refs.ts      # ★ 项目里所有素材引用位的唯一清单（导出配置 JSON 带字节、导入改 id 都走它；新增引用位只改这里）
   request-engine.ts    # ★ 接口模板求值：三层取值 + `${x}` 求值与删键级联 / readPath / applyOutputs / runSync·submitAsync·queryOnce·runClone / validateTemplate；不碰网络不碰 DOM
   template-seed.ts     # 内置接口模板 seed（3 份 = 四个上游形状，一行一份完整模板）；首次建库铺成表行，之后是普通可编辑数据；接新供应商改这里或界面上自己填
   providers.ts         # 供应商调用薄壳：callLLM/callTTS/callImage/cloneVoice + declaredOptions/declaredDefault（界面按声明长控件）→ 全走引擎；**没有协议分支**
@@ -170,7 +171,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 ## 8. 协作约定
 
 - **★ 不为兼容性牺牲设计（用户明确要求，2026-09-11）**：改造 / 重构时**不考虑向后兼容**——不做老存档迁移、不保留旧字段、不写双读分支、不堆 `normalize*` 兜底链、不为旧库加兼容性 `ALTER TABLE`；一律按「设计是否合理」决策，数据结构可以直改，老数据可丢弃或重新生成。若某处确实必须保留兼容，先与用户确认。
-- **AI 功能只有桌面端支持**（2026-09-23 拍板）：网页版隐藏 ⚙「设置 · AI」入口与字幕生成里的 AI 生成 / 配音 / 音色区（`IS_DESKTOP` 门禁），只留「粘贴文本 / 导入 SRT / 逐行手写 / 字幕样式 / 导出」。已有配音是项目里的 dataURL，网页仍可试听。
+- **AI 功能只有桌面端支持**（2026-09-23 拍板）：网页版隐藏 ⚙「设置 · AI」入口与字幕生成里的 AI 生成 / 配音 / 音色区（`IS_DESKTOP` 门禁），只留「粘贴文本 / 导入 SRT / 逐行手写 / 字幕样式 / 导出」。音频在素材库（网页端是 Dexie Blob 行），所以已生成的配音在网页里照样能试听。
 - 与用户**中文交流**，回复精简；改动后提醒刷新（用户浏览器常需 Ctrl+F5 才拿最新包）。
 - 用户的真实测试数据在自己浏览器的 IndexedDB（如 test001 项目）；自动化调试 Chrome 的 profile 是隔离的——跨环境验证用「⚙️ 导出配置 json → 放项目根目录 → 脚本导入」的方式（参考 `tools/test-import.mjs`）。
 - 导出视频、播放、镜头插值等改动完成后，优先用 `tools/` 脚本做一次带截图的自动化回归。
@@ -179,18 +180,25 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - ORIENTATION/点动画/移动点高亮圈等仅在编辑端验证过，导出端 MapScene 未逐项回归。
 - docs/ARCHITECTURE.md 已删除；数据库设计见 `docs/db-schema-v2.sql`（唯一事实源）+ `docs/db-tables.md`（速查与字段字典）+ `docs/db-redesign.md`（设计依据）+ README「数据库设计」（简版，已按 V2 重写）。
-- **配音 / BGM / 弹窗音频还没落 `asset`**：现在整段音频以 dataURL 塞在 `narration_entry.url` / `overlay.audio` 里（一条 6 秒配音 ≈ 400KB 文本进项目 JSON）。要做的是「音频走 `asset`（`kind='audio'`），项目里只存 assetId」，见任务「批次 6」。
+- **弹窗图片 / 人物照片仍是内联 dataURL**：`OverlayBlock` 的 image/video 与 `person.imageUrl`（含 AI 生成那张 ≈2MB）还在 payload 里；音频那批已收口（见 §10「音频只存 assetId」条）。要做的是同一件事搬到图片上。
+- **孤儿素材不清理**：元素/字幕/音乐行删掉后 `asset` 行与磁盘文件都留着（没有反向引用可查，也不做引用计数）。要么定期体检删孤儿，要么给 asset 加引用计数。
 - 预览倍速下配音 / BGM 与播放头会失步（预览场景，可接受）。
 - 3D(globe) 下 `pixelsToDegrees` 为墨卡托近似，高纬度箭头宽度略有偏差。
 - Region 数据源为世界国家级（英文属性名，内置 ~100 国中英映射）；省级需换 `setRegionSources` 数据源。
 
 ## 10. 数据库约定（V2：桌面端已落地，网页端仍为简化实现）
 
-**规模**：27 张表 / 4 视图 / **0 触发器** / 704 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
+**规模**：27 张表 / 4 视图 / **0 触发器** / 702 列（源 `docs/db-schema-v2.sql`，可用 `node --experimental-sqlite` 直接执行验证）。
 
 - **★ 片长（`project.endFrame`）不入库**（2026-09-19）：`project.end_sec` 列已删——它是纯派生量且**没有任何 UI 能改它**（`setProjectEndFrame` 零调用）。读取端 `getProjectV2` 现按内容实际结束推导：`endFrame = max(60s × fps, 元素/特效/弹窗/机位/字幕/音乐的结束帧)`，与时间线口径一致；空项目从原来的「100 秒幽灵容器」变成 60 秒。新增任何「容器长度」类字段前先问它是不是派生值。
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
 - **★ 只存输入原值，不存派生 / 换算值**：凡是能从别处算出来的都不入库或存为可空覆盖值 —— 例如字幕时长有配音时随音频（不落库）、无配音时才存估算值，`music_track` 的结束时间同理。典型反面：`FrameTimeField` 曾把「秒」输入换算成帧入库，改 fps 后用户输入就永久丢失了。
+- **★ 音频只有 `asset` 一本账（2026-09-24）**：配音 / BGM / 弹窗语音在项目数据里**只有 assetId**（`NarrationEntry.audioId`、`MusicTrack.audioId`、`person.audioId`、`custom.audio.audioId`），字节走 `asset`（`kind='audio'`：桌面落 `userData/media/audio/`、网页存 Dexie Blob）。三条硬规矩：
+  ① 库里对应 `audio_asset_id` 是**真外键 SET NULL**，弹窗那条从 `payload_json` 里摘出来单独成列（同一条事实不留第二份，`v_check_dangling` 才查得到）；
+  ② 运行时地址一律现取 `getAssetUrl(assetId)`（按 id 缓存 objectURL）—— 预览池按 **id** 存元素、导出前在 `export-video` 里一次水合成 `audioSrc` 传给 Remotion（组件不等异步、不读库）；
+  ③ 内置 BGM 在**「选用」那一刻**就把字节复制进素材库，项目里不留站内路径 —— 所以音频只有一种表示，消费点不用判「是 id 还是 URL」。
+  代价照 §8 认：老库里内联的 `url` 列直接作废（`RETIRED_COLUMNS` 删列，不写迁移），旧配音重跑一次「全部生成配音」即可。
+  **新增素材引用位时改 `lib/asset-refs.ts` 那一处**（导出带字节 / 导入改 id 都读它）—— 以前 `createExport` 只收 point 的 assetId，移动图标、地理贴图与全部音频都静默漏在导出文件外面。
 - **时间的两个例外**：① `created_at` / `updated_at` 是 epoch **毫秒**（审计用，非播放时间）；② **离散步长 / 速率类**参数（`frame_step`、`flow_speed`、`trail_length`）UI 就是按「每 N 帧」输入的，**保持帧**。
 - **落地范围**：**桌面端已按 V2 落地** —— `electron/db-v2.mjs` 做「多表 ↔ `MapVideoProject`」双向映射，帧↔秒换算就在这一层（写入 `f2s`、读出 `s2f`，fps 取 `globalConfig.defaultFPS`）。运行时（`src`）**仍以帧为基准**（`startFrame` / `endFrame` / `frame`），渲染端 Remotion 也用帧，不要在 store 里再换算一次。网页端（Dexie / localStorage）**仍是整对象存帧值的简化实现**，没有 V2 的多表与秒约定。
 
@@ -233,7 +241,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **能力矩阵三处联动，改一处必须同步另两处**：**只有 `emoji` 不可着色**（表情字符自带颜色）、`model` 不可贴地（位图贴片）——其余 9 种形态都可着色（multiply 染色，白色=原色）。① DDL 的 CHECK（**不要**再给 model/gif 加 `color IS NULL` 约束，2026-09-19 已删）② 属性面板（隐藏不可用控件，见 `getPinCapability`）③ 渲染端（按形态选管线）。
 - **外键策略**：保留外键（**不要为性能删外键**，强制检查 ≈1µs/行），但不使用触发器（见上一条）；真瓶颈是子表 FK 列无索引（补索引后 27×）。最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
-- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（704 字段中文说明词表，**新增字段漏补说明会直接报错**）。
+- **改 DDL 后必跑**：`tools/audit-fk-indexes.mjs`（外键索引审计）、`tools/gen-db-field-dict.mjs`（把字段字典注入 `docs/db-tables.md`，`--check` 只校验）、`tools/db-field-notes.mjs`（702 字段中文说明词表，**新增字段漏补说明会直接报错**）。
 - **文档一律 Markdown**（2026-09-11 起）：`docs/` 下不再有 HTML，也不要用脚本生成 HTML；图用 ```mermaid 代码块内嵌（E-R 图源 `docs/db-er-diagram.mmd`），不再预渲染 SVG。
 
 ## 11. 标记（Pin）形态扩展的代码落点

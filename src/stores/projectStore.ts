@@ -11,7 +11,9 @@ import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeNa
 import { normalizeTerritoryDisplay } from '../lib/territory';
 import { deriveElements, layerTypeOf, insertLayerSorted, LAYER_TYPE_LABEL, resolveTargetLayerId } from '../lib/layers';
 import { useEditorStore } from './editorStore';
-import { releaseAssetUrls, getAssetBytes, putAssetBytes, type AssetKind } from '../lib/assets';
+import { readAsset, releaseAssetUrls, putAssetBytes, type AssetKind } from '../lib/assets';
+import { projectAssetIds, remapProjectAssetIds } from '../lib/asset-refs';
+import { base64ToBytes, bytesToBase64 } from '../lib/providers';
 import { clearGifCache } from '../lib/gif-decoder';
 
 /** 元素归一化：custom_icon 下线 → 点；旧 fly 动画 → move；疆域 display 补默认 */
@@ -288,32 +290,12 @@ interface ProjectState {
   redo: () => void;
 }
 
-/** 导入的素材字节 → 素材类别 */
+/** 导入的素材字节 → 素材类别（音频也认：配音 / BGM 现在都走 asset） */
 function mimeToAssetKind(mime: string): AssetKind {
   return mime === 'image/gif' ? 'gif'
     : mime.startsWith('model/') ? 'model'
-      : mime.startsWith('image/') ? 'image' : 'icon';
-}
-
-/** 导入后把项目里所有 assetId 旧引用换成新 id */
-function remapAssetIds(project: MapVideoProject, map: Record<string, string>): MapVideoProject {
-  if (!Object.keys(map).length) return project;
-  return {
-    ...project,
-    elements: project.elements.map((el) => {
-      const e = el as { assetId?: string; moveIcon?: { assetId?: string } };
-      const hitAsset = e.assetId ? map[e.assetId] : undefined;
-      const hitMove = e.moveIcon?.assetId ? map[e.moveIcon.assetId] : undefined;
-      if (!hitAsset && !hitMove) return el;
-      return {
-        ...e,
-        assetId: hitAsset ?? e.assetId,
-        moveIcon: e.moveIcon
-          ? { ...e.moveIcon, assetId: hitMove ?? e.moveIcon.assetId }
-          : e.moveIcon,
-      } as typeof el;
-    }),
-  };
+      : mime.startsWith('audio/') ? 'audio'
+        : mime.startsWith('image/') ? 'image' : 'icon';
 }
 
 // ========== Store 实现 ==========
@@ -612,15 +594,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       if (data.assets?.length) {
         const idMap: Record<string, string> = {};
         for (const a of data.assets) {
-          // 素材还原失败要中止整笔导入：留着指向空素材的 assetId，导入后是坏图，
-          // 桌面端还会被 element_*.asset_id 的外键把整次保存打回。
-          const bin = atob(a.dataUrl.split(',')[1] || '');
-          const bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          const ref = await putAssetBytes(bytes, a.mime, '', mimeToAssetKind(a.mime));
+          // 素材还原失败要中止整笔导入：留着指向空素材的 assetId，导入后是坏图 / 放不响的配音，
+          // 桌面端还会被 asset_id 的外键把整次保存打回。
+          const ref = await putAssetBytes(base64ToBytes(a.dataUrl.split(',')[1] || ''), a.mime, a.name ?? '', mimeToAssetKind(a.mime));
           idMap[a.assetId] = ref.assetId;
         }
-        imported = { ...data, project: remapAssetIds(data.project, idMap) };
+        imported = { ...data, project: remapProjectAssetIds(data.project, idMap) };
       }
       const existing = await storage.listProjects();
       const project = stripRemovedBaseMaps(normalizeProject({
@@ -639,25 +618,15 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     createExport: async () => {
       const { project } = get();
       if (!project) throw new Error('没有可导出的项目');
-      const ids = new Set<string>();
-      for (const el of project.elements) {
-        if (el.type === 'point' && el.assetId) ids.add(el.assetId);
-      }
+      // 引用位与还原共用 lib/asset-refs 那一份清单（以前在这儿各写一遍，音频就整类漏在导出文件外）
       const assets: ExportedAsset[] = [];
-      for (const assetId of ids) {
-        const bytes = await getAssetBytes(assetId);
-        if (!bytes) continue;
-        let bin = '';
-        for (let i = 0; i < bytes.length; i += 0x8000) {
-          bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-        }
-        const b64 = btoa(bin);
-        const mime = bytes[0] === 0x89 && bytes[1] === 0x50 ? 'image/png'
-          : bytes[0] === 0x47 && bytes[1] === 0x49 ? 'image/gif'
-          : bytes[0] === 0xff && bytes[1] === 0xd8 ? 'image/jpeg'
-          : bytes[0] === 0x67 && bytes[1] === 0x6c ? 'model/gltf-binary'
-          : 'application/octet-stream';
-        assets.push({ assetId, mime, byteSize: bytes.length, dataUrl: `data:${mime};base64,${b64}` });
+      for (const assetId of projectAssetIds(project)) {
+        const a = await readAsset(assetId);
+        if (!a) continue;
+        assets.push({
+          assetId, mime: a.mime, name: a.name, byteSize: a.bytes.length,
+          dataUrl: `data:${a.mime};base64,${bytesToBase64(a.bytes)}`,
+        });
       }
       return { version: 1, exportedAt: new Date(), project, assets };
     },

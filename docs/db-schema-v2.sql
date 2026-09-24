@@ -1047,10 +1047,7 @@ CREATE TABLE IF NOT EXISTS narration_entry (  -- 字幕条：文本 + 配音音�
   entry_id      TEXT PRIMARY KEY,  -- 字幕条 id
   project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   text          TEXT NOT NULL DEFAULT '',  -- 字幕文本（同时也是配音朗读文本）
-  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 配音音频（TTS 生成或导入）
-  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径；与 audio_asset_id 二选一）
-  url           TEXT,  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径）
-  -- 显示时长（秒）：NULL = 自动（有配音随音频、无配音按字数估算）；非空 = 手动覆盖值
+  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 配音音频：TTS 产物或导入，字节在素材库（项目里不留内联地址）
   duration_sec REAL CHECK (duration_sec IS NULL OR duration_sec > 0),  -- 显示时长（秒）：空=自动（有配音随音频、无配音按字数估算）；非空=手动覆盖
   start_sec     REAL NOT NULL CHECK (start_sec >= 0),  -- 起始时间（秒，项目绝对时间；默认自动顺排）
   locked        INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),  -- 手动定位后锁定，不再参与自动顺排
@@ -1063,9 +1060,7 @@ CREATE TABLE IF NOT EXISTS music_track (  -- 项目级背景音乐：单轨多�
   track_id      TEXT PRIMARY KEY,  -- 音乐段 id
   project_id    TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目（项目级单轨多段）
   name          TEXT NOT NULL DEFAULT '',  -- 曲目名
-  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 音频素材
-  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径；与 audio_asset_id 二选一）
-  url           TEXT,  -- 音频地址（asset 不可用时的内联 dataURL / 站内路径）
+  audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 音频素材（内置曲目在「选用」那一刻也复制进素材库，项目里不留站内路径）
   start_sec   REAL NOT NULL CHECK (start_sec >= 0),  -- 起效起始时间（秒，项目绝对时间轴）
   -- 结束时间：NULL = 随音频长度（循环则随项目）；非空 = 手动覆盖值
   end_sec     REAL,  -- 结束时间（秒）：空=随音频长度；非空=手动覆盖

@@ -199,9 +199,12 @@ export async function queryStep(inst: InstanceDef, upstream: Record<string, unkn
   return { done: true, bytes: one.bytes, mime: one.mime };
 }
 
-/** 字节 → dataURL（产物写回项目时用的就是这一份） */
-export function bytesToDataUrl(bytes: Uint8Array, mime = 'application/octet-stream'): Promise<string> {
-  return blobToDataUrl(new Blob([bytes], { type: mime }));
+/** base64 → 字节（配置 JSON 导入时还原素材） */
+export function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 /** 预览 / 试调用时给调用级参数占位的样例文本（只有界面用，不进真实调用） */
@@ -276,12 +279,13 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-/** 解码音频取时长（失败按字数估算兜底） */
-export async function decodeAudioDuration(dataUrl: string, fallbackText = ''): Promise<number> {
+/** 解码音频取时长（失败按字数估算兜底）。给字节时不用绕一趟 URL（产物刚落库，字节就在手上） */
+export async function decodeAudioDuration(src: string | Uint8Array, fallbackText = ''): Promise<number> {
   try {
     const AC: typeof AudioContext = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = new AC();
-    const buf = await ctx.decodeAudioData(await (await fetch(dataUrl)).arrayBuffer());
+    // decodeAudioData 会 detach 传进去的 buffer —— 给副本，别把调用方那份字节作废掉
+    const buf = await ctx.decodeAudioData(typeof src === 'string' ? await (await fetch(src)).arrayBuffer() : src.slice().buffer);
     void ctx.close();
     return buf.duration;
   } catch {
@@ -334,13 +338,6 @@ export function bytesToBase64(bytes: Uint8Array): string {
     bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
   return btoa(bin);
-}
-
-/** 解析 dataURL 音频为 Blob（导入时用） */
-export async function readAudioFile(file: File): Promise<{ dataUrl: string; durationSec: number }> {
-  const dataUrl = await blobToDataUrl(file);
-  const durationSec = await decodeAudioDuration(dataUrl);
-  return { dataUrl, durationSec };
 }
 
 // ========== SRT ==========

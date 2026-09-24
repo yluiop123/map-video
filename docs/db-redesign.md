@@ -89,7 +89,7 @@
 | 25 | Overlay → PersonBlock | 1 → N | person 类型的 5 类槽位 | 组合 |
 | 26 | `overlay.content.children[]` → OverlayItem | N → 1 | 旧 group 自引用，已废弃 | 遗留 |
 | 27 | Overlay（person/custom）→ 音频资产 | N → 1 | 可空 | 关联 |
-| 28 | 各实体 → 图片 / 音频 / 视频（dataURL 或 URL） | N → 1 | **当前为无约束的裸字符串** | 弱关联 |
+| 28 | 各实体 → 图片 / 视频（内联 dataURL） | N → 1 | **当前为无约束的裸字符串** | 弱关联；**音频已收口**：`narration_entry` / `music_track` / `overlay` 的 `audio_asset_id` 是真外键（SET NULL），项目里不留字节 |
 | 29 | ProviderConfig | — | 独立聚合，无外键 | 孤立 |
 
 ### 1.4 依赖方向

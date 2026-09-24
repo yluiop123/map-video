@@ -141,7 +141,12 @@ function ensureAllColumns(db, ddl) {
  * DDL 里已经删掉的列，旧库还留着 —— 启动时直接 DROP COLUMN 掉（SQLite 3.35+ 支持），
  * 库里不留「读它的人已经不存在」的列。列本身有值时会抛错，那种改动要走让位而不是删列。
  */
-const RETIRED_COLUMNS = [['provider_template', 'note']];
+const RETIRED_COLUMNS = [
+  ['provider_template', 'note'],
+  // 音频只认 asset 了：内联 dataURL / 站内路径那两列不再承载素材本体（老数据按 §8 不迁移，重做一次配音即可）
+  ['narration_entry', 'url'],
+  ['music_track', 'url'],
+];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
     let have;
@@ -300,6 +305,28 @@ function jsonToKfs(json, s2f) {
   return { style, drawProgress, progress, pathProgress, fillProgress, morphKeyframes };
 }
 
+// ---------- 弹窗语音：id 单独成列（真外键），payload 里只留标题 ----------
+/** custom 的「背景语音」与 person 的「整卡语音」互斥，共用 overlay 这一列 */
+function overlayAudioId(content) {
+  return content?.custom?.audio?.audioId || content?.person?.audioId || null;
+}
+/** 写库前把 id 从 payload 里摘掉：同一条事实只留 audio_asset_id 那一处 */
+function stripOverlayAudio(content) {
+  if (!overlayAudioId(content)) return content;
+  const next = { ...content };
+  if (next.custom?.audio) next.custom = { ...next.custom, audio: { title: next.custom.audio.title } };
+  if (next.person) next.person = { ...next.person, audioId: undefined };
+  return next;
+}
+/** 读库时按类型装回去（素材被删 → 列是 NULL，语音自然就没有了） */
+function attachOverlayAudio(content, assetId) {
+  if (!content || !assetId) return content;
+  const next = { ...content };
+  if (next.custom?.audio) next.custom = { ...next.custom, audio: { ...next.custom.audio, audioId: assetId } };
+  if (next.person) next.person = { ...next.person, audioId: assetId };
+  return next;
+}
+
 // ---------- 保存 ----------
 export function saveProjectV2(db, project) {
   const fps = project.globalConfig?.defaultFPS || 30;
@@ -372,11 +399,11 @@ export function saveProjectV2(db, project) {
       project_id, font_size, font_family, color, stroke_color, stroke_width, bg, bg_color, pos_y, max_pct, hot_fix_json
     ) VALUES (@project_id,@font_size,@font_family,@color,@stroke_color,@stroke_width,@bg,@bg_color,@pos_y,@max_pct,@hot_fix_json)`);
     const insEntry = db.prepare(`INSERT INTO narration_entry (
-      entry_id, project_id, text, audio_asset_id, url, duration_sec, start_sec, locked, ord
-    ) VALUES (@entry_id,@project_id,@text,@audio_asset_id,@url,@duration_sec,@start_sec,@locked,@ord)`);
+      entry_id, project_id, text, audio_asset_id, duration_sec, start_sec, locked, ord
+    ) VALUES (@entry_id,@project_id,@text,@audio_asset_id,@duration_sec,@start_sec,@locked,@ord)`);
     const insMusic = db.prepare(`INSERT INTO music_track (
-      track_id, project_id, name, audio_asset_id, url, start_sec, end_sec, volume, loop, fade_in, fade_out, ord
-    ) VALUES (@track_id,@project_id,@name,@audio_asset_id,@url,@start_sec,@end_sec,@volume,@loop,@fade_in,@fade_out,@ord)`);
+      track_id, project_id, name, audio_asset_id, start_sec, end_sec, volume, loop, fade_in, fade_out, ord
+    ) VALUES (@track_id,@project_id,@name,@audio_asset_id,@start_sec,@end_sec,@volume,@loop,@fade_in,@fade_out,@ord)`);
 
     // 图层（项目 ▸ 图层 ▸ 元素）
     const insLayer = db.prepare(`INSERT INTO layer (
@@ -413,8 +440,8 @@ export function saveProjectV2(db, project) {
       start_sec: f2s(o.startFrame), end_sec: f2s(o.endFrame), animation: n(o.animation), exit_animation: n(o.exitAnimation),
       scale: n(o.scale), offset_x: o.offsetX ?? 0, offset_y: o.offsetY ?? 0, z_index: o.zIndex ?? 0,
       bg_color: n(o.bg?.color), bg_opacity: n(o.bg?.opacity), bg_blur: n(o.bg?.blur), bg_radius: n(o.bg?.radius),
-      bg_border: n(o.bg?.border), payload_json: j(o.content), person_layout_json: null,
-      audio_asset_id: null, parent_overlay_id: null, ord: i,
+      bg_border: n(o.bg?.border), payload_json: j(stripOverlayAudio(o.content)), person_layout_json: null,
+      audio_asset_id: overlayAudioId(o.content), parent_overlay_id: null, ord: i,
     }));
     // 字幕 / 配音
     const nar = project.narration || { entries: [], style: {} };
@@ -426,13 +453,13 @@ export function saveProjectV2(db, project) {
       hot_fix_json: j(nar.hotFix),
     });
     (nar.entries || []).forEach((e, i) => insEntry.run({
-      entry_id: e.id, project_id: project.id, text: e.text || '', audio_asset_id: null, url: n(e.audioUrl),
+      entry_id: e.id, project_id: project.id, text: e.text || '', audio_asset_id: n(e.audioId),
       duration_sec: e.durationFrames == null ? null : f2s(e.durationFrames),
       start_sec: f2s(e.startFrame), locked: e.locked ? 1 : 0, ord: i,
     }));
     // 项目级背景音乐：单轨多段，挂在项目上（绝对秒）
     (project.music || []).forEach((m, i) => insMusic.run({
-      track_id: m.id, project_id: project.id, name: m.name || '', audio_asset_id: null, url: n(m.url),
+      track_id: m.id, project_id: project.id, name: m.name || '', audio_asset_id: n(m.audioId),
       start_sec: f2s(m.startFrame), end_sec: m.endFrame == null ? null : f2s(m.endFrame),
       volume: m.volume ?? 0.6, loop: m.loop ? 1 : 0, fade_in: m.fadeIn ?? 0, fade_out: m.fadeOut ?? 0, ord: i,
     }));
@@ -652,15 +679,15 @@ export function getProjectV2(db, id) {
     animation: o.animation ?? undefined, exitAnimation: o.exit_animation ?? undefined,
     scale: o.scale ?? undefined, offsetX: o.offset_x, offsetY: o.offset_y, zIndex: o.z_index,
     ...(o.bg_color != null || o.bg_opacity != null ? { bg: { color: o.bg_color ?? '#000000', opacity: o.bg_opacity ?? 0.6, blur: o.bg_blur ?? 0, radius: o.bg_radius ?? 12, border: o.bg_border ?? undefined } } : {}),
-    content: J(o.payload_json, { type: o.type }),
+    content: attachOverlayAudio(J(o.payload_json, { type: o.type }), o.audio_asset_id),
   }));
   const st = db.prepare('SELECT * FROM narration WHERE project_id = ?').get(pid);
   const entries = db.prepare('SELECT * FROM narration_entry WHERE project_id = ? ORDER BY ord').all(pid).map((e) => ({
-    id: e.entry_id, text: e.text, audioUrl: e.url ?? undefined, durationFrames: s2f(e.duration_sec ?? 0), startFrame: s2f(e.start_sec), locked: e.locked === 1,
+    id: e.entry_id, text: e.text, audioId: e.audio_asset_id ?? undefined, durationFrames: s2f(e.duration_sec ?? 0), startFrame: s2f(e.start_sec), locked: e.locked === 1,
   }));
   const elements = readElementsV2(db, pid, s2f);
   const music = db.prepare('SELECT * FROM music_track WHERE project_id = ? ORDER BY ord').all(pid).map((m) => ({
-    id: m.track_id, name: m.name, url: m.url ?? undefined, startFrame: s2f(m.start_sec), endFrame: m.end_sec == null ? s2f(m.start_sec) : s2f(m.end_sec),
+    id: m.track_id, name: m.name, audioId: m.audio_asset_id ?? '', startFrame: s2f(m.start_sec), endFrame: m.end_sec == null ? s2f(m.start_sec) : s2f(m.end_sec),
     volume: m.volume, loop: m.loop === 1, fadeIn: m.fade_in, fadeOut: m.fade_out,
   }));
   // 片长不入库（派生量，§10「只存输入原值」）：内容实际结束 + 至少 60 秒留白，与时间线口径一致
