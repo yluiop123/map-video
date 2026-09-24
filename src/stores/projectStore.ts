@@ -650,3 +650,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     },
   };
 });
+
+// 调试便捷入口（生产无副作用）：自动化脚本直控项目/撤销栈，与 __editorStore 同一条先例
+if (typeof window !== 'undefined') (window as any).__projectStore = useProjectStore;

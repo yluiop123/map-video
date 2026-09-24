@@ -1,6 +1,7 @@
 /**
  * 预览音频同步（编辑器）：订阅 editorStore 播放头，驱动 配音 + 背景音乐 HTMLAudio 池。
  * - 播放中：按帧计算目标偏移，漂移 >0.3s 自动 seek；BGM 循环取模
+ * - 倍速预览：音频速率跟着 playRate 走，seek 只当漂移兜底
  * - 暂停/跳帧/出章：全部暂停
  * 导出端不走这里（Remotion <Audio> 混流）。
  */
@@ -76,7 +77,7 @@ function sync(): void {
   if (syncing) return;
   syncing = true;
   try {
-    const { isPlaying, currentFrame } = useEditorStore.getState();
+    const { isPlaying, currentFrame, playRate } = useEditorStore.getState();
     const project = useProjectStore.getState().project;
     if (!isPlaying || !project) {
       pauseAll();
@@ -96,6 +97,10 @@ function sync(): void {
       if (!el) continue;                       // 地址还在路上
       el.loop = d.loop;
       el.volume = Math.max(0, Math.min(1, d.vol));
+      // 倍速预览：让音频自己跑快。实测改之前 playbackRate 一直是 1，播放头跑到 3× / 5× 时
+      // 只能靠下面的 seek 硬追。界面最高 5×（本机 Chromium 支持到 16×），
+      // preservesPitch 默认为 true，所以倍速下是「连续且不变调」。
+      if (el.playbackRate !== playRate) el.playbackRate = playRate;
       const target = d.loop && el.duration > 0 ? d.offset % el.duration : d.offset;
       if (el.paused) {
         try {
