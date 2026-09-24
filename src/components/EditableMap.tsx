@@ -28,7 +28,6 @@ import type {
 
 interface EditableMapProps {
   project: MapVideoProject;
-  currentFrame: number;
 }
 
 const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot', 'terr_split', 'terr_annex'];
@@ -40,7 +39,7 @@ const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line',
 const SCISSORS_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#ffffff" stroke-width="5"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></g><g stroke="#111111" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></g></svg>`;
 const SCISSORS_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(SCISSORS_SVG)}") 8 8, crosshair`;
 
-export function EditableMap({ project, currentFrame }: EditableMapProps) {
+export function EditableMap({ project }: EditableMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const cameraRef = useRef({ center: [104.0, 35.0] as [number, number], zoom: 4, pitch: 0, bearing: 0 });
@@ -61,6 +60,8 @@ export function EditableMap({ project, currentFrame }: EditableMapProps) {
   const mode = useInteractionStore((s) => s.mode);
   const selectElement = useEditorStore((s) => s.selectElement);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
+  // 播放头由本层订阅（App 根不再往下传 prop：App 每帧重渲染会拖着整棵界面 diff 一遍）
+  const currentFrame = useEditorStore((s) => s.currentFrame);
   const setMode = useInteractionStore((s) => s.setMode);
   const [viewSaved, setViewSaved] = useState(false);
   const [viewBarHidden, setViewBarHidden] = useState(false);

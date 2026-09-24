@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { TopBar, FloatingTools } from './components/Toolbar';
 import { EditableMap } from './components/EditableMap';
 import { ElementsPanel } from './components/ElementsPanel';
@@ -22,7 +22,7 @@ import { PanelHeader } from './components/ui/primitives';
 
 import { useProjectStore, isProjectDirty } from './stores/projectStore';
 import { useEditorStore } from './stores/editorStore';
-import { generateId, type MapElement } from './types';
+import { generateId, type MapElement, type MapVideoProject } from './types';
 
 /** 自动保存：停止编辑这么久后静默落盘 */
 const AUTOSAVE_DELAY_MS = 5000;
@@ -38,10 +38,33 @@ function computeStageFit(container: { w: number; h: number }, res: { width: numb
   return { left: (cw - w) / 2, top: (ch - h) / 2, w, h };
 }
 
+/**
+ * 舞台的「画面震动」包络层。
+ * 播放头订阅放在这一层，而不是 App 根：App 每帧重渲染会把 TopBar / 时间线 / 左右浮层
+ * 整棵树一起拖着 diff 一遍（实测 1× 播放时 248 次 DOM mutation/s）。
+ * children 由 App 传进来、引用不变，所以本层逐帧更新不会波及舞台内部。
+ */
+function StageShake({ project, fps, box, children }: {
+  project: MapVideoProject;
+  fps: number;
+  box: CSSProperties;
+  children: ReactNode;
+}) {
+  const frame = useEditorStore((s) => s.currentFrame);
+  const shake = screenFxCombinedAt(project.fx, frame, fps).shake;
+  return (
+    <div
+      className="absolute isolate overflow-hidden"
+      style={{ ...box, transform: shake ? `translate(${shake.x.toFixed(2)}px, ${shake.y.toFixed(2)}px)` : undefined }}
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function App() {
   const project = useProjectStore((s) => s.project);
 
-  const currentFrame = useEditorStore((s) => s.currentFrame);
   const panelMode = useEditorStore((s) => s.panelMode);
   const selectedKeyframeIdx = useEditorStore((s) => s.selectedKeyframeIdx);
   const selectedElementId = useEditorStore((s) => s.selectedElementId);
@@ -188,10 +211,8 @@ export default function App() {
       panelMode === 'fx' ||
       (panelMode === 'element' && !!selectedElementId));
 
-  // 特效窗口的「画面震动」：编辑器与导出端同源（整体画面位移包络）
-  const fps = project.globalConfig.defaultFPS ?? 30;
-  const shake = screenFxCombinedAt(project.fx, currentFrame, fps).shake;
   // 画幅：地图舞台按项目画幅等比居中（黑边），改画幅后地图区域随之变化
+  const fps = project.globalConfig.defaultFPS ?? 30;
   const fit = computeStageFit(stageSize, project.globalConfig.defaultResolution);
   const stageBoxStyle = stageSize.w > 0
     ? { left: fit.left, top: fit.top, width: fit.w, height: fit.h }
@@ -202,19 +223,13 @@ export default function App() {
       {/* 顶部栏：Logo + 项目芯片 + 底图/高程/3D + 撤销重做/保存/导出（演示时隐藏） */}
       {!presenting && <TopBar onOpenExport={() => setExportOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />}
 
-      {/* 地图舞台：全幅画布 + 特效预览层 + 浮动工具条/面板（震动=整体画面位移） */}
+      {/* 地图舞台：全幅画布 + 特效预览层 + 浮动工具条/面板（震动=整体画面位移，见 StageShake） */}
       <div ref={stageRef} className={`relative flex-1 overflow-hidden ${presenting ? 'bg-black' : 'bg-[#0c0a09]'}`}>
-        <div
-          className="absolute isolate overflow-hidden"
-          style={{ ...stageBoxStyle, transform: shake ? `translate(${shake.x.toFixed(2)}px, ${shake.y.toFixed(2)}px)` : undefined }}
-        >
-          <EditableMap
-            project={project}
-            currentFrame={currentFrame}
-          />
+        <StageShake project={project} fps={fps} box={stageBoxStyle}>
+          <EditableMap project={project} />
           {/* 特效窗口预览层：弹窗卡片/字幕/天气/画面特效（双端同源渲染） */}
-          <FxPreviewLayer project={project} frame={currentFrame} fps={fps} />
-        </div>
+          <FxPreviewLayer project={project} fps={fps} />
+        </StageShake>
 
         {/* 浮动工具条（选择 + 六大工具）；播放预览时隐藏 */}
         {!isPlaying && !presenting && <FloatingTools />}

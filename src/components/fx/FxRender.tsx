@@ -9,6 +9,7 @@ import { normalizePersonContent, normalizeNarrationTrack, POS_BASE } from '../..
 import { screenFxCombinedAt } from '../../lib/screenfx';
 import { getAssetUrl } from '../../lib/assets';
 import { FxCanvas } from './FxCanvas';
+import { useEditorStore } from '../../stores/editorStore';
 
 // ========== 工具 ==========
 
@@ -807,7 +808,9 @@ export function ScreenFxLayer({ fxList, frame, fps }: { fxList: ScreenFxItem[] |
 }
 
 /** 编辑器舞台预览层：弹窗卡片 + 屏幕特效 + 字幕（不含震动 transform，调用方处理） */
-export function FxPreviewLayer({ project, frame, fps }: { project: MapVideoProject; frame: number; fps: number }) {
+export function FxPreviewLayer({ project, fps }: { project: MapVideoProject; fps: number }) {
+  // 播放头由本层订阅：让 App 根带着 frame 重渲染的话，整棵界面（顶栏/时间线/浮层）每帧都要 diff 一遍
+  const frame = useEditorStore((s) => s.currentFrame);
   return (
     <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
       {(project.overlays || []).map((o) => (
