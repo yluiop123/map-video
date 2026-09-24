@@ -55,7 +55,7 @@ components/
   ElementsPanel.tsx    # 左侧浮动元素面板：搜索/眼睛显隐/副标题/GeoJSON-GPX 导入/底部统计（由右下「元素」按钮开合）
   App.tsx              # 布局：TopBar + 全幅地图舞台(浮动工具条/元素浮层/右侧浮层) + 时间线
   ui/                  # 共享原子两处：primitives.tsx（本项目自研：Section/Field/StyleGrid/Toggle/ColorPicker/OptionBlocks/PanelHeader）
-                       #   + shadcn 原子（button/input/textarea/label/select/dialog/popover/tooltip/tabs/switch/slider/progress/badge/collapsible/radio-group…）
+                       #   + shadcn 原子（button/input/textarea/label/select/dialog/popover/tooltip/tabs/switch/slider/progress/badge/collapsible/radio-group/card…）
                        #   新界面优先用 shadcn 那批；旧面板沿用 primitives，别为用而用；配置见根目录 components.json（`npx shadcn add <名字>` 追加）
   RegionPickerDialog.tsx / FrameTimeField.tsx / TaskTray.tsx(顶栏「在途 N」浮层) / ImageGenerateField.tsx / HotFixField.tsx 等
 compositions/          # Remotion 导出端：MapVideo(单轴渲染) / MapScene / OverlayRenderer

@@ -13,6 +13,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Badge } from './ui/badge';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Separator } from './ui/separator';
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { Textarea } from './ui/textarea';
@@ -121,7 +122,7 @@ export function TemplatesPane() {
         </TabsList>
       </Tabs>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[150px_minmax(0,1fr)] gap-3 xl:grid-cols-[150px_minmax(0,1fr)_300px]">
+      <div className="grid min-h-0 flex-1 grid-cols-[150px_minmax(0,1fr)] gap-3 xl:grid-cols-[150px_minmax(0,1fr)_340px]">
         {/* 左：这一类的模板列表 */}
         <div className="min-h-0 space-y-1 overflow-y-auto pr-0.5">
           {mine.map((x) => (
@@ -205,9 +206,9 @@ export function TemplatesPane() {
           </div>
         )}
 
-        {/* 右：实例级参数（整份模板共用） */}
+        {/* 右：实例级参数（整份模板共用）。窄屏时不再「藏起来就摸不到」—— 换到第二行整宽显示 */}
         {tpl && (
-          <div className="hidden min-h-0 overflow-y-auto border-l border-white/10 pl-3 xl:block">
+          <div className="col-span-2 min-h-0 min-w-0 overflow-y-auto border-t border-white/10 pt-2 xl:col-span-1 xl:border-l xl:border-t-0 xl:pl-3 xl:pt-0">
             <ParamTable title={t('实例级参数', 'Instance params')}
               hint={t('全请求共用；Base URL 与密钥就在这儿声明，secret 渲染成密码框', 'declare baseUrl / keys here')}
               params={tpl.instanceParams ?? []} onChange={(instanceParams) => patch({ ...tpl, instanceParams })} />
@@ -263,15 +264,18 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
   };
 
   return (
-    <div className="space-y-2 rounded-md border border-white/10 p-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <Select value={def.method ?? 'POST'} onValueChange={(method) => set({ method })}>
-          <SelectTrigger className="h-7 w-[70px] text-[11px]"><SelectValue /></SelectTrigger>
-          <SelectContent>{['GET', 'POST', 'PUT'].map((m) => <SelectItem key={m} value={m} className="text-[11px]">{m}</SelectItem>)}</SelectContent>
-        </Select>
-        <Input value={def.path} onChange={(e) => set({ path: e.target.value })} className="h-7 text-xs flex-1 min-w-40 font-mono" placeholder="{baseUrl}/…" />
-        <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={dropReq}>{t('删这条接口', 'remove')}</Button>
-      </div>
+    <Card className="gap-0 p-0">
+      <CardHeader className="px-2 py-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={def.method ?? 'POST'} onValueChange={(method) => set({ method })}>
+            <SelectTrigger className="h-7 w-[70px] text-[11px]"><SelectValue /></SelectTrigger>
+            <SelectContent>{['GET', 'POST', 'PUT'].map((m) => <SelectItem key={m} value={m} className="text-[11px]">{m}</SelectItem>)}</SelectContent>
+          </Select>
+          <Input value={def.path} onChange={(e) => set({ path: e.target.value })} className="h-7 min-w-40 flex-1 text-xs font-mono" placeholder="{baseUrl}/…" />
+          <Button variant="outline" size="sm" className="h-7 text-[11px] text-red-400/90" onClick={dropReq}>{t('删这条接口', 'remove')}</Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 p-2 pt-0">
 
       <JsonBox label={t('附加请求头', 'Extra headers')} value={def.headers ?? {}} onChange={(headers) => set({ headers: headers as Record<string, unknown> })}
         hint={t('只写需要覆盖模板级的那几个（如异步开关头）', 'only what this request overrides')} />
@@ -288,14 +292,14 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
         hint={t('multipart 字段（上传文件用）', 'multipart fields')} />
 
       <div className="space-y-1">
-        <div className="text-[10px] text-muted-foreground">
-          {t('从响应里取字段（outputs）', 'Outputs')} · {t('取出来的名字下一个请求直接 ${它}', 'downstream requests use ${name}')}
-        </div>
+        <Label className="block text-[10px] font-normal text-muted-foreground">
+          {t('从响应里取字段（outputs）', 'Outputs')} · <span className="text-muted-foreground/70">{t('取出来的名字下一个请求直接 ${它}', 'downstream requests use ${name}')}</span>
+        </Label>
         {Object.entries(def.outputs ?? {}).map(([k, v]) => (
-          <div key={k} className="flex items-center gap-1">
-            <Input value={k} className="h-6 w-28 text-[10px] font-mono" placeholder="taskId"
+          <div key={k} className="flex min-w-0 items-center gap-1">
+            <Input value={k} className="h-6 w-28 min-w-0 text-[10px] font-mono" placeholder="taskId"
               onChange={(e) => set({ outputs: rename(mapOf(def), k, e.target.value) })} />
-            <Input value={String(v)} className="h-6 flex-1 text-[10px] font-mono" placeholder="output.task_id"
+            <Input value={String(v)} className="h-6 min-w-0 flex-1 text-[10px] font-mono" placeholder="output.task_id"
               onChange={(e) => set({ outputs: { ...mapOf(def), [k]: e.target.value } })} />
             <Button variant="ghost" size="sm" className="h-6 w-6 text-[10px]" onClick={() => { const n = { ...mapOf(def) }; delete n[k]; set({ outputs: n }); }}>✕</Button>
           </div>
@@ -341,9 +345,10 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
         </span>
       </div>
       {preview && (
-        <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{preview}</pre>
+        <pre className="max-h-40 overflow-auto rounded-md border border-white/10 bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{preview}</pre>
       )}
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -364,62 +369,65 @@ function ParamTable({ title, hint, params, onChange }: {
   const at = (i: number, p: Partial<ParamSpec>) => onChange(params.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const optsText = (p: ParamSpec) => (p.options ?? []).map((o) => (typeof o === 'object' && o !== null ? `${o.value}${o.label ? `=${o.label}` : ''}` : String(o))).join(', ');
   return (
-    <div className="space-y-1">
-      <div className="text-[10px] text-muted-foreground font-medium">
-        {title}{hint && <span className="font-normal text-muted-foreground/70"> · {hint}</span>}
-      </div>
-      {params.map((p, i) => (
-        <div key={i} className="space-y-1 rounded border border-white/10 p-1.5">
-          <div className="grid grid-cols-[minmax(0,1fr)_86px_22px] items-center gap-1">
-            <Input value={p.key} onChange={(e) => at(i, { key: e.target.value })} className="h-6 text-[10px] font-mono" placeholder="key" />
-            <Select value={p.valueType ?? 'string'} onValueChange={(v) => at(i, { valueType: v as ValueType })}>
-              <SelectTrigger className="h-6 text-[10px]"><SelectValue /></SelectTrigger>
-              <SelectContent>{VALUE_TYPES.map((v) => <SelectItem key={v} value={v} className="text-[10px]">{v}</SelectItem>)}</SelectContent>
-            </Select>
-            <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-[10px]" onClick={() => onChange(params.filter((_, j) => j !== i))}>✕</Button>
+    <Card className="gap-0 bg-transparent p-0">
+      <CardHeader className="px-0 py-0 space-y-0">
+        <CardTitle className="text-[10px] font-medium text-muted-foreground">{title}</CardTitle>
+        {!!hint && <CardDescription className="text-[10px] leading-4">{hint}</CardDescription>}
+      </CardHeader>
+      <CardContent className="space-y-1 p-0 pt-1.5">
+        {params.map((p, i) => (
+          <div key={i} className="min-w-0 space-y-1 rounded-md border border-white/10 bg-white/[0.02] p-1.5">
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_86px_22px] items-center gap-1">
+              <Input value={p.key} onChange={(e) => at(i, { key: e.target.value })} className="h-6 min-w-0 text-[10px] font-mono" placeholder="key" />
+              <Select value={p.valueType ?? 'string'} onValueChange={(v) => at(i, { valueType: v as ValueType })}>
+                <SelectTrigger className="h-6 min-w-0 text-[10px]"><SelectValue /></SelectTrigger>
+                <SelectContent>{VALUE_TYPES.map((v) => <SelectItem key={v} value={v} className="text-[10px]">{v}</SelectItem>)}</SelectContent>
+              </Select>
+              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-[10px]" onClick={() => onChange(params.filter((_, j) => j !== i))}>✕</Button>
+            </div>
+            <div className="grid min-w-0 grid-cols-2 gap-1">
+              <Input value={p.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('说明', 'label')} />
+              <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('默认值', 'default')} />
+            </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
+              <label className="flex items-center gap-1 pr-1 text-[10px] text-muted-foreground">
+                <Switch id={sid(i)} checked={!!p.required} onCheckedChange={(v) => at(i, { required: v })} />
+                <Label htmlFor={sid(i)} className="text-[10px] font-normal">{t('必填', 'required')}</Label>
+              </label>
+              {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
+                <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 min-w-0 flex-1 basis-32 text-[10px] font-mono"
+                  placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />
+              )}
+              {p.valueType === 'number' && (
+                <div className="grid min-w-0 flex-1 basis-32 grid-cols-3 gap-1">
+                  <Input type="number" value={p.min ?? ''} onChange={(e) => at(i, { min: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="min" />
+                  <Input type="number" value={p.max ?? ''} onChange={(e) => at(i, { max: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="max" />
+                  <Input type="number" step="0.1" value={p.step ?? ''} onChange={(e) => at(i, { step: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="step" />
+                </div>
+              )}
+              {p.valueType === 'file' && (
+                <>
+                  <Input value={p.accept ?? ''} onChange={(e) => at(i, { accept: e.target.value })} className="h-6 min-w-0 flex-1 basis-20 text-[10px] font-mono" placeholder=".mp3,.wav" />
+                  <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-20 min-w-0 text-[10px]" placeholder={t('上限字节', 'maxSize')} />
+                </>
+              )}
+              <Select value={p.transform ?? 'none'} onValueChange={(v) => at(i, { transform: v === 'none' ? undefined : (v as ParamSpec['transform']) })}>
+                <SelectTrigger className="h-6 w-32 min-w-0 text-[10px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none" className="text-[10px]">{t('不做转换', 'no transform')}</SelectItem>
+                  <SelectItem value="hotFixArray" className="text-[10px]">hotFix → 数组</SelectItem>
+                  <SelectItem value="base64DataUri" className="text-[10px]">文件 → data URI</SelectItem>
+                  <SelectItem value="json" className="text-[10px]">字符串 → JSON</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-1">
-            <Input value={p.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="h-6 text-[10px]" placeholder={t('说明', 'label')} />
-            <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 text-[10px]" placeholder={t('默认值', 'default')} />
-          </div>
-          <div className="flex flex-wrap items-center gap-1">
-            <label className="flex items-center gap-1 pr-1 text-[10px] text-muted-foreground">
-              <Switch id={sid(i)} checked={!!p.required} onCheckedChange={(v) => at(i, { required: v })} />
-              <Label htmlFor={sid(i)} className="text-[10px] font-normal">{t('必填', 'required')}</Label>
-            </label>
-            {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
-              <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 min-w-32 flex-1 basis-40 text-[10px] font-mono"
-                placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />
-            )}
-            {p.valueType === 'number' && (
-              <div className="grid min-w-32 flex-1 basis-40 grid-cols-3 gap-1">
-                <Input type="number" value={p.min ?? ''} onChange={(e) => at(i, { min: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="min" />
-                <Input type="number" value={p.max ?? ''} onChange={(e) => at(i, { max: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="max" />
-                <Input type="number" step="0.1" value={p.step ?? ''} onChange={(e) => at(i, { step: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="step" />
-              </div>
-            )}
-            {p.valueType === 'file' && (
-              <>
-                <Input value={p.accept ?? ''} onChange={(e) => at(i, { accept: e.target.value })} className="h-6 min-w-20 flex-1 text-[10px] font-mono" placeholder=".mp3,.wav" />
-                <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-20 text-[10px]" placeholder={t('上限字节', 'maxSize')} />
-              </>
-            )}
-            <Select value={p.transform ?? 'none'} onValueChange={(v) => at(i, { transform: v === 'none' ? undefined : (v as ParamSpec['transform']) })}>
-              <SelectTrigger className="h-6 w-32 text-[10px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none" className="text-[10px]">{t('不做转换', 'no transform')}</SelectItem>
-                <SelectItem value="hotFixArray" className="text-[10px]">hotFix → 数组</SelectItem>
-                <SelectItem value="base64DataUri" className="text-[10px]">文件 → data URI</SelectItem>
-                <SelectItem value="json" className="text-[10px]">字符串 → JSON</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      ))}
-      <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => onChange([...params, { key: '', label: '', valueType: 'string' }])}>
-        ＋ {t('参数', 'param')}
-      </Button>
-    </div>
+        ))}
+        <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => onChange([...params, { key: '', label: '', valueType: 'string' }])}>
+          ＋ {t('参数', 'param')}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -440,6 +448,7 @@ function parseList(s: string): ParamSpec['options'] {
 
 function JsonBox({ label, value, onChange, hint }: { label: string; value: unknown; onChange: (v: unknown) => void; hint?: string }) {
   const t = useT();
+  const id = useId();
   const [text, setText] = useState(() => JSON.stringify(value ?? {}, null, 1));
   const [bad, setBad] = useState(false);
   const commit = (next: string) => {
@@ -448,10 +457,10 @@ function JsonBox({ label, value, onChange, hint }: { label: string; value: unkno
   };
   return (
     <div className="space-y-1">
-      <div className="text-[10px] text-muted-foreground">
+      <Label htmlFor={id} className="block text-[10px] font-normal text-muted-foreground">
         {label} · {hint ?? t('JSON', 'JSON')}{bad && <span className="text-red-400"> · {t('还不成形，暂不应用', 'not valid yet')}</span>}
-      </div>
-      <Textarea value={text} onChange={(e) => commit(e.target.value)} rows={4} className={`text-[10px] font-mono ${bad ? 'border-red-400/60' : ''}`} />
+      </Label>
+      <Textarea id={id} value={text} onChange={(e) => commit(e.target.value)} rows={3} className={`min-h-0 text-[10px] font-mono ${bad ? 'border-red-400/60' : ''}`} />
     </div>
   );
 }
