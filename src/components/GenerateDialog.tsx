@@ -13,6 +13,7 @@ import { IS_DESKTOP } from '../lib/backend';
 import { useProviderStore } from '../stores/providerStore';
 import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
 import { Badge } from './ui/badge';
+import { Button } from './ui/button';
 import { callLLM, defaultVoiceOf, parseSrt, srtTime } from '../lib/providers';
 import { useTaskStore } from '../stores/taskStore';
 import { playAudition, stopAudition } from '../lib/audition';
@@ -121,8 +122,10 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const setStyle = useProjectStore((s) => s.setNarrationStyle);
 
   const [topic, setTopic] = useState('');
-  const [reference, setReference] = useState('');
-  const [refFiles, setRefFiles] = useState<string[]>([]);
+  /** 参考资料 = 上传进来的文件，一份一项（能单独摘掉）；拼进提示词时才合成一段文本 */
+  const [refs, setRefs] = useState<{ name: string; text: string }[]>([]);
+  const refText = refs.map((r) => r.text).join('\n\n');
+  const refFileRef = useRef<HTMLInputElement>(null);
   // 已有字幕直接载入：一次性初始值，不跟随 project 引用变化重置（否则打字途中会被冲掉）
   const [rows, setRows] = useState<SubRow[]>(() => rowsFromProject(project?.narration?.entries));
   const [pasteOpen, setPasteOpen] = useState(false);
@@ -306,7 +309,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       const sys = '你是「地图讲解视频」的文案策划。按用户需求与参考资料，写出可直接播报的连续口播稿。';
       const user = [
         `【需求】\n${topic.trim()}`,
-        reference.trim() && `【参考资料】\n${reference.trim()}`,
+        refText.trim() && `【参考资料】\n${refText.trim()}`,
         [
           '【输出要求】',
           '- 8–24 条口播字幕，按时间顺序排列，每条不超过 40 字，语言与需求一致',
@@ -385,19 +388,18 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           >✕</button>
         </div>
 
-        <textarea
-          value={topic}
-          onChange={(e) => setTopic(e.target.value)}
-          rows={3}
-          className="input text-xs resize-none mb-2"
-          placeholder={t('描述你的需求（主题 / 大纲 / 风格 / 口吻 / 受众 / 时长 / 侧重点…任何要求）', 'Describe your requirements (topic / outline / style / tone / audience / length … anything)')}
-        />
-
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-[11px] text-muted-foreground shrink-0">{t('参考资料', 'Reference')}</span>
-          <label className="inline-flex items-center gap-1.5 h-6 px-2 rounded-md border border-white/15 bg-white/[0.045] text-[11px] hover:border-white/25 cursor-pointer transition-colors">
-            ⬆ {t('上传文件（txt/md/json）', 'Upload file (txt/md/json)')}
+        {/* 需求与参考资料同一个框（composer）：附件是需求的上下文，分成两处填就没人在意下面那块了 */}
+        <div className="rounded-md border border-white/15 bg-white/[0.03] mb-2 focus-within:border-white/30 transition-colors">
+          <textarea
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            rows={3}
+            className="w-full bg-transparent px-2.5 py-2 text-xs resize-none outline-none placeholder:text-muted-foreground/50"
+            placeholder={t('描述你的需求（主题 / 大纲 / 风格 / 口吻 / 受众 / 时长 / 侧重点…任何要求）', 'Describe your requirements (topic / outline / style / tone / audience / length … anything)')}
+          />
+          <div className="flex items-center gap-1.5 flex-wrap border-t border-white/[0.08] px-2 py-1.5">
             <input
+              ref={refFileRef}
               type="file"
               accept=".txt,.md,.markdown,.json,.csv,text/*"
               className="hidden"
@@ -406,31 +408,28 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                 if (f) {
                   try {
                     const text = await f.text();
-                    setReference((prev) => (prev ? prev + '\n\n' + text : text));
-                    setRefFiles((prev) => [...prev, f.name]);
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : String(err));
-                  }
+                    setRefs((prev) => [...prev, { name: f.name, text }]);
+                  } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
                 }
                 e.target.value = '';
               }}
             />
-          </label>
-        </div>
-        {/* 参考资料只走文件上传：它只是提示词上下文，不需要用户手改 */}
-        <div className="flex items-center gap-1.5 mb-2 min-h-5">
-          <span className="text-[11px] text-muted-foreground truncate">
-            {reference
-              ? t(`已载入 ${refFiles.join('、')} · ${reference.length} 字`, `Loaded ${refFiles.join(', ')} · ${reference.length} chars`)
-              : t('未载入（上传后自动拼进提示词）', 'Nothing loaded (uploaded text is appended to the prompt)')}
-          </span>
-          {!!reference && (
-            <button
-              onClick={() => { setReference(''); setRefFiles([]); }}
-              className="h-5 px-1.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-white/10 shrink-0"
-              title={t('清除参考资料', 'Clear reference')}
-            >✕ {t('清除', 'Clear')}</button>
-          )}
+            <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]"
+              onClick={() => refFileRef.current?.click()}
+              title={t('上传 txt / md / json 作为参考资料，自动拼进提示词', 'Attach a reference file; it goes into the prompt')}
+            >⬆ {t('参考资料', 'Reference')}</Button>
+            {refs.map((r, i) => (
+              <Badge key={`${r.name}-${i}`} variant="outline" className="h-6 gap-1 border-white/15 bg-white/[0.05] font-normal text-[11px] max-w-[16rem]">
+                <span className="truncate">{r.name}</span>
+                <span className="tabular-nums text-muted-foreground">{r.text.length}</span>
+                <button
+                  onClick={() => setRefs((prev) => prev.filter((_, j) => j !== i))}
+                  className="text-muted-foreground hover:text-foreground"
+                  title={t('移除这个文件', 'Remove this file')}
+                >✕</button>
+              </Badge>
+            ))}
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 mb-2 flex-wrap">
