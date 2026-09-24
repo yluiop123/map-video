@@ -1140,8 +1140,11 @@ CREATE TABLE IF NOT EXISTS task (  -- 异步任务：唯一价值是跨重启续
   task_id      TEXT PRIMARY KEY,  -- 本地任务 id（与厂商的 provider_task_id 无关）
   batch_id     TEXT NOT NULL,  -- 批次 id（一次「全部生成配音」= 一个 batchId + N 条 task）
   provider_id  TEXT NOT NULL REFERENCES provider(provider_id) ON DELETE CASCADE,  -- 用哪个实例发的
-  project_id   TEXT REFERENCES project(project_id) ON DELETE CASCADE,  -- 回填到哪个项目（删项目连带删它的在途任务）
-  entry_id     TEXT REFERENCES narration_entry(entry_id) ON DELETE CASCADE,  -- 回填到哪条字幕（字幕条本就是表行，故为真外键而非弱引用）
+  -- 这两个都是**弱引用**，不是偷懒：任务行是调度状态、不是项目内容，而「保存项目」= 把项目那一行连同
+  -- 字幕行整批删了重建（见 electron/db-v2.mjs 的 saveProjectV2）。挂成真外键的话，用户每次自动保存
+  -- 都会 CASCADE 掉自己正在跑的任务（实测：在途行凭空消失，产物没地方放）。删项目由 removeProjectV2 显式清。
+  project_id   TEXT,  -- 回填到哪个项目（弱引用：删项目由 removeProjectV2 显式清）
+  entry_id     TEXT,  -- 回填到哪条字幕（弱引用：字幕行没了就是「没地方放」，调度器当场跳过）
   category     TEXT NOT NULL,  -- 任务种类：tts / image（llm 不进表，同步一把梭）
   status       TEXT NOT NULL DEFAULT 'submitting',  -- 本地状态：submitting / querying / success / failed / canceled（厂商状态值不入库）
   input_json   TEXT CHECK (input_json IS NULL OR json_valid(input_json)),  -- 提交参数快照（重试 = 取原值重新调生成接口）

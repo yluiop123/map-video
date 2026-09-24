@@ -44,6 +44,13 @@ export function submitKeyOfInstance(inst: InstanceDef): ReqKey {
   return key;
 }
 
+/** 这份模板声明的默认音色（callParams 里 voice 的 defaultValue）；没声明返回空，由界面要求用户选 */
+export function defaultVoiceOf(inst: InstanceDef | null | undefined): string {
+  const tpl = inst ? templateOf(inst) : undefined;
+  const spec = (tpl ? requestOf(tpl, 'sync.submit')?.callParams ?? [] : []).find((x) => x.key === 'voice');
+  return String(spec?.defaultValue ?? '');
+}
+
 /** 参考音频要求采样率：CosyVoice 16k、Qwen-TTS ≥24k，各家不同，写死过一次就出事 */
 export function refSampleRateOf(inst: InstanceDef | null | undefined): number {
   return templateOf(inst)?.refSampleRateHz ?? 16000;
@@ -147,6 +154,38 @@ export async function trialCall(inst: InstanceDef, key: ReqKey, callArgs: Record
   }
   const r = await runSync(tpl, inst, deps, key, callArgs);
   return { values: r.values, bytes: r.bytes, mime: r.mime, steps: r.steps };
+}
+
+// ========== 调度器用的两步（一次推进一步，状态由调用方落 task 表） ==========
+
+/** 第一步：提交。同步模板一步到底拿到产物；异步模板交出任务号 */
+export async function submitStep(inst: InstanceDef, callArgs: Record<string, unknown>): Promise<
+  { done: true; bytes: Uint8Array; mime?: string } | { done: false; providerTaskId: string; upstream: Record<string, unknown> }
+> {
+  const tpl = tplOf(inst);
+  if (submitKeyOfInstance(inst) === 'sync.submit') {
+    const r = await runSync(tpl, inst, deps, 'sync.submit', callArgs);
+    if (!r.bytes?.length) throw new EngineError('这一步没拿到产物，检查模板的产物路径与 outputFormat');
+    return { done: true, bytes: r.bytes, mime: r.mime };
+  }
+  const r = await submitAsync(tpl, inst, deps, callArgs);
+  if (!r.taskId) throw new EngineError(`提交响应里没取到任务 id，检查 async.submit 的 outputs（取到的是 ${JSON.stringify(r.values)}）`);
+  return { done: false, providerTaskId: r.taskId, upstream: r.values };
+}
+
+/** 第二步：查一次。没成就是没成 —— 下次什么时候再来由调度器定 */
+export async function queryStep(inst: InstanceDef, upstream: Record<string, unknown>): Promise<
+  { done: true; bytes: Uint8Array; mime?: string } | { done: false; status?: string }
+> {
+  const one = await queryOnce(tplOf(inst), inst, deps, upstream);
+  if (one.outcome !== 'success') return { done: false, status: one.status };
+  if (!one.bytes?.length) throw new EngineError('任务说成功了，但产物没取回来 —— 检查查询接口的产物路径');
+  return { done: true, bytes: one.bytes, mime: one.mime };
+}
+
+/** 字节 → dataURL（产物写回项目时用的就是这一份） */
+export function bytesToDataUrl(bytes: Uint8Array, mime = 'application/octet-stream'): Promise<string> {
+  return blobToDataUrl(new Blob([bytes], { type: mime }));
 }
 
 /** 预览 / 试调用时给调用级参数占位的样例文本（只有界面用，不进真实调用） */

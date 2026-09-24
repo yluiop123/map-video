@@ -136,7 +136,7 @@ const qwenTts: TemplateDef = {
         en('model', '模型', ['qwen3-tts-flash', 'qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-flash' }),
         en('languageType', '语种', ['Chinese', 'English', 'Auto'], { defaultValue: 'Chinese' }),
       ],
-      callParams: [text('text', '合成文本'), p('voice', '音色 ID')],
+      callParams: [text('text', '合成文本'), p('voice', '音色 ID', { defaultValue: 'Ethan' })],
       body: {
         model: '${model}',
         input: { text: '${text}', voice: '${voice}' },

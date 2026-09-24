@@ -13,11 +13,12 @@ import { IS_DESKTOP } from '../lib/backend';
 import { useProviderStore } from '../stores/providerStore';
 import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
 import { Badge } from './ui/badge';
-import { callLLM, callTTS, parseSrt, srtTime } from '../lib/providers';
-import { runBatch } from '../lib/provider-queue';
+import { callLLM, defaultVoiceOf, parseSrt, srtTime } from '../lib/providers';
+import { useTaskStore } from '../stores/taskStore';
 import { playAudition, stopAudition } from '../lib/audition';
 import { VoicePicker } from './VoicePicker';
 import type { InstanceDef } from '../lib/request-engine';
+import type { TaskRow } from '../types';
 import { estimateTextDurationFrames, generateId, defaultNarrationStyle, type NarrationEntry } from '../types';
 
 /** 一行 = 一条字幕 + 它自己的配音（可单独生成 / 覆盖） */
@@ -92,19 +93,21 @@ function LineInput(props: ComponentProps<'textarea'>) {
  * 这一行的配音到哪一步了。批量 30 行时，只有顶部一个汇总数字根本看不出是哪行卡住、
  * 哪行失败，所以状态逐行摆：排队中 / 合成中 / 时长 / 失败（原因在 title 里，不翻译）。
  */
-function RowStatus({ r, running, fps }: { r: SubRow; running: boolean; fps: number }) {
+function RowStatus({ r, task, fps }: { r: SubRow; task?: TaskRow; fps: number }) {
   const t = useT();
   const base = 'w-14 justify-center px-1 py-0 text-[9px] font-normal tabular-nums';
-  if (running) return <Badge className={`${base} animate-pulse border-sky-400/40 bg-sky-500/15 text-sky-200`}>{t('合成中', 'synth')}</Badge>;
-  if (r.status === 'error') {
-    return <Badge variant="outline" className={`${base} border-red-400/40 text-red-300`} title={r.error || t('合成失败', 'failed')}>{t('失败', 'failed')}</Badge>;
+  if (task?.status === 'querying') return <Badge className={`${base} animate-pulse border-sky-400/40 bg-sky-500/15 text-sky-200`}>{t('查询中', 'polling')}</Badge>;
+  if (task && (task.status === 'submitting')) return <Badge className={`${base} animate-pulse border-sky-400/40 bg-sky-500/15 text-sky-200`}>{t('合成中', 'synth')}</Badge>;
+  if (task?.status === 'failed' || r.status === 'error') {
+    return <Badge variant="outline" className={`${base} border-red-400/40 text-red-300`} title={task?.error || r.error || t('合成失败', 'failed')}>{t('失败', 'failed')}</Badge>;
   }
   if (r.audioUrl) {
     return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground`} title={t('配音时长', 'clip length')}>
       {(r.durationFrames / fps).toFixed(1)}s
     </Badge>;
   }
-  if (r.status === 'pending') return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/70`}>{t('排队中', 'queued')}</Badge>;
+  if (task?.status === 'canceled') return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/60`}>{t('已取消', 'canceled')}</Badge>;
+  if (task || r.status === 'pending') return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/70`}>{t('排队中', 'queued')}</Badge>;
   if (!r.text.trim()) return null;
   return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/50`}>{t('未配音', 'no audio')}</Badge>;
 }
@@ -113,6 +116,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const t = useT();
   const project = useProjectStore((s) => s.project);
   const setNarrationEntries = useProjectStore((s) => s.setNarrationEntries);
+  const saveProject = useProjectStore((s) => s.saveProject);
   const setProjectEndFrame = useProjectStore((s) => s.setProjectEndFrame);
   const setStyle = useProjectStore((s) => s.setNarrationStyle);
 
@@ -123,15 +127,16 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const [rows, setRows] = useState<SubRow[]>(() => rowsFromProject(project?.narration?.entries));
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
-  const [genIdx, setGenIdx] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // 一个能力一条实例（选了哪条就订阅哪条）；改完服务立刻反映到本弹窗
   const llm = useProviderStore((s) => s.current('llm'));
   const tts = useProviderStore((s) => s.current('tts'));
-  /** 音色是调用级参数：随每次合成传下去，不写进实例配置 */
-  const [voice, setVoice] = useState('');
+  /** 音色是调用级参数：随每次合成传下去，不写进实例配置。初值取模板声明的默认音色（没有默认值时才是「未选」） */
+  const [voice, setVoice] = useState(() => defaultVoiceOf(useProviderStore.getState().current('tts')));
+  /** 克隆音色绑一条模型，合成时得一起传（系统音色为空 = 用实例配的） */
+  const [voiceModel, setVoiceModel] = useState('');
   const ready = (i: InstanceDef | null) => !!i && !!String(i.values.instance?.baseUrl ?? '');
   const fps = project?.globalConfig.defaultFPS || 30;
   const hasContent = rows.some((r) => r.text.trim());
@@ -177,73 +182,99 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const addRow = () => setRows((rs) => [...rs, mkRow('')]);
   const delRow = (id: string) => setRows((rs) => resequenceRows(rs.filter((r) => r.id !== id)));
 
-  /** 合成一行并写回；抛错交给调度层判要不要重试 */
-  const synthesizeInto = async (idx: number) => {
-    const r = rows[idx];
-    if (!r?.text.trim() || !tts) return;
-    setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'pending' as const, error: undefined } : x)));
-    try {
-      const { dataUrl, durationSec } = await callTTS(tts, r.text, voice || undefined);
-      setRows((rs) => resequenceRows(rs.map((x, i) => (
-        i === idx
-          ? { ...x, audioUrl: dataUrl, durationFrames: Math.max(1, Math.round(durationSec * fps)), status: 'ready' as const, error: undefined }
-          : x
-      ))));
-    } catch (e) {
-      // 失败原因留在行上：批量 30 行时，只有全局一行汇总根本看不出是哪行、为什么
-      setRows((rs) => rs.map((x, i) => (i === idx ? { ...x, status: 'error' as const, error: e instanceof Error ? e.message : String(e) } : x)));
-      throw e;
-    }
-  };
-
-  /** 单行生成配音（已有音频即覆盖） */
-  const genRow = async (idx: number) => {
-    const target = rows[idx];
-    if (!target?.text.trim()) { setError(t('请先填写字幕文本', 'Fill in this line first')); return; }
-    if (!tts || !ready(tts)) { setError(t('未配置配音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
-    setGenIdx(idx); setError(null);
-    markRunning(target.id, true);
-    try { await synthesizeInto(idx); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-    finally { markRunning(target.id, false); setGenIdx(null); }
-  };
-
-  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null);
-  const cancelBatch = useRef(false);
-  /** 正在合成的行 id（并发>1 时不止一条）；status=pending 但不在这里 = 还在排队 */
-  const [running, setRunning] = useState<string[]>([]);
-  const markRunning = (id: string, on: boolean) =>
-    setRunning((s) => (on ? [...s, id] : s.filter((x) => x !== id)));
+  const taskRows = useTaskStore((s) => s.rows);
+  const taskResults = useTaskStore((s) => s.results);
+  const startTask = useTaskStore((s) => s.start);
+  const cancelTasks = useTaskStore((s) => s.cancelBatch);
+  const [batchId, setBatchId] = useState<string | null>(null);
+  /** 这一行最近的那条任务（重跑就再点一次，取最新一条） */
+  const taskOf = (entryId: string) => taskRows.filter((x) => x.entryId === entryId).slice(-1)[0];
+  const stillOpen = (x: TaskRow) => x.status === 'submitting' || x.status === 'querying';
 
   /**
-   * 全部生成：只补没有配音的行，走队列（并发上限与重试次数来自这个语音实例）。
-   * 每行成功即刻写回，中途取消或失败都不影响已完成的行 —— 下次点它天然只补剩下的。
+   * 生成配音前先把当前行落库。
+   * 不这么做就有两个洞：① 任务在途时关掉弹窗 / 刷新页面，重启后续跑成功，
+   * 但产物要回填的那条字幕**还没入库**，音频只能凭空消失；② `task.entry_id` 是对
+   * `narration_entry` 的**真外键**，而行还没进库（自动保存是停止编辑 5 秒后才落盘），
+   * 于是插任务直接被拒 —— 表现成「点了生成本句配音，什么也没发生」。
+   * 落库之后 entryId 一直有效 —— 谁在跑、跑完给谁，都不依赖弹窗还开着。
    */
-  const genAllMissing = async () => {
+  const ensureLinesSaved = async () => {
+    // 本地行还没镜像到、但项目里已经有音频的（任务刚跑完那一刻），以项目为准 —— 别把刚落库的产物覆盖成空
+    const saved = new Map((project?.narration?.entries ?? []).map((e) => [e.id, e]));
+    setNarrationEntries(
+      resequenceRows(rows).filter((r) => r.text.trim()).map((r) => {
+        const cur = saved.get(r.id);
+        const keep = !r.audioUrl && cur?.audioUrl ? cur : undefined;
+        return {
+          id: r.id, text: r.text,
+          audioUrl: r.audioUrl ?? keep?.audioUrl,
+          durationFrames: Math.max(1, r.audioUrl ? r.durationFrames : keep?.durationFrames ?? r.durationFrames),
+          startFrame: r.startFrame, locked: r.locked,
+          status: keep?.status ?? r.status, error: keep ? undefined : (r.status === 'error' ? r.error : undefined),
+        };
+      }),
+    );
+    await saveProject();
+  };
+
+  /**
+   * 生成一行配音：交给 `task` 表，不在本组件里跑。
+   * 于是关窗口、刷新页面都不断进度 —— 产物回来时调度器直接写项目里的条目，
+   * 弹窗若还开着，由下面的 effect 从任务结果镜像进编辑行。
+   */
+  const genVoice = async (r: SubRow, batch?: string) => {
+    if (!r.text.trim()) { setError(t('请先填写字幕文本', 'Fill in this line first')); return; }
     if (!tts || !ready(tts)) { setError(t('未配置配音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
-    const todo = rows.map((_, i) => i).filter((i) => rows[i].text.trim() && !rows[i].audioUrl);
-    if (!todo.length) return;
-    cancelBatch.current = false;
-    // 先整批标成排队：从点下去到第一行出结果之间那几秒，界面不能看着像没反应
-    setRows((rs) => rs.map((x, i) => (todo.includes(i) ? { ...x, status: 'pending' as const, error: undefined } : x)));
-    setBatch({ done: 0, total: todo.length });
     setError(null);
-    const res = await runBatch(todo.map((i) => async () => {
-      const id = rows[i].id;
-      markRunning(id, true);
-      try { return await synthesizeInto(i); } finally { markRunning(id, false); }
-    }), {
-      concurrency: Number(tts.values.instance?.batchConcurrency ?? 1) || 1,
-      retries: Number(tts.values.instance?.retryTimes ?? 2),
-      isCancelled: () => cancelBatch.current,
-      onProgress: (done, total) => setBatch({ done, total }),
-    });
-    setBatch(null);
-    if (res.failed.length) {
-      const head = res.failed.slice(0, 3).map((f) => `#${f.index + 1} ${f.error}`).join(' · ');
-      setError(`${res.failed.length} ${t('行失败', 'line(s) failed')}: ${head}`);
+    // 整批那条路已经存过一次，不必每行再写一遍库
+    if (!batch) await ensureLinesSaved();
+    try {
+      await startTask({
+        category: 'tts', providerId: tts.id, projectId: project?.id, entryId: r.id,
+        batchId: batch,
+        input: { text: r.text, ...(voice ? { voice } : {}), ...(voiceModel ? { model: voiceModel } : {}) },
+      });
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      setError(t(`任务建不起来：${why}`, `Could not create the task: ${why}`));
     }
   };
+
+  /** 整批生成：给这一批一个 batchId（进度与取消都按批算），只补没有配音的行 */
+  const genAllMissing = async () => {
+    const todo = rows.filter((r) => r.text.trim() && !r.audioUrl);
+    if (!todo.length) return;
+    if (!tts || !ready(tts)) { setError(t('未配置配音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
+    const id = `bt_${Date.now()}`;
+    setBatchId(id);
+    setError(null);
+    await ensureLinesSaved();
+    for (const r of todo) await genVoice(r, id);
+  };
+  const batchTasks = batchId ? taskRows.filter((x) => x.batchId === batchId) : [];
+  const batch = batchTasks.length ? { done: batchTasks.filter((x) => !stillOpen(x)).length, total: batchTasks.length } : null;
+  // 批内失败不汇总成一句「N 行失败」就完事：徽标标红，这里再点名第一条，其余看行
+  const batchFail = batchTasks.find((x) => x.status === 'failed');
+
+  /** 产物回来后镜像到编辑行（项目里那条字幕由调度器写，这里只跟着显示，不另存一份真相） */
+  useEffect(() => {
+    setRows((rs) => {
+      let touched = false;
+      const next = rs.map((r) => {
+        const tk = taskOf(r.id);
+        const res = tk ? taskResults[tk.taskId] : undefined;
+        if (!tk || tk.status !== 'success' || !res || r.audioUrl === res.dataUrl) return r;
+        touched = true;
+        return {
+          ...r, audioUrl: res.dataUrl,
+          durationFrames: Math.max(1, Math.round(res.durationSec * fps)),
+          status: 'ready' as const, error: undefined,
+        };
+      });
+      return touched ? resequenceRows(next) : rs;
+    });
+  }, [taskRows, taskResults, fps]);
 
   /**
    * 试听：**全局只留一路声音**（见 lib/audition）。
@@ -432,7 +463,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           <button onClick={addRow} className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10" title={t('在末尾加一行字幕', 'Append a line')}>＋ {t('加一行', 'Add')}</button>
           {IS_DESKTOP && <button
             onClick={genAllMissing}
-            disabled={busy || genIdx !== null || !ready(tts) || !rows.some((r) => r.text.trim() && !r.audioUrl)}
+            disabled={busy || !ready(tts) || !rows.some((r) => r.text.trim() && !r.audioUrl)}
             className="h-7 px-2 rounded-md border border-sky-400/40 bg-sky-500/10 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
             title={t('给所有还没有配音的行生成语音（已有配音的行不动）', 'Generate voice for every line without audio')}
           >
@@ -444,7 +475,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                 {batch.done}/{batch.total}
               </span>
               <button
-                onClick={() => { cancelBatch.current = true; }}
+                onClick={() => batchId && void cancelTasks(batchId)}
                 className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10"
                 title={t('不再开始新的行（在途的那条会跑完）', 'Stop starting new lines; the in-flight one finishes')}
               >✕ {t('取消', 'Cancel')}</button>
@@ -478,7 +509,8 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
         {IS_DESKTOP && (
           <div className="mb-2">
             <p className="text-[11px] text-muted-foreground mb-1.5">{t('配音音色', 'Voice')}</p>
-            <VoicePicker inst={tts} voice={voice} onPick={setVoice} />
+            <VoicePicker inst={tts} voice={voice} voiceModel={voiceModel}
+              onPick={(id, m) => { setVoice(id); setVoiceModel(m ?? ''); }} />
           </div>
         )}
 
@@ -494,14 +526,14 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                   placeholder={t('一行字幕（可直接贴入整篇文案，按行拆分）', 'One subtitle per line (paste a whole script to split)')}
                 />
                 <div className="shrink-0 flex items-center gap-1 pt-0.5">
-                  {IS_DESKTOP && <RowStatus r={r} running={running.includes(r.id)} fps={fps} />}
+                  {IS_DESKTOP && <RowStatus r={r} task={taskOf(r.id)} fps={fps} />}
                   {IS_DESKTOP && <button
-                    onClick={() => genRow(idx)}
-                    disabled={genIdx !== null || !r.text.trim()}
+                    onClick={() => void genVoice(r)}
+                    disabled={!r.text.trim()}
                     className="w-7 h-7 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
                     title={r.audioUrl ? t('重新生成并覆盖原配音', 'Regenerate (overwrites audio)') : t('生成本句配音', 'Generate voice for this line')}
                   >
-                    {genIdx === idx ? '⏳' : r.status === 'error' ? '⚠' : r.audioUrl ? '🔁' : '🔊'}
+                    {taskOf(r.id) && stillOpen(taskOf(r.id)!) ? '⏳' : r.status === 'error' ? '⚠' : r.audioUrl ? '🔁' : '🔊'}
                   </button>}
                   {r.audioUrl && (
                     <button
@@ -529,7 +561,11 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           </p>
         </div>
 
-        {error && <p className="text-[11px] text-red-400/90 mb-2">{error}</p>}
+        {(error || batchFail) && (
+          <p className="text-[11px] text-red-400/90 mb-2">
+            {error ?? `${t('有行配音失败：', 'a line failed: ')}${batchFail?.error ?? ''}`}
+          </p>
+        )}
 
         <div className="flex justify-end gap-2 mb-1">
           <button onClick={onClose} disabled={busy} className="h-8 px-3 rounded-md border border-white/15 text-xs hover:bg-white/10 disabled:opacity-40">{t('取消', 'Cancel')}</button>

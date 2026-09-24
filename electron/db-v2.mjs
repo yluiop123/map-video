@@ -61,6 +61,8 @@ export function ensureV2Schema(db) {
     // 接口配置三代的形状漂移都在这一步让位（**早于 ensureAllColumns**，否则新列名先塞进旧表就把漂移盖住了）：
     // 否则补列那一步会把新列名塞进旧表，形状漂移就检不出来了（实测踩过）
     retireProviderIfStale(db);
+    // task 的 FK 条款换代也在这一步（**早于 ensureAllColumns**：改名让位后建新表，最后把行搬回）
+    const taskCols = rebuildTaskIfFkBound(db);
     // 先给旧表补缺失列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）；
     // 必须早于 db.exec(ddl)：视图引用了新列（layer_id），旧表缺列会让整段 DDL 失败。
     ensureAllColumns(db, ddl);
@@ -68,6 +70,7 @@ export function ensureV2Schema(db) {
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
     db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref; DROP VIEW IF EXISTS v_check_async_pairing;');
     db.exec(ddl);
+    restoreTaskRows(db, taskCols);
     // 旧实例行的搬迁要等模板铺好之后（provider.tpl_id 是真外键）→ 由渲染端 hydrate 触发
     repairAssetRefs(db);
     return true;
@@ -151,6 +154,32 @@ function dropRetiredColumns(db) {
       console.warn(`[db-v2] 删列失败 ${table}.${col}:`, e?.message || e);
     }
   }
+}
+
+/**
+ * `task` 表的形状漂移：早先 `project_id` / `entry_id` 是**真外键**，而「保存项目」就是把项目那一行
+ * 连同字幕行删了重写 —— 于是每次自动保存都会 CASCADE 掉正在跑的任务（实测：刚点「生成本句配音」
+ * 建好的行，下一次保存就凭空消失）。现在两列都是弱引用，但 SQLite 不会改已存在表的 FK 条款，
+ * 所以认出旧形状就重建这张表。行要留着：升级那一刻在途的任务不该白扔。
+ * 改名让位 → DDL 建新表 → 按共同列名搬回 → 删旧表（返回列名给调用方，DDL 跑完再搬）。
+ */
+function rebuildTaskIfFkBound(db) {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task'").get()) return null;
+  const bound = db.prepare('PRAGMA foreign_key_list(task)').all()
+    .some((r) => r.table === 'project' || r.table === 'narration_entry');
+  if (!bound) return null;
+  db.exec('ALTER TABLE task RENAME TO task__fk_stale');
+  console.log('[db-v2] task 表旧形状（指向项目/字幕是真外键）已让位，建新表后把行搬回');
+  return columnsOf(db, 'task__fk_stale');
+}
+
+function restoreTaskRows(db, cols) {
+  if (!cols?.length) return;
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task__fk_stale'").get()) return;
+  const keep = new Set(columnsOf(db, 'task'));
+  const list = cols.filter((c) => keep.has(c));
+  db.prepare(`INSERT OR IGNORE INTO task (${list.join(',')}) SELECT ${list.join(',')} FROM task__fk_stale`).run();
+  db.exec('DROP TABLE task__fk_stale');
 }
 
 // ---------- 小工具 ----------
@@ -281,6 +310,8 @@ export function saveProjectV2(db, project) {
   db.exec('BEGIN');
   try {
     // 清掉旧子行（chapter CASCADE 会连带 element/overlay/...）
+    // ⚠ 这条删除会 CASCADE 掉**所有**指向项目行的真外键 —— 所以「保存项目」不该带走的东西
+    //    （task：调度状态，跨重启续跑）在 DDL 里对 project_id / entry_id 一律是弱引用。
     db.prepare('DELETE FROM project WHERE project_id = ?').run(project.id);
 
     // 保证所属合集在 V2 collection 表存在（否则 project.collection_id 外键失败）。
@@ -798,6 +829,8 @@ export function listProjectsV2(db) {
 }
 
 export function removeProjectV2(db, id) {
+  // task 对项目的引用是弱引用（原因见 DDL 那条注释：保存项目会重写项目行），所以删项目要自己清掉它的在途任务
+  db.prepare('DELETE FROM task WHERE project_id = ?').run(String(id));
   db.prepare('DELETE FROM project WHERE project_id = ?').run(id);
 }
 
@@ -1100,6 +1133,80 @@ export function saveVoiceV2(db, v) {
 export function removeVoiceV2(db, rowId) {
   db.prepare('DELETE FROM voice WHERE voice_row_id = ?').run(String(rowId));
   return { ok: true };
+}
+
+// ========== 异步任务（task）：唯一价值是跨重启续跑，所以状态必须在库里 ==========
+
+const TASK_COLS = `task_id AS taskId, batch_id AS batchId, provider_id AS providerId,
+  project_id AS projectId, entry_id AS entryId, category, status, input_json AS inputJson,
+  provider_task_id AS providerTaskId, artifact_id AS artifactId, error,
+  query_count AS queryCount, rebuild_count AS rebuildCount, next_query_at AS nextQueryAt,
+  created_at AS createdAt, updated_at AS updatedAt, finished_at AS finishedAt`;
+
+const taskRow = (r) => ({
+  taskId: r.taskId, batchId: r.batchId, providerId: r.providerId,
+  projectId: r.projectId ?? undefined, entryId: r.entryId ?? undefined,
+  category: r.category, status: r.status,
+  input: r.inputJson ? JSON.parse(r.inputJson) : undefined,
+  providerTaskId: r.providerTaskId ?? undefined, artifactId: r.artifactId ?? undefined,
+  error: r.error ?? undefined, queryCount: r.queryCount ?? 0, rebuildCount: r.rebuildCount ?? 0,
+  nextQueryAt: r.nextQueryAt ?? undefined, createdAt: r.createdAt ?? undefined,
+  updatedAt: r.updatedAt ?? undefined, finishedAt: r.finishedAt ?? undefined,
+});
+
+const TASK_UPDATES = `batch_id=@batchId, provider_id=@providerId, project_id=@projectId, entry_id=@entryId,
+  category=@category, status=@status, input_json=@input, provider_task_id=@providerTaskId,
+  artifact_id=@artifactId, error=@error, query_count=@queryCount, rebuild_count=@rebuildCount,
+  next_query_at=@nextQueryAt, updated_at=@now, finished_at=@finishedAt`;
+
+/** 存一条任务（按 task_id upsert；调度器每推进一步就写一次） */
+export function saveTaskV2(db, t) {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO task (task_id, batch_id, provider_id, project_id, entry_id, category, status,
+      input_json, provider_task_id, artifact_id, error, query_count, rebuild_count,
+      next_query_at, created_at, updated_at, finished_at)
+    VALUES (@taskId, @batchId, @providerId, @projectId, @entryId, @category, @status,
+      @input, @providerTaskId, @artifactId, @error, @queryCount, @rebuildCount,
+      @nextQueryAt, @now, @now, @finishedAt)
+    ON CONFLICT(task_id) DO UPDATE SET ${TASK_UPDATES}
+  `).run({
+    taskId: String(t.taskId), batchId: String(t.batchId ?? t.taskId), providerId: String(t.providerId),
+    projectId: t.projectId ?? null, entryId: t.entryId ?? null, category: String(t.category),
+    status: t.status || 'submitting', input: t.input == null ? null : JSON.stringify(t.input),
+    providerTaskId: t.providerTaskId ?? null, artifactId: t.artifactId ?? null, error: t.error ?? null,
+    queryCount: t.queryCount ?? 0, rebuildCount: t.rebuildCount ?? 0,
+    nextQueryAt: t.nextQueryAt ?? null, finishedAt: t.finishedAt ?? null, now,
+  });
+  return { taskId: String(t.taskId) };
+}
+
+/** 到点的在途任务（调度器每轮就查这个：status 未完成 + 时间到了） */
+export function dueTasksV2(db, now = Date.now()) {
+  return db.prepare(`SELECT ${TASK_COLS} FROM task
+    WHERE status IN ('submitting','querying') AND (next_query_at IS NULL OR next_query_at <= ?)
+    ORDER BY created_at, task_id`).all(now).map(taskRow);
+}
+
+/** 某批次的全部任务（进度条按批算） */
+export function batchTasksV2(db, batchId) {
+  return db.prepare(`SELECT ${TASK_COLS} FROM task WHERE batch_id = ? ORDER BY created_at, task_id`)
+    .all(String(batchId)).map(taskRow);
+}
+
+/** 某项目全部未结束的任务（重启后续跑、顶栏「在途任务」浮层都读这个） */
+export function openTasksV2(db, projectId) {
+  return db.prepare(`SELECT ${TASK_COLS} FROM task
+    WHERE status IN ('submitting','querying')${projectId ? ' AND project_id = ?' : ''}
+    ORDER BY created_at, task_id`).all(...(projectId ? [String(projectId)] : [])).map(taskRow);
+}
+
+/** 只留审计价值的已结束任务清掉（否则跑几个月，task 表里全是几年前的成功行） */
+export function pruneFinishedTasksV2(db, keepMs = 7 * 24 * 3600_000) {
+  const cut = Date.now() - keepMs;
+  const r = db.prepare(`DELETE FROM task WHERE status IN ('success','failed','canceled')
+    AND COALESCE(finished_at, updated_at, created_at) < ?`).run(cut);
+  return { removed: Number(r.changes) };
 }
 
 /**

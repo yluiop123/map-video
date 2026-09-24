@@ -53,6 +53,14 @@ declare global {
         save: (v: import('../types').VoiceRow) => Promise<{ rowId: string }>;
         remove: (rowId: string) => Promise<{ ok: boolean }>;
       };
+      /** 异步任务（task 表）：状态在库里 → 关窗口 / 刷新页面都不丢在途任务 */
+      tasks: {
+        save: (t: import('../types').TaskRow) => Promise<{ taskId: string }>;
+        due: () => Promise<import('../types').TaskRow[]>;
+        open: (projectId?: string) => Promise<import('../types').TaskRow[]>;
+        batch: (batchId: string) => Promise<import('../types').TaskRow[]>;
+        prune: () => Promise<{ removed: number }>;
+      };
       /** 素材仓库：图片 / GIF / 模型等大文件外置（assetId 随机；登记在 asset 表） */
       assets: {
         save: (p: { mime: string; bytes: Uint8Array; name?: string; kind?: string }) => Promise<{ assetId: string; relPath: string; byteSize: number }>;

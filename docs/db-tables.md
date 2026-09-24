@@ -169,7 +169,7 @@
 | `provider_template` | **一行 = 一份完整模板**（这一家这个功能怎么发、返回从哪取、产物怎么变字节） | `tpl_id` | 六个接口槽各占一个 JSON 列（`sync` / `async` / `download` / `upload` / `clone` + 模板级 `headers`）；`outputs` 是**自由 map**（`{想要名字: 相对路径}`）不再是固定槽位；`category` **不写 CHECK**（TS 类型 + 保存前 `validateTemplate` 管）；`use_clone` / `upload` 两个开关决定界面上那两格显不显示 | ⚙ →「接口模板」（`TemplatesPane.tsx`，三栏） |
 | `provider` | 实例：引用哪份模板 + 同步异步 + 一组取值（**一个模板可配几套账号**） | `provider_id` | **只有五个业务列**：`tpl_id`（真外键，被引用时删不掉）· `name` · `sync` · `values_json{instance,requests}` · 时间戳；`baseUrl` / 密钥 / 模型 / 尺寸全是模板声明的参数，**密钥 = `valueType:'secret'` 的普通参数**；没有 `active`，调用处选实例 | ⚙ →「文案 / 语音 / 图片」（`ProviderPanel.tsx`） |
 | `voice` | 克隆音色账本：**同实例 + 同参考音频 + 同目标模型只建一次** | `voice_row_id` | 唯一键 `ux_voice_once(provider_id, source_hash, target_model)` —— voiceId 换模型即失效（实测 418）；`source_asset_id` 是 `RESTRICT`（原件被音色引用时删不掉，失效靠它重建）；`status` 就是抢占标志 | 字幕生成里的「克隆音色」区（`VoicePicker.tsx`） |
-| `task` | 在途异步任务：唯一价值是**跨重启续跑** | `task_id` | `batch_id` 一次动作一批；`project_id` / `entry_id` 真外键 `CASCADE`（删项目或删字幕条带走在途任务，不需要自检视图）；`artifact_id` `SET NULL`（产物当场落 `asset`）；`next_query_at` 给调度器错峰 | 逐条配音状态 + 顶栏在途任务浮层 |
+| `task` | 在途异步任务：唯一价值是**跨重启续跑** | `task_id` | `batch_id` 一次动作一批；`project_id` / `entry_id` 是**弱引用**（保存项目 = 删了重写，挂成真外键会让每次自动保存 CASCADE 掉在途任务；删项目由 `removeProjectV2` 显式清）；`provider_id` 真外键 `CASCADE`；`artifact_id` `SET NULL`（产物当场落 `asset`）；`next_query_at` 给调度器错峰 | 逐条配音状态 + 顶栏在途任务浮层 |
 
 ### 组 11 · 公共图层与公共元素（跨项目图库） 6 张
 
@@ -918,8 +918,8 @@
 | `task_id` | TEXT | `PK` | 本地任务 id（与厂商的 provider_task_id 无关） |
 | `batch_id` | TEXT | `NOT NULL` | 批次 id（一次「全部生成配音」= 一个 batchId + N 条 task） |
 | `provider_id` | TEXT | `NOT NULL` `FK → provider CASCADE` | 用哪个实例发的 |
-| `project_id` | TEXT | `FK → project CASCADE` | 回填到哪个项目（删项目连带删它的在途任务） |
-| `entry_id` | TEXT | `FK → narration_entry CASCADE` | 回填到哪条字幕（字幕条本就是表行，故为真外键而非弱引用） |
+| `project_id` | TEXT | — | 回填到哪个项目（弱引用：删项目由 removeProjectV2 显式清） |
+| `entry_id` | TEXT | — | 回填到哪条字幕（弱引用：字幕行没了就是「没地方放」，调度器当场跳过） |
 | `category` | TEXT | `NOT NULL` | 任务种类：tts / image（llm 不进表，同步一把梭） |
 | `status` | TEXT | `NOT NULL` | 本地状态：submitting / querying / success / failed / canceled（厂商状态值不入库） · 默认 `'submitting'` |
 | `input_json` | TEXT | — | 提交参数快照（重试 = 取原值重新调生成接口） · `CHECK (input_json IS NULL OR json_valid(input_json))` |

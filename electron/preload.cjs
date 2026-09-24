@@ -34,6 +34,13 @@ contextBridge.exposeInMainWorld('mapvideo', {
     save: (v) => ipcRenderer.invoke('db:voices:save', v),
     remove: (rowId) => ipcRenderer.invoke('db:voices:remove', rowId),
   },
+  tasks: {
+    save: (t) => ipcRenderer.invoke('db:tasks:save', t),
+    due: () => ipcRenderer.invoke('db:tasks:due'),
+    open: (projectId) => ipcRenderer.invoke('db:tasks:open', projectId),
+    batch: (batchId) => ipcRenderer.invoke('db:tasks:batch', batchId),
+    prune: () => ipcRenderer.invoke('db:tasks:prune'),
+  },
   providers: {
     migrate: () => ipcRenderer.invoke('db:providers:migrate'),
     list: () => ipcRenderer.invoke('db:providers:list'),

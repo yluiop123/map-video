@@ -3,8 +3,9 @@
  *
  * 覆盖：全新库建表（不再有 provider_template_group）、模板整份逐字往返、实例多条共存与
  *       values 两段读写、真外键（删被引用的模板要拦住 / 删实例不牵连模板）、voice 幂等键、
- *       task 随项目级联清掉、异步配对的自检视图，以及三代旧形状（provider_endpoint 副本 /
- *       组表 + 每 role 一行 / 每能力一条实例）启动让位后把密钥搬进 values.instance。
+ *       task 随项目删除被应用层清掉、异步配对的自检视图，以及三代旧形状（provider_endpoint 副本 /
+ *       组表 + 每 role 一行 / 每能力一条实例）启动让位后把密钥搬进 values.instance，
+ *       和 [8] 的 task 表换代（旧的真外键 → 弱引用，行不丢）。
  * 运行：node --experimental-sqlite tools/verify-provider-templates.mjs
  */
 import { DatabaseSync } from 'node:sqlite';
@@ -15,6 +16,7 @@ import {
   ensureV2Schema, listTemplatesV2, upsertTemplateV2, removeTemplateV2,
   listProvidersV2, upsertProviderV2, removeProviderV2, migrateProvidersFromStale, retireProviderIfStale,
   listVoicesV2, saveVoiceV2, removeVoiceV2,
+  saveTaskV2, dueTasksV2, batchTasksV2, openTasksV2, pruneFinishedTasksV2, removeProjectV2,
 } from '../electron/db-v2.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -160,8 +162,32 @@ console.log('\n[3] voice 幂等键 / task 随项目级联');
     try { db.prepare("INSERT INTO task (task_id, batch_id, provider_id, category, status) VALUES ('t2','b1','nope','tts','submitting')").run(); return false; }
     catch (e) { return /FOREIGN KEY/i.test(String(e.message)); }
   })());
+  // —— task 表的读写与调度查询（调度器每轮就是查这些）——
+  saveTaskV2(db, { taskId: 'tk1', batchId: 'b2', providerId: 'prov_task', projectId: 'p1', entryId: undefined,
+    category: 'tts', status: 'submitting', input: { text: '第一句' }, queryCount: 0, rebuildCount: 0, nextQueryAt: 1 });
+  const t1 = dueTasksV2(db, 10).find((x) => x.taskId === 'tk1');
+  check('3.8 到点的任务查得出来，input_json 还原成对象', t1?.taskId === 'tk1' && t1.input?.text === '第一句', JSON.stringify(t1));
+  check('3.9 没到点的不该被捞出来（错峰靠 next_query_at）', dueTasksV2(db, 0).some((x) => x.taskId === 'tk1') === false);
+  saveTaskV2(db, { ...t1, status: 'querying', providerTaskId: 'up-77', queryCount: 3, nextQueryAt: 5 });
+  const t1b = batchTasksV2(db, 'b2')[0];
+  check('3.10 按 task_id upsert：推进不新增行，字段跟着变',
+    batchTasksV2(db, 'b2').length === 1 && t1b.status === 'querying' && t1b.providerTaskId === 'up-77' && t1b.queryCount === 3);
+  saveTaskV2(db, { ...t1b, status: 'success', finishedAt: Date.now() });
+  check('3.11 已结束的任务不在「在途」里（顶栏芯片与续跑都读这个）', openTasksV2(db, 'p1').filter((x) => x.batchId === 'b2').length === 0);
+  // 清历史：只动「已结束且早于保留窗」的行，别把刚跑完的也扫掉（用户要看结果）
+  saveTaskV2(db, { taskId: 'tkOld', batchId: 'bOld', providerId: 'prov_task', category: 'tts', status: 'success', queryCount: 0, rebuildCount: 0 });
+  db.prepare('UPDATE task SET finished_at = ? WHERE task_id = ?').run(Date.now() - 40 * 24 * 3600_000, 'tkOld');
+  check('3.12 清历史只清过保留窗的已结束行', (() => {
+    const r = pruneFinishedTasksV2(db);
+    return r.removed === 1 && !db.prepare("SELECT 1 FROM task WHERE task_id='tkOld'").get()
+      && !!db.prepare("SELECT 1 FROM task WHERE task_id='tk1'").get() && !!db.prepare("SELECT 1 FROM task WHERE task_id='t1'").get();
+  })(), db.prepare('SELECT task_id, status FROM task').all());
+
   db.prepare("DELETE FROM project WHERE project_id='p1'").run();
-  check('3.7 删项目带走它的在途任务（不留悬空批次）', db.prepare("SELECT COUNT(*) c FROM task WHERE task_id='t1'").get().c === 0);
+  check('3.7a 保存/删除项目那一行的 CASCADE 不再牵连任务（project_id 是弱引用）',
+    db.prepare("SELECT COUNT(*) c FROM task WHERE task_id='t1'").get().c === 1);
+  removeProjectV2(db, 'p1');
+  check('3.7b 删项目仍带走它的在途任务（应用层显式清，不留悬空批次）', db.prepare("SELECT COUNT(*) c FROM task WHERE task_id='t1'").get().c === 0);
   db.close();
 }
 
@@ -285,6 +311,41 @@ console.log('\n[7] 作废列清理');
   const cols = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
   check('7.2 启动后 note 列已删（不是留着没人读）', !cols.includes('note'), cols.join(','));
   check('7.3 删列不丢行', listTemplatesV2(db).map((x) => x.id).join() === 'keep-me');
+  db.close();
+}
+
+console.log('\n[8] task 表换代：指向项目 / 字幕的真外键 → 弱引用');
+{
+  const db = fresh();
+  upsertTemplateV2(db, TPL);
+  upsertProviderV2(db, { id: 'prov_keep', tplId: 'verify-image', name: '', sync: false, values: { instance: {}, requests: {} } });
+  db.prepare(`INSERT INTO collection (collection_id, name, ord, created_at, updated_at)
+    VALUES ('default','默认合集',-1,1,1)`).run();
+  db.prepare(`INSERT INTO project (project_id, name, collection_id, created_at, updated_at)
+    VALUES ('p1','回归项目','default',1,1)`).run();
+  db.prepare(`INSERT INTO narration_entry (entry_id, project_id, text, start_sec) VALUES ('e1','p1','在途的那一句',1)`).run();
+  // 装作这台机器还停在上一代：把新表换成「带 CASCADE 真外键」的旧形状，并留一条在途任务
+  db.exec('DROP TABLE task');
+  db.exec(`CREATE TABLE task (
+    task_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, provider_id TEXT,
+    project_id TEXT REFERENCES project(project_id) ON DELETE CASCADE,
+    entry_id TEXT REFERENCES narration_entry(entry_id) ON DELETE CASCADE,
+    category TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'submitting', input_json TEXT,
+    provider_task_id TEXT, artifact_id TEXT, error TEXT,
+    query_count INTEGER NOT NULL DEFAULT 0, rebuild_count INTEGER NOT NULL DEFAULT 0,
+    next_query_at INTEGER, created_at INTEGER, updated_at INTEGER, finished_at INTEGER)`);
+  db.prepare(`INSERT INTO task (task_id,batch_id,provider_id,project_id,entry_id,category,status,next_query_at,created_at,updated_at)
+    VALUES ('tk_keep','b1','prov_keep','p1','e1','tts','querying',1,10,11)`).run();
+  check('8.1 换代前确实是旧形状（真外键）',
+    db.prepare('PRAGMA foreign_key_list(task)').all().some((r) => r.table === 'narration_entry'));
+  ensureV2Schema(db);
+  db.exec('PRAGMA foreign_keys = ON');
+  check('8.2 换代后不再牵连删除（FK 条款已去掉）',
+    !db.prepare('PRAGMA foreign_key_list(task)').all().some((r) => r.table === 'project' || r.table === 'narration_entry'));
+  check('8.3 归档表不留尾巴', !db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'task__%'").get());
+  const kept = db.prepare('SELECT * FROM task WHERE task_id=?').get('tk_keep');
+  check('8.4 在途任务行没被换代丢掉，引用值原样搬回',
+    kept?.status === 'querying' && kept.entry_id === 'e1' && kept.project_id === 'p1' && kept.next_query_at === 1, kept);
   db.close();
 }
 

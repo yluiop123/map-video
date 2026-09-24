@@ -17,6 +17,7 @@ import type { LayerType } from '../types';
 import { MapSearchBox } from './MapSearchBox';
 import { TerritoryImportDialog } from './TerritoryImportDialog';
 import { GenerateDialog } from './GenerateDialog';
+import { TaskTray } from './TaskTray';
 
 interface ToolbarProps {
   onOpenExport: () => void;
@@ -235,6 +236,9 @@ export function TopBar({ onOpenExport, onOpenSettings }: ToolbarProps) {
           <Settings2 size={15} />
         </button>
       )}
+
+      {/* 在途配音 / 出图任务（走 task 表，关掉弹窗也继续跑，所以顶栏要有落点） */}
+      {IS_DESKTOP && <TaskTray />}
 
       {/* 字幕生成：主题 → 整片 + 字幕 + 配音（顶栏与时间线「🎙 配音」块同一入口） */}
       <button

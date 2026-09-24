@@ -882,6 +882,32 @@ export interface VoiceRow {
   updatedAt?: number;
 }
 
+/** 一行在途异步任务（`task` 表）：重启后靠它续跑 */
+export interface TaskRow {
+  taskId: string;
+  /** 一次「全部生成配音」= 一个 batchId + N 条任务 */
+  batchId: string;
+  providerId: string;
+  projectId?: string;
+  /** 回填到哪条字幕（真外键，删字幕连带删任务） */
+  entryId?: string;
+  category: 'tts' | 'image';
+  status: 'submitting' | 'querying' | 'success' | 'failed' | 'canceled';
+  /** 提交参数快照（重试 = 取原值重新调生成接口） */
+  input?: Record<string, unknown>;
+  providerTaskId?: string;
+  /** 产物落 asset 后回填（时效链接绝不留到以后） */
+  artifactId?: string;
+  error?: string;
+  queryCount: number;
+  rebuildCount: number;
+  /** 下次查询时间（调度器按它错峰，不做每任务独立循环） */
+  nextQueryAt?: number;
+  createdAt?: number;
+  updatedAt?: number;
+  finishedAt?: number;
+}
+
 export interface NarrationEntry {
   id: string;
   /** 字幕文本 = 配音朗读文本 */

@@ -219,9 +219,9 @@ CREATE TABLE element_route (
 
 #### 弱引用的补偿机制
 
-取消基表后剩下的弱引用只有四处，全部由写入端保证（**不使用触发器**）：
+取消基表后剩下的弱引用只有五处，全部由写入端保证（**不使用触发器**）：
 
-1. **写入端保证**：`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries / plots / events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（项目 ↔ 子行互引，见 2.2）。项目侧 `element_marker.asset_id`、`move_icon_asset_id`、音频列、`camera_keyframe.follow_route_element_id` 都是真外键（SET NULL），删除父行由数据库负责，应用层无需连带清理
+1. **写入端保证**：`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries / plots / events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（项目 ↔ 子行互引，见 2.2）、`task.project_id` / `task.entry_id`（任务行是调度状态、不是项目内容，而保存项目 = 删了重写，挂成真外键会让每次自动保存 CASCADE 掉在途任务；删项目由 `removeProjectV2` 显式清）。项目侧 `element_marker.asset_id`、`move_icon_asset_id`、音频列、`camera_keyframe.follow_route_element_id` 都是真外键（SET NULL），删除父行由数据库负责，应用层无需连带清理
 2. **`v_check_dangling` 视图**：检出悬空的跟随机位（`PRAGMA foreign_keys=OFF` 的批量迁移与老库才会出现），`v_check_territory_ref` 检出疆域 JSON 内部失配，正常应返回 0 行
 
 > 为什么不用触发器：网页端是 Dexie（IndexedDB），**没有触发器**，数据库侧触发器只在桌面端生效，同一条规则会有两套真相；且规则藏在表定义之外、与写入端逻辑重复。详见 2.6。
@@ -282,7 +282,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 #### 收益
 
-- **正确性：**引用完整性由外键（`CASCADE` / `SET NULL` / `RESTRICT`）保证；仅存的四处弱引用（贴图素材、公共库副本素材、疆域 JSON、生效底图/高程指针）由写入端保证 + 自检视图兜底
+- **正确性：**引用完整性由外键（`CASCADE` / `SET NULL` / `RESTRICT`）保证；仅存的五处弱引用（贴图素材、公共库副本素材、疆域 JSON、生效底图/高程指针、任务的 project_id/entry_id）由写入端保证 + 自检视图兜底
 
 - **性能：**素材外置后项目 JSON 从数 MB 降到数十 KB；保存从全量重写变为按实体增量
 
@@ -298,7 +298,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 - **写入需事务：**保存一个元素要写它所属的类别表（+ 可能的关键帧表），必须包在事务里
 
-- **弱引用的维护成本：**贴图 / 公共库副本的 `asset_id`、疆域 JSON、生效底图与高程指针没有外键目标，新增跨表引用时必须重复「写入端保证 + 自检视图」这个模式；且校验只在写入端生效，数据库侧不再有第二道保险
+- **弱引用的维护成本：**贴图 / 公共库副本的 `asset_id`、疆域 JSON、生效底图与高程指针、任务的 `project_id` / `entry_id` 没有外键目标，新增跨表引用时必须重复「写入端保证 + 自检视图」这个模式；且校验只在写入端生效，数据库侧不再有第二道保险
 
 - **两类存储范式并存：**桌面端规范化、网页端文档型，需在 mapper 层明确边界
 
@@ -338,7 +338,7 @@ DDL 已用 Node 内置 `node:sqlite`（Node v22.22.2）在内存库中实际执�
 | Q3 | 素材文件的生命周期与垃圾回收 | 元素被删后 `asset` 行仍在（无反向引用）。需要定期「孤儿素材清理」任务，或改用引用计数 |
 | Q4 | `move_icon_json` 内的 `symbolId` 是弱引用 | P3 JSON 内的符号引用无法用外键约束。可选：把 `moveIcon` 提升为独立表以换取约束能力，但会为各类元素都增加一次 JOIN |
 | Q5 | 撤销/重做（50 步历史栈）与数据库的关系 | 历史栈完全在内存（快照式）；数据库只承载「已保存」状态，这是有意的边界 |
-| Q6 | 弱引用的一致性兜底策略 | 连接线端点已随该类型整条下线，弱引用只剩贴图 / 公共库副本的 `asset_id` 与疆域 JSON，由**写入端保证** + `v_check_dangling` / `v_check_territory_ref` 兜底（无触发器）。**待定：是否在保存 / 导入后强制跑一次自检，非 0 行即回滚？** |
+| Q6 | 弱引用的一致性兜底策略 | 连接线端点已随该类型整条下线，弱引用只剩贴图 / 公共库副本的 `asset_id`、疆域 JSON 与任务的 `project_id` / `entry_id`，由**写入端保证** + `v_check_dangling` / `v_check_territory_ref` 兜底（无触发器）。**待定：是否在保存 / 导入后强制跑一次自检，非 0 行即回滚？** |
 | Q7 | 疆域 JSON 内联后的一致性校验时机 | `plots_json.ownerId` / `events_json.toCountryId` 的合法性由 `v_check_territory_ref` 校验（`json_each` 实现）。待定：是否前置为写路径硬校验（保存前跑），避免脏数据入库 |
 | Q8 | 图标库（原 `custom_symbol`）的 UI 入口 | 三表合并后图标库条目 = `asset(kind='icon')`；当前仍无上传/管理面板，待确认是否补入口或下线该能力 |
 

@@ -2,13 +2,12 @@
  * VoicePicker — 字幕生成里的音色区：上「配音音色」（系统音色，男声 / 女声两组，默认折叠），
  * 下「克隆音色」（内置男声 / 女声样本格 + ⬆ 上传其它参考音频克隆）。
  *
- * **音色是调用级参数**（不写进实例配置）：这个组件受控 —— 选择结果交给调用方（字幕生成）保存并随每次合成传下去。
- * 克隆出的 voiceId 绑在「哪个实例 + 哪个目标模型」上，所以账本（`voice` 表 / `useVoiceStore`）
- * 三样一起记，换模型即视为另一条音色；参考音频原件也存着，音色失效时靠它重建。
+ * **音色是调用级参数**（不写进实例配置）：这个组件受控 —— 选择结果（音色 id + 它绑的模型）交给调用方
+ * （字幕生成）保存并随每次合成传下去。克隆出的 voiceId 绑在「哪个实例 + 哪个目标模型」上，
+ * 所以账本（`voice` 表 / `useVoiceStore`）三样一起记；参考音频原件也存着，音色失效时靠它重建。
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
-import { useProviderStore } from '../stores/providerStore';
 import { callTTS, supports, templateOf } from '../lib/providers';
 import { playAudition, stopAudition } from '../lib/audition';
 import { requestOf, type InstanceDef, type ParamSpec } from '../lib/request-engine';
@@ -33,13 +32,14 @@ export function voiceModelOf(inst: InstanceDef | null | undefined): string {
 
 const strOf = (v: unknown) => (typeof v === 'string' ? v : '');
 
-export function VoicePicker({ inst, voice, onPick }: {
+export function VoicePicker({ inst, voice, voiceModel, onPick }: {
   inst: InstanceDef | null;
   voice: string;
-  onPick: (voiceId: string) => void;
+  /** 选中音色绑定的模型：克隆音色有值，系统音色为空（= 用实例配的模型） */
+  voiceModel: string;
+  onPick: (voiceId: string, voiceModel?: string) => void;
 }) {
   const t = useT();
-  const updateInstance = useProviderStore((s) => s.updateInstance);
   const voiceRows = useVoiceStore((s) => s.rows);
   const cloneLedger = useVoiceStore((s) => s.clone);
   const forgetVoice = useVoiceStore((s) => s.remove);
@@ -53,52 +53,41 @@ export function VoicePicker({ inst, voice, onPick }: {
   const [auditioning, setAuditioning] = useState(false);
 
   const tpl = templateOf(inst);
-  const model = voiceModelOf(inst);
-  const system = systemVoicesFor(tpl?.id, model);
+  const instModel = voiceModelOf(inst);
+  const system = systemVoicesFor(tpl?.id, instModel);
   /** 能不能克隆 = 这份模板有没有配 clone 请求（不再是协议字符串判断） */
   const canClone = supports(inst, 'clone');
   /**
-   * 克隆出的音色绑在「克隆时用的模型」上，合成时 model 必须一模一样。
-   * Qwen-TTS 的系统模型不吃克隆音色，只有 vc 那条吃 —— 克隆时顺带切过去并在提示里说明（不静默改）。
+   * 克隆出的音色绑在「克隆时用的模型」上，合成时 model 必须一模一样，而系统模型不吃克隆音色。
+   * 「哪条模型能吃克隆音色」不写死在代码里：从模板给 model 参数配的候选值里找那条 -vc。
+   * 它只用于**这次调用**（跟着音色一起传下去），不改实例配置 —— 一改动实例配置，
+   * 系统音色就在那台实例上再也合成不了了（实测上游回 InvalidParameter）。
    */
-  // 「哪条模型能吃克隆音色」不写死在代码里：从模板给 model 参数配的候选值里找那条 -vc
   const modelOptions = (key: string): string[] => {
     if (!tpl) return [];
     const all: ParamSpec[] = [...(tpl.instanceParams ?? []), ...(requestOf(tpl, 'sync.submit')?.requestParams ?? [])];
     return (all.find((x) => x.key === key)?.options ?? []).map((o) => String(typeof o === 'object' && o !== null ? o.value : o));
   };
   const vcModel = modelOptions('model').find((m) => m.includes('-vc')) ?? '';
-  // 「哪条模型吃克隆音色」看模板给 model 配的候选值（-vc 是上游的命名），不认模板 id —— 换一家也不用改这里
-  const bindModel = canClone && vcModel && !model.includes('-vc') ? vcModel : model;
+  const cloneModel = vcModel || instModel;
 
-  const setModel = (m: string) => {
-    if (!inst) return;
-    updateInstance(inst.id, {}, {
-      instance: { model: m },
-      requests: { 'sync.submit': { ...(inst.values.requests?.['sync.submit'] ?? {}), model: m } },
-    });
-  };
-
-  const pick = (voiceId: string) => { onPick(voiceId); setMsg(''); };
-
-  /** 该实例 + 当前模型下能用的音色（含别人在别的机器上建好后同步过来的） */
+  /** 该实例下能用的克隆音色：每条自带它的目标模型，所以不受实例当前模型限制 */
   const cloned: VoiceRow[] = inst
-    ? voiceRows.filter((x) => x.providerId === inst.id && x.targetModel === bindModel && usableVoice(x))
+    ? voiceRows.filter((x) => x.providerId === inst.id && usableVoice(x))
     : [];
   /** 按内置样本名找：样本格要能认出「这条就是那个样本克隆出来的」 */
   const cloneOfLabel = (label: string) => cloned.find((x) => x.label === label);
 
+  const pick = (voiceId: string, model?: string) => { onPick(voiceId, model); setMsg(''); };
+
   /** 参考音频 → 音色 ID；同样本同模型已克隆过就直接复用，不在服务端反复建音色 */
   const cloneFrom = async (bytes: ArrayBuffer, label: string, prefix: string, mime = 'audio/wav', name = `${prefix}.wav`) => {
     if (!inst || !strOf(inst.values.instance?.baseUrl)) { setMsg(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
-    const alsoModel = bindModel !== model ? bindModel : undefined;
-    const done = (s: string) => (alsoModel ? `${s} · ${t('配音模型已切成', 'model switched to')} ${bindModel}` : s);
     setBusy('clone'); setBusyLabel(label); setMsg(t('克隆中…（约几秒）', 'Cloning…'));
     try {
-      const row = await cloneLedger({ inst, bytes, mime, name, label, targetModel: bindModel, prefix });
-      if (row.voiceId) pick(row.voiceId);
-      if (alsoModel) setModel(alsoModel);
-      setMsg(done(`✓ ${row.voiceId ?? ''}`));
+      const row = await cloneLedger({ inst, bytes, mime, name, label, targetModel: cloneModel, prefix });
+      if (row.voiceId) pick(row.voiceId, row.targetModel || cloneModel);
+      setMsg(`✓ ${row.voiceId ?? ''}`);
     } catch (e) {
       setMsg(`✕ ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -112,7 +101,8 @@ export function VoicePicker({ inst, voice, onPick }: {
     if (!inst || !voice) { setMsg(t('先选一个音色', 'Pick a voice first')); return; }
     setBusy('audition'); setMsg('');
     try {
-      const { dataUrl } = await callTTS(inst, t('这段旁白用来试听音色。', 'This line previews the voice.'), voice);
+      const { dataUrl } = await callTTS(inst, t('这段旁白用来试听音色。', 'This line previews the voice.'), voice,
+        voiceModel ? { model: voiceModel } : {});
       setAuditioning(true);
       // 播不出去（浏览器拦自动播放）就当没在播，别让按钮一直显示在响
       if (!await playAudition(dataUrl, () => setAuditioning(false))) setAuditioning(false);
@@ -125,6 +115,8 @@ export function VoicePicker({ inst, voice, onPick }: {
 
   const cell = (o: {
     id?: string;
+    /** 这条音色绑的模型（克隆音色才有；系统音色不填 = 用实例配的） */
+    model?: string;
     title: string;
     sub?: string;
     extra?: ReactNode;
@@ -135,7 +127,7 @@ export function VoicePicker({ inst, voice, onPick }: {
   }) => (
     <span key={o.id || o.title} className="inline-flex items-center">
       <button
-        onClick={o.onClick || (() => pick(o.id || ''))}
+        onClick={o.onClick || (() => pick(o.id || '', o.model))}
         disabled={!inst || (!o.onClick && !o.id)}
         title={`${o.title}${o.sub ? ` · ${o.sub}` : ''}`}
         className={`h-7 px-2 border text-[11px] truncate transition-colors disabled:opacity-40 max-w-[10rem] ${
@@ -153,10 +145,11 @@ export function VoicePicker({ inst, voice, onPick }: {
     const hit = cloneOfLabel(pr.label);
     return cell({
       id: hit?.voiceId,
+      model: hit?.targetModel,
       title: `${pr.label}·内置`,
       sub: hit
         ? t(`已克隆为 ${hit.voiceId}（模型 ${hit.targetModel}）`, `Cloned as ${hit.voiceId} (model ${hit.targetModel})`)
-        : t(`用内置样本 ${pr.file} 克隆一个${pr.label}（目标模型 ${bindModel || '未设'}）`, `Clone from bundled sample ${pr.file} (target ${bindModel || 'unset'})`),
+        : t(`用内置样本 ${pr.file} 克隆一个${pr.label}（目标模型 ${cloneModel || '未设'}）`, `Clone from bundled sample ${pr.file} (target ${cloneModel || 'unset'})`),
       dashed: !hit,
       busy: busy === 'clone' && busyLabel === pr.label,
       onClick: hit ? undefined : async () => {
@@ -223,6 +216,7 @@ export function VoicePicker({ inst, voice, onPick }: {
             {sampleCells}
             {myClones.map((c) => cell({
               id: c.voiceId,
+              model: c.targetModel,
               title: c.label,
               sub: t(`上传样本克隆 · ${c.voiceId}（模型 ${c.targetModel}）`, `Uploaded clone · ${c.voiceId} (model ${c.targetModel})`),
               extra: (
@@ -233,12 +227,12 @@ export function VoicePicker({ inst, voice, onPick }: {
                 >✕</button>
               ),
             }))}
-            {orphan && cell({ id: voice, title: t('当前音色', 'Current'), sub: t('不在系统表与克隆记录里', 'Not in the catalog or clone list') })}
+            {orphan && cell({ id: voice, model: voiceModel || undefined, title: t('当前音色', 'Current'), sub: t('不在系统表与克隆记录里', 'Not in the catalog or clone list') })}
             <button
               onClick={() => fileRef.current?.click()}
               disabled={busy !== null || !inst}
               className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
-              title={t('上传 3~60 秒参考音频，克隆成绑定当前模型的新音色', 'Upload 3–60s reference audio to clone a voice for the current model')}
+              title={t(`上传 3~60 秒参考音频，克隆成绑定模型 ${cloneModel || '未设'} 的新音色`, `Upload 3–60s reference audio to clone a voice for model ${cloneModel || 'unset'}`)}
             >⬆ {t('上传其它音色', 'Upload reference')}</button>
             <input
               ref={fileRef}
@@ -268,9 +262,10 @@ export function VoicePicker({ inst, voice, onPick }: {
             title={auditioning ? t('停止试听', 'Stop') : t('用当前音色合成一句试听', 'Synthesize one preview line with the current voice')}
           >{busy === 'audition' ? '⏳' : auditioning ? '⏸' : '▶'} {auditioning ? t('停止', 'Stop') : t('试听', 'Audition')}</button>
           <span className="text-[10px] text-muted-foreground/70 truncate" title={voice}>
-            {t('音色随每次合成传下去（不写进实例配置）', 'The voice goes with each call, not the instance')}
+            {t('音色（连同它绑的模型）随每次合成传下去，不写进实例配置', 'The voice and its model go with each call, not the instance')}
             {voice ? ` · ${voice}` : ''}
-            {tpl?.id === 'dashscope-qwen-tts' && model === 'qwen-tts'
+            {voiceModel ? ` · ${voiceModel}` : ''}
+            {tpl?.id === 'qwen-tts' && instModel === 'qwen-tts'
               ? t(' · 旧模型 qwen-tts 只带 4 个系统音色，改用 qwen3-tts-flash 可选全部', ' · the legacy model qwen-tts ships 4 voices only; use qwen3-tts-flash for the full list')
               : ''}
             {msg ? ` · ${msg}` : ''}

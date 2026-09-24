@@ -11,7 +11,8 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2,
   listTemplatesV2, upsertTemplateV2, removeTemplateV2, migrateProvidersFromStale,
-  listProvidersV2, upsertProviderV2, removeProviderV2, listVoicesV2, saveVoiceV2, removeVoiceV2 } from './db-v2.mjs';
+  listProvidersV2, upsertProviderV2, removeProviderV2, listVoicesV2, saveVoiceV2, removeVoiceV2,
+  saveTaskV2, dueTasksV2, batchTasksV2, openTasksV2, pruneFinishedTasksV2 } from './db-v2.mjs';
 
 const DIST = path.join(app.getAppPath(), 'dist');
 
@@ -149,6 +150,13 @@ function registerIpc() {
   ipcMain.handle('db:voices:list', (_e, providerId) => listVoicesV2(db, providerId));
   ipcMain.handle('db:voices:save', (_e, v) => saveVoiceV2(db, v));
   ipcMain.handle('db:voices:remove', (_e, rowId) => removeVoiceV2(db, rowId));
+
+  // 异步任务（task 表）：状态在库里，所以关窗口、刷新页面都不丢在途任务
+  ipcMain.handle('db:tasks:save', (_e, t) => saveTaskV2(db, t));
+  ipcMain.handle('db:tasks:due', () => dueTasksV2(db));
+  ipcMain.handle('db:tasks:open', (_e, projectId) => openTasksV2(db, projectId));
+  ipcMain.handle('db:tasks:batch', (_e, batchId) => batchTasksV2(db, batchId));
+  ipcMain.handle('db:tasks:prune', () => pruneFinishedTasksV2(db));
   ipcMain.handle('db:providers:upsert', (_e, cfg) => { upsertProviderV2(db, cfg); return { ok: true }; });
 
   // 网络管道：渲染进程算好请求，主进程只管发与收（无 CORS，Key 不出本机）
