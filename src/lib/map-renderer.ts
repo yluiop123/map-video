@@ -42,6 +42,8 @@ const renderedTypeByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
 const hiddenElByMap = new WeakMap<maplibregl.Map, Set<string>>();
 // 箭头图标已注册颜色（元素 id → 颜色），颜色变化需重注册
 const renderedHeadColorByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
+// 「叠放顺序已就位」的签名（元素顺序 + 图层排列），见 restackByLayerOrder
+const restackSettledByMap = new WeakMap<maplibregl.Map, string>();
 
 // ========== 防御圈锯齿：屏幕像素级，须随相机变化重算 ==========
 // 锯齿是按当前相机用 map.project/unproject 在屏幕像素上采样生成的，
@@ -145,6 +147,11 @@ export function restackByLayerOrder(map: maplibregl.Map, elementIdsTopToBottom: 
   const style = map.getStyle();
   if (!style?.layers) return;
   const styleIds = style.layers.map((l) => l.id);
+  // 签名 = 元素顺序 + 图层 id 的实际排列。两者都没变就说明上一轮已经把这个序摆好了，
+  // 直接返回。以前这里是「每个元素 × 每个图层」的 includes 全表扫描，播放时每帧一次
+  // （压测项目 340 元素 × 1125 图层，单独量到 10.7ms/帧）；换签名比对后每帧只剩 getStyle。
+  const sig = elementIdsTopToBottom.join('|') + '#' + styleIds.join('|');
+  if (restackSettledByMap.get(map) === sig) return;
   const wanted: string[] = [];
   // 自底向上 = 列表倒序
   for (let i = elementIdsTopToBottom.length - 1; i >= 0; i--) {
@@ -153,11 +160,17 @@ export function restackByLayerOrder(map: maplibregl.Map, elementIdsTopToBottom: 
   }
   const inWanted = new Set(wanted);
   const current = styleIds.filter((id) => inWanted.has(id));
-  if (current.length === wanted.length && current.every((id, k) => id === wanted[k])) return;
+  if (current.length === wanted.length && current.every((id, k) => id === wanted[k])) {
+    restackSettledByMap.set(map, sig);
+    return;
+  }
   // 自顶向下逐个「插到已就位的下一层之下」，锚点层位置不变，最终得到 wanted 的相对序
   for (let k = wanted.length - 2; k >= 0; k--) {
     try { map.moveLayer(wanted[k], wanted[k + 1]); } catch { /* 图层刚被移除 */ }
   }
+  // 记的是移动**前**读到的排列：移动后它必然对不上，于是下一帧会真扫一次、
+  // 走到上面那个「已就位」分支并把签名换成移动后的排列，之后就一直走快路径。
+  restackSettledByMap.set(map, sig);
 }
 
 
