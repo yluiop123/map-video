@@ -42,6 +42,7 @@ components/
   ShortcutsDialog.tsx  # 快捷键速查弹窗（时间线「快捷键」按钮触发）；改键盘绑定需同步此文件内容
   MapSearchBox.tsx     # 地名/坐标搜索，内嵌顶栏（项目芯片右侧）；地图实例经 lib/shared-map.ts 共享，EditableMap load/unload 时 set
   FxPanelBody.tsx      # 特效面板主体：天气/画面/弹窗/音乐 四页签（**无字幕页签**，字幕已迁到 GenerateDialog）；服务配置弹窗已搬去 ProviderPanel
+  ImageGenerateField.tsx # 「描述 → 一张图」输入区（现在只有弹窗·人物的照片区在用）：尺寸/模型按模板声明长控件，产物 dataURL 交给调用方
   ProviderPanel.tsx    # ⚙ 设置 · AI 的「实例设置」页：实例芯片一排 + ＋实例 / 模板下拉 / 同步异步 / 实例级参数 / 按请求分区的请求级参数（密钥按声明渲染成密码框）
   TemplatesPane.tsx    # ⚙ 左侧独立的「接口模板」入口：一行一份模板（三栏：模板列表 · 六个接口槽卡片 · 实例级参数表）+ 每槽「预览请求（零网络，密钥打码）」+ 三层参数表与 outputs 行编辑器
   SettingsDialog.tsx   # ⚙ 设置 · AI 外壳：左侧文案 / 语音 / 图片三类，右侧嵌 ProviderPanel（唯一入口，内联那份已删）

@@ -32,6 +32,22 @@ export function supports(inst: InstanceDef | null | undefined, key: 'clone' | 'u
   return key === 'async' ? !!t.async?.submit : !!t[key];
 }
 
+/** 参数的声明位置：实例级 + 两条提交接口的请求级 —— 与引擎取值同一批来源，界面不另立一套 */
+function specOf(inst: InstanceDef | null | undefined, key: string) {
+  const t = templateOf(inst);
+  if (!t) return undefined;
+  const all = [...(t.instanceParams ?? []), ...(requestOf(t, 'sync.submit')?.requestParams ?? []), ...(requestOf(t, 'async.submit')?.requestParams ?? [])];
+  return all.find((s) => s.key === key);
+}
+
+/** 某个参数在模板里声明的候选值（有就长按钮组，没有就是文本框） */
+export function declaredOptions(inst: InstanceDef | null | undefined, key: string): string[] {
+  return (specOf(inst, key)?.options ?? []).map((o) => String(typeof o === 'object' && o !== null ? (o as { value: unknown }).value : o));
+}
+
+/** 某个参数声明的默认值 —— 只当输入框的占位提示，真实取值仍由引擎三层解析 */
+export const declaredDefault = (inst: InstanceDef | null | undefined, key: string): string => String(specOf(inst, key)?.defaultValue ?? '');
+
 /** 该实例这次该走哪条提交接口（实例的同步开关决定） */
 export function submitKeyOfInstance(inst: InstanceDef): ReqKey {
   const t = templateOf(inst);

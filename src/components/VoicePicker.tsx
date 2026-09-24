@@ -8,26 +8,22 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
-import { callTTS, supports, templateOf } from '../lib/providers';
+import { callTTS, declaredDefault, declaredOptions, supports, templateOf } from '../lib/providers';
 import { playAudition, stopAudition } from '../lib/audition';
-import { requestOf, type InstanceDef, type ParamSpec } from '../lib/request-engine';
+import type { InstanceDef } from '../lib/request-engine';
 import { CLIP_PRESETS, fetchClipBytes, systemVoicesFor, type VoiceGender } from '../lib/voices';
 import { useVoiceStore } from '../stores/voiceStore';
 import type { VoiceRow } from '../types';
 
 const SAMPLE_LABELS: string[] = CLIP_PRESETS.map((pr) => pr.label);
 
-/** 这个实例配音用的模型：先看请求级（同步那条），再退到实例级 */
+/** 这个实例配音用的模型：先看请求级（同步那条），再退到实例级，最后退到模板声明的默认值 */
 export function voiceModelOf(inst: InstanceDef | null | undefined): string {
   if (!inst) return '';
   const v = inst.values;
   const given = v.requests?.['sync.submit']?.model ?? v.requests?.['async.submit']?.model ?? v.instance?.model;
   if (typeof given === 'string' && given.trim()) return given.trim();
-  // 实例没显式填过就走模板声明的默认值 —— 与引擎三层取值同一条规则，别在这儿另起一套
-  const tpl = templateOf(inst);
-  const spec = [...(tpl?.instanceParams ?? []), ...(tpl ? requestOf(tpl, 'sync.submit')?.requestParams ?? [] : [])]
-    .find((x) => x.key === 'model');
-  return String(spec?.defaultValue ?? '');
+  return declaredDefault(inst, 'model');
 }
 
 const strOf = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -63,12 +59,7 @@ export function VoicePicker({ inst, voice, voiceModel, onPick }: {
    * 它只用于**这次调用**（跟着音色一起传下去），不改实例配置 —— 一改动实例配置，
    * 系统音色就在那台实例上再也合成不了了（实测上游回 InvalidParameter）。
    */
-  const modelOptions = (key: string): string[] => {
-    if (!tpl) return [];
-    const all: ParamSpec[] = [...(tpl.instanceParams ?? []), ...(requestOf(tpl, 'sync.submit')?.requestParams ?? [])];
-    return (all.find((x) => x.key === key)?.options ?? []).map((o) => String(typeof o === 'object' && o !== null ? o.value : o));
-  };
-  const vcModel = modelOptions('model').find((m) => m.includes('-vc')) ?? '';
+  const vcModel = declaredOptions(inst, 'model').find((m) => m.includes('-vc')) ?? '';
   const cloneModel = vcModel || instModel;
 
   /** 该实例下能用的克隆音色：每条自带它的目标模型，所以不受实例当前模型限制 */

@@ -17,6 +17,7 @@ import {
   type MusicTrack,
 } from '../types';
 import { readAudioFile } from '../lib/providers';
+import { ImageGenerateField } from './ImageGenerateField';
 import { projectContentEndFrame } from '../lib/project-duration';
 
 const FPS_FALLBACK = 30;
@@ -614,6 +615,7 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
                   <button className={rowMini} onClick={() => setP({ imageUrl: undefined })} title={t('移除', 'Remove')}>✕</button>
                 )}
               </div>
+              <ImageGenerateField onPick={(url) => setP({ imageUrl: url })} />
               <Field label={t('形状', 'Shape')}>
                 <OptionBlocks<PersonContent['imageShape']>
                   value={pc.imageShape}
