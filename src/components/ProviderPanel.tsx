@@ -6,7 +6,7 @@
  * 以及按请求分区的请求级参数（同步与异步的 model 可以不一样）。
  * 「怎么发请求」不在这页 —— 那是左侧单独的「接口模板」入口（TemplatesPane）。
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { OptionBlocks, useT } from './ui/primitives';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -53,9 +53,6 @@ export function ProviderPanel({ kind }: { kind: Category }) {
   const list = instances.filter((i) => templates.find((x) => x.id === i.tplId)?.category === kind);
   const sel = list.find((i) => i.id === picked) ?? list[0] ?? null;
 
-  // 一条实例都没有时自动建一条（一个能力一处起点，不必先学"怎么加实例"）
-  useEffect(() => { if (!sel && kind) addInstance(kind); }, [sel, kind, addInstance]);
-
   const tplOf = (i: InstanceDef) => templates.find((x) => x.id === i.tplId);
 
   return (
@@ -81,6 +78,12 @@ export function ProviderPanel({ kind }: { kind: Category }) {
       </div>
 
       {sel && <InstanceForm inst={sel} tplName={tplOf(sel)?.name ?? sel.tplId} missingTpl={!tplOf(sel)} />}
+      {!list.length && (
+        <p className="rounded-md border border-dashed border-white/15 px-3 py-4 text-center text-[11px] text-muted-foreground">
+          {t('这个能力还没有实例：点上面「＋实例」建一条，选模板并填地址与 Key。',
+            'No instance yet — use ＋instance above, pick a template, fill base URL and key.')}
+        </p>
+      )}
     </div>
   );
 }
