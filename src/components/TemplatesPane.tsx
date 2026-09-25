@@ -288,22 +288,20 @@ export function TemplatesPane() {
 
             <Separator />
 
-            {/* 页签 = 开关推出来的那几格，按调用顺序排；两套都勾了才给这一排右侧一个视图下拉 */}
+            {/* 页签 = 开关推出来的那几格，按调用顺序排；两套都勾了才给这一排最右边一个「同步 | 异步」切换 */}
             <Tabs value={curReq} onValueChange={(k) => setSelReq(k as ReqKey)} className="w-full">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2">
                 <TabsList className="h-8 flex-wrap">
                   {tabs.map((k) => (
                     <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}</TabsTrigger>
                   ))}
                 </TabsList>
                 {both && (
-                  <Select value={view} onValueChange={(v) => setView(v as 'sync' | 'async')}>
-                    <SelectTrigger className="h-8 w-[86px] text-[11px]"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="sync" className="text-[11px]">{t('只看同步', 'Sync only')}</SelectItem>
-                      <SelectItem value="async" className="text-[11px]">{t('只看异步', 'Async only')}</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="ml-auto shrink-0">
+                    <OptionBlocks<'sync' | 'async'> value={view}
+                      options={[{ value: 'sync', label: t('同步', 'Sync') }, { value: 'async', label: t('异步', 'Async') }]}
+                      onChange={setView} />
+                  </div>
                 )}
               </div>
               {curReq && present(tpl, curReq) && (
@@ -320,7 +318,7 @@ export function TemplatesPane() {
         {/* 右：实例级参数（整份模板共用）。窄屏时换到第二行整宽显示，别「藏起来就摸不到」 */}
         {tpl && (
           <div className="col-span-2 min-h-0 min-w-0 overflow-y-auto border-t border-white/10 pt-2 xl:col-span-1 xl:border-l xl:border-t-0 xl:pl-3 xl:pt-0">
-            <ParamTable tone="instance" title={t('实例级参数', 'Instance params')}
+            <ParamTable title={t('实例级参数', 'Instance params')}
               hint={t('整份模板共用；Base URL 与密钥就在这儿声明，声明成 secret 的渲染成密码框。', 'shared by every request; declare baseUrl and keys here')}
               params={tpl.instanceParams ?? []} onChange={(instanceParams) => patch({ ...tpl, instanceParams })} />
           </div>
@@ -356,7 +354,6 @@ function RequestEditor({ tpl, reqKey, onChange }: {
     <Card className="gap-0 p-0">
       <CardHeader className="px-2 py-2">
         <CardTitle className="flex flex-wrap items-center gap-2 text-[11px] font-medium text-muted-foreground">
-          {t(REQ_LABEL[reqKey].zh, REQ_LABEL[reqKey].en)}
           <Select value={def.method ?? 'POST'} onValueChange={(method) => set({ method })}>
             <SelectTrigger className="h-7 w-[70px] text-[11px]"><SelectValue /></SelectTrigger>
             <SelectContent>{['GET', 'POST', 'PUT'].map((m) => <SelectItem key={m} value={m} className="text-[11px]">{m}</SelectItem>)}</SelectContent>
@@ -367,10 +364,7 @@ function RequestEditor({ tpl, reqKey, onChange }: {
       <CardContent className="space-y-1 p-2 pt-0">
 
         {/* 顺序照发出去的样子排：先这条请求自己的头与体，再声明它引用了哪些参数 */}
-        <Group title={t('发出去的内容', 'Payload')}
-          hint={isUpload
-            ? t('一层键值：值是 ${某参数} 时，字符串当普通字段、文件当二进制分片。', 'flat fields; a ${param} holding a file becomes the binary part')
-            : t('值里写 ${key} 引用下面声明的参数；没给值的键整个删掉。', 'use ${key} to reference the params declared below; unset keys are dropped')}>
+        <Group title={t('发出去的内容', 'Payload')}>
           <JsonBox label="Headers" rows={3} value={def.headers ?? {}}
             hint={isUpload
               ? t('认证头写在这儿。multipart 的 Content-Type 由传输层生成，不用写。', 'auth headers; the multipart Content-Type comes from the transport')
@@ -386,20 +380,19 @@ function RequestEditor({ tpl, reqKey, onChange }: {
         </Group>
 
         {/* 上传那一格的入参与别的接口不同：只有一个要传的文件，model / size 那类请求级参数对它没意义 */}
-        <Group title={t('要填的参数', 'Parameters')}
-          hint={t('请求级存在实例里、按这一格各存一份；调用级不落库，每次调用现场给。', 'request params persist on the instance; call params never do')}>
+        <Group title={t('要填的参数', 'Parameters')}>
           {isUpload ? (
-            <ParamTable tone="call" title={t('要传的文件', 'File to upload')}
+            <ParamTable variant="flush" title={t('要传的文件', 'File to upload')}
               hint={t('引用写 ${它的名字}：进 multipart 表单就是那个二进制分片（自带 mime 与文件名），进 JSON 体就是 data:<mime>;base64,…；单取格式写 ${它的名字.mime}。',
                 'reference it as ${name}: a binary part in the form, a data: URI in a JSON body; ${name.mime} for the type alone')}
               params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
           ) : (
             <>
-              <ParamTable tone="request" title={t('请求级参数', 'Request params')}
-                hint={t('这一格专属；同名参数在别的格可以取不同值（比如同步与异步的 model 不同）。', 'specific to this endpoint; the same name may hold a different value elsewhere')}
+              <ParamTable variant="framed" title={t('请求级参数', 'Request params')}
+                hint={t('这一格专属，取值存在实例里；同名参数在别的格可以取不同值（比如同步与异步的 model 不同）。', 'specific to this endpoint; the same name may hold a different value elsewhere')}
                 params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
-              <ParamTable tone="call" title={t('调用级参数', 'Call params')}
-                hint={t('每次调用现场给（正文文本、画面描述、文件）；调用页与「试调用」按这些长输入框。', 'given per call; the call UI and 试调用 build inputs from these')}
+              <ParamTable variant="flush" title={t('调用级参数', 'Call params')}
+                hint={t('每次调用现场给（正文文本、画面描述、文件），不落库；调用页与「试调用」按这些长输入框。', 'given per call; the call UI and 试调用 build inputs from these')}
                 params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
             </>
           )}
@@ -473,66 +466,68 @@ const rename = (map: Record<string, string>, from: string, to: string) => {
   return next;
 };
 
-// ========== 参数表：三层各一种色调，免得两排长得很像分不清 ==========
+// ========== 参数表：三层 ==========
+// 分层不用颜色（三块各涂一种色，看着像三套不同的东西，其实同一套行的三种归属）。
+// 区分靠**装不装框**：会留在库里的（实例级 / 请求级）每行一个框；每次调用现场给的（调用级）不装框，
+// 整组缩在一道竖线后面 —— 一眼就是「这里是临时值」。
 
-const TONE = {
-  instance: { chip: 'bg-violet-400/15 text-violet-300 border-violet-400/30', edge: 'border-l-violet-400/50' },
-  request: { chip: 'bg-sky-400/15 text-sky-300 border-sky-400/30', edge: 'border-l-sky-400/50' },
-  call: { chip: 'bg-amber-400/15 text-amber-300 border-amber-400/30', edge: 'border-l-amber-400/50' },
-} as const;
-
-function ParamTable({ title, hint, tone, params, onChange }: {
-  title: string; hint?: string; tone: keyof typeof TONE; params: ParamSpec[]; onChange: (p: ParamSpec[]) => void;
+function ParamTable({ title, hint, variant = 'framed', params, onChange }: {
+  title: string; hint?: string; variant?: 'framed' | 'flush'; params: ParamSpec[]; onChange: (p: ParamSpec[]) => void;
 }) {
   const t = useT();
   const at = (i: number, p: Partial<ParamSpec>) => onChange(params.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const optsText = (p: ParamSpec) => (p.options ?? []).map((o) => (typeof o === 'object' && o !== null ? `${o.value}${o.label ? `=${o.label}` : ''}` : String(o))).join(', ');
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-1.5">
-        <Badge variant="outline" className={`px-1.5 py-0 text-[9px] font-normal ${TONE[tone].chip}`}>{title}</Badge>
-        <InfoHint text={hint} />
+  const row = (p: ParamSpec, i: number) => (
+    <div key={i} className={`min-w-0 space-y-1 ${variant === 'framed' ? 'rounded-md border border-white/10 bg-white/[0.02] p-1.5' : 'py-1.5'}`}>
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_86px_22px] items-center gap-1">
+        <Input value={p.key} onChange={(e) => at(i, { key: e.target.value })} className="h-6 min-w-0 text-[10px] font-mono" placeholder="key" />
+        <Select value={p.valueType ?? 'string'} onValueChange={(v) => at(i, { valueType: v as ValueType })}>
+          <SelectTrigger className="h-6 min-w-0 text-[10px]"><SelectValue /></SelectTrigger>
+          <SelectContent>{VALUE_TYPES.map((v) => <SelectItem key={v} value={v} className="text-[10px]">{v}</SelectItem>)}</SelectContent>
+        </Select>
+        <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-[10px]" onClick={() => onChange(params.filter((_, j) => j !== i))}>✕</Button>
       </div>
-      <div className="space-y-1">
-        {params.map((p, i) => (
-          <div key={i} className={`min-w-0 space-y-1 rounded-md border border-white/10 border-l-2 bg-white/[0.02] p-1.5 ${TONE[tone].edge}`}>
-            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_86px_22px] items-center gap-1">
-              <Input value={p.key} onChange={(e) => at(i, { key: e.target.value })} className="h-6 min-w-0 text-[10px] font-mono" placeholder="key" />
-              <Select value={p.valueType ?? 'string'} onValueChange={(v) => at(i, { valueType: v as ValueType })}>
-                <SelectTrigger className="h-6 min-w-0 text-[10px]"><SelectValue /></SelectTrigger>
-                <SelectContent>{VALUE_TYPES.map((v) => <SelectItem key={v} value={v} className="text-[10px]">{v}</SelectItem>)}</SelectContent>
-              </Select>
-              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-[10px]" onClick={() => onChange(params.filter((_, j) => j !== i))}>✕</Button>
-            </div>
-            <div className="grid min-w-0 grid-cols-2 gap-1">
-              <Input value={p.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('说明', 'label')} />
-              <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('默认值', 'default')} />
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
-              {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
-                <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 min-w-0 flex-1 basis-32 text-[10px] font-mono"
-                  placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />
-              )}
-              {p.valueType === 'number' && (
-                <div className="grid min-w-0 flex-1 basis-32 grid-cols-3 gap-1">
-                  <Input type="number" value={p.min ?? ''} onChange={(e) => at(i, { min: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="min" />
-                  <Input type="number" value={p.max ?? ''} onChange={(e) => at(i, { max: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="max" />
-                  <Input type="number" step="0.1" value={p.step ?? ''} onChange={(e) => at(i, { step: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="step" />
-                </div>
-              )}
-              {p.valueType === 'file' && (
-                <>
-                  <Input value={p.accept ?? ''} onChange={(e) => at(i, { accept: e.target.value })} className="h-6 min-w-0 flex-1 basis-20 text-[10px] font-mono" placeholder=".mp3,.wav" />
-                  <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-20 min-w-0 text-[10px]" placeholder={t('上限字节', 'maxSize')} />
-                </>
-              )}
-            </div>
+      <div className="grid min-w-0 grid-cols-2 gap-1">
+        <Input value={p.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('说明', 'label')} />
+        <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('默认值', 'default')} />
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-1">
+        {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
+          <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 min-w-0 flex-1 basis-32 text-[10px] font-mono"
+            placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />
+        )}
+        {p.valueType === 'number' && (
+          <div className="grid min-w-0 flex-1 basis-32 grid-cols-3 gap-1">
+            <Input type="number" value={p.min ?? ''} onChange={(e) => at(i, { min: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="min" />
+            <Input type="number" value={p.max ?? ''} onChange={(e) => at(i, { max: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="max" />
+            <Input type="number" step="0.1" value={p.step ?? ''} onChange={(e) => at(i, { step: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="step" />
           </div>
-        ))}
-        <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => onChange([...params, { key: '', label: '', valueType: 'string' }])}>
-          ＋ {t('参数', 'param')}
-        </Button>
+        )}
+        {p.valueType === 'file' && (
+          <>
+            <Input value={p.accept ?? ''} onChange={(e) => at(i, { accept: e.target.value })} className="h-6 min-w-0 flex-1 basis-20 text-[10px] font-mono" placeholder=".mp3,.wav" />
+            <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-20 min-w-0 text-[10px]" placeholder={t('上限字节', 'maxSize')} />
+          </>
+        )}
       </div>
+    </div>
+  );
+  const add = (
+    <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => onChange([...params, { key: '', label: '', valueType: 'string' }])}>
+      ＋ {t('参数', 'param')}
+    </Button>
+  );
+  return (
+    <div className="space-y-1">
+      {/* 小标题 + 一条延伸到右边界细线：线把这一组的范围画出来，比色块安静 */}
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-medium text-foreground/85">{title}</span>
+        <InfoHint text={hint} />
+        <span className="h-px min-w-4 flex-1 bg-white/10" />
+      </div>
+      {variant === 'framed'
+        ? <div className="space-y-1">{params.map(row)}{add}</div>
+        : <div className="border-l border-white/15 pl-2">{params.map(row)}{add}</div>}
     </div>
   );
 }
