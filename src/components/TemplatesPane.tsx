@@ -61,7 +61,7 @@ function nextModes(cur: Caps['modes'], which: 'sync' | 'async', on: boolean): Ca
 
 /** 产物以什么形式给 —— 整份模板问一次，同步与异步共用；下载没有接口，按这一档直接生成 */
 const ARTIFACT_OPTIONS = (t: (a: string, b: string) => string) => [
-  { value: 'binary' as const, label: t('响应体就是', 'Body'), hint: t('图片和音频直接在响应体里，不用从字段中取', 'the response body is the artifact') },
+  { value: 'binary' as const, label: 'bin', hint: t('图片和音频直接在响应体里，不用从字段中取', 'the response body is the artifact') },
   { value: 'base64' as const, label: 'base64', hint: t('字节以 base64 写在某个字段里', 'bytes as base64 in a field') },
   { value: 'hex' as const, label: 'hex', hint: t('字节以十六进制写在某个字段里', 'bytes as hex in a field') },
   { value: 'url' as const, label: 'url', hint: t('响应给一个链接，当场下载成字节（没有单独的下载接口）', 'a URL, downloaded on the spot — there is no download endpoint') },
