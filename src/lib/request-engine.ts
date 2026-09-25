@@ -746,6 +746,10 @@ export function validateTemplate(tpl: TemplateDef): string[] {
     const def = requestOf(tpl, key);
     if (!def) { problems.push(`${REQ_LABEL[key]}：能力开关要求这一格，但还没配`); continue; }
     if (!def.path?.trim()) problems.push(`${REQ_LABEL[key]}：没填地址`);
+    // 上传那一格发出去的就是一张 multipart 表单 —— 表是空的等于什么都没传
+    if (key === 'upload' && !Object.keys(def.form ?? {}).length) {
+      problems.push(`${REQ_LABEL[key]}：这一格发的是 multipart 表单，字段一个都没写（要上传的文件也在那张表里引用）`);
+    }
     for (const o of requiredOutputsOf(tpl, key)) {
       if (o.required && !def.outputs?.[o.name]?.trim()) {
         problems.push(`${REQ_LABEL[key]}：固定项「${o.label}」没填路径 —— ${o.hint}`);

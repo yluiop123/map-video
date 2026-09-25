@@ -84,9 +84,20 @@ function withCaps(tpl: TemplateDef, caps: Caps): TemplateDef {
 
 /** 新建一格时给的头：认证头是每条都要的，Content-Type 只有带 JSON 体的那条要 */
 const AUTH_HDR = { Authorization: 'Bearer ${apiKey}' };
-const blankRequest = (key: ReqKey): RequestDef => (key === 'async.query'
-  ? { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { ...AUTH_HDR }, body: {}, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] }
-  : { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} });
+const blankRequest = (key: ReqKey): RequestDef => {
+  if (key === 'async.query') {
+    return { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { ...AUTH_HDR }, body: {}, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] };
+  }
+  // 上传那一格发的是 multipart 表单，不是 JSON 体：入参只有一个文件，随附字段写在表单里
+  if (key === 'upload') {
+    return {
+      path: '${baseUrl}/files', method: 'POST', headers: { ...AUTH_HDR }, requestParams: [],
+      callParams: [{ key: 'audioFile', label: '要上传的音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
+      form: { file: '${audioFile}', purpose: 'voice_clone' }, outputs: {},
+    };
+  }
+  return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
+};
 
 export function TemplatesPane() {
   const t = useT();
@@ -314,13 +325,26 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
       </CardHeader>
       <CardContent className="space-y-1 p-2 pt-0">
 
-      <Group title={t('要填的参数', 'Parameters')} hint={t('请求级存进实例的「按请求」那一区；调用级不落库，每次现场给', 'request params persist per request on the instance; call params never do')}>
-        <ParamTable title={t('请求级参数（这个请求专属）', 'Request params')}
-          hint={t('同名参数在不同请求可取不同值', 'same name, different value per request')}
-          params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
-        <ParamTable title={t('调用级参数（每次调用现场给）', 'Call params')}
-          hint={t('调用页与「试调用」按这些长输入框', 'the call UI and 试调用 build inputs from these')}
-          params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
+      {/* 上传那一格的入参与别的接口不同：要传的只有一个**文件**（调用时给），
+          没有 model / size 这类请求级 JSON 参数 —— 那些字段是 multipart 表单的一部分，在下一节里写。 */}
+      <Group title={reqKey === 'upload' ? t('要上传的文件', 'File to upload') : t('要填的参数', 'Parameters')}
+        hint={reqKey === 'upload'
+          ? t('只有这一格是文件：随文件一起发的字段在下面「发出去的内容」里写', 'the only input is the file; the companion fields live in the payload below')
+          : t('请求级存进实例的「按请求」那一区；调用级不落库，每次现场给', 'request params persist per request on the instance; call params never do')}>
+        {reqKey === 'upload' ? (
+          <ParamTable title={t('要传的文件（调用时给）', 'File param')}
+            hint={t('表单里用 ${它的名字} 引用；格式与体积上限就在这儿声明', 'reference it from the form as ${name}')}
+            params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
+        ) : (
+          <>
+            <ParamTable title={t('请求级参数（这个请求专属）', 'Request params')}
+              hint={t('同名参数在不同请求可取不同值', 'same name, different value per request')}
+              params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
+            <ParamTable title={t('调用级参数（每次调用现场给）', 'Call params')}
+              hint={t('调用页与「试调用」按这些长输入框', 'the call UI and 试调用 build inputs from these')}
+              params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
+          </>
+        )}
       </Group>
 
       <Group title={reqKey === 'upload' ? t('上传时发出去的内容', 'Upload payload') : t('发出去的内容', 'Request body')}
@@ -335,7 +359,9 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
         )}
         {/* 请求头逐条各一份：同一家不同端点要的头并不相同（异步开关头只有提交那条该带） */}
         <JsonBox label="Headers" rows={3} value={def.headers ?? {}}
-          hint={t('这一条自己的头，${apiKey} 会换成实例里填的 Key', "this request's own headers; ${apiKey} comes from the instance")}
+          hint={reqKey === 'upload'
+            ? t('认证头写在这儿；multipart 的 Content-Type 由传输层生成，不用写', "auth headers; the multipart Content-Type comes from the transport")
+            : t('这一条自己的头，${apiKey} 会换成实例里填的 Key', "this request's own headers; ${apiKey} comes from the instance")}
           onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
       </Group>
 

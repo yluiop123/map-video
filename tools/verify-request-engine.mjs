@@ -218,13 +218,23 @@ console.log('\n[6] 音色克隆');
 
   const up = {
     ...qwen, caps: { ...qwen.caps, clone: true, uploadFirst: true },
-    upload: { path: '${baseUrl}/files/upload', body: {}, outputs: { fileId: 'file.file_id' } },
+    // 上传那一格与别的接口不同：入参只有一个文件，发出去的是 multipart 表单（不是 JSON 体）
+    upload: {
+      path: '${baseUrl}/files/upload', method: 'POST', headers: { Authorization: 'Bearer ${apiKey}' },
+      callParams: [{ key: 'audioFile', label: '要上传的音频', valueType: 'file' }],
+      form: { file: '${audioFile}', purpose: 'voice_clone' }, outputs: { fileId: 'file.file_id' },
+    },
     clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileId}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
   };
   const d2 = mk([{ on: 'files/upload', res: json({ file: { file_id: 'F7' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-7' }) }]);
-  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { preferredName: 'mv' });
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { audioFile: bytes, preferredName: 'mv' });
   eq('6.4 分离式：先上传拿 fileId 再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
   eq('6.5 中间变量 fileId 自动流进克隆请求体', d2.sent[1].body.file_id, 'F7');
+  // 走「先上传」这条路时文件不转 base64：交出去的是二进制分片 + 普通字段，Content-Type 归传输层拼
+  eq('6.6 上传那条交的是 multipart：文件仍是字节、别的字段是字符串',
+    [d2.sent[0].form.file === bytes, d2.sent[0].form.purpose, d2.sent[0].body], [true, 'voice_clone', undefined]);
+  eq('6.7 上传那条没带模板级 Content-Type（逐槽各配一份）', d2.sent[0].headers, { Authorization: 'Bearer sk-abcdefghij1234' });
 }
 
 // ========== 7. 打码 ==========
@@ -262,6 +272,13 @@ console.log('\n[8] 保存前自检');
   const stray = { ...base, clone: { path: '${baseUrl}/x', body: {} } };
   check('8.10 开关里不需要 clone、却留着 clone 那一格 → 点名', validateTemplate(stray).some((x) => x.includes('克隆音色')), validateTemplate(stray));
   check('8.11 文案类不该有产物 / 克隆开关', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'sync', artifact: 'url' } }).length > 0);
+  // 上传那一格发出去的就是一张 multipart 表单：表是空的等于什么都没传
+  const emptyForm = {
+    ...seedTemplate('qwen-tts'), caps: { modes: 'sync', artifact: 'url', clone: true, uploadFirst: true },
+    upload: { path: '${baseUrl}/files/upload', outputs: { fileId: 'file.file_id' } },
+  };
+  check('8.12 上传那一格没写 multipart 字段 → 点名',
+    validateTemplate(emptyForm).some((x) => x.includes('multipart')), validateTemplate(emptyForm));
 }
 
 // ========== 9. 逐份 seed 试构造 ==========
