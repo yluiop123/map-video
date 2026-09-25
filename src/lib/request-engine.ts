@@ -68,7 +68,6 @@ export interface RequestDef {
   /** 只有 query 用；中间态不配（没命中两个列表就继续查） */
   successValues?: string[];
   failureValues?: string[];
-  timeoutMs?: number;
 }
 
 /**
@@ -484,7 +483,8 @@ export function buildRequest(
       headers,
       body: body && Object.keys(body).length ? body : undefined,
       form: Object.keys(form).length ? form : undefined,
-      timeoutMs: def.timeoutMs ?? numberValue(s.values.timeoutMs),
+      // 超时只有实例级那一份（模板把它声明成一条实例参数）—— 槽上那一格从来没有生产者
+      timeoutMs: numberValue(s.values.timeoutMs),
     },
     missing: s.missing,
   };

@@ -393,23 +393,16 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
             </Button>
           </div>
         )}
-      </div>
-      </Group>
-
-      <Group title={t('这一步的判定与超时', 'Outcome & timeout')}>
-        <div className="flex flex-wrap items-center gap-2 text-[10px]">
-          <span className="text-muted-foreground">{t('超时 ms', 'timeout')}</span>
-          <Input type="number" value={def.timeoutMs ?? ''} className="h-7 w-24 text-[11px]"
-            onChange={(e) => set({ timeoutMs: e.target.value ? Number(e.target.value) : undefined })} />
-          <span className="text-muted-foreground/60">{t('留空 = 用实例参数里那个', 'blank = the instance-level timeout')}</span>
-        </div>
+        {/* 查询这一格：取到的 status 等于哪些词算查完 —— 判的就是上面那个字段，所以并在这里，
+            不再单开一节（超时只有实例级那一份，槽上那一格没有生产者，已删） */}
         {reqKey === 'async.query' && (
-          <div className="space-y-1.5">
+          <div className="mt-1.5 space-y-1.5">
             <ListField label={t('算成功的状态值', 'successValues')} value={def.successValues ?? []} onChange={(successValues) => set({ successValues })} />
             <ListField label={t('算失败的状态值', 'failureValues')} value={def.failureValues ?? []} onChange={(failureValues) => set({ failureValues })} />
             <p className="text-[10px] text-muted-foreground/70">{t('中间态不用配：两个列表都没命中就继续查。', 'Anything unlisted keeps polling.')}</p>
           </div>
         )}
+      </div>
       </Group>
 
       <div className="flex flex-wrap items-center gap-1.5 pt-1">
