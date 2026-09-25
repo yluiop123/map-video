@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS provider_template (
   tpl_id      TEXT PRIMARY KEY,          -- deepseek-chat / qwen-image / qwen-tts / custom-1 …
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,             -- llm / tts / image（不加 CHECK，取值由 TS 联合类型管）
-  caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：接法 / 产物形式 / 建音色 / 建前先上传
+  caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：调用方式 / 产物形式 / 建音色 / 建前先上传
   instance_params_json TEXT,                -- 实例级参数声明
   sync_json    TEXT,     async_json    TEXT,            -- 同步 {submit} / 异步 {submit,query}
   download_json TEXT,    upload_json   TEXT,   clone_json TEXT,   -- 三条桥接 / 核心请求
@@ -214,7 +214,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **一小节「这一家怎么交活」**（接法 / 产物形式 / 建音色 / 建前先上传 / 采样率，按 category 只显示问得上的；文案生成三问都用不上，整节不显示。界面上不写「这一节是怎么推导出下面那些格子的」这类解说句，机制写在本文）→ 开关推导出的接口槽卡片，卡片内按小节排：**要填的参数**（请求级 / 调用级两张表；upload 那格只有一张「要上传的文件」）→ **发出去的内容**（body + 这一条自己的 headers；upload 那格换成 multipart 表单）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、产物形式 / 建音色 / 建前先上传 / 采样率，按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片，卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；upload 那格是 multipart 表单）→ **要填的参数**（请求级 → 调用级两张表；upload 那格只有一张「要上传的文件」）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - 「预览请求 → 试调用」是这套设计的验收口，两件事分在两页：**预览**在模板页（只跑求值 + 按声明打码，一个字节都不发），**试调用**在实例页（真发一条要的是这条实例的 Key）。改完模板先看形状，再决定要不要花一次真调用。
@@ -227,11 +227,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 <!-- BEGIN generated:seed-templates -->
 _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 从 `src/lib/template-seed.ts` 生成，改 seed 后重跑；`--check` 只校验。）_
 
-### 9.1 能力开关：这一家怎么交活
+### 9.1 能力开关
 
 `caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段，全由它推导**（`slotsOf` / `requiredOutputsOf`）。
+界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）。
 
-| 模板 | 接法 | 产物形式 | 建音色 | 建前先上传 | 参考音频采样率 | 推导出的接口槽 |
+| 模板 | 调用方式 | 产物形式 | 建音色 | 建前先上传 | 参考音频采样率 | 推导出的接口槽 |
 |---|---|---|---|---|---|---|
 | `deepseek-chat` | sync | none | 否 | 否 | — | `同步 · 提交` |
 | `qwen-image` | both | url | 否 | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
