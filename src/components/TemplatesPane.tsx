@@ -301,21 +301,21 @@ export function TemplatesPane() {
 
             <Separator />
 
-            {/* 页签 = 开关推出来的那几格，按调用顺序排；两套都勾了才给这一排最右边一个「同步 | 异步」切换 */}
+            {/* 页签 = 开关推出来的那几格，按调用顺序排；两套都勾了才在这一排**最左边**先选一侧 */}
             <Tabs value={curReq} onValueChange={(k) => setSelReq(k as ReqKey)} className="w-full">
-              <div className="flex items-center gap-2">
-                <TabsList className="h-8 flex-wrap">
-                  {tabs.map((k) => (
-                    <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}</TabsTrigger>
-                  ))}
-                </TabsList>
+              <div className="flex flex-wrap items-center gap-2">
                 {both && (
-                  <div className="ml-auto shrink-0">
+                  <div className="shrink-0">
                     <OptionBlocks<'sync' | 'async'> value={view}
                       options={[{ value: 'sync', label: t('同步', 'Sync') }, { value: 'async', label: t('异步', 'Async') }]}
                       onChange={setView} />
                   </div>
                 )}
+                <TabsList className="h-8 flex-wrap">
+                  {tabs.map((k) => (
+                    <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}</TabsTrigger>
+                  ))}
+                </TabsList>
               </div>
               {curReq && present(tpl, curReq) && (
                 <div className="mt-2">

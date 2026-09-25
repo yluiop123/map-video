@@ -331,6 +331,16 @@ export function submitKeyOf(sync: boolean): ReqKey {
   return sync ? 'sync.submit' : 'async.submit';
 }
 
+/**
+ * 这条实例真会走到的那几格：模板两套都配了，实例也只吃自己那一侧（上传 / 克隆与这一选无关）。
+ * 早先配置页把 REQ_KEYS 整个铺出来，于是「千问 文生图」那条同步实例下面同时挂着「提交」「查询」
+ * 两组格子 —— 异步那两组它这辈子都不会读，填了也没消费者。
+ */
+export function usedSlotsOf(tpl: TemplateDef, inst: InstanceDef): ReqKey[] {
+  const side = new Set<ReqKey>(inst.sync ? ['sync.submit'] : ['async.submit', 'async.query']);
+  return slotsOf(tpl).filter((k) => !k.includes('.') || side.has(k));
+}
+
 /** 这一格引用了哪些名字（按出现顺序去重；`${它.mime}` 记作 `它`）—— 只扫真发出去的那部分内容 */
 function referencedIn(def: RequestDef, multipart: boolean): string[] {
   const out: string[] = [];
@@ -350,7 +360,9 @@ function referencedIn(def: RequestDef, multipart: boolean): string[] {
 
 /**
  * 这一格要「现场给值」的参数 = 引用到了、但实例与默认值都没给来源的名字。
- * 声明只有一张表，谁在调用时给不用另外标 —— 从占位符反推（试调用与调用页据此长输入框）。
+ * 声明只有一张表，谁在调用时给不用另外标 —— 从占位符反推（试调用与调用页据此长控件）。
+ * `${voiceData}` 也算一个：它是引擎注入的那个文件，界面上因此长文件选择框
+ * （先上传那类从「克隆」这一格试发时也要它 —— 试调用跑的是整条链）。
  */
 export function openKeysOf(tpl: TemplateDef, inst: InstanceDef, key: ReqKey): string[] {
   const def = requestOf(tpl, key);

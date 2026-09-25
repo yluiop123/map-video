@@ -19,7 +19,7 @@ import { Button } from './ui/button';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  REQ_KEYS, VOICE_FILE_KEY, openKeysOf, paramLabelOf, requestOf, validateTemplate,
+  VOICE_FILE_KEY, openKeysOf, paramLabelOf, requestOf, usedSlotsOf, validateTemplate,
   type Category, type FileValue, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
 } from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
@@ -33,12 +33,16 @@ const KIND_TITLE: Record<Category, { zh: string; en: string }> = {
   image: { zh: '🖼 图片生成 AI', en: '🖼 Image AI' },
 };
 
+/**
+ * 页签与分区的名字：这条实例只走自己那一侧（`usedSlotsOf`），所以不用带「同步 · / 异步 ·」前缀
+ * —— 那一排的右边「请求方式」已经说明在看哪一侧了。
+ */
 const REQ_TITLE: Record<ReqKey, { zh: string; en: string }> = {
-  'sync.submit': { zh: '同步 · 提交', en: 'Sync · submit' },
-  'async.submit': { zh: '异步 · 提交', en: 'Async · submit' },
-  'async.query': { zh: '异步 · 查询', en: 'Async · query' },
   upload: { zh: '上传', en: 'Upload' },
   clone: { zh: '克隆', en: 'Clone' },
+  'sync.submit': { zh: '提交', en: 'Submit' },
+  'async.submit': { zh: '提交', en: 'Submit' },
+  'async.query': { zh: '查询', en: 'Query' },
 };
 
 export function ProviderPanel({ kind }: { kind: Category }) {
@@ -155,7 +159,8 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
         </Group>
       )}
 
-      {tpl && REQ_KEYS.filter((k) => k !== 'async.query' && !!requestOf(tpl, k)?.requestParams?.length).map((k) => (
+      {/* 只列这条实例真会走到的那几格：模板两套都配了，异步那两组它也不读 */}
+      {tpl && usedSlotsOf(tpl, inst).filter((k) => !!requestOf(tpl, k)?.requestParams?.length).map((k) => (
         <Group key={k} title={`${t(REQ_TITLE[k].zh, REQ_TITLE[k].en)} · ${t('参数', 'params')}`}
           hint={t('填了值的存这条实例（同名参数在别的格可以取不同值）；留空的由调用点现场给，会出现在下面的试调用里', 'fill what this account pins; leave the rest to the call site')}>
           {(requestOf(tpl, k)?.requestParams ?? []).map((p) => (
@@ -179,7 +184,7 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
  */
 function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
   const t = useT();
-  const keys = REQ_KEYS.filter((k) => !!requestOf(tpl, k));
+  const keys = usedSlotsOf(tpl, inst);
   const [key, setKey] = useState<ReqKey>('sync.submit');
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<Record<string, FileValue>>({});
@@ -235,10 +240,18 @@ function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
               {/* 显示模板声明的名字，裸 key 只作 title */}
               <span className="text-muted-foreground" title={k}>{argLabel(k)}</span>
               {isFileParam(k) ? (
-                <span className="flex items-center gap-1">
-                  <input type="file" className="w-40 text-[10px] text-muted-foreground"
-                    onChange={(e) => void pickFile(k, e.target.files?.[0])} />
-                  {files[k] && <span className="tabular-nums">{(files[k].bytes.length / 1024).toFixed(0)}KB</span>}
+                /* 就是那个引擎注入的文件：点按钮选，选了显示名字与大小（裸 input[type=file] 太不起眼，看着像不能上传） */
+                <span className="flex items-center gap-1.5">
+                  <label className="cursor-pointer rounded border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] hover:bg-white/10">
+                    {files[k] ? t('换一份', 'Replace') : t('上传文件', 'Choose file')}
+                    <input type="file" className="hidden" accept="audio/*"
+                      onChange={(e) => void pickFile(k, e.target.files?.[0])} />
+                  </label>
+                  {files[k] && (
+                    <span className="max-w-40 truncate text-muted-foreground" title={files[k].name}>
+                      {files[k].name} · {(files[k].bytes.length / 1024).toFixed(0)}KB
+                    </span>
+                  )}
                 </span>
               ) : (
                 <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-40 text-[11px]"
