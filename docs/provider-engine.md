@@ -194,94 +194,617 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 - 缺配项**当场点名**（`validateTemplate`）：有 `async.submit` 没 `async.query`、查询没 `successValues`、勾了克隆没配 `clone`、实例参数同名重复、占位符没人给值 —— 不留到运行时。
 - 新界面用 shadcn 原子（`src/components/ui/`），旧面板沿用 `ui/primitives.tsx`；两边都不写原生 `<select>`。
 - **AI 功能只有桌面端有**：网页端不配 Key、不显示字幕生成里的 AI 区（浏览器直连必然 CORS，且 Key 没地方安全存）。
+## 九、内置模板的具体参数与逐列 JSON
 
-## 九、内容示例（照抄可用）
+<!-- BEGIN generated:seed-templates -->
+_（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 从 `src/lib/template-seed.ts` 生成，改 seed 后重跑；`--check` 只校验。）_
 
-> 权威副本是 `src/lib/template-seed.ts`，这里是同样三份的形状说明。
-> `${baseUrl}` `${apiKey}` `timeoutMs` 是每份模板都声明的三条实例级参数（密钥就是 `valueType:'secret'` 的普通参数）。
+### 9.1 三份模板各自声明了哪些参数
 
-### 9.1 文案 · `deepseek-chat`
+「层」就是取值的三级：实例级整条实例共用、请求级按接口槽各存各的、调用级不落库（由业务界面或试调用现场给）。
 
-```jsonc
-{ "id":"deepseek-chat", "name":"DeepSeek 对话", "category":"llm",
-  "headers":{ "Content-Type":"application/json", "Authorization":"Bearer ${apiKey}" },
-  "instanceParams":[ { "key":"baseUrl","label":"服务地址","valueType":"string","defaultValue":"https://api.deepseek.com" },
-                     { "key":"apiKey","label":"API Key","valueType":"secret" },
-                     { "key":"timeoutMs","label":"单次超时 ms","valueType":"number","defaultValue":60000 } ],
-  "sync":{ "submit":{
-    "path":"${baseUrl}/chat/completions", "method":"POST",
-    "requestParams":[ { "key":"model","valueType":"enum","options":["deepseek-flash","deepseek-v4-pro"],"defaultValue":"deepseek-flash" },
-                      { "key":"reasoningEffort","valueType":"enum","options":["high","medium","low"] },
-                      { "key":"thinking","valueType":"enum","options":["enabled","disabled"] },
-                      { "key":"temperature","valueType":"number","min":0,"max":2,"step":0.1 } ],
-    "callParams":[ { "key":"systemPrompt","valueType":"text","required":true },
-                   { "key":"userPrompt","valueType":"text","required":true } ],
-    "body":{ "model":"${model}",
-             "messages":[ { "role":"system","content":"${systemPrompt}" }, { "role":"user","content":"${userPrompt}" } ],
-             "stream":false, "reasoning_effort":"${reasoningEffort}",
-             "thinking":{ "type":"${thinking}" }, "temperature":"${temperature}" },
-    "outputs":{ "content":"choices[0].message.content", "errorCode":"error.code", "error":"error.message" } } } }
+#### `deepseek-chat` · DeepSeek 对话（llm）
+
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 | 必填 | 加工 |
+|---|---|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://api.deepseek.com"` | — |  |  |
+| 实例级 | `apiKey` | API Key | secret | — | — |  |  |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |  |  |
+| 请求级 `sync.submit` | `model` | 模型 | enum | `"deepseek-flash"` | deepseek-flash · deepseek-v4-pro |  |  |
+| 请求级 `sync.submit` | `reasoningEffort` | 思考强度 | enum | — | high · medium · low |  |  |
+| 请求级 `sync.submit` | `thinking` | 深度思考 | enum | — | enabled · disabled |  |  |
+| 请求级 `sync.submit` | `temperature` | 温度 | number | — | ≥0 ≤2 步长 0.1 |  |  |
+| 请求级 `sync.submit` | `maxTokens` | 最大输出 token | number | — | — |  |  |
+| 调用级 `sync.submit` | `systemPrompt` | 系统提示词 | text | — | — | 是 |  |
+| 调用级 `sync.submit` | `userPrompt` | 用户提示词 | text | — | — | 是 |  |
+
+#### `qwen-image` · 千问 文生图（image）
+
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 | 必填 | 加工 |
+|---|---|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |  |  |
+| 实例级 | `apiKey` | API Key | secret | — | — |  |  |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |  |  |
+| 实例级 | `queryIntervalMs` | 查询间隔 ms | number | `5000` | — |  |  |
+| 实例级 | `queryMaxAttempts` | 查询次数上限 | number | `360` | — |  |  |
+| 请求级 `sync.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |  |  |
+| 请求级 `sync.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |  |  |
+| 请求级 `sync.submit` | `watermark` | 水印 | boolean | `false` | — |  |  |
+| 调用级 `sync.submit` | `prompt` | 画面描述 | text | — | — | 是 |  |
+| 请求级 `async.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |  |  |
+| 请求级 `async.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |  |  |
+| 请求级 `async.submit` | `n` | 张数 | number | `1` | ≥1 ≤4 |  |  |
+| 调用级 `async.submit` | `prompt` | 画面描述 | text | — | — | 是 |  |
+
+#### `qwen-tts` · 千问 TTS（tts）
+
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 | 必填 | 加工 |
+|---|---|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |  |  |
+| 实例级 | `apiKey` | API Key | secret | — | — |  |  |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |  |  |
+| 请求级 `sync.submit` | `model` | 模型 | enum | `"qwen3-tts-flash"` | qwen3-tts-flash · qwen3-tts-vc-2026-01-22 |  |  |
+| 请求级 `sync.submit` | `languageType` | 语种 | enum | `"Chinese"` | Chinese · English · Auto |  |  |
+| 调用级 `sync.submit` | `text` | 合成文本 | text | — | — | 是 |  |
+| 调用级 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |  |  |
+| 请求级 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |  |  |
+| 请求级 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |  |  |
+| 调用级 `clone` | `audioDataUri` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |  | base64DataUri |
+
+### 9.2 逐列 JSON（照抄可用）
+
+下面每块就是 `provider_template` 那一行对应列里存的内容，键名与列名一一对应；`null` = 该列没配（界面上那一格也就不出现）。
+
+#### `deepseek-chat`
+
+- 标量列：`category=llm`，`use_clone=0`，`upload=0`，`ref_sample_rate=NULL`
+
+**`headers_json`**（模板级请求头，这一行所有请求共用）
+
+```json
+{
+  "Content-Type": "application/json",
+  "Authorization": "Bearer ${apiKey}"
+}
 ```
 
-`thinking` 不填 → `{"type":"${thinking}"}` 取不到值 → 整个 `thinking` 键被删，上游收不到半成品。
+**`instance_params_json`**（实例级参数**声明**）
 
-### 9.2 图片 · `qwen-image`（同步 + 异步 + 查询，一行装下）
-
-```jsonc
-{ "id":"qwen-image", "category":"image",
-  "instanceParams":[ /* baseUrl(默认 https://maas.qianwenaiapi.com/api/v1)、apiKey、timeoutMs */
-                     { "key":"queryIntervalMs","valueType":"number","defaultValue":5000 },
-                     { "key":"queryMaxAttempts","valueType":"number","defaultValue":360 } ],
-  "sync":{ "submit":{ "path":"${baseUrl}/services/aigc/multimodal-generation/generation",
-    "requestParams":[ { "key":"model","valueType":"enum","options":["qwen-image-3.0-pro"] },
-                      { "key":"size","defaultValue":"2048*2048" }, { "key":"watermark","valueType":"boolean" } ],
-    "callParams":[ { "key":"prompt","valueType":"text","required":true } ],
-    "body":{ "model":"${model}", "input":{ "messages":[ { "role":"user","content":[ { "text":"${prompt}" } ] } ] },
-             "parameters":{ "size":"${size}", "watermark":"${watermark}" } },
-    "outputs":{ "url":"output.choices[0].message.content[0].image", "errorCode":"code", "error":"message" },
-    "outputFormat":"url" } },
-  "async":{
-    "submit":{ "path":"${baseUrl}/services/aigc/image-generation/generation",
-      "headers":{ "X-DashScope-Async":"enable" },
-      "requestParams":[ /* model、size、n */ ],
-      "callParams":[ { "key":"prompt","valueType":"text","required":true } ],
-      "body":{ "model":"${model}", "input":{ "messages":[ { "role":"user","content":[ { "text":"${prompt}" } ] } ] },
-               "parameters":{ "size":"${size}", "n":"${n}" } },
-      "outputs":{ "taskId":"output.task_id", "errorCode":"code", "error":"message" } },
-    "query":{ "path":"${baseUrl}/tasks/${taskId}", "method":"GET",
-      "outputs":{ "status":"output.task_status", "url":"output.choices[0].message.content[0].image" },
-      "successValues":["SUCCEEDED"], "failureValues":["FAILED","CANCELED","UNKNOWN"],
-      "outputFormat":"url" } } }
+```json
+[
+  {
+    "key": "baseUrl",
+    "label": "服务地址",
+    "valueType": "string",
+    "defaultValue": "https://api.deepseek.com"
+  },
+  {
+    "key": "apiKey",
+    "label": "API Key",
+    "valueType": "secret"
+  },
+  {
+    "key": "timeoutMs",
+    "label": "单次超时 ms",
+    "valueType": "number",
+    "defaultValue": 60000
+  }
+]
 ```
 
-**实测（2026-09-23）**：异步查询回的产物路径与同步**同一条**（`output.choices[0].message.content[0].image`），文档写的 `output.results[].url` 是这个模型不再用的旧形状；一次 1024×1024 出图排队 52 秒～9 分钟不等，所以查询节奏是实例级参数、默认给到 30 分钟预算。
+**`sync_json`**（sync.submit）
 
-### 9.3 语音 · `qwen-tts`（合成 + 声音复刻）
-
-```jsonc
-{ "id":"qwen-tts", "category":"tts", "useClone":true, "refSampleRateHz":24000,
-  "sync":{ "submit":{ "path":"${baseUrl}/services/aigc/multimodal-generation/generation",
-    "requestParams":[ { "key":"model","valueType":"enum","options":["qwen3-tts-flash","qwen3-tts-vc-2026-01-22"] },
-                      { "key":"languageType","valueType":"enum","options":["Chinese","English","Auto"] } ],
-    "callParams":[ { "key":"text","valueType":"text","required":true }, { "key":"voice" } ],
-    "body":{ "model":"${model}", "input":{ "text":"${text}", "voice":"${voice}" },
-             "parameters":{ "language_type":"${languageType}" } },
-    "outputs":{ "url":"output.audio.url" },           // 带时效 → outputFormat=url 当场下载
-    "outputFormat":"url" } },
-  "clone":{ "path":"${baseUrl}/services/audio/tts/customization",
-    "requestParams":[ { "key":"model","valueType":"enum","options":["qwen3-tts-vc-2026-01-22"] },
-                      { "key":"preferredName","defaultValue":"mapvideo" } ],
-    "callParams":[ { "key":"audioDataUri","valueType":"file","transform":"base64DataUri","accept":".mp3,.wav,.m4a" } ],
-    "body":{ "model":"qwen-voice-enrollment",
-             "input":{ "action":"create","target_model":"${model}","preferred_name":"${preferredName}",
-                       "audio":{ "data":"${audioDataUri}" } } },
-    "outputs":{ "voiceId":"output.voice" } } }
+```json
+{
+  "submit": {
+    "path": "${baseUrl}/chat/completions",
+    "method": "POST",
+    "requestParams": [
+      {
+        "key": "model",
+        "label": "模型",
+        "valueType": "enum",
+        "options": [
+          "deepseek-flash",
+          "deepseek-v4-pro"
+        ],
+        "defaultValue": "deepseek-flash"
+      },
+      {
+        "key": "reasoningEffort",
+        "label": "思考强度",
+        "valueType": "enum",
+        "options": [
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      {
+        "key": "thinking",
+        "label": "深度思考",
+        "valueType": "enum",
+        "options": [
+          "enabled",
+          "disabled"
+        ]
+      },
+      {
+        "key": "temperature",
+        "label": "温度",
+        "valueType": "number",
+        "min": 0,
+        "max": 2,
+        "step": 0.1
+      },
+      {
+        "key": "maxTokens",
+        "label": "最大输出 token",
+        "valueType": "number"
+      }
+    ],
+    "callParams": [
+      {
+        "key": "systemPrompt",
+        "label": "系统提示词",
+        "valueType": "text",
+        "required": true
+      },
+      {
+        "key": "userPrompt",
+        "label": "用户提示词",
+        "valueType": "text",
+        "required": true
+      }
+    ],
+    "body": {
+      "model": "${model}",
+      "messages": [
+        {
+          "role": "system",
+          "content": "${systemPrompt}"
+        },
+        {
+          "role": "user",
+          "content": "${userPrompt}"
+        }
+      ],
+      "stream": false,
+      "reasoning_effort": "${reasoningEffort}",
+      "thinking": {
+        "type": "${thinking}"
+      },
+      "temperature": "${temperature}",
+      "max_tokens": "${maxTokens}"
+    },
+    "outputs": {
+      "content": "choices[0].message.content",
+      "errorCode": "error.code",
+      "error": "error.message"
+    }
+  }
+}
 ```
 
-- 合成与复刻**共用实例的同一份地址与 Key**（模板行的两份 JSON，密钥只填一次）。
-- 复刻产出的 `voiceId` **绑 `target_model`**：换合成模型即另一条音色（实测报 418），所以 `voice` 表的唯一键含 `target_model`，界面上克隆时会把模型一并切过去并在提示里说明。
-- 参考音频要求 ≥24kHz（`refSampleRateHz` 是模板数据，不是代码常量 —— CosyVoice 那条要 16k）。
+**`async_json`**（async.submit）
 
+```json
+null
+```
+
+**`download_json`**（download）
+
+```json
+null
+```
+
+**`upload_json`**（upload）
+
+```json
+null
+```
+
+**`clone_json`**（clone）
+
+```json
+null
+```
+
+#### `qwen-image`
+
+- 标量列：`category=image`，`use_clone=0`，`upload=0`，`ref_sample_rate=NULL`
+
+**`headers_json`**（模板级请求头，这一行所有请求共用）
+
+```json
+{
+  "Content-Type": "application/json",
+  "Authorization": "Bearer ${apiKey}"
+}
+```
+
+**`instance_params_json`**（实例级参数**声明**）
+
+```json
+[
+  {
+    "key": "baseUrl",
+    "label": "服务地址",
+    "valueType": "string",
+    "defaultValue": "https://maas.qianwenaiapi.com/api/v1"
+  },
+  {
+    "key": "apiKey",
+    "label": "API Key",
+    "valueType": "secret"
+  },
+  {
+    "key": "timeoutMs",
+    "label": "单次超时 ms",
+    "valueType": "number",
+    "defaultValue": 60000
+  },
+  {
+    "key": "queryIntervalMs",
+    "label": "查询间隔 ms",
+    "valueType": "number",
+    "defaultValue": 5000
+  },
+  {
+    "key": "queryMaxAttempts",
+    "label": "查询次数上限",
+    "valueType": "number",
+    "defaultValue": 360
+  }
+]
+```
+
+**`sync_json`**（sync.submit）
+
+```json
+{
+  "submit": {
+    "path": "${baseUrl}/services/aigc/multimodal-generation/generation",
+    "method": "POST",
+    "requestParams": [
+      {
+        "key": "model",
+        "label": "模型",
+        "valueType": "enum",
+        "options": [
+          "qwen-image-3.0-pro"
+        ],
+        "defaultValue": "qwen-image-3.0-pro"
+      },
+      {
+        "key": "size",
+        "label": "出图尺寸",
+        "valueType": "string",
+        "defaultValue": "2048*2048"
+      },
+      {
+        "key": "watermark",
+        "label": "水印",
+        "valueType": "boolean",
+        "defaultValue": false
+      }
+    ],
+    "callParams": [
+      {
+        "key": "prompt",
+        "label": "画面描述",
+        "valueType": "text",
+        "required": true
+      }
+    ],
+    "body": {
+      "model": "${model}",
+      "input": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "text": "${prompt}"
+              }
+            ]
+          }
+        ]
+      },
+      "parameters": {
+        "size": "${size}",
+        "watermark": "${watermark}"
+      }
+    },
+    "outputs": {
+      "url": "output.choices[0].message.content[0].image",
+      "errorCode": "code",
+      "error": "message"
+    },
+    "outputFormat": "url"
+  }
+}
+```
+
+**`async_json`**（async.submit）
+
+```json
+{
+  "submit": {
+    "path": "${baseUrl}/services/aigc/image-generation/generation",
+    "method": "POST",
+    "headers": {
+      "X-DashScope-Async": "enable"
+    },
+    "requestParams": [
+      {
+        "key": "model",
+        "label": "模型",
+        "valueType": "enum",
+        "options": [
+          "qwen-image-3.0-pro"
+        ],
+        "defaultValue": "qwen-image-3.0-pro"
+      },
+      {
+        "key": "size",
+        "label": "出图尺寸",
+        "valueType": "string",
+        "defaultValue": "2048*2048"
+      },
+      {
+        "key": "n",
+        "label": "张数",
+        "valueType": "number",
+        "defaultValue": 1,
+        "min": 1,
+        "max": 4
+      }
+    ],
+    "callParams": [
+      {
+        "key": "prompt",
+        "label": "画面描述",
+        "valueType": "text",
+        "required": true
+      }
+    ],
+    "body": {
+      "model": "${model}",
+      "input": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "text": "${prompt}"
+              }
+            ]
+          }
+        ]
+      },
+      "parameters": {
+        "size": "${size}",
+        "n": "${n}"
+      }
+    },
+    "outputs": {
+      "taskId": "output.task_id",
+      "errorCode": "code",
+      "error": "message"
+    }
+  },
+  "query": {
+    "path": "${baseUrl}/tasks/${taskId}",
+    "method": "GET",
+    "outputs": {
+      "status": "output.task_status",
+      "url": "output.choices[0].message.content[0].image",
+      "errorCode": "code",
+      "error": "message"
+    },
+    "successValues": [
+      "SUCCEEDED"
+    ],
+    "failureValues": [
+      "FAILED",
+      "CANCELED",
+      "UNKNOWN"
+    ],
+    "outputFormat": "url"
+  }
+}
+```
+
+**`download_json`**（download）
+
+```json
+null
+```
+
+**`upload_json`**（upload）
+
+```json
+null
+```
+
+**`clone_json`**（clone）
+
+```json
+null
+```
+
+#### `qwen-tts`
+
+- 标量列：`category=tts`，`use_clone=1`，`upload=0`，`ref_sample_rate=24000`
+
+**`headers_json`**（模板级请求头，这一行所有请求共用）
+
+```json
+{
+  "Content-Type": "application/json",
+  "Authorization": "Bearer ${apiKey}"
+}
+```
+
+**`instance_params_json`**（实例级参数**声明**）
+
+```json
+[
+  {
+    "key": "baseUrl",
+    "label": "服务地址",
+    "valueType": "string",
+    "defaultValue": "https://maas.qianwenaiapi.com/api/v1"
+  },
+  {
+    "key": "apiKey",
+    "label": "API Key",
+    "valueType": "secret"
+  },
+  {
+    "key": "timeoutMs",
+    "label": "单次超时 ms",
+    "valueType": "number",
+    "defaultValue": 60000
+  }
+]
+```
+
+**`sync_json`**（sync.submit）
+
+```json
+{
+  "submit": {
+    "path": "${baseUrl}/services/aigc/multimodal-generation/generation",
+    "method": "POST",
+    "requestParams": [
+      {
+        "key": "model",
+        "label": "模型",
+        "valueType": "enum",
+        "options": [
+          "qwen3-tts-flash",
+          "qwen3-tts-vc-2026-01-22"
+        ],
+        "defaultValue": "qwen3-tts-flash"
+      },
+      {
+        "key": "languageType",
+        "label": "语种",
+        "valueType": "enum",
+        "options": [
+          "Chinese",
+          "English",
+          "Auto"
+        ],
+        "defaultValue": "Chinese"
+      }
+    ],
+    "callParams": [
+      {
+        "key": "text",
+        "label": "合成文本",
+        "valueType": "text",
+        "required": true
+      },
+      {
+        "key": "voice",
+        "label": "音色 ID",
+        "valueType": "string",
+        "defaultValue": "Ethan"
+      }
+    ],
+    "body": {
+      "model": "${model}",
+      "input": {
+        "text": "${text}",
+        "voice": "${voice}"
+      },
+      "parameters": {
+        "language_type": "${languageType}"
+      }
+    },
+    "outputs": {
+      "url": "output.audio.url",
+      "errorCode": "code",
+      "error": "message"
+    },
+    "outputFormat": "url"
+  }
+}
+```
+
+**`async_json`**（async.submit）
+
+```json
+null
+```
+
+**`download_json`**（download）
+
+```json
+null
+```
+
+**`upload_json`**（upload）
+
+```json
+null
+```
+
+**`clone_json`**（clone）
+
+```json
+{
+  "path": "${baseUrl}/services/audio/tts/customization",
+  "method": "POST",
+  "requestParams": [
+    {
+      "key": "model",
+      "label": "复刻目标模型（须与合成同款）",
+      "valueType": "enum",
+      "options": [
+        "qwen3-tts-vc-2026-01-22"
+      ],
+      "defaultValue": "qwen3-tts-vc-2026-01-22"
+    },
+    {
+      "key": "preferredName",
+      "label": "音色名",
+      "valueType": "string",
+      "defaultValue": "mapvideo"
+    }
+  ],
+  "callParams": [
+    {
+      "key": "audioDataUri",
+      "label": "参考音频",
+      "valueType": "file",
+      "transform": "base64DataUri",
+      "accept": ".mp3,.wav,.m4a",
+      "maxSize": 10485760
+    }
+  ],
+  "body": {
+    "model": "qwen-voice-enrollment",
+    "input": {
+      "action": "create",
+      "target_model": "${model}",
+      "preferred_name": "${preferredName}",
+      "audio": {
+        "data": "${audioDataUri}"
+      }
+    }
+  },
+  "outputs": {
+    "voiceId": "output.voice",
+    "errorCode": "code",
+    "error": "message"
+  }
+}
+```
+<!-- END generated:seed-templates -->
 ## 十、内置模板清单（seed）
 
 | `tpl_id` | category | 接口槽 | 真实上游实测 |
@@ -289,6 +812,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | `deepseek-chat` | llm | `sync.submit` | ✅ 2026-09-23 |
 | `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条路径均通过 |
 | `qwen-tts` | tts | `sync.submit` + `clone` | 合成 ✅；复刻未跑（会在账号下建音色资源） |
+
+**实测（2026-09-23）**：异步查询回的产物路径与同步**同一条**（`output.choices[0].message.content[0].image`），文档写的 `output.results[].url` 是这个模型不再用的旧形状；一次 1024×1024 出图排队 52 秒～9 分钟不等，所以查询节奏是实例级参数、默认给到 30 分钟预算。
 
 按用户要求只留这三份。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
 
@@ -298,7 +823,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 |---|---|
 | `docs/db-schema-v2.sql` | 四张表 DDL（模板 / 实例 / 音色 / 任务）与索引，含真外键 |
 | `src/lib/request-engine.ts` | 纯函数：三层取值、`${x}` 求值与删键级联、`outputs` 取名、`classify`、字节还原、`validateTemplate`、按声明打码、`retriable`（只有 429·5xx 算「重试有用」） |
-| `src/lib/template-seed.ts` | 内置模板 seed（铺表 + 「恢复默认」的覆盖源） |
+| `src/lib/template-seed.ts` | 内置模板 seed（铺表 + 「恢复默认」的覆盖源）；**第九节就是它展开出来的** |
+| `tools/gen-template-json-doc.mjs` | 把 seed 展开成第九节（参数总表 + 逐列 JSON），`--check` 只校验 |
 | `src/stores/taskStore.ts` | 在途任务的调度：并发上限取实例参数、按 `next_query_at` 错峰、逐条进度、失败行按 `retriable` 决定重试还是点名 |
 | `src/lib/providers.ts` | `callLLM` / `callTTS` / `callImage` / `cloneVoice` 薄壳：实例 → 模板 → 引擎 → 产物落 `asset` |
 | `src/stores/providerStore.ts` | 模板与实例两份实体的读写与持久化；`currentInstance(category)` 取调用处选中的实例 |

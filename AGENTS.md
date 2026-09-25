@@ -30,7 +30,7 @@ npm run dist:win       # 打 Windows 包 → release/
 
 - 无测试框架。回归验证靠：`npx tsc -b` + `npm run build` + `tools/*.mjs` 自动化（需本机 Chrome 开 `--remote-debugging-port=9222`，临时 profile：`C:\Users\23659\AppData\Local\Temp\opencode\mv-studio-profile`，配合 `playwright-core`）。
 - `tools/` 只留**跑得动、还会再跑**的东西，读文件头注释即可用，四类：
-  ① 文档生成链：`db-field-notes.mjs`（701 字段中文说明词表，`gen-db-field-dict` 的**必需输入**，漏一条直接报错）→ `gen-db-field-dict.mjs`（注入 `docs/db-tables.md`，`--check` 只校验）→ `comment-ddl.mjs`（把说明写成 DDL 行尾注释）；
+  ① 文档生成链：`db-field-notes.mjs`（701 字段中文说明词表，`gen-db-field-dict` 的**必需输入**，漏一条直接报错）→ `gen-db-field-dict.mjs`（注入 `docs/db-tables.md`，`--check` 只校验）→ `comment-ddl.mjs`（把说明写成 DDL 行尾注释）；另一支：`gen-template-json-doc.mjs`（把 `src/lib/template-seed.ts` 里的内置模板展开成「参数总表 + 逐列 JSON」，注入 `docs/provider-engine.md` 第九节，`--check` 只校验 —— 那节原先手抄还拿 `/* … */` 省略参数表，结果「到底声明了哪些参数」在文档里查不到）；
   ② 离线回归（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `audit-fk-indexes` / `verify-path-interpolation`（逐帧路径插值与 `turf.along` 逐字同值）；
   ③ 浏览器自动化（Chrome 9222，或桌面端 `MV_CDP=9223`）：`smoke-desktop` / `smoke-backend` / `test-fx` / `test-overlays` / `test-timeline` / `test-import` / `verify-render-gate`（逐帧门禁：该跳的还在显示、该动的还在动，自建临时项目 `__gate-check` 并在跑完删除），公共助手 `pw-page.mjs`（标签页复用，避免每次开新标签）；
   ④ 会花配额 / 改数据的：`try-real-calls.mjs`（真发上游）、`bench-preview.mjs`（预览性能基线，采样结果存 `tools/.bench/`，不入库）、`bench-attribution.mjs`（把自耗时归因到我们的渲染函数，见 §6.28）、`stress-project.mjs`（建 / 开 / 删 `__perf-stress`：几百元素的测量场景，用户自己的项目太轻量不出差别）。

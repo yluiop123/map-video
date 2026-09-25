@@ -1,0 +1,122 @@
+/**
+ * gen-template-json-doc.mjs — 把内置模板的**具体参数与逐列 JSON** 注入 docs/provider-engine.md 第九节
+ *
+ * 为什么要有这条：第九节原先是手抄的 TS 片段，还拿 `/* … *\/` 把参数表省略掉了 ——
+ * 于是「文档里到底声明了哪些参数、每列 JSON 长什么样」这个问题答不出来，改 seed 也没人发现文档过期。
+ * 现在这节是生成的：事实源只有一个（`src/lib/template-seed.ts`），文档只是它的一份可读投影。
+ *
+ *   node --experimental-strip-types tools/gen-template-json-doc.mjs            # 写入
+ *   node --experimental-strip-types tools/gen-template-json-doc.mjs --check    # 只校验（漂移则退出码 1）
+ * 与 `gen-db-field-dict.mjs` 同一条链：改了表内容 / 字段说明就回来重跑一次。
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { SEED_TEMPLATES } from '../src/lib/template-seed.ts';
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DOC = path.join(ROOT, 'docs', 'provider-engine.md');
+const CHECK = process.argv.includes('--check');
+const BEGIN = '<!-- BEGIN generated:seed-templates -->';
+const END = '<!-- END generated:seed-templates -->';
+
+const SLOT_COL = [
+  ['sync.submit', 'sync_json', (t) => t.sync],
+  ['async.submit', 'async_json', (t) => t.async],
+  ['download', 'download_json', (t) => t.download],
+  ['upload', 'upload_json', (t) => t.upload],
+  ['clone', 'clone_json', (t) => t.clone],
+];
+
+const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+const json = (v) => '```json\n' + JSON.stringify(v ?? null, null, 2) + '\n```';
+
+/** 候选值 / 范围 / 文件限制挤进同一列：一个参数只可能用得上其中一种 */
+function rangeOf(p) {
+  if (p.options?.length) {
+    return p.options.map((o) => (typeof o === 'object' && o !== null ? `${o.value}（${o.label ?? ''}）` : String(o))).join(' · ');
+  }
+  if (p.valueType === 'number' || p.min !== undefined || p.max !== undefined) {
+    return [p.min !== undefined ? `≥${p.min}` : '', p.max !== undefined ? `≤${p.max}` : '', p.step !== undefined ? `步长 ${p.step}` : '']
+      .filter(Boolean).join(' ') || '—';
+  }
+  if (p.valueType === 'file') return [p.accept && `接受 ${p.accept}`, p.maxSize && `上限 ${p.maxSize}`].filter(Boolean).join('，') || '—';
+  if (p.valueType === 'array' || p.valueType === 'list') return p.itemType ? `元素 ${p.itemType}` : '—';
+  return '—';
+}
+
+function paramRows(t) {
+  const rows = [];
+  const push = (layer, list) => (list ?? []).forEach((p) => rows.push(
+    `| ${layer} | \`${p.key}\` | ${cell(p.label)} | ${p.valueType ?? 'string'} | ${p.defaultValue === undefined ? '—' : '`' + cell(JSON.stringify(p.defaultValue)) + '`'} | ${cell(rangeOf(p))} | ${p.required ? '是' : ''} | ${p.transform ?? ''} |`));
+  push('实例级', t.instanceParams);
+  for (const [slot] of SLOT_COL) {
+    const def = slot === 'sync.submit' ? t.sync?.submit : slot === 'async.submit' ? t.async?.submit
+      : slot === 'download' ? t.download : slot === 'upload' ? t.upload : t.clone;
+    if (!def) continue;
+    push(`请求级 \`${slot}\``, def.requestParams);
+    push(`调用级 \`${slot}\``, def.callParams);
+  }
+  return rows;
+}
+
+const HEAD = '| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 | 必填 | 加工 |\n|---|---|---|---|---|---|---|---|';
+
+function block() {
+  const out = [];
+  out.push('### 9.1 三份模板各自声明了哪些参数');
+  out.push('');
+  out.push('「层」就是取值的三级：实例级整条实例共用、请求级按接口槽各存各的、调用级不落库（由业务界面或试调用现场给）。');
+  for (const t of SEED_TEMPLATES) {
+    out.push('');
+    out.push(`#### \`${t.id}\` · ${t.name}（${t.category}）`);
+    out.push('');
+    out.push(HEAD);
+    out.push(...paramRows(t));
+  }
+
+  out.push('');
+  out.push('### 9.2 逐列 JSON（照抄可用）');
+  out.push('');
+  out.push('下面每块就是 `provider_template` 那一行对应列里存的内容，键名与列名一一对应；`null` = 该列没配（界面上那一格也就不出现）。');
+  for (const t of SEED_TEMPLATES) {
+    out.push('');
+    out.push(`#### \`${t.id}\``);
+    out.push('');
+    out.push(`- 标量列：\`category=${t.category}\`，\`use_clone=${t.useClone ? 1 : 0}\`，\`upload=${t.hasUpload ? 1 : 0}\`，\`ref_sample_rate=${t.refSampleRateHz ?? 'NULL'}\``);
+    out.push('');
+    out.push('**`headers_json`**（模板级请求头，这一行所有请求共用）');
+    out.push('');
+    out.push(json(t.headers ?? {}));
+    out.push('');
+    out.push('**`instance_params_json`**（实例级参数**声明**）');
+    out.push('');
+    out.push(json(t.instanceParams ?? []));
+    for (const [slot, col, get] of SLOT_COL) {
+      const v = get(t);
+      out.push('');
+      out.push(`**\`${col}\`**（${slot}）`);
+      out.push('');
+      out.push(json(v ?? null));
+    }
+  }
+  return out.join('\n');
+}
+
+const generated = `${BEGIN}\n_（本节由 \`node --experimental-strip-types tools/gen-template-json-doc.mjs\` 从 \`src/lib/template-seed.ts\` 生成，改 seed 后重跑；\`--check\` 只校验。）_\n\n${block()}\n${END}`;
+
+// 读入即归一成 LF：编辑器/工具可能把文档写成 CRLF，混着写会让整份文件显示成全文件重写（见 AGENTS §6.21）
+const src = fs.readFileSync(DOC, 'utf8').replace(/\r\n/g, '\n');
+const re = new RegExp(`${BEGIN}[\\s\\S]*?${END}`);
+if (!re.test(src)) {
+  console.error(`文档里找不到 ${BEGIN} —— 第九节还没接上生成链`);
+  process.exit(2);
+}
+const current = re.exec(src)[0];
+if (CHECK) {
+  const ok = current === generated;
+  console.log(ok ? '第九节与 seed 一致 ✓' : '结果：文档已与 seed 漂移，重跑 gen-template-json-doc ✗');
+  process.exit(ok ? 0 : 1);
+}
+fs.writeFileSync(DOC, src.replace(re, generated), 'utf8');
+console.log(`已写入 ${path.relative(ROOT, DOC)} 第九节（${SEED_TEMPLATES.length} 份模板）`);
