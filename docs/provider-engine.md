@@ -60,7 +60,6 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 ```jsonc
 { "path": "${baseUrl}/services/aigc/image-generation/generation",  // 查询串直接拼在串上
   "method": "POST",
-  "headers": { "X-DashScope-Async": "enable" },        // 与模板级 headers 合并，这一层的赢
   "requestParams": [ /* 这个请求专属的参数声明：model / size… */ ],
   "callParams":    [ /* 每次调用由界面或程序给的参数：text / prompt / 文件… */ ],
   "body": { "model": "${model}", "input": { "text": "${text}" } },
@@ -69,6 +68,10 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   "successValues": ["SUCCEEDED"], "failureValues": ["FAILED","CANCELED","UNKNOWN"],  // 只有 query 用
   "timeoutMs": 60000 }
 ```
+
+- **请求头整份模板只有 `headers_json` 一份**，槽上不再有 `headers`。理由：同一家怎么认证是固定的，
+  多一格「附加请求头」只会多一个看不懂又可能写错的地方。代价是异步开关头（`X-DashScope-Async: enable`）
+  现在也挂在模板级，同步那条端点同样会收到它 —— **该端点是否忽略这个头未实测**。
 
 - **`outputs` 分两种，界面上也分两处**：
   - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`artifact`（产物）、
@@ -199,7 +202,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + **能力开关**：接法 / 产物形式 / 建音色 / 建前先上传 / 采样率）→ 开关推导出的接口槽卡片（path/method/该槽 headers/请求体或上传表单/请求级与调用级参数表/**固定项逐行填路径** + 折叠的「给下一个请求用的变量」/两个枚举/超时）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **一小节「这一家怎么交活」**（接法 / 产物形式 / 建音色 / 建前先上传 / 采样率，按 category 只显示问得上的）→ **请求头（折叠，标题带条数）** → 开关推导出的接口槽卡片，卡片内按小节排：**要填的参数**（请求级 / 调用级两张表）→ **发出去的内容**（body；upload 那格换成 multipart 表单）→ **从响应里取**（固定项逐行 + 折叠的自定义变量）→ **这一步的判定与超时**（两个状态值只在 query 出现）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - 「预览请求 → 试调用」是这套设计的验收口，两件事分在两页：**预览**在模板页（只跑求值 + 按声明打码，一个字节都不发），**试调用**在实例页（真发一条要的是这条实例的 Key）。改完模板先看形状，再决定要不要花一次真调用。
@@ -469,7 +472,8 @@ null
 ```json
 {
   "Content-Type": "application/json",
-  "Authorization": "Bearer ${apiKey}"
+  "Authorization": "Bearer ${apiKey}",
+  "X-DashScope-Async": "enable"
 }
 ```
 
@@ -582,9 +586,6 @@ null
   "submit": {
     "path": "${baseUrl}/services/aigc/image-generation/generation",
     "method": "POST",
-    "headers": {
-      "X-DashScope-Async": "enable"
-    },
     "requestParams": [
       {
         "key": "model",
