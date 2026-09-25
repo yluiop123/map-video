@@ -19,8 +19,8 @@ import { Button } from './ui/button';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  REQ_KEYS, openKeysOf, paramLabelOf, requestOf, validateTemplate,
-  type Category, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
+  REQ_KEYS, openKeysOf, paramLabelOf, requestOf, requestParamsOf, validateTemplate,
+  type Category, type FileValue, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
 } from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
 import { previewRequest, trialCall, SAMPLE_CALL_ARGS } from '../lib/providers';
@@ -182,18 +182,27 @@ function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
   const keys = REQ_KEYS.filter((k) => !!requestOf(tpl, k));
   const [key, setKey] = useState<ReqKey>('sync.submit');
   const [inputs, setInputs] = useState<Record<string, string>>({});
+  const [files, setFiles] = useState<Record<string, FileValue>>({});
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState('');
   const cur = keys.includes(key) ? key : keys[0];
   if (!cur) return null;
   const callKeys = openKeysOf(tpl, inst, cur);
+  const declared = requestParamsOf(tpl, cur);
+  /** 文件参数交的是文件值（字节 + mime + 名字）：base64 那格换成 data URI，表单那格就是分片 */
+  const isFileParam = (k: string) => declared.find((p) => p.key === k)?.valueType === 'file';
   const args = (): Record<string, unknown> => {
     const o: Record<string, unknown> = {};
     for (const k of callKeys) {
-      const v = inputs[k] ?? SAMPLE_CALL_ARGS[k];
+      const v = files[k] ?? inputs[k] ?? SAMPLE_CALL_ARGS[k];
       if (v !== undefined) o[k] = v;
     }
     return o;
+  };
+  const pickFile = async (k: string, f?: File) => {
+    if (!f) { setFiles((s) => { const n = { ...s }; delete n[k]; return n; }); return; }
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    setFiles((s) => ({ ...s, [k]: { bytes, mime: f.type || 'application/octet-stream', name: f.name } }));
   };
   const preview = () => {
     try { setOut(JSON.stringify(previewRequest(inst, cur, args()), null, 1)); }
@@ -221,11 +230,20 @@ function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
       {callKeys.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           {callKeys.map((k) => (
-            <label key={k} className="flex items-center gap-1 text-[10px]">
+            // 换页签不重挂载会留着上一格选中的那个文件（见 §6.30）：定位按「哪一格的哪个参数」
+            <label key={`${cur}:${k}`} className="flex items-center gap-1 text-[10px]">
               {/* 显示模板声明的名字，裸 key 只作 title */}
               <span className="text-muted-foreground" title={k}>{paramLabelOf(tpl, cur, k)}</span>
-              <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-40 text-[11px]"
-                onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
+              {isFileParam(k) ? (
+                <span className="flex items-center gap-1">
+                  <input type="file" className="w-40 text-[10px] text-muted-foreground"
+                    onChange={(e) => void pickFile(k, e.target.files?.[0])} />
+                  {files[k] && <span className="tabular-nums">{(files[k].bytes.length / 1024).toFixed(0)}KB</span>}
+                </span>
+              ) : (
+                <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-40 text-[11px]"
+                  onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
+              )}
             </label>
           ))}
         </div>
