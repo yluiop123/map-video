@@ -23,14 +23,13 @@ export interface OptionSpec { value: string | number | boolean; label?: string }
 
 /**
  * 一条参数声明。名字 / 说明都是用户自填的单个字符串（自定义的东西没有自动翻这回事）。
- * `transform` 是**数据驱动的取值变换**，用来吃掉「同一条数据在不同厂商要变成不同形状」这类差异，
- * 免得引擎里长出 `if (厂商 === 'minimax')`。
+ * **没有「必填」也没有「加工方式」**：声明出来的参数要么在实例里填、要么在调用时给，
+ * 没有第三种来源，所以「必不必填」这个问题问得没意义；取值成形只看 `valueType`。
  */
 export interface ParamSpec {
   key: string;
   label?: string;
   valueType?: ValueType;
-  required?: boolean;
   defaultValue?: unknown;
   /** 有 options 就是选项块；enum 单值、multiEnum 数组 */
   options?: (OptionSpec | string | number | boolean)[];
@@ -43,12 +42,6 @@ export interface ParamSpec {
   itemType?: 'string' | 'number';
   accept?: string;
   maxSize?: number;
-  /**
-   * hotFixArray：把 {pronunciation:[{词:音}]} / {replace:[{原:换}]} 摊成 ["词/音", …]
-   * base64DataUri：文件字节 → `data:<mime>;base64,…`
-   * json：字符串按 JSON 解析后再入体
-   */
-  transform?: 'hotFixArray' | 'base64DataUri' | 'json';
 }
 
 /** 一条请求（核心或桥接）。请求头逐条各配一份：同一个账号的认证头家家一样，但异步开关头只有提交那条要 */
@@ -330,37 +323,17 @@ export function applyOutputs(doc: unknown, outputs?: Record<string, string>): Re
 }
 
 /**
- * 参数声明的 valueType / transform 落到实际值：控件给的是字符串，进请求体前按声明成形。
+ * 参数声明的 valueType 落到实际值：控件给的是字符串，进请求体前按声明成形。
  * 未识别的键（界面里手打的 `${x}`）原样传出去，交给「未声明占位符」那条校验点名。
  */
 function castParam(spec: ParamSpec | undefined, raw: unknown): unknown {
   if (raw === undefined || raw === null) return raw;
   const t = spec?.valueType;
-  if (spec?.transform === 'json' && typeof raw === 'string') {
-    try { return JSON.parse(raw); } catch { return raw; }
-  }
-  if (spec?.transform === 'hotFixArray') return hotFixToArrays(raw);
-  if (spec?.transform === 'base64DataUri') return raw;     // 调用端已给 data URI
   if (typeof raw !== 'string') return raw;
   if (t === 'number') return raw === '' ? raw : Number(raw);
   if (t === 'boolean') return raw === 'true';
   if (t === 'json') { try { return JSON.parse(raw); } catch { return raw; } }
   return raw;
-}
-
-/**
- * 发音修正 → 数组形状：`{词: "chong2 qing4"}` → `"词/chong2 qing4"`。
- * 千问要对象、MiniMax / 字节要这个数组 —— 差别只在模板里选不选这个 transform。
- */
-export function hotFixToArrays(raw: unknown): unknown {
-  if (!raw || typeof raw !== 'object') return raw;
-  const o = raw as Record<string, unknown>;
-  const one = (arr: unknown) => (Array.isArray(arr) ? arr : arr ? [arr] : []);
-  const tone = [
-    ...one(o.pronunciation).flatMap((m) => Object.entries((m ?? {}) as object).map(([k, v]) => `${k}/${v}`)),
-    ...one(o.replace).flatMap((m) => Object.entries((m ?? {}) as object).map(([k, v]) => `${k}/${v}`)),
-  ];
-  return tone.length ? tone : undefined;
 }
 
 /** 一次求值的作用域：调用参数 > 上游 outputs > 请求级 > 实例级 > 声明的 defaultValue > 内置 */
@@ -812,19 +785,4 @@ export function validateTemplate(tpl: TemplateDef): string[] {
     problems.push(`${key} 引用了 \${${name}}，但没有任何来源给它（三层参数里都没有这个名字，也不是 outputs 的产出）`);
   }
   return problems;
-}
-
-/** 实例是否配齐到能发出去（缺 baseUrl / Key 时界面要说话，别只让请求炸） */
-export function missingOfInstance(tpl: TemplateDef, inst: InstanceDef, key: ReqKey): string[] {
-  const need: string[] = [];
-  const def = requestOf(tpl, key);
-  if (!def) return [`${key} 这条请求模板里没有`];
-  const given = scopeOf(tpl, inst, key, {}, {});
-  const has = (n: string) => n in given.values;
-  for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? [])]) {
-    // 有默认值或可选的就不催；催的只是「非填不可、又没给值」的那些
-    if (p.required === false || p.defaultValue !== undefined || has(p.key)) continue;
-    need.push(`参数「${p.label || p.key}」没填`);
-  }
-  return need;
 }

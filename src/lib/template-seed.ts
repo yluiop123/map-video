@@ -26,7 +26,7 @@ const num = (key: string, label: string, extra: Partial<ParamSpec> = {}): ParamS
 const en = (key: string, label: string, options: string[], extra: Partial<ParamSpec> = {}): ParamSpec =>
   ({ key, label, valueType: 'enum', options, ...extra });
 const bool = (key: string, label: string, defaultValue = false): ParamSpec => ({ key, label, valueType: 'boolean', defaultValue });
-const text = (key: string, label: string): ParamSpec => ({ key, label, valueType: 'text', required: true });
+const text = (key: string, label: string): ParamSpec => ({ key, label, valueType: 'text' });
 
 /** 实例级共用的三样：地址、密钥、超时（密钥就是 valueType=secret 的普通参数，界面渲染成密码框） */
 const net = (baseUrl: string): ParamSpec[] => [p('baseUrl', '服务地址', { defaultValue: baseUrl }), secret('apiKey', 'API Key'), num('timeoutMs', '单次超时 ms', { defaultValue: 60000 })];
@@ -151,7 +151,10 @@ const qwenTts: TemplateDef = {
       en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
       p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
     ],
-    callParams: [{ key: 'audioDataUri', label: '参考音频', valueType: 'file', transform: 'base64DataUri', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
+    // 全项目**只有一处**要把文件转成 base64：语音克隆且「建音色前不单独上传」（直接克隆）。
+    // 那一步由调用点把参考音频编成 data URI 交给 ${audioDataUri}（providers.ts 的 cloneVoice），
+    // 模板这边只管声明「这是个文件、收什么格式、多大为止」。
+    callParams: [{ key: 'audioDataUri', label: '参考音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
     body: {
       model: 'qwen-voice-enrollment',
       input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${audioDataUri}' } },

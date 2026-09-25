@@ -937,7 +937,7 @@ export interface NarrationStyle {
 
 /**
  * 发音修正（TTS 的 `hot_fix`）：**形状就是上游那一份** —— 一条 = 单键对象 `{词: 读音}` / `{原: 换}`。
- * 要数组形状的供应商（MiniMax / 字节）由模板给这个参数选 `transform: 'hotFixArray'`，界面上不再另立一套模型。
+ * 模板把这条参数声明成 `json`，它便原样进请求体；界面上不另立一套模型。
  */
 export interface HotFix {
   pronunciation: Record<string, string>[];

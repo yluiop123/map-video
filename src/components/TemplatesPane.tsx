@@ -428,8 +428,6 @@ function ParamTable({ title, hint, params, onChange }: {
   title: string; hint?: string; params: ParamSpec[]; onChange: (p: ParamSpec[]) => void;
 }) {
   const t = useT();
-  const uid = useId();
-  const sid = (i: number) => `${uid}-req-${i}`;
   const at = (i: number, p: Partial<ParamSpec>) => onChange(params.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const optsText = (p: ParamSpec) => (p.options ?? []).map((o) => (typeof o === 'object' && o !== null ? `${o.value}${o.label ? `=${o.label}` : ''}` : String(o))).join(', ');
   return (
@@ -454,10 +452,6 @@ function ParamTable({ title, hint, params, onChange }: {
               <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('默认值', 'default')} />
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <label className="flex items-center gap-1 pr-1 text-[10px] text-muted-foreground">
-                <Switch id={sid(i)} checked={!!p.required} onCheckedChange={(v) => at(i, { required: v })} />
-                <Label htmlFor={sid(i)} className="text-[10px] font-normal">{t('必填', 'required')}</Label>
-              </label>
               {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
                 <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 min-w-0 flex-1 basis-32 text-[10px] font-mono"
                   placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />
@@ -475,15 +469,6 @@ function ParamTable({ title, hint, params, onChange }: {
                   <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-20 min-w-0 text-[10px]" placeholder={t('上限字节', 'maxSize')} />
                 </>
               )}
-              <Select value={p.transform ?? 'none'} onValueChange={(v) => at(i, { transform: v === 'none' ? undefined : (v as ParamSpec['transform']) })}>
-                <SelectTrigger className="h-6 w-32 min-w-0 text-[10px]"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none" className="text-[10px]">{t('不做转换', 'no transform')}</SelectItem>
-                  <SelectItem value="hotFixArray" className="text-[10px]">hotFix → 数组</SelectItem>
-                  <SelectItem value="base64DataUri" className="text-[10px]">文件 → data URI</SelectItem>
-                  <SelectItem value="json" className="text-[10px]">字符串 → JSON</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
           </div>
         ))}

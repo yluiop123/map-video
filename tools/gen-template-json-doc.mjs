@@ -46,10 +46,11 @@ function rangeOf(p) {
   return '—';
 }
 
+/** 参数总表：声明层 + key + 显示名 + 类型 + 默认值 + 候选值/范围（没有「必填」「加工」这两列 —— 声明出来的参数只有两个来源：实例里填、调用时给） */
 function paramRows(t) {
   const rows = [];
   const push = (layer, list) => (list ?? []).forEach((p) => rows.push(
-    `| ${layer} | \`${p.key}\` | ${cell(p.label)} | ${p.valueType ?? 'string'} | ${p.defaultValue === undefined ? '—' : '`' + cell(JSON.stringify(p.defaultValue)) + '`'} | ${cell(rangeOf(p))} | ${p.required ? '是' : ''} | ${p.transform ?? ''} |`));
+    `| ${layer} | \`${p.key}\` | ${cell(p.label)} | ${p.valueType ?? 'string'} | ${p.defaultValue === undefined ? '—' : '`' + cell(JSON.stringify(p.defaultValue)) + '`'} | ${cell(rangeOf(p))} |`));
   push('实例级', t.instanceParams);
   for (const [slot] of SLOT_COL) {
     const def = slot === 'sync.submit' ? t.sync?.submit : slot === 'async.submit' ? t.async?.submit
@@ -61,7 +62,7 @@ function paramRows(t) {
   return rows;
 }
 
-const HEAD = '| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 | 必填 | 加工 |\n|---|---|---|---|---|---|---|---|';
+const HEAD = '| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |\n|---|---|---|---|---|---|';
 
 function block() {
   const out = [];

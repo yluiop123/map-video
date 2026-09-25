@@ -136,19 +136,25 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 | `label` | 显示名，**单个字符串**（纯显示，不进请求体） |
 | `valueType` | `string`｜`text`｜`number`｜`boolean`｜`enum`｜`secret`｜`file`｜`list`｜`json`（模板页是下拉框） |
 | `defaultValue` | 模板给的默认值（实例没填就用它） |
-| `required` | 没值时报错而不是删键 |
 | `options` | 候选值：裸值或 `{value,label}`；有候选 → `OptionBlocks`，**不写原生 `<select>`** |
 | `min`/`max`/`step` | number 控件范围 |
 | `accept`/`maxSize` | file 控件：接受类型与体积上限 |
 | `itemType`/`item` | list 的行编辑器（`item` 可给元素子模板） |
-| `transform` | 数据驱动的取值加工：`base64DataUri`｜`json`｜`hotFixArray`（**不按厂商名写分支**） |
+
+- **声明里没有「必填」也没有「加工方式」这两格**：一份声明出来的参数只有两个来源 —— 要么在实例里填，要么在调用时给，
+  「必不必填」问得没意义（没给值就是那个键删掉，级联到空父键，见 §四）；取值成形只看 `valueType`。
+  原先的 `transform` 三选一里，`json` 与 `valueType:'json'` 重复，`base64DataUri` 在引擎里是个空操作
+  （文件本来就是调用点编好的），`hotFixArray` 三家内置模板一个都没用到 —— 整列删了。
+- **全项目只有一处要把文件转成 base64**：语音克隆且「建音色前不单独上传」（= 直接克隆）。那一步在调用点
+  （`providers.ts` 的 `cloneVoice`：参考音频 → 单声道 WAV → `data:audio/wav;base64,…` 交给 `${audioDataUri}`），
+  模板这边只声明「这是个文件、收什么格式、多大为止」。走「先上传再克隆」的那家传的是 multipart 二进制分片，不编码。
 
 - **内置 seed 只声明真正引用到的参数**，并且只到「该请求用得上」为止；`{text}` `{prompt}` 这类正文由调用点给值，要渲染成输入框就从占位符反推，不靠声明。
 - 候选值由模板写死，**不运行时从上游拉**（各家没有统一的 list 接口，顺序与文案不可控）。
-- **发音修正（`hotFix`）是这条规则的样例**：界面（`HotFixField`，项目级，存进 `narration.hot_fix_json`）保存的就是
-  上游那份对象形状 `{pronunciation:[{词:读音}], replace:[{原:换}]}`，模板在 `input` 里写 `hot_fix: '${hotFix}'` 即可（不选 transform → 原样发出）；
-  要数组形状的供应商（`"词/读音"`）给这个参数选 `transform: hotFixArray`，由引擎摊平 —— 差别只在模板，代码里没有厂商名分支。
-  没填修正时那个键整个消失，不会发半个空对象给上游（回归 `verify-request-engine` 3.9 / 3.10）。
+- **发音修正（`hotFix`）是「形状照上游存」的样例**：界面（`HotFixField`，项目级，存进 `narration.hot_fix_json`）保存的就是
+  上游那份对象形状 `{pronunciation:[{词:读音}], replace:[{原:换}]}`，模板在 `input` 里写 `hot_fix: '${hotFix}'`、
+  把这条参数声明成 `json` 即可原样发出（引擎不改形状，代码里也就没有厂商名分支）。
+  没填修正时那个键整个消失，不会发半个空对象给上游（回归 `verify-request-engine` 3.5–3.7）。
   注意**不是每条端点都吃这个参数**：非实时 CosyVoice / Qwen-Audio-TTS（`/services/audio/tts/SpeechSynthesizer`）有 `hot_fix`（`cosyvoice-v2` 除外），
   而 seed 里那条 `qwen3-tts`（`/services/aigc/multimodal-generation/generation`）**没有**（两条都按 2026-09-24 官方 API 参考逐字核对，未实测）—— 自建 CosyVoice 模板时才用得上。
 
@@ -261,51 +267,51 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 
 #### `deepseek-chat` · DeepSeek 对话（llm）
 
-| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 | 必填 | 加工 |
-|---|---|---|---|---|---|---|---|
-| 实例级 | `baseUrl` | 服务地址 | string | `"https://api.deepseek.com"` | — |  |  |
-| 实例级 | `apiKey` | API Key | secret | — | — |  |  |
-| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |  |  |
-| 请求级 `sync.submit` | `model` | 模型 | enum | `"deepseek-flash"` | deepseek-flash · deepseek-v4-pro |  |  |
-| 请求级 `sync.submit` | `reasoningEffort` | 思考强度 | enum | — | high · medium · low |  |  |
-| 请求级 `sync.submit` | `thinking` | 深度思考 | enum | — | enabled · disabled |  |  |
-| 请求级 `sync.submit` | `temperature` | 温度 | number | — | ≥0 ≤2 步长 0.1 |  |  |
-| 请求级 `sync.submit` | `maxTokens` | 最大输出 token | number | — | — |  |  |
-| 调用级 `sync.submit` | `systemPrompt` | 系统提示词 | text | — | — | 是 |  |
-| 调用级 `sync.submit` | `userPrompt` | 用户提示词 | text | — | — | 是 |  |
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
+|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://api.deepseek.com"` | — |
+| 实例级 | `apiKey` | API Key | secret | — | — |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
+| 请求级 `sync.submit` | `model` | 模型 | enum | `"deepseek-flash"` | deepseek-flash · deepseek-v4-pro |
+| 请求级 `sync.submit` | `reasoningEffort` | 思考强度 | enum | — | high · medium · low |
+| 请求级 `sync.submit` | `thinking` | 深度思考 | enum | — | enabled · disabled |
+| 请求级 `sync.submit` | `temperature` | 温度 | number | — | ≥0 ≤2 步长 0.1 |
+| 请求级 `sync.submit` | `maxTokens` | 最大输出 token | number | — | — |
+| 调用级 `sync.submit` | `systemPrompt` | 系统提示词 | text | — | — |
+| 调用级 `sync.submit` | `userPrompt` | 用户提示词 | text | — | — |
 
 #### `qwen-image` · 千问 文生图（image）
 
-| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 | 必填 | 加工 |
-|---|---|---|---|---|---|---|---|
-| 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |  |  |
-| 实例级 | `apiKey` | API Key | secret | — | — |  |  |
-| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |  |  |
-| 实例级 | `queryIntervalMs` | 查询间隔 ms | number | `5000` | — |  |  |
-| 实例级 | `queryMaxAttempts` | 查询次数上限 | number | `360` | — |  |  |
-| 请求级 `sync.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |  |  |
-| 请求级 `sync.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |  |  |
-| 请求级 `sync.submit` | `watermark` | 水印 | boolean | `false` | — |  |  |
-| 调用级 `sync.submit` | `prompt` | 画面描述 | text | — | — | 是 |  |
-| 请求级 `async.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |  |  |
-| 请求级 `async.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |  |  |
-| 请求级 `async.submit` | `n` | 张数 | number | `1` | ≥1 ≤4 |  |  |
-| 调用级 `async.submit` | `prompt` | 画面描述 | text | — | — | 是 |  |
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
+|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |
+| 实例级 | `apiKey` | API Key | secret | — | — |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
+| 实例级 | `queryIntervalMs` | 查询间隔 ms | number | `5000` | — |
+| 实例级 | `queryMaxAttempts` | 查询次数上限 | number | `360` | — |
+| 请求级 `sync.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |
+| 请求级 `sync.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |
+| 请求级 `sync.submit` | `watermark` | 水印 | boolean | `false` | — |
+| 调用级 `sync.submit` | `prompt` | 画面描述 | text | — | — |
+| 请求级 `async.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |
+| 请求级 `async.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |
+| 请求级 `async.submit` | `n` | 张数 | number | `1` | ≥1 ≤4 |
+| 调用级 `async.submit` | `prompt` | 画面描述 | text | — | — |
 
 #### `qwen-tts` · 千问 TTS（tts）
 
-| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 | 必填 | 加工 |
-|---|---|---|---|---|---|---|---|
-| 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |  |  |
-| 实例级 | `apiKey` | API Key | secret | — | — |  |  |
-| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |  |  |
-| 请求级 `sync.submit` | `model` | 模型 | enum | `"qwen3-tts-flash"` | qwen3-tts-flash · qwen3-tts-vc-2026-01-22 |  |  |
-| 请求级 `sync.submit` | `languageType` | 语种 | enum | `"Chinese"` | Chinese · English · Auto |  |  |
-| 调用级 `sync.submit` | `text` | 合成文本 | text | — | — | 是 |  |
-| 调用级 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |  |  |
-| 请求级 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |  |  |
-| 请求级 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |  |  |
-| 调用级 `clone` | `audioDataUri` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |  | base64DataUri |
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
+|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |
+| 实例级 | `apiKey` | API Key | secret | — | — |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
+| 请求级 `sync.submit` | `model` | 模型 | enum | `"qwen3-tts-flash"` | qwen3-tts-flash · qwen3-tts-vc-2026-01-22 |
+| 请求级 `sync.submit` | `languageType` | 语种 | enum | `"Chinese"` | Chinese · English · Auto |
+| 调用级 `sync.submit` | `text` | 合成文本 | text | — | — |
+| 调用级 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |
+| 请求级 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
+| 请求级 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
+| 调用级 `clone` | `audioDataUri` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |
 
 ### 9.4 逐列 JSON（照抄可用）
 
@@ -400,14 +406,12 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
       {
         "key": "systemPrompt",
         "label": "系统提示词",
-        "valueType": "text",
-        "required": true
+        "valueType": "text"
       },
       {
         "key": "userPrompt",
         "label": "用户提示词",
-        "valueType": "text",
-        "required": true
+        "valueType": "text"
       }
     ],
     "body": {
@@ -543,8 +547,7 @@ null
       {
         "key": "prompt",
         "label": "画面描述",
-        "valueType": "text",
-        "required": true
+        "valueType": "text"
       }
     ],
     "body": {
@@ -616,8 +619,7 @@ null
       {
         "key": "prompt",
         "label": "画面描述",
-        "valueType": "text",
-        "required": true
+        "valueType": "text"
       }
     ],
     "body": {
@@ -755,8 +757,7 @@ null
       {
         "key": "text",
         "label": "合成文本",
-        "valueType": "text",
-        "required": true
+        "valueType": "text"
       },
       {
         "key": "voice",
@@ -834,7 +835,6 @@ null
       "key": "audioDataUri",
       "label": "参考音频",
       "valueType": "file",
-      "transform": "base64DataUri",
       "accept": ".mp3,.wav,.m4a",
       "maxSize": 10485760
     }
