@@ -19,6 +19,7 @@ import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Switch } from './ui/switch';
+import { Checkbox } from './ui/checkbox';
 import { useConfirm } from './ui/ConfirmHost';
 import { useProviderStore } from '../stores/providerStore';
 import { seedTemplate } from '../lib/template-seed';
@@ -47,12 +48,16 @@ const REQ_LABEL: Record<ReqKey, { zh: string; en: string }> = {
 
 const VALUE_TYPES: ValueType[] = ['string', 'text', 'number', 'boolean', 'enum', 'multiEnum', 'array', 'secret', 'file', 'json'];
 
-/** 接法：这一家有几种交活方式 */
-const MODE_OPTIONS = (t: (a: string, b: string) => string) => [
-  { value: 'sync' as const, label: t('只要同步', 'Sync') },
-  { value: 'async' as const, label: t('只要异步', 'Async') },
-  { value: 'both' as const, label: t('两套都有', 'Both') },
-];
+/**
+ * 同步 / 异步 两个复选框 ↔ `caps.modes` 三态。
+ * 两个都不勾 = 这份模板没有任何接口可配，所以最后一个勾不让掉（不让界面进入那个状态）。
+ */
+function nextModes(cur: Caps['modes'], which: 'sync' | 'async', on: boolean): Caps['modes'] {
+  const has = { sync: cur !== 'async', async: cur !== 'sync' };
+  if (!on && !has[which === 'sync' ? 'async' : 'sync']) return cur;
+  const next = { ...has, [which]: on };
+  return next.sync && next.async ? 'both' : next.async ? 'async' : 'sync';
+}
 
 /** 产物以什么形式给 —— 整份模板问一次，同步与异步共用 */
 const ARTIFACT_OPTIONS = (t: (a: string, b: string) => string) => [
@@ -123,6 +128,11 @@ export function TemplatesPane() {
   }, [tpl, selReq, slots]);
 
   const patch = (next: TemplateDef) => { if (next.id) saveTemplate(next); };
+  const toggleMode = (which: 'sync' | 'async', on: boolean) => {
+    if (!tpl) return;
+    const modes = nextModes(tpl.caps.modes, which, on);
+    if (modes !== tpl.caps.modes) patch(withCaps(tpl, { ...tpl.caps, modes }));
+  };
   const usedBy = (id: string) => instances.filter((i) => i.tplId === id);
   const problems = tpl ? validateTemplate(tpl) : [];
 
@@ -182,16 +192,24 @@ export function TemplatesPane() {
               </div>
             </div>
 
-            {/* 能力开关：这一家怎么交活。**下面的接口槽与每格必填的返回项全部由它推导**，
-                所以问完这几个问题，就不需要「自己加一条接口」了。
-                文案生成只取一段文本 —— 三问都用不上，整节就不摆（摆个空标题在那儿更迷惑）。 */}
+            {/* 能力开关：文案生成只取一段文本，这几问都用不上，整块不显示。
+                同步 / 异步 是**两个复选框**（勾掉最后一个不动 —— 两个都不勾等于这份模板没有接口可配）。 */}
             {tpl.category !== 'llm' && (
-            <Group title={t('这一家怎么交活', 'Capabilities')}>
+            <>
+            <Separator />
             <div className="space-y-2 text-[11px]">
               <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
-                <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('接法', 'Modes')}</Label>
-                <OptionBlocks<Caps['modes']> value={tpl.caps.modes} options={MODE_OPTIONS(t)}
-                  onChange={(modes) => patch(withCaps(tpl, { ...tpl.caps, modes }))} />
+                <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('调用方式', 'Call mode')}</Label>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+                  {([['sync', t('同步', 'Sync')], ['async', t('异步', 'Async')]] as const).map(([k, label]) => (
+                    <label key={k} className="flex items-center gap-2">
+                      <Checkbox id={`tpl-mode-${k}`}
+                        checked={k === 'sync' ? tpl.caps.modes !== 'async' : tpl.caps.modes !== 'sync'}
+                        onCheckedChange={(on) => toggleMode(k, !!on)} />
+                      <Label htmlFor={`tpl-mode-${k}`} className="text-[11px] font-normal">{label}</Label>
+                    </label>
+                  ))}
+                </div>
               </div>
               <div className="grid grid-cols-[86px_minmax(0,1fr)] items-start gap-x-3">
                 <Label className="pt-1 text-right text-[10px] font-normal text-muted-foreground">{t('产物形式', 'Artifact')}</Label>
@@ -227,7 +245,7 @@ export function TemplatesPane() {
                 </div>
               )}
             </div>
-            </Group>
+            </>
             )}
 
             {/* 请求头**逐条接口各一份**（在下面的接口卡片里配）：认证头家家不同，
@@ -241,9 +259,6 @@ export function TemplatesPane() {
                   <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}</TabsTrigger>
                 ))}
               </TabsList>
-              {!slots.length && (
-                <p className="mt-1.5 text-[10px] text-red-400">{t('上面一个开关都没开，所以没有任何接口可配。', 'No capability is on, so there is nothing to configure.')}</p>
-              )}
               {curReq && present(tpl, curReq) && (
                 <div className="mt-2">
                   <RequestEditor tpl={tpl} reqKey={curReq} inst={usedBy(tpl.id)[0] ?? null} onChange={patch} />
@@ -319,15 +334,32 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
       </CardHeader>
       <CardContent className="space-y-1 p-2 pt-0">
 
+      {/* 顺序照发出去的样子排：先这条请求自己的头与体，再声明它引用了哪些参数 */}
+      <Group title={reqKey === 'upload' ? t('上传时发出去的内容', 'Upload payload') : t('发出去的内容', 'Request body')}
+        hint={reqKey === 'upload'
+          ? t('一层键值：值是 ${某参数} 时，字符串当普通字段、文件当二进制分片', 'flat fields; a ${param} holding a file becomes the binary part')
+          : t('值里写 ${key} 引用下面声明的参数；没给值的键会整个删掉', 'use ${key} to reference the params declared below; unset keys are dropped')}>
+        <JsonBox label="Headers" rows={3} value={def.headers ?? {}}
+          hint={reqKey === 'upload'
+            ? t('认证头写在这儿；multipart 的 Content-Type 由传输层生成，不用写', "auth headers; the multipart Content-Type comes from the transport")
+            : t('这一条自己的头，${apiKey} 会换成实例里填的 Key', "this request's own headers; ${apiKey} comes from the instance")}
+          onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
+        {reqKey === 'upload' ? (
+          <JsonBox label={t('上传表单（multipart 字段）', 'Upload form')} value={def.form ?? {}} onChange={(form) => set({ form: form as Record<string, unknown> })}
+            hint={t('例 { "file": "${audioFile}", "purpose": "voice_clone" }', 'e.g. { "file": "${audioFile}", "purpose": "voice_clone" }')} />
+        ) : (
+          <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />
+        )}
+      </Group>
+
       {/* 上传那一格的入参与别的接口不同：要传的只有一个**文件**（调用时给），
-          没有 model / size 这类请求级 JSON 参数 —— 那些字段是 multipart 表单的一部分，在下一节里写。 */}
+          model / size 那类请求级 JSON 参数对它没意义。 */}
       <Group title={reqKey === 'upload' ? t('要上传的文件', 'File to upload') : t('要填的参数', 'Parameters')}
         hint={reqKey === 'upload'
-          ? t('只有这一格是文件：随文件一起发的字段在下面「发出去的内容」里写', 'the only input is the file; the companion fields live in the payload below')
+          ? t('表单里用 ${它的名字} 引用；格式与体积上限就在这儿声明', 'reference it from the form as ${name}')
           : t('请求级存进实例的「按请求」那一区；调用级不落库，每次现场给', 'request params persist per request on the instance; call params never do')}>
         {reqKey === 'upload' ? (
           <ParamTable title={t('要传的文件（调用时给）', 'File param')}
-            hint={t('表单里用 ${它的名字} 引用；格式与体积上限就在这儿声明', 'reference it from the form as ${name}')}
             params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
         ) : (
           <>
@@ -339,24 +371,6 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
               params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
           </>
         )}
-      </Group>
-
-      <Group title={reqKey === 'upload' ? t('上传时发出去的内容', 'Upload payload') : t('发出去的内容', 'Request body')}
-        hint={reqKey === 'upload'
-          ? t('一层键值：值是 ${某参数} 时，字符串当普通字段、文件当二进制分片', 'flat fields; a ${param} holding a file becomes the binary part')
-          : t('值里写 ${key} 从上面的参数表取值；没给值的键会整个删掉', 'use ${key}; unset keys are dropped')}>
-        {reqKey === 'upload' ? (
-          <JsonBox label={t('上传表单（multipart 字段）', 'Upload form')} value={def.form ?? {}} onChange={(form) => set({ form: form as Record<string, unknown> })}
-            hint={t('例 { "file": "${audioFile}", "purpose": "voice_clone" }', 'e.g. { "file": "${audioFile}", "purpose": "voice_clone" }')} />
-        ) : (
-          <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />
-        )}
-        {/* 请求头逐条各一份：同一家不同端点要的头并不相同（异步开关头只有提交那条该带） */}
-        <JsonBox label="Headers" rows={3} value={def.headers ?? {}}
-          hint={reqKey === 'upload'
-            ? t('认证头写在这儿；multipart 的 Content-Type 由传输层生成，不用写', "auth headers; the multipart Content-Type comes from the transport")
-            : t('这一条自己的头，${apiKey} 会换成实例里填的 Key', "this request's own headers; ${apiKey} comes from the instance")}
-          onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
       </Group>
 
       {/* 引擎要读的返回项：名字写死（写错就没有消费者），只能填路径 */}

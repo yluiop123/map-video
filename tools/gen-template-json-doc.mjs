@@ -66,11 +66,12 @@ const HEAD = '| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 
 
 function block() {
   const out = [];
-  out.push('### 9.1 能力开关：这一家怎么交活');
+  out.push('### 9.1 能力开关');
   out.push('');
   out.push('`caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段，全由它推导**（`slotsOf` / `requiredOutputsOf`）。');
+  out.push('界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）。');
   out.push('');
-  out.push('| 模板 | 接法 | 产物形式 | 建音色 | 建前先上传 | 参考音频采样率 | 推导出的接口槽 |');
+  out.push('| 模板 | 调用方式 | 产物形式 | 建音色 | 建前先上传 | 参考音频采样率 | 推导出的接口槽 |');
   out.push('|---|---|---|---|---|---|---|');
   for (const t of SEED_TEMPLATES) {
     out.push(`| \`${t.id}\` | ${t.caps.modes} | ${t.caps.artifact} | ${t.caps.clone ? '是' : '否'} | ${t.caps.uploadFirst ? '是' : '否'} | ${t.refSampleRateHz ?? '—'} | ${slotsOf(t).map((k) => `\`${REQ_LABEL[k]}\``).join(' + ') || '（无）'} |`);
