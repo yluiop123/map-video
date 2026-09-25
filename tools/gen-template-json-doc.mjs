@@ -111,9 +111,7 @@ function block() {
     out.push('');
     out.push(`- 标量列：\`category=${t.category}\`，\`caps_json=${JSON.stringify(t.caps)}\`，\`ref_sample_rate=${t.refSampleRateHz ?? 'NULL'}\``);
     out.push('');
-    out.push('**`headers_json`**（模板级请求头，这一行所有请求共用）');
-    out.push('');
-    out.push(json(t.headers ?? {}));
+    out.push('- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。');
     out.push('');
     out.push('**`instance_params_json`**（实例级参数**声明**）');
     out.push('');

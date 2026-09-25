@@ -154,6 +154,9 @@ const RETIRED_COLUMNS = [
   // 真要支持过期，就把它作为固定项放进 upload / clone 的返回项里，而不是留一列空占着。
   ['voice', 'file_id_expires_at'],
   ['voice', 'voice_id_expires_at'],
+  // 请求头改回逐条接口各配一份（写在 sync_json / async_json 那几列里面）：
+  // 模板级那一份会替同步端点也带上异步开关头，而且多一处要对照的地方。
+  ['provider_template', 'headers_json'],
 ];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
@@ -1024,7 +1027,7 @@ export function migrateProvidersFromStale(db) {
 // ========== 接口模板（一行 = 一份完整模板；共享数据，实例只引用） ==========
 
 const TPL_COLS = `tpl_id AS id, name, category, caps_json AS capsJson,
-  headers_json AS headersJson, instance_params_json AS instanceParamsJson,
+  instance_params_json AS instanceParamsJson,
   sync_json AS syncJson, async_json AS asyncJson, download_json AS downloadJson,
   upload_json AS uploadJson, clone_json AS cloneJson, ref_sample_rate AS refSampleRateHz, ord`;
 
@@ -1034,7 +1037,6 @@ export function listTemplatesV2(db) {
     .map((r) => ({
       id: r.id, name: r.name ?? '', category: r.category,
       caps: parseCol(r.capsJson, {}),
-      headers: parseCol(r.headersJson, {}) ?? {},
       instanceParams: parseCol(r.instanceParamsJson, []) ?? [],
       sync: blank(parseCol(r.syncJson, null)) ? undefined : parseCol(r.syncJson, {}),
       async: blank(parseCol(r.asyncJson, null)) ? undefined : parseCol(r.asyncJson, {}),
@@ -1051,21 +1053,21 @@ export function upsertTemplateV2(db, t) {
   const now = Date.now();
   db.prepare(`
     INSERT INTO provider_template (tpl_id, name, category, caps_json,
-      headers_json, instance_params_json, sync_json, async_json, download_json, upload_json, clone_json,
+      instance_params_json, sync_json, async_json, download_json, upload_json, clone_json,
       ref_sample_rate, ord, created_at, updated_at)
-    VALUES (@id,@name,@category,@caps,@headers,@instanceParams,@sync,@async,
+    VALUES (@id,@name,@category,@caps,@instanceParams,@sync,@async,
       @download,@upload,@clone,@refSampleRateHz,
       COALESCE((SELECT ord FROM provider_template WHERE tpl_id = @id),
                (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider_template WHERE category = @category)),
       @now,@now)
     ON CONFLICT(tpl_id) DO UPDATE SET name=@name, category=@category, caps_json=@caps,
-      headers_json=@headers, instance_params_json=@instanceParams, sync_json=@sync,
+      instance_params_json=@instanceParams, sync_json=@sync,
       async_json=@async, download_json=@download, upload_json=@upload, clone_json=@clone,
       ref_sample_rate=@refSampleRateHz, updated_at=@now
   `).run({
     id: String(t.id), name: t.name ?? '', category: t.category,
     caps: jsonCol(t.caps),
-    headers: jsonCol(t.headers), instanceParams: jsonCol(t.instanceParams ?? []),
+    instanceParams: jsonCol(t.instanceParams ?? []),
     sync: jsonCol(t.sync), async: jsonCol(t.async), download: jsonCol(t.download),
     upload: jsonCol(t.upload), clone: jsonCol(t.clone),
     refSampleRateHz: t.refSampleRateHz ?? null, now,

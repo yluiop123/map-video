@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS provider_template (
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,             -- llm / tts / image（不加 CHECK，取值由 TS 联合类型管）
   caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：接法 / 产物形式 / 建音色 / 建前先上传
-  headers_json TEXT,     instance_params_json TEXT,     -- 模板级请求头 / 实例级参数声明
+  instance_params_json TEXT,                -- 实例级参数声明
   sync_json    TEXT,     async_json    TEXT,            -- 同步 {submit} / 异步 {submit,query}
   download_json TEXT,    upload_json   TEXT,   clone_json TEXT,   -- 三条桥接 / 核心请求
   ref_sample_rate INTEGER,                              -- 克隆参考音频采样率 Hz（各家不同）
@@ -60,6 +60,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 ```jsonc
 { "path": "${baseUrl}/services/aigc/image-generation/generation",  // 查询串直接拼在串上
   "method": "POST",
+  "headers": { "Content-Type": "application/json", "Authorization": "Bearer ${apiKey}", "X-DashScope-Async": "enable" },
   "requestParams": [ /* 这个请求专属的参数声明：model / size… */ ],
   "callParams":    [ /* 每次调用由界面或程序给的参数：text / prompt / 文件… */ ],
   "body": { "model": "${model}", "input": { "text": "${text}" } },
@@ -71,9 +72,9 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 - **超时只有实例级那一份**（模板把 `timeoutMs` 声明成一条实例参数）：槽上曾有过一格 `timeoutMs`，
   但没有任何生产者，删了。
 
-- **请求头整份模板只有 `headers_json` 一份**，槽上不再有 `headers`。理由：同一家怎么认证是固定的，
-  多一格「附加请求头」只会多一个看不懂又可能写错的地方。代价是异步开关头（`X-DashScope-Async: enable`）
-  现在也挂在模板级，同步那条端点同样会收到它 —— **该端点是否忽略这个头未实测**。
+- **请求头逐条接口各配一份**，值里同样能写 `${apiKey}` 这类占位符。中间版本曾把整份模板合成一份 `headers_json`，
+  代价是异步开关头（`X-DashScope-Async: enable`）被同步端点也收走一份 —— 同一家不同端点要的头本来就不一样
+  （查询是 GET，没什么 Content-Type 可声明），所以那一列删了，头回到每条请求自己身上。
 
 - **`outputs` 分两种，界面上也分两处**：
   - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`artifact`（产物）、
@@ -204,7 +205,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **一小节「这一家怎么交活」**（接法 / 产物形式 / 建音色 / 建前先上传 / 采样率，按 category 只显示问得上的）→ **请求头（折叠，标题带条数）** → 开关推导出的接口槽卡片，卡片内按小节排：**要填的参数**（请求级 / 调用级两张表）→ **发出去的内容**（body；upload 那格换成 multipart 表单）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **一小节「这一家怎么交活」**（接法 / 产物形式 / 建音色 / 建前先上传 / 采样率，按 category 只显示问得上的）→ 开关推导出的接口槽卡片，卡片内按小节排：**要填的参数**（请求级 / 调用级两张表）→ **发出去的内容**（body + 这一条自己的 headers；upload 那格换成 multipart 表单）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - 「预览请求 → 试调用」是这套设计的验收口，两件事分在两页：**预览**在模板页（只跑求值 + 按声明打码，一个字节都不发），**试调用**在实例页（真发一条要的是这条实例的 Key）。改完模板先看形状，再决定要不要花一次真调用。
@@ -212,7 +213,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
   开关不需要的槽还留着、有 `async.submit` 没 `async.query`、查询没 `successValues`、实例参数同名重复、占位符没人给值 —— 不留到运行时。
 - 新界面用 shadcn 原子（`src/components/ui/`），旧面板沿用 `ui/primitives.tsx`；两边都不写原生 `<select>`。
 - **AI 功能只有桌面端有**：网页端不配 Key、不显示字幕生成里的 AI 区（浏览器直连必然 CORS，且 Key 没地方安全存）。
-## 九、内置模板的具体参数与逐列 JSON
+## 九、内置模板的具体参数与逐列 JSON
 
 <!-- BEGIN generated:seed-templates -->
 _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 从 `src/lib/template-seed.ts` 生成，改 seed 后重跑；`--check` 只校验。）_
@@ -314,14 +315,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 
 - 标量列：`category=llm`，`caps_json={"modes":"sync","artifact":"none"}`，`ref_sample_rate=NULL`
 
-**`headers_json`**（模板级请求头，这一行所有请求共用）
-
-```json
-{
-  "Content-Type": "application/json",
-  "Authorization": "Bearer ${apiKey}"
-}
-```
+- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
 **`instance_params_json`**（实例级参数**声明**）
 
@@ -354,6 +348,10 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
   "submit": {
     "path": "${baseUrl}/chat/completions",
     "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer ${apiKey}"
+    },
     "requestParams": [
       {
         "key": "model",
@@ -469,15 +467,7 @@ null
 
 - 标量列：`category=image`，`caps_json={"modes":"both","artifact":"url"}`，`ref_sample_rate=NULL`
 
-**`headers_json`**（模板级请求头，这一行所有请求共用）
-
-```json
-{
-  "Content-Type": "application/json",
-  "Authorization": "Bearer ${apiKey}",
-  "X-DashScope-Async": "enable"
-}
-```
+- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
 **`instance_params_json`**（实例级参数**声明**）
 
@@ -522,6 +512,10 @@ null
   "submit": {
     "path": "${baseUrl}/services/aigc/multimodal-generation/generation",
     "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer ${apiKey}"
+    },
     "requestParams": [
       {
         "key": "model",
@@ -588,6 +582,11 @@ null
   "submit": {
     "path": "${baseUrl}/services/aigc/image-generation/generation",
     "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer ${apiKey}",
+      "X-DashScope-Async": "enable"
+    },
     "requestParams": [
       {
         "key": "model",
@@ -649,6 +648,9 @@ null
   "query": {
     "path": "${baseUrl}/tasks/${taskId}",
     "method": "GET",
+    "headers": {
+      "Authorization": "Bearer ${apiKey}"
+    },
     "outputs": {
       "status": "output.task_status",
       "artifact": "output.choices[0].message.content[0].image",
@@ -689,14 +691,7 @@ null
 
 - 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"url","clone":true}`，`ref_sample_rate=24000`
 
-**`headers_json`**（模板级请求头，这一行所有请求共用）
-
-```json
-{
-  "Content-Type": "application/json",
-  "Authorization": "Bearer ${apiKey}"
-}
-```
+- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
 **`instance_params_json`**（实例级参数**声明**）
 
@@ -729,6 +724,10 @@ null
   "submit": {
     "path": "${baseUrl}/services/aigc/multimodal-generation/generation",
     "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer ${apiKey}"
+    },
     "requestParams": [
       {
         "key": "model",
@@ -809,6 +808,10 @@ null
 {
   "path": "${baseUrl}/services/audio/tts/customization",
   "method": "POST",
+  "headers": {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer ${apiKey}"
+  },
   "requestParams": [
     {
       "key": "model",

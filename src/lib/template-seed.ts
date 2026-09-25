@@ -18,6 +18,8 @@ const AUTH = { Authorization: 'Bearer ${apiKey}' };
 const JSON_CT = { 'Content-Type': 'application/json' };
 
 const req = (path: string, o: Partial<RequestDef> = {}): RequestDef => ({ path, method: 'POST', ...o });
+/** 认证 + JSON：每条请求各写一份（逐槽配，不再有模板级那份） */
+const jsonReq = (path: string, o: Partial<RequestDef> = {}): RequestDef => req(path, { headers: { ...JSON_CT, ...AUTH }, ...o });
 const p = (key: string, label: string, extra: Partial<ParamSpec> = {}): ParamSpec => ({ key, label, valueType: 'string', ...extra });
 const secret = (key: string, label: string): ParamSpec => ({ key, label, valueType: 'secret' });
 const num = (key: string, label: string, extra: Partial<ParamSpec> = {}): ParamSpec => ({ key, label, valueType: 'number', ...extra });
@@ -41,10 +43,9 @@ const deepseekChat: TemplateDef = {
   id: 'deepseek-chat', name: 'DeepSeek 对话', category: 'llm',
   caps: { modes: 'sync', artifact: 'none' },
 
-  headers: { ...JSON_CT, ...AUTH },
   instanceParams: net('https://api.deepseek.com'),
   sync: {
-    submit: req('${baseUrl}/chat/completions', {
+    submit: jsonReq('${baseUrl}/chat/completions', {
       requestParams: [
         en('model', '模型', ['deepseek-flash', 'deepseek-v4-pro'], { defaultValue: 'deepseek-flash' }),
         en('reasoningEffort', '思考强度', ['high', 'medium', 'low']),
@@ -77,12 +78,10 @@ const qwenImage: TemplateDef = {
   id: 'qwen-image', name: '千问 文生图', category: 'image',
   caps: { modes: 'both', artifact: 'url' },
 
-  // 异步开关头并入模板级（槽上不再有 headers）：同步那条端点也会收到这个头，
-  // 按 DashScope 文档它只作用于异步提交端点 —— **同步端点未实测**，若上游挑理就把这条模板改成只走异步。
-  headers: { ...JSON_CT, ...AUTH, 'X-DashScope-Async': 'enable' },
+  // 异步开关头只挂在异步提交那一条上（早先整份模板共用一份，同步端点也被塞了它 —— 那是个没实测过的风险）。
   instanceParams: [...net('https://maas.qianwenaiapi.com/api/v1'), ...pacing(5000, 360)],
   sync: {
-    submit: req('${baseUrl}/services/aigc/multimodal-generation/generation', {
+    submit: jsonReq('${baseUrl}/services/aigc/multimodal-generation/generation', {
       requestParams: [
         en('model', '模型', ['qwen-image-3.0-pro'], { defaultValue: 'qwen-image-3.0-pro' }),
         p('size', '出图尺寸', { defaultValue: '2048*2048' }),
@@ -99,6 +98,7 @@ const qwenImage: TemplateDef = {
   },
   async: {
     submit: req('${baseUrl}/services/aigc/image-generation/generation', {
+      headers: { ...JSON_CT, ...AUTH, 'X-DashScope-Async': 'enable' },
       requestParams: [
         en('model', '模型', ['qwen-image-3.0-pro'], { defaultValue: 'qwen-image-3.0-pro' }),
         p('size', '出图尺寸', { defaultValue: '2048*2048' }),
@@ -114,6 +114,8 @@ const qwenImage: TemplateDef = {
     }),
     query: req('${baseUrl}/tasks/${taskId}', {
       method: 'GET',
+      // GET 没有请求体，也就没什么 Content-Type 可声明 —— 逐槽配头之后这类「跟着模板级一起被塞进来」的头就没得了
+      headers: { ...AUTH },
       // 实测（2026-09-23）：异步产物与同步同一路径 output.choices[0].message.content[0].image，
       // 文档写的 output.results[].url 是这个模型不再用的旧形状；任务要排几分钟，queryMaxAttempts 得给够
       outputs: { status: 'output.task_status', artifact: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' },
@@ -128,10 +130,9 @@ const qwenImage: TemplateDef = {
 const qwenTts: TemplateDef = {
   id: 'qwen-tts', name: '千问 TTS', category: 'tts',
   caps: { modes: 'sync', artifact: 'url', clone: true },
-  headers: { ...JSON_CT, ...AUTH },
   instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
   sync: {
-    submit: req('${baseUrl}/services/aigc/multimodal-generation/generation', {
+    submit: jsonReq('${baseUrl}/services/aigc/multimodal-generation/generation', {
       requestParams: [
         en('model', '模型', ['qwen3-tts-flash', 'qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-flash' }),
         en('languageType', '语种', ['Chinese', 'English', 'Auto'], { defaultValue: 'Chinese' }),
@@ -145,7 +146,7 @@ const qwenTts: TemplateDef = {
       outputs: { artifact: 'output.audio.url', errorCode: 'code', error: 'message' },
     }),
   },
-  clone: req('${baseUrl}/services/audio/tts/customization', {
+  clone: jsonReq('${baseUrl}/services/audio/tts/customization', {
     requestParams: [
       en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
       p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
@@ -171,10 +172,9 @@ export function blankTemplate(category: Category): TemplateDef {
   return {
     id: '', name: '', category,
     caps: category === 'llm' ? { modes: 'sync', artifact: 'none' } : { modes: 'sync', artifact: 'url' },
-    headers: { ...JSON_CT, ...AUTH },
     instanceParams: net(''),
     sync: {
-      submit: req('${baseUrl}', {
+      submit: jsonReq('${baseUrl}', {
         callParams: [text(category === 'image' ? 'prompt' : 'text', category === 'image' ? '画面描述' : '文本')],
         body: { model: '${model}' },
       }),
@@ -185,10 +185,4 @@ export function blankTemplate(category: Category): TemplateDef {
 /** seed 深拷贝（界面编辑绝不能改到常量本身） */
 export function seedCopy(): TemplateDef[] {
   return structuredClone(SEED_TEMPLATES);
-}
-
-/** 需要第二把 Key 吗（判断依据仍是模板声明，不写死厂商名） */
-export function needsSecret2(t: TemplateDef | undefined): boolean {
-  return !!t && (JSON.stringify(t.headers ?? {}).includes('${apiKey2}')
-    || (t.instanceParams ?? []).some((x) => x.valueType === 'secret' && x.key !== 'apiKey'));
 }

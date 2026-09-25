@@ -1081,9 +1081,8 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板：一行 = 一�
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,  -- 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK）
   caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关 JSON { modes: sync|async|both, artifact: none|binary|base64|hex|url|viaDownload, clone, uploadFirst }：该有哪些接口槽、每槽必须交出哪些字段，全由它推（原先 use_clone / upload 两列与「clone_json 空不空」是三份真相）
-  headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 模板级请求头 JSON（这一行的所有请求共用一份）
   instance_params_json TEXT CHECK (instance_params_json IS NULL OR json_valid(instance_params_json)),  -- 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json）
-  sync_json   TEXT CHECK (sync_json IS NULL OR json_valid(sync_json)),  -- 同步接法 { submit }（一条请求直接拿产物）
+  sync_json   TEXT CHECK (sync_json IS NULL OR json_valid(sync_json)),  -- 同步接法 { submit }（一条请求直接拿产物；地址 / 请求头 / 参数声明 / body / 取字段都在这一格里）
   async_json  TEXT CHECK (async_json IS NULL OR json_valid(async_json)),  -- 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举）
   download_json TEXT CHECK (download_json IS NULL OR json_valid(download_json)),  -- 桥接请求：fileId → 最终下载地址（同步异步共用；不配 = 上一步直接给产物）
   upload_json TEXT CHECK (upload_json IS NULL OR json_valid(upload_json)),  -- 桥接请求：本地文件 → fileId（仅克隆用）

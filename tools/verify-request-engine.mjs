@@ -100,15 +100,16 @@ console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
   const i = inst('qwen-image', { sync: false });
   const s = buildRequest(tpl, i, 'sync.submit', { prompt: '猫' }).req;
   const a = buildRequest(tpl, i, 'async.submit', { prompt: '猫' }).req;
-  // 请求头整份模板只有 headers_json 一份：槽上那格「附加请求头」已删（同一家怎么认证是固定的，
-  // 多一格只会多一处写错的地方）。异步开关头因此也在模板级，两条都带。
-  eq('3.1 请求头只有模板级一份（两条都带异步开关头）',
-    [s.headers['X-DashScope-Async'], a.headers['X-DashScope-Async']], ['enable', 'enable']);
-  // 旧数据里残留的槽级 headers 必须**不生效**（不做兼容：引擎压根不读它）
-  const staleSlot = { ...tpl, sync: { submit: { ...tpl.sync.submit, headers: { 'X-Slot-Only': 'yes' } } } };
-  check('3.1b 槽里残留的 headers 不再被读（旧 JSON 不复活那一格）',
-    !('X-Slot-Only' in buildRequest(staleSlot, i, 'sync.submit', { prompt: '猫' }).req.headers));
-  eq('3.2 两条都用模板级 Authorization', [s.headers.Authorization, a.headers.Authorization], ['Bearer sk-abcdefghij1234', 'Bearer sk-abcdefghij1234']);
+  // 请求头**逐条各一份**（模板级那份已下线）：异步开关头只有异步提交那条该带，
+  // 查询是 GET，也就没人替它声明 Content-Type。
+  eq('3.1 异步开关头只在异步提交那条上',
+    [s.headers['X-DashScope-Async'], a.headers['X-DashScope-Async']], [undefined, 'enable']);
+  const q = buildRequest(tpl, i, 'async.query', {}, { taskId: 'T9' }).req;
+  eq('3.1b 查询那条只带认证', [q.headers.Authorization !== undefined, q.headers['Content-Type'] === undefined], [true, true]);
+  const noHdr = { ...tpl, sync: { submit: { ...tpl.sync.submit, headers: undefined } } };
+  check('3.1c 没配头的那条就是没头（不会再从模板级继承）',
+    Object.keys(buildRequest(noHdr, i, 'sync.submit', { prompt: '猫' }).req.headers).length === 0);
+  eq('3.2 两条提交各带自己的 Authorization', [s.headers.Authorization, a.headers.Authorization], ['Bearer sk-abcdefghij1234', 'Bearer sk-abcdefghij1234']);
   eq('3.3 outputs 把 task_id 收成中间变量', applyOutputs({ output: { task_id: 'T9' } }, { taskId: 'output.task_id' }), { taskId: 'T9' });
   eq('3.4 查询请求直接 ${taskId}', buildRequest(tpl, i, 'async.query', {}, { taskId: 'T9' }).req.url, 'https://x.example/v1/tasks/T9');
   eq('3.5 hotFix 摊成上游要的数组', hotFixToArrays({ pronunciation: [{ 重庆: 'chong2 qing4' }], replace: [{ AI: '人工智能' }] }), ['重庆/chong2 qing4', 'AI/人工智能']);

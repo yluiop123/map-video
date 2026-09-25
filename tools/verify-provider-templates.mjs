@@ -43,18 +43,17 @@ const fresh = () => {
 const TPL = {
   id: 'verify-image', name: '回归用图片', category: 'image',
   caps: { modes: 'both', artifact: 'url' },
-  headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' },
   instanceParams: [
     { key: 'baseUrl', label: '服务地址', valueType: 'string', defaultValue: 'https://x/v1' },
     { key: 'apiKey', label: 'API Key', valueType: 'secret' },
     { key: 'timeoutMs', label: '超时', valueType: 'number', defaultValue: 30000 },
   ],
-  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }], callParams: [{ key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { artifact: 'output.url' } } },
+  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' }, requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }], callParams: [{ key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { artifact: 'output.url' } } },
   async: {
-    submit: { path: '${baseUrl}/submit', method: 'POST', headers: { 'X-DashScope-Async': 'enable' }, body: { prompt: '${prompt}' }, outputs: { taskId: 'output.task_id' } },
-    query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', outputs: { status: 'output.task_status', artifact: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },
+    submit: { path: '${baseUrl}/submit', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}', 'X-DashScope-Async': 'enable' }, body: { prompt: '${prompt}' }, outputs: { taskId: 'output.task_id' } },
+    query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { status: 'output.task_status', artifact: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },
   },
-  download: { path: '${baseUrl}/files/retrieve?file_id=${artifact}', method: 'GET', outputs: { artifact: 'file.download_url' } },
+  download: { path: '${baseUrl}/files/retrieve?file_id=${artifact}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { artifact: 'file.download_url' } },
 };
 
 // ---------- 1. 模板读写 ----------
@@ -66,15 +65,17 @@ console.log('\n[1] 模板表（一行一份完整模板）');
   check('1.3 空库 list 返回空', listTemplatesV2(db).length === 0);
   upsertTemplateV2(db, TPL);
   const got = listTemplatesV2(db).find((t) => t.id === 'verify-image');
-  eq('1.4 整份逐字往返（三层参数 / outputs / 两枚举 / 桥接 / 异步头）',
-    { name: got.name, category: got.category, note: got.note, headers: got.headers, instanceParams: got.instanceParams, sync: got.sync, async: got.async, download: got.download },
-    { name: TPL.name, category: TPL.category, note: TPL.note, headers: TPL.headers, instanceParams: TPL.instanceParams, sync: TPL.sync, async: TPL.async, download: TPL.download });
+  eq('1.4 整份逐字往返（三层参数 / outputs / 两枚举 / 桥接 / 逐槽请求头）',
+    { name: got.name, category: got.category, note: got.note, instanceParams: got.instanceParams, sync: got.sync, async: got.async, download: got.download },
+    { name: TPL.name, category: TPL.category, note: TPL.note, instanceParams: TPL.instanceParams, sync: TPL.sync, async: TPL.async, download: TPL.download });
   check('1.5 方括号下标原样存回（output.results[0].url）', got.async.query.outputs.artifact === 'output.results[0].url', got.async.query.outputs);
   eq('1.6 能力开关逐字往返', got.caps, { modes: 'both', artifact: 'url' });
   check('1.6b use_clone / upload 两列不再存在（能力开关并进 caps_json）',
     !db.prepare('PRAGMA table_info(provider_template)').all().map((r) => r.name).some((c) => c === 'use_clone' || c === 'upload'));
   check('1.6c voice 的两个过期列已下线（全库没有生产者）',
     !db.prepare('PRAGMA table_info(voice)').all().map((r) => r.name).some((c) => c.endsWith('_expires_at')));
+  check('1.6d 模板级 headers_json 列已下线（请求头写在每条接口的 JSON 里）',
+    !db.prepare('PRAGMA table_info(provider_template)').all().map((r) => r.name).includes('headers_json'));
   upsertTemplateV2(db, { ...TPL, async: undefined, download: undefined });
   const after = listTemplatesV2(db).find((t) => t.id === 'verify-image');
   check('1.7 整份覆写：删掉的接口不残留', !after.async && !after.download, Object.keys(after));
@@ -369,6 +370,26 @@ console.log('\n[7] 作废列清理');
   check('7.5 换代与删列同一次启动都成（顺序错了就会因视图报错而失败）',
     !after.some((c) => c.endsWith('_expires_at')), after.join(','));
   check('7.6 视图还在、查得动', !!db.prepare('SELECT COUNT(*) AS n FROM v_check_async_pairing').get());
+  db.close();
+}
+
+{
+  // 用户机器现在正停在这一代：表形状与新版只差一列 headers_json（没有 use_clone / upload 那些换代标志），
+  // 所以启动必须走「删作废列」这条路把行留住，而不是让位重建。
+  const db = fresh();
+  upsertTemplateV2(db, TPL);
+  db.exec("ALTER TABLE provider_template ADD COLUMN headers_json TEXT");
+  db.exec(`UPDATE provider_template SET headers_json = '{"Authorization":"Bearer old-shared-header"}'`);
+  check('7.7 造出「只差 headers_json 一列」的现场',
+    db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'headers_json'));
+  ensureV2Schema(db);
+  const cols = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
+  check('7.8 下次启动删掉 headers_json（不让位、不重建）', !cols.includes('headers_json'), cols.join(','));
+  const got = listTemplatesV2(db).find((t) => t.id === 'verify-image');
+  check('7.9 行没丢，逐槽请求头原样在（模板级那份没人读了）',
+    got?.sync.submit.headers['X-DashScope-Async'] === undefined
+    && got?.async.submit.headers['X-DashScope-Async'] === 'enable',
+    JSON.stringify(got?.async.submit.headers));
   db.close();
 }
 

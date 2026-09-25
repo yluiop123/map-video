@@ -51,11 +51,13 @@ export interface ParamSpec {
   transform?: 'hotFixArray' | 'base64DataUri' | 'json';
 }
 
-/** 一条请求（核心或桥接）。请求头整份模板只有顶层那一份，槽上不再带 */
+/** 一条请求（核心或桥接）。请求头逐条各配一份：同一个账号的认证头家家一样，但异步开关头只有提交那条要 */
 export interface RequestDef {
   /** 地址模板，`${x}` 随便写；查询参数直接拼在串上（各家 taskId 位置不同，写在这里就行） */
   path: string;
   method?: string;
+  /** 这一条请求自己的头；值里同样可写 `${apiKey}` 这类占位符 */
+  headers?: Record<string, unknown>;
   /** 请求级参数：这个请求专属（model / size…），取值存实例的 values.requests[<本 key>] */
   requestParams?: ParamSpec[];
   /** 调用级参数：每次调用由界面 / 程序给（text / prompt / file / hotFix…） */
@@ -98,7 +100,6 @@ export interface TemplateDef {
   category: Category;
   /** 能力开关：槽位与承重输出的唯一来源 */
   caps: Caps;
-  headers?: Record<string, unknown>;
   /** 实例级参数声明：所有请求共用（超时 / 批次并发 / 查询节奏…） */
   instanceParams?: ParamSpec[];
   sync?: { submit?: RequestDef };
@@ -462,9 +463,9 @@ export function buildRequest(
   if (!def) throw new EngineError(`模板「${tpl.name}」没有 ${reqKey} 这条请求`);
   const s = scopeOf(tpl, inst, reqKey, callArgs, upstream);
   const headers: Record<string, string> = {};
-  // 请求头**只有模板级一份**（`headers_json`）：同一家怎么认证是固定的，逐槽再开一格
-  // 「附加请求头」只会多出一个没人懂的字段与一处会写错的地方。
-  for (const [k, v] of Object.entries(tpl.headers ?? {})) {
+  // 请求头逐条请求各配一份：认证头家家一样是巧合不是约定，而异步开关头只有提交那条要
+  // （早先整份模板共用一份，同步端点也被塞了那个头）。
+  for (const [k, v] of Object.entries(def.headers ?? {})) {
     const rv = walk(v, s);
     if (rv !== undefined && rv !== '') headers[k] = String(rv);
   }
@@ -742,6 +743,7 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
     const declared = new Set<string>(produced);
     for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? []), ...(def.callParams ?? [])]) declared.add(p.key);
     scan(key, def.path, declared);
+    scan(key, def.headers, declared);
     scan(key, def.body, declared);
     scan(key, def.form, declared);
   }

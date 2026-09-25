@@ -71,11 +71,6 @@ export function refSampleRateOf(inst: InstanceDef | null | undefined): number {
   return templateOf(inst)?.refSampleRateHz ?? 16000;
 }
 
-/** 需要第二把 Key 吗（实例页据此决定那一格出不出现） */
-export function needsSecret2(inst: InstanceDef | null | undefined): boolean {
-  return JSON.stringify(templateOf(inst)?.headers ?? {}).includes('${apiKey2}');
-}
-
 /** 查询节奏（实例级：账号限额，不属模板形状） */
 function pacing(inst: InstanceDef) {
   const v = inst.values.instance ?? {};

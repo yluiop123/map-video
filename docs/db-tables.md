@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 698 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，698 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 697 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，697 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -844,7 +844,7 @@
 
 **职责**：接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）
 
-15 列 · 主键 `tpl_id`
+14 列 · 主键 `tpl_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -852,9 +852,8 @@
 | `name` | TEXT | `NOT NULL` | 模板名（用户自填的单个字符串，不做中英两份） · 默认 `''` |
 | `category` | TEXT | `NOT NULL` | 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK） |
 | `caps_json` | TEXT | `NOT NULL` | 能力开关 JSON { modes: sync\|async\|both, artifact: none\|binary\|base64\|hex\|url\|viaDownload, clone, uploadFirst }：该有哪些接口槽、每槽必须交出哪些字段，全由它推（原先 use_clone / upload 两列与「clone_json 空不空」是三份真相） · `CHECK (json_valid(caps_json))` |
-| `headers_json` | TEXT | — | 模板级请求头 JSON（这一行的所有请求共用一份） · `CHECK (headers_json IS NULL OR json_valid(headers_json))` |
 | `instance_params_json` | TEXT | — | 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json） · `CHECK (instance_params_json IS NULL OR json_valid(instance_params_json))` |
-| `sync_json` | TEXT | — | 同步接法 { submit }（一条请求直接拿产物） · `CHECK (sync_json IS NULL OR json_valid(sync_json))` |
+| `sync_json` | TEXT | — | 同步接法 { submit }（一条请求直接拿产物；地址 / 请求头 / 参数声明 / body / 取字段都在这一格里） · `CHECK (sync_json IS NULL OR json_valid(sync_json))` |
 | `async_json` | TEXT | — | 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举） · `CHECK (async_json IS NULL OR json_valid(async_json))` |
 | `download_json` | TEXT | — | 桥接请求：fileId → 最终下载地址（同步异步共用；不配 = 上一步直接给产物） · `CHECK (download_json IS NULL OR json_valid(download_json))` |
 | `upload_json` | TEXT | — | 桥接请求：本地文件 → fileId（仅克隆用） · `CHECK (upload_json IS NULL OR json_valid(upload_json))` |

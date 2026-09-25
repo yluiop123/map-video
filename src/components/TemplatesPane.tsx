@@ -1,21 +1,19 @@
 /**
  * TemplatesPane.tsx — ⚙ 设置 · AI 左侧的「接口模板」页（三栏）
  *
- * 一份模板 = 数据库一行，里面同时装着：headers、实例级参数、同步 / 异步两套接口、
- * 下载 / 上传桥接、克隆音色。三层参数（实例级 / 请求级 / 调用级）都在这页自由增删改 ——
- * 引擎里没有任何按厂商名写的分支，界面配不出来的东西就不该存在。
+ * 一份模板 = 数据库一行，里面同时装着：实例级参数、同步 / 异步两套接口、下载 / 上传桥接、克隆音色。
+ * 请求头与参数都挂在各条接口自己身上（同一家不同端点要的头并不相同）；三层参数（实例级 / 请求级 /
+ * 调用级）都在这页自由增删改 —— 引擎里没有任何按厂商名写的分支，界面配不出来的东西就不该存在。
  *
  * 「预览请求」零网络（只跑求值 + 密钥打码），「试调用」真发一条。
  */
 import { useEffect, useId, useMemo, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
 import { OptionBlocks, ProblemList, useT } from './ui/primitives';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Badge } from './ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
 import { Separator } from './ui/separator';
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { Textarea } from './ui/textarea';
@@ -84,9 +82,11 @@ function withCaps(tpl: TemplateDef, caps: Caps): TemplateDef {
   return next;
 }
 
+/** 新建一格时给的头：认证头是每条都要的，Content-Type 只有带 JSON 体的那条要 */
+const AUTH_HDR = { Authorization: 'Bearer ${apiKey}' };
 const blankRequest = (key: ReqKey): RequestDef => (key === 'async.query'
-  ? { path: '${baseUrl}/tasks/${taskId}', method: 'GET', body: {}, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] }
-  : { path: '${baseUrl}/', method: 'POST', requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} });
+  ? { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { ...AUTH_HDR }, body: {}, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] }
+  : { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} });
 
 export function TemplatesPane() {
   const t = useT();
@@ -225,22 +225,8 @@ export function TemplatesPane() {
             </div>
             </Group>
 
-            {/* 请求头整份模板就这一份（槽上不再有「附加请求头」）。默认折叠：
-                多数模板就是 Content-Type + Authorization 两条，展开才编辑。 */}
-            <Collapsible>
-              <CollapsibleTrigger className="flex w-full items-center gap-2 text-[10px] font-medium text-muted-foreground hover:text-foreground">
-                <ChevronRight size={12} className="transition-transform data-[open]:rotate-90" />
-                {t('请求头', 'Headers')}
-                <Badge variant="outline" className="px-1 py-0 text-[9px] font-normal tabular-nums">{Object.keys(tpl.headers ?? {}).length}</Badge>
-                <span className="font-normal text-muted-foreground/60">
-                  {t('所有请求共用一份；${apiKey} 会换成实例里填的那把 Key', 'shared by every request; ${apiKey} comes from the instance')}
-                </span>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="mt-1.5">
-                <JsonBox label="Headers" value={tpl.headers ?? {}} rows={5} onChange={(headers) => patch({ ...tpl, headers: headers as Record<string, unknown> })} />
-              </CollapsibleContent>
-            </Collapsible>
-
+            {/* 请求头**逐条接口各一份**（在下面的接口卡片里配）：认证头家家不同，
+                异步开关头更只有提交那条要 —— 共用一份等于替同步端点也带上它。 */}
             <Separator />
 
             {/* 槽位 = 上面那几个开关推出来的，不给手动加删 */}
@@ -347,6 +333,10 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
         ) : (
           <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />
         )}
+        {/* 请求头逐条各一份：同一家不同端点要的头并不相同（异步开关头只有提交那条该带） */}
+        <JsonBox label="Headers" rows={3} value={def.headers ?? {}}
+          hint={t('这一条自己的头，${apiKey} 会换成实例里填的 Key', "this request's own headers; ${apiKey} comes from the instance")}
+          onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
       </Group>
 
       {/* 引擎要读的返回项：名字写死（写错就没有消费者），只能填路径 */}
