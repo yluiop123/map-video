@@ -205,8 +205,8 @@ export function base64ToBytes(b64: string): Uint8Array {
 export const SAMPLE_CALL_ARGS: Record<string, string> = {
   text: '这段旁白用来试听音色。',
   prompt: '一只戴宇航员头盔的橘猫',
-  systemPrompt: '你是连通性测试助手。',
-  userPrompt: '只回复两个字：正常',
+  systemPrompt: '你是地图视频的文案助手。',
+  userPrompt: '用两句话介绍官渡之战。',
 };
 
 // ========== 对外几个动作 ==========
