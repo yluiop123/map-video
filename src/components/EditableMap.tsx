@@ -5,7 +5,7 @@ import maplibregl, { type GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import * as turf from '@turf/turf';
 import {
-  renderElements, restackByLayerOrder, setRenderFps, setVisualReadyHandler,
+  renderElements, restackByLayerOrder, setRenderFps, setVisualReadyHandler, putGeoJSON,
   buildArrowGeometry, buildSelectionFeature, pixelsToDegrees, rotatePt, resolveFollowCam, resolveOrbitCam,
 } from '../lib/map-renderer';
 import { buildDoubleArrow, buildGatheringPlace } from '../lib/military-plots';
@@ -338,7 +338,7 @@ export function EditableMap({ project }: EditableMapProps) {
     const fc = coord ? turf.featureCollection([turf.point(coord)]) : turf.featureCollection([] as any);
     try {
       if (map.getSource(srcId)) {
-        (map.getSource(srcId) as any).setData(fc);
+        putGeoJSON(map.getSource(srcId) as GeoJSONSource, fc);
       } else {
         map.addSource(srcId, { type: 'geojson', data: fc } as any);
         map.addLayer({
@@ -377,7 +377,7 @@ export function EditableMap({ project }: EditableMapProps) {
     const fc = turf.featureCollection(feats);
     try {
       if (map.getSource(srcId)) {
-        (map.getSource(srcId) as GeoJSONSource).setData(fc);
+        putGeoJSON(map.getSource(srcId) as GeoJSONSource, fc);
       } else {
         map.addSource(srcId, { type: 'geojson', data: fc } as any);
         map.addLayer({ id: 'terr-sel-fill', type: 'fill', source: srcId, paint: { 'fill-color': '#FFD700', 'fill-opacity': 0.16 } });
@@ -1271,7 +1271,7 @@ export function EditableMap({ project }: EditableMapProps) {
         const line = turf.lineString([last, [p.lng, p.lat]]);
         try {
           if (map.getSource('route-add-preview')) {
-            (map.getSource('route-add-preview') as GeoJSONSource).setData(turf.featureCollection([line]));
+            putGeoJSON(map.getSource('route-add-preview') as GeoJSONSource, turf.featureCollection([line]));
           } else {
             map.addSource('route-add-preview', { type: 'geojson', data: turf.featureCollection([line]) } as any);
             map.addLayer({
@@ -1572,7 +1572,7 @@ export function EditableMap({ project }: EditableMapProps) {
     const data = turf.featureCollection(feats);
     try {
       if (map.getSource(srcId)) {
-        (map.getSource(srcId) as any).setData(data);
+        putGeoJSON(map.getSource(srcId) as GeoJSONSource, data);
         if (map.getLayer('vertex-dot')) map.moveLayer('vertex-dot'); // 保持顶点在图形前面
       } else {
         map.addSource(srcId, { type: 'geojson', data } as any);
@@ -2219,7 +2219,7 @@ function nearestRingVertexIndex(ring: [number, number][], pt: [number, number]):
         },
       });
     } else {
-      (map.getSource('terr-snap') as any).setData(data);
+      putGeoJSON(map.getSource('terr-snap') as GeoJSONSource, data);
     }
     if (map.getLayer('terr-snap')) {
       map.setLayoutProperty('terr-snap', 'visibility', 'visible');
@@ -2303,10 +2303,10 @@ function elementIdFromLayerId(layerId: string, elements: MapElement[]): string {
  *  返回 false 表示源还没建好（尚未渲染），调用方回退到写 store。 */
 function previewMoveElementOnMap(map: maplibregl.Map, el: MapElement, lngLat: [number, number]): boolean {
   const sid = el.type === 'flag' ? `flag-${el.id}` : `point-${el.id}`;
-  const src = map.getSource(sid) as { setData?: (d: unknown) => void } | undefined;
-  if (!src || typeof src.setData !== 'function') return false;
+  if (!map.getSource(sid)) return false;
+
   const name = (el as { label?: { text?: string } }).label?.text || el.name;
-  src.setData(turf.featureCollection([turf.point(lngLat, { name })]));
+  putGeoJSON(map.getSource(sid) as GeoJSONSource, turf.featureCollection([turf.point(lngLat, { name })]));
   return true;
 }
 
@@ -2434,7 +2434,7 @@ function setPreviewData(map: maplibregl.Map, data: any, showFill: boolean = true
   const pointId = 'draw-preview-point';
 
   if (map.getSource(src)) {
-    (map.getSource(src) as any).setData(data);
+    putGeoJSON(map.getSource(src) as GeoJSONSource, data);
     // 动态显示/隐藏填充层
     if (map.getLayer(fillId)) {
       map.setLayoutProperty(fillId, 'visibility', showFill ? 'visible' : 'none');

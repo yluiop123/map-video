@@ -38,8 +38,9 @@ export function setRenderFps(fps: number): void {
 // 记录每个 map 上已被渲染的元素 ID 与类型签名（类型切换时需整体重建图层）
 const renderedByMap = new WeakMap<maplibregl.Map, Set<string>>();
 const renderedTypeByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
-// 记录被 hideElementLayers 隐藏过的元素 id：重新可见时需整体恢复层可见性
-const hiddenElByMap = new WeakMap<maplibregl.Map, Set<string>>();
+// 记录被 hideElementLayers 隐藏过的元素 id → 隐藏时的图层 id 名单签名：重新可见时要恢复，
+// 名单变了（有新图层出现）才需要再 hide 一次
+const hiddenElByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
 // 箭头图标已注册颜色（元素 id → 颜色），颜色变化需重注册
 const renderedHeadColorByMap = new WeakMap<maplibregl.Map, Map<string, string>>();
 // 「叠放顺序已就位」的签名（元素顺序 + 图层排列），见 restackByLayerOrder
@@ -76,7 +77,7 @@ function ensureDefendRecompute(map: maplibregl.Map): void {
       try {
         const teeth = buildToothedTeeth(map, j.ring, j.toothLen, j.toothGap, j.side, j.tiltRad);
         const fc = turf.featureCollection(teeth.map((l) => turf.lineString(l)));
-        if (map.getSource(j.srcId)) (map.getSource(j.srcId) as GeoJSONSource).setData(fc);
+        if (map.getSource(j.srcId)) putGeoJSON(map.getSource(j.srcId) as GeoJSONSource, fc);
       } catch { /* style 未就绪 */ }
     }
   };
@@ -117,6 +118,23 @@ export function removeElementLayers(map: maplibregl.Map, elementId: string): voi
  */
 function styleLayerIds(map: maplibregl.Map): string[] {
   return map.getStyle()?.layers?.map((l) => l.id) ?? [];
+}
+
+/**
+ * 「内容没变就别推给地图」的唯一出口。
+ * setData 每次都要把整份 FeatureCollection 结构化克隆交给 geojson worker 重新校验切片，
+ * 实测压测项目（340 元素 / 464 个 source）逐帧预算的大头就是 worker 那头的 receive / sendAsync。
+ * 签名记在 **source 对象** 上：换底图、removeElementLayers 重建都会得到新的 source 对象，
+ * 于是缓存天然作废，不会拿旧签名把新 source 的空数据误判成「已经推过了」。
+ */
+const pushedDataSig = new WeakMap<GeoJSONSource, string>();
+type SourceData = Parameters<GeoJSONSource['setData']>[0];
+export function putGeoJSON(src: GeoJSONSource | undefined, data: SourceData): void {
+  if (!src) return;
+  const sig = JSON.stringify(data);
+  if (pushedDataSig.get(src) === sig) return;
+  pushedDataSig.set(src, sig);
+  src.setData(data);
 }
 
 /** 隐藏元素的所有图层（显示时间之外时调用，避免图层残留） */
@@ -212,16 +230,20 @@ export function renderElements(
   for (const el of elements) nextMeta.set(el.id, el.type);
   renderedTypeByMap.set(map, nextMeta);
 
-  const hiddenEls = hiddenElByMap.get(map) || new Set<string>();
+  const hiddenEls = hiddenElByMap.get(map) || new Map<string, string>();
   hiddenElByMap.set(map, hiddenEls);
-  // 图层 id 列表整帧只读一次（见 styleLayerIds 注释）。本帧内不可见的元素不会被任何渲染函数
-  // 碰到，所以这份快照不会漏掉「属于隐藏元素的新图层」；新图层只会来自下一帧。
+  // 图层 id 列表整帧只读一次（见 styleLayerIds 注释），并拿它当这一帧的签名。
   const layerIds = styleLayerIds(map);
+  const frameSig = layerIds.join('|');
   for (const element of elements) {
     if (!isVisible(element, frame)) {
-      // 不可见：隐藏该元素所有图层（避免上一帧残留导致"显示时间之外仍显示"）
-      hideElementLayers(map, element.id, layerIds);
-      hiddenEls.add(element.id);
+      // 不可见：隐藏该元素所有图层（避免上一帧残留导致"显示时间之外仍显示"）。
+      // 只在「图层集合与上次隐藏时不同」才重扫：一个已经整组 none 的元素，只有新图层出现
+      // （id 名单变了）才可能被重新点亮，而隐藏期间不会有渲染函数给它建层。
+      if (hiddenEls.get(element.id) !== frameSig) {
+        hideElementLayers(map, element.id, layerIds);
+        hiddenEls.set(element.id, frameSig);
+      }
       continue;
     }
     if (hiddenEls.delete(element.id)) {
@@ -522,7 +544,7 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   const geojson = turf.featureCollection([turf.point(element.coordinates, { name: element.label?.text || element.name, emoji: emojiChar })]);
 
   if (map.getSource(sourceId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojson);
     // 更新 circle 可见性
     if (map.getLayer(layerId)) {
       map.setLayoutProperty(layerId, 'visibility', circleVisible ? 'visible' : 'none');
@@ -941,7 +963,7 @@ function renderMovingPoint(map: maplibregl.Map, element: MovingPointElement, fra
   // 全程路径虚线引导：仅编辑端观察用（导出时若画出来会污染视频画面）
   if (interactive) {
     if (map.getSource(guideSourceId)) {
-      (map.getSource(guideSourceId) as GeoJSONSource).setData(turf.featureCollection([pathLine]));
+      putGeoJSON(map.getSource(guideSourceId) as GeoJSONSource, turf.featureCollection([pathLine]));
     } else {
       map.addSource(guideSourceId, { type: 'geojson', data: turf.featureCollection([pathLine]) });
       map.addLayer({
@@ -961,7 +983,7 @@ function renderMovingPoint(map: maplibregl.Map, element: MovingPointElement, fra
   const geojson = turf.featureCollection([turf.point(currentPos, { name: element.name })]);
 
   if (map.getSource(sourceId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojson);
   } else {
     map.addSource(sourceId, { type: 'geojson', data: geojson });
     map.addLayer({
@@ -1087,7 +1109,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   }
 
   if (map.getSource(sourceId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(data);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, data);
     if (map.getLayer(layerId)) {
       map.setPaintProperty(layerId, 'line-color', element.lineColor || '#FF0000');
       map.setPaintProperty(layerId, 'line-width', element.lineWidth || 8);
@@ -1197,7 +1219,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     const fillColor = lightenHex(element.lineColor || '#FF0000', GHOST_LIGHTEN);
     try {
       if (map.getSource(fillSrcId)) {
-        (map.getSource(fillSrcId) as GeoJSONSource).setData(fullData);
+        putGeoJSON(map.getSource(fillSrcId) as GeoJSONSource, fullData);
         if (map.getLayer(fillLayerId)) {
           map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
           // 颜色/宽度随面板实时同步（浅色由线色派生，改线色时浅色段一起变）
@@ -1341,7 +1363,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       }
       else ensureShapeImage(map, mImgId, getCached(`dot-${mColor}`, () => makeDotImageData(mColor)));
       if (map.getSource(iconSrcId)) {
-        (map.getSource(iconSrcId) as GeoJSONSource).setData(iconData);
+        putGeoJSON(map.getSource(iconSrcId) as GeoJSONSource, iconData);
       } else {
         map.addSource(iconSrcId, { type: 'geojson', data: iconData } as any);
         map.addLayer({
@@ -1380,7 +1402,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
           : ((mi?.labelPos || 'top') === 'top' ? [0, -28] : (mi?.labelPos || 'top') === 'left' ? [-40, 0] : (mi?.labelPos || 'top') === 'right' ? [40, 0] : [0, 26]);
         try {
           if (map.getSource(lSrcId)) {
-            (map.getSource(lSrcId) as GeoJSONSource).setData(iconData);
+            putGeoJSON(map.getSource(lSrcId) as GeoJSONSource, iconData);
           } else {
             map.addSource(lSrcId, { type: 'geojson', data: iconData } as any);
             map.addLayer({
@@ -1471,7 +1493,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     const fc = turf.featureCollection(lines.map((l) => turf.lineString(l)));
     try {
       if (map.getSource(frontSrcId)) {
-        (map.getSource(frontSrcId) as GeoJSONSource).setData(fc);
+        putGeoJSON(map.getSource(frontSrcId) as GeoJSONSource, fc);
       } else {
         map.addSource(frontSrcId, { type: 'geojson', data: fc } as any);
         map.addLayer({
@@ -1523,7 +1545,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       }
       const headData = turf.featureCollection([turf.point(tipLL, { rot: angleDeg })]);
       if (map.getSource(headSrcId)) {
-        (map.getSource(headSrcId) as GeoJSONSource).setData(headData);
+        putGeoJSON(map.getSource(headSrcId) as GeoJSONSource, headData);
         if (map.getLayer(headLayerId)) {
           map.setLayoutProperty(headLayerId, 'icon-rotate', ['get', 'rot'] as any);
           // 贴地随地图旋转/倾斜；飞行模式整体隐藏（头部改由 3D 锥体几何绘制）
@@ -1584,7 +1606,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     const labelData = turf.featureCollection([turf.point(midCoord, { text: element.label!.text })]);
 
     if (map.getSource(labelSourceId)) {
-      (map.getSource(labelSourceId) as GeoJSONSource).setData(labelData);
+      putGeoJSON(map.getSource(labelSourceId) as GeoJSONSource, labelData);
       // LABEL STYLE 实时同步
       if (map.getLayer(labelBgId)) {
         const L = element.label!;
@@ -1654,7 +1676,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       const spotLayerId = `linespot-layer-${element.id}-${i}`;
       const spotData = turf.featureCollection([turf.point(spotCoord)]);
       if (map.getSource(spotSourceId)) {
-        (map.getSource(spotSourceId) as GeoJSONSource).setData(spotData);
+        putGeoJSON(map.getSource(spotSourceId) as GeoJSONSource, spotData);
       } else {
         map.addSource(spotSourceId, { type: 'geojson', data: spotData });
         map.addLayer({
@@ -1771,7 +1793,7 @@ function renderPolygon(map: maplibregl.Map, element: PolygonElement, frame: numb
       paint: { 'line-color': element.strokeColor || '#FF0000', 'line-width': element.strokeWidth || 2 },
     });
   }
-  (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+  putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojson);
   map.setPaintProperty(fillLayerId, 'fill-color', element.fillColor || '#FF0000');
   map.setPaintProperty(fillLayerId, 'fill-opacity', element.fillOpacity ?? 0.3);
   map.setPaintProperty(strokeLayerId, 'line-color', element.strokeColor || '#FF0000');
@@ -1804,7 +1826,7 @@ function renderPolygon(map: maplibregl.Map, element: PolygonElement, frame: numb
           layout: { 'line-cap': 'round' },
         });
       }
-      (map.getSource(defendSrcId) as GeoJSONSource).setData(fc);
+      putGeoJSON(map.getSource(defendSrcId) as GeoJSONSource, fc);
       map.setPaintProperty(defendLayerId, 'line-color', element.strokeColor || '#FF0000');
       map.setPaintProperty(defendLayerId, 'line-width', Math.max(2, (element.strokeWidth || 8) * 0.6));
       map.setLayoutProperty(defendLayerId, 'visibility', 'visible');
@@ -2080,7 +2102,7 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
         paint: { 'line-color': 'rgba(255,255,255,0.55)', 'line-width': 1, 'line-opacity': 0.6 },
       });
     }
-    (map.getSource(srcId) as GeoJSONSource).setData(turf.featureCollection(fillFeatures));
+    putGeoJSON(map.getSource(srcId) as GeoJSONSource, turf.featureCollection(fillFeatures));
     map.setLayoutProperty(plineId, 'visibility', display.plotBorders ? 'visible' : 'none');
 
     // 国界
@@ -2091,7 +2113,7 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
         paint: { 'line-color': ['get', 'color'], 'line-width': display.borderWidth, 'line-opacity': 0.95 },
       });
     }
-    (map.getSource(bSrcId) as GeoJSONSource).setData(cached.borderFC);
+    putGeoJSON(map.getSource(bSrcId) as GeoJSONSource, cached.borderFC);
     map.setPaintProperty(borderId, 'line-width', display.borderWidth);
     map.setLayoutProperty(borderId, 'visibility', display.countryBorders ? 'visible' : 'none');
 
@@ -2104,7 +2126,7 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
         layout: { 'line-cap': 'round' },
       });
     }
-    (map.getSource(dSrcId) as GeoJSONSource).setData(drawFeatures.length ? turf.featureCollection(drawFeatures) : emptyFC);
+    putGeoJSON(map.getSource(dSrcId) as GeoJSONSource, drawFeatures.length ? turf.featureCollection(drawFeatures) : emptyFC);
     map.setPaintProperty(drawId, 'line-width', Math.max(2, display.borderWidth + 1));
     map.setLayoutProperty(drawId, 'visibility', drawFeatures.length ? 'visible' : 'none');
 
@@ -2120,7 +2142,7 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
         paint: { 'line-color': '#FFFFFF', 'line-width': 4, 'line-opacity': ['get', 'gop'] },
       });
     }
-    (map.getSource(gSrcId) as GeoJSONSource).setData(glowFeatures.length ? turf.featureCollection(glowFeatures) : emptyFC);
+    putGeoJSON(map.getSource(gSrcId) as GeoJSONSource, glowFeatures.length ? turf.featureCollection(glowFeatures) : emptyFC);
     map.setPaintProperty(glowLineId, 'line-width', 3 + display.borderWidth);
     map.setLayoutProperty(glowFillId, 'visibility', glowFeatures.length ? 'visible' : 'none');
     map.setLayoutProperty(glowLineId, 'visibility', glowFeatures.length ? 'visible' : 'none');
@@ -2140,7 +2162,7 @@ function renderTerritory(map: maplibregl.Map, element: TerritoryElement, frame: 
         },
       });
     }
-    (map.getSource(lSrcId) as GeoJSONSource).setData(turf.featureCollection(labelFeatures));
+    putGeoJSON(map.getSource(lSrcId) as GeoJSONSource, turf.featureCollection(labelFeatures));
     map.setLayoutProperty(labelId, 'visibility', labelFeatures.length ? 'visible' : 'none');
     map.setLayoutProperty(labelId, 'icon-rotation-alignment', display.labelAlign === 'map' ? 'map' : 'viewport');
     map.setLayoutProperty(labelId, 'icon-pitch-alignment', display.labelAlign === 'map' ? 'map' : 'viewport');
@@ -2261,7 +2283,7 @@ function renderGeoImage(map: maplibregl.Map, el: GeoImageElement): void {
     // 透明命中/高亮轮廓（raster 层无法被 queryRenderedFeatures 命中，故用矢量面兜底）
     const hitData = turf.featureCollection([turf.polygon([geoOuterRing(el)])]);
     if (map.getSource(hitSrc)) {
-      (map.getSource(hitSrc) as GeoJSONSource).setData(hitData);
+      putGeoJSON(map.getSource(hitSrc) as GeoJSONSource, hitData);
     } else {
       map.addSource(hitSrc, { type: 'geojson', data: hitData } as never);
       map.addLayer({ id: hitLayer, type: 'fill', source: hitSrc, paint: { 'fill-color': '#000000', 'fill-opacity': 0 } } as never);
@@ -2699,7 +2721,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   const fillColor = element.color || '#E23B3B';
   const fillOpacity = element.fillOpacity ?? 0.92;
   if (map.getSource(sourceId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojson);
     if (map.getLayer(layerId)) {
       map.setLayoutProperty(layerId, 'visibility', 'visible');
       map.setPaintProperty(layerId, 'fill-color', fillColor);
@@ -2736,7 +2758,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     }
     try {
       if (map.getSource(fillSrcId)) {
-        (map.getSource(fillSrcId) as GeoJSONSource).setData(fullGeojson);
+        putGeoJSON(map.getSource(fillSrcId) as GeoJSONSource, fullGeojson);
         if (map.getLayer(fillLayerId)) {
           map.setLayoutProperty(fillLayerId, 'visibility', 'visible');
           map.setPaintProperty(fillLayerId, 'fill-color', arrowGhostColor);
@@ -2836,7 +2858,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
       }
       else ensureShapeImage(map, mImgId, getCached(`dot-${mColor}`, () => makeDotImageData(mColor)));
       if (map.getSource(iconSrcId)) {
-        (map.getSource(iconSrcId) as GeoJSONSource).setData(iconData);
+        putGeoJSON(map.getSource(iconSrcId) as GeoJSONSource, iconData);
       } else {
         map.addSource(iconSrcId, { type: 'geojson', data: iconData } as any);
         map.addLayer({
@@ -2868,7 +2890,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
           : ((mi?.labelPos || 'top') === 'top' ? [0, -28] : (mi?.labelPos || 'top') === 'left' ? [-40, 0] : (mi?.labelPos || 'top') === 'right' ? [40, 0] : [0, 26]);
         try {
           if (map.getSource(lSrcId)) {
-            (map.getSource(lSrcId) as GeoJSONSource).setData(iconData);
+            putGeoJSON(map.getSource(lSrcId) as GeoJSONSource, iconData);
           } else {
             map.addSource(lSrcId, { type: 'geojson', data: iconData } as any);
             map.addLayer({
@@ -2913,13 +2935,13 @@ function renderDoubleArrow(map: maplibregl.Map, element: DoubleArrowElement, fra
     // 渐进绘制：按点比例截断
     const sliced = ring.slice(0, Math.max(3, Math.ceil(ring.length * progress)));
     const geojsonN = turf.featureCollection([turf.polygon([[...sliced, sliced[0]]])]);
-    (map.getSource(sourceId) as GeoJSONSource)?.setData(geojsonN);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojsonN);
     return;
   }
   const geojson = turf.featureCollection([turf.polygon([[...ring, ring[0]]])]);
 
   if (map.getSource(sourceId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojson);
   } else {
     map.addSource(sourceId, { type: 'geojson', data: geojson });
     map.addLayer({
@@ -3046,7 +3068,7 @@ function renderEncirclement(map: maplibregl.Map, element: EncirclementElement, _
       paint: { 'line-color': element.strokeColor || '#D33030', 'line-width': 3.5, 'line-dasharray': [4, 2.5] },
     });
   } else {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojson);
   }
 }
 
@@ -3081,7 +3103,7 @@ function renderGathering(map: maplibregl.Map, element: GatheringElement, frame: 
   ]);
 
   if (map.getSource(sourceId)) {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojson);
     if (map.getLayer(layerId)) {
       map.setPaintProperty(layerId, 'line-color', element.color || '#FF6600');
     }
@@ -3263,7 +3285,7 @@ function renderFlag(map: maplibregl.Map, element: FlagElement) {
       },
     });
   } else {
-    (map.getSource(sourceId) as GeoJSONSource).setData(geojson);
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, geojson);
     if (map.getLayer(layerId)) {
       map.setLayoutProperty(layerId, 'icon-image', imageId);
     }
