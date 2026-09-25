@@ -126,7 +126,7 @@ export function TemplatesPane() {
         {/* 左：这一类的模板列表 */}
         <div className="min-h-0 space-y-1 overflow-y-auto pr-0.5">
           {mine.map((x) => (
-            <button key={x.id} onClick={() => setSelId(x.id)} title={x.id}
+            <button key={x.id} onClick={() => setSelId(x.id)}
               className={`flex w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left text-[11px] ${
                 x.id === tpl?.id ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
               <span className="min-w-0 flex-1 truncate">{x.name || x.id}</span>
@@ -141,9 +141,9 @@ export function TemplatesPane() {
         {/* 中：模板头 + 选中的那条接口 */}
         {tpl && (
           <div className="min-h-0 min-w-0 space-y-2 overflow-y-auto pr-1">
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-1.5">
+            {/* 主键不显示也不给改：新建时由 store 生成（custom-<类>-<随机串>），列表与标题只认 name */}
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5">
               <Input value={tpl.name} onChange={(e) => patch({ ...tpl, name: e.target.value })} className="h-7 text-xs" placeholder={t('模板名', 'Name')} />
-              <Input value={tpl.id} onChange={(e) => patch({ ...tpl, id: e.target.value })} className="h-7 text-xs font-mono" placeholder="id" />
               <div className="flex items-center gap-1.5">
                 <Button variant="outline" size="sm" className="h-7 text-[11px]" disabled={!seedTemplate(tpl.id)}
                   onClick={() => restoreTemplate(tpl.id)} title={t('丢弃本地改动，取回内置默认形状', 'Restore the built-in shape')}>
