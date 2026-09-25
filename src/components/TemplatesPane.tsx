@@ -271,18 +271,11 @@ export function TemplatesPane() {
                           <Label htmlFor="tpl-clone" className="text-[11px] font-normal">{t('克隆', 'Clone')}</Label>
                         </label>
                         {tpl.caps.clone && (
-                          <>
-                            <label className="flex items-center gap-2">
-                              <Switch id="tpl-upload" checked={!!tpl.caps.uploadFirst}
-                                onCheckedChange={(uploadFirst) => void setCaps({ ...tpl.caps, uploadFirst })} />
-                              <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('上传', 'Upload')}</Label>
-                            </label>
-                            <label className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-muted-foreground">{t('参考音频采样率', 'ref rate')}</span>
-                              <Input type="number" value={tpl.refSampleRateHz ?? ''} className="h-6 w-24 text-[10px]"
-                                onChange={(e) => patch({ ...tpl, refSampleRateHz: e.target.value ? Number(e.target.value) : undefined })} />
-                            </label>
-                          </>
+                          <label className="flex items-center gap-2">
+                            <Switch id="tpl-upload" checked={!!tpl.caps.uploadFirst}
+                              onCheckedChange={(uploadFirst) => void setCaps({ ...tpl.caps, uploadFirst })} />
+                            <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('上传', 'Upload')}</Label>
+                          </label>
                         )}
                       </div>
                     </div>

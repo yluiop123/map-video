@@ -474,7 +474,6 @@ const NOTES = {
     "async_json": "异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举）",
     "upload_json": "桥接请求：本地文件 → 文件引用 fileRef（url 或文件号；仅克隆用）",
     "clone_json": "克隆音色请求：参考音频 → voiceId",
-    "ref_sample_rate": "克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k，写死过一次就出事）",
     "ord": "列表排序（同分类内）",
     "created_at": "创建时间（epoch ms，审计用）",
     "updated_at": "最后修改时间（epoch ms，审计用）"

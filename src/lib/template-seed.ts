@@ -161,7 +161,6 @@ const qwenTts: TemplateDef = {
     },
     outputs: { voiceId: 'output.voice', errorCode: 'code', error: 'message' },
   }),
-  refSampleRateHz: 24000,
 };
 
 export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts];

@@ -198,6 +198,8 @@ const RETIRED_COLUMNS = [
   ['provider_template', 'headers_json'],
   // 「下载桥接」整条下线：产物统一按 响应体 / base64 / hex / 下载链接 四种取，链接一律当场下载。
   ['provider_template', 'download_json'],
+  // 参考音频采样率不再是一个概念：转码固定输出 24000（providers.ts 的 REF_SAMPLE_RATE_HZ）。
+  ['provider_template', 'ref_sample_rate'],
 ];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
@@ -1070,7 +1072,7 @@ export function migrateProvidersFromStale(db) {
 const TPL_COLS = `tpl_id AS id, name, category, caps_json AS capsJson,
   instance_params_json AS instanceParamsJson,
   sync_json AS syncJson, async_json AS asyncJson,
-  upload_json AS uploadJson, clone_json AS cloneJson, ref_sample_rate AS refSampleRateHz, ord`;
+  upload_json AS uploadJson, clone_json AS cloneJson, ord`;
 
 /** 列出全部模板（一行一份，JSON 列还原成对象） */
 export function listTemplatesV2(db) {
@@ -1083,7 +1085,6 @@ export function listTemplatesV2(db) {
       async: blank(parseCol(r.asyncJson, null)) ? undefined : parseCol(r.asyncJson, {}),
       upload: blank(parseCol(r.uploadJson, null)) ? undefined : parseCol(r.uploadJson, {}),
       clone: blank(parseCol(r.cloneJson, null)) ? undefined : parseCol(r.cloneJson, {}),
-      refSampleRateHz: r.refSampleRateHz ?? undefined,
       ord: r.ord,
     }));
 }
@@ -1094,23 +1095,23 @@ export function upsertTemplateV2(db, t) {
   db.prepare(`
     INSERT INTO provider_template (tpl_id, name, category, caps_json,
       instance_params_json, sync_json, async_json, upload_json, clone_json,
-      ref_sample_rate, ord, created_at, updated_at)
+      ord, created_at, updated_at)
     VALUES (@id,@name,@category,@caps,@instanceParams,@sync,@async,
-      @upload,@clone,@refSampleRateHz,
+      @upload,@clone,
       COALESCE((SELECT ord FROM provider_template WHERE tpl_id = @id),
                (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider_template WHERE category = @category)),
       @now,@now)
     ON CONFLICT(tpl_id) DO UPDATE SET name=@name, category=@category, caps_json=@caps,
       instance_params_json=@instanceParams, sync_json=@sync,
       async_json=@async, upload_json=@upload, clone_json=@clone,
-      ref_sample_rate=@refSampleRateHz, updated_at=@now
+      updated_at=@now
   `).run({
     id: String(t.id), name: t.name ?? '', category: t.category,
     caps: jsonCol(t.caps),
     instanceParams: jsonCol(t.instanceParams ?? []),
     sync: jsonCol(t.sync), async: jsonCol(t.async),
     upload: jsonCol(t.upload), clone: jsonCol(t.clone),
-    refSampleRateHz: t.refSampleRateHz ?? null, now,
+    now,
   });
   return { id: String(t.id) };
 }

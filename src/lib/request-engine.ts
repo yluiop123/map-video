@@ -103,8 +103,6 @@ export interface TemplateDef {
   upload?: RequestDef;
   /** 核心：参考音频 → 音色 ID */
   clone?: RequestDef;
-  /** 克隆参考音频要求采样率 Hz（CosyVoice 16k、Qwen-TTS ≥24k） */
-  refSampleRateHz?: number;
 }
 
 /** 实例的取值：`{ instance: {…}, requests: { "async.submit": {…} } }`（密钥也在里面，模板把它声明成 `valueType:'secret'`） */

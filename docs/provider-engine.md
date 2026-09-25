@@ -22,11 +22,10 @@ CREATE TABLE IF NOT EXISTS provider_template (
   tpl_id      TEXT PRIMARY KEY,          -- deepseek-chat / qwen-image / qwen-tts / custom-1 …
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,             -- llm / tts / image（不加 CHECK，取值由 TS 联合类型管）
-  caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：调用方式 / 产物形式 / 建音色 / 建前先上传
+  caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：调用方式 / 产物形式 / 克隆 / 上传
   instance_params_json TEXT,                -- 实例级参数声明
   sync_json    TEXT,     async_json    TEXT,            -- 同步 {submit} / 异步 {submit,query}
-  upload_json  TEXT,    clone_json TEXT,                      -- 上传桥接 / 核心请求
-  ref_sample_rate INTEGER,                              -- 克隆参考音频采样率 Hz（各家不同）
+  upload_json  TEXT,    clone_json TEXT,                      -- 上传 / 核心请求
   ord INTEGER NOT NULL DEFAULT 0,  created_at INTEGER,  updated_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, name);
@@ -224,7 +223,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、产物形式 / 建音色 / 建前先上传 / 采样率，按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、只写动作名（提交 / 查询），哪一侧由这一排最右边那个「同步 | 异步」切换说明，卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；upload 那格是 multipart 表单）→ **要填的参数**（请求级 → 调用级两张表；upload 那格只有一张「要上传的文件」）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**三层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，入库的层每行装框、调用时给值的那层不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、产物形式 / 克隆 / 上传，按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、只写动作名（提交 / 查询），哪一侧由这一排最右边那个「同步 | 异步」切换说明，卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；upload 那格是 multipart 表单）→ **要填的参数**（请求级 → 调用级两张表；upload 那格只有一张「要上传的文件」）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**三层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，入库的层每行装框、调用时给值的那层不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - **验收口只有一个：实例页的「试调用」**（它同时给求值后的请求形状与真发一条的结果 —— 真发要的是这条实例的 Key，所以这件事只能在实例页做）。模板页不预览、不发请求：那一页只有形状本身，拼得出拼不出由保存前自检点名。
@@ -242,11 +241,11 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 `caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段，全由它推导**（`slotsOf` / `requiredOutputsOf`）。
 界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）。
 
-| 模板 | 调用方式 | 产物形式 | 建音色 | 建前先上传 | 参考音频采样率 | 推导出的接口槽 |
-|---|---|---|---|---|---|---|
-| `deepseek-chat` | sync | none | 否 | 否 | — | `同步 · 提交` |
-| `qwen-image` | both | url | 否 | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
-| `qwen-tts` | sync | url | 是 | 否 | 24000 | `克隆` + `同步 · 提交` |
+| 模板 | 调用方式 | 产物形式 | 克隆 | 上传 | 推导出的接口槽 |
+|---|---|---|---|---|---|
+| `deepseek-chat` | sync | none | 否 | 否 | `同步 · 提交` |
+| `qwen-image` | both | url | 否 | 否 | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
+| `qwen-tts` | sync | url | 是 | 否 | `克隆` + `同步 · 提交` |
 
 ### 9.2 每格必须交出的返回项（名字写死，只能填路径）
 
@@ -333,7 +332,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 
 #### `deepseek-chat`
 
-- 标量列：`category=llm`，`caps_json={"modes":"sync","artifact":"none"}`，`ref_sample_rate=NULL`
+- 标量列：`category=llm`，`caps_json={"modes":"sync","artifact":"none"}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
@@ -477,7 +476,7 @@ null
 
 #### `qwen-image`
 
-- 标量列：`category=image`，`caps_json={"modes":"both","artifact":"url"}`，`ref_sample_rate=NULL`
+- 标量列：`category=image`，`caps_json={"modes":"both","artifact":"url"}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
@@ -693,7 +692,7 @@ null
 
 #### `qwen-tts`
 
-- 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"url","clone":true}`，`ref_sample_rate=24000`
+- 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"url","clone":true}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 

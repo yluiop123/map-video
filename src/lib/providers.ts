@@ -66,11 +66,6 @@ export function defaultVoiceOf(inst: InstanceDef | null | undefined): string {
   return String(spec?.defaultValue ?? '');
 }
 
-/** 参考音频要求采样率：CosyVoice 16k、Qwen-TTS ≥24k，各家不同，写死过一次就出事 */
-export function refSampleRateOf(inst: InstanceDef | null | undefined): number {
-  return templateOf(inst)?.refSampleRateHz ?? 16000;
-}
-
 /** 查询节奏（实例级：账号限额，不属模板形状） */
 function pacing(inst: InstanceDef) {
   const v = inst.values.instance ?? {};
@@ -241,11 +236,17 @@ export async function callImage(inst: InstanceDef, prompt: string, extra: Record
   throw new EngineError('响应里没取到图片，检查模板 outputs 里的产物路径');
 }
 
+/**
+ * 参考音频转码的采样率。以前它是模板上的一个字段（CosyVoice 要 16k、Qwen-TTS 要 ≥24k），
+ * 现在按 24000 固定输出：高规格那份两家都吃得下，代价是将来接「只收 16k」的一家时要在这里改。
+ */
+const REF_SAMPLE_RATE_HZ = 24000;
+
 /** 参考音频 → 音色 ID。targetModel 必须与之后合成用的 model 一致（换模型 voiceId 即失效） */
 export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targetModel: string, label = 'mv'): Promise<string> {
   const tpl = tplOf(inst);
   if (!tpl.clone) throw new EngineError('这份模板没配克隆接口');
-  const wav = await toWavMono(refBytes, refSampleRateOf(inst));
+  const wav = await toWavMono(refBytes, REF_SAMPLE_RATE_HZ);
   if (wav.length > 10 * 1024 * 1024) throw new EngineError('参考音频超过 10MB');
   // 音色名优先用实例在 ⚙ 里填的那条，没填才用样本名兜底；两者都要过滤 ——
   // 实测上游对 `preferred_name` 只收字母数字（带连字符直接 InvalidParameter）
@@ -297,7 +298,7 @@ function normalizeImage(s: string): string {
   return `data:image/png;base64,${v}`;
 }
 
-/** 任意音频 → 单声道 WAV（各家要求的采样率不同，见模板的 refSampleRateHz） */
+/** 任意音频 → 单声道 WAV（采样率见 REF_SAMPLE_RATE_HZ） */
 async function toWavMono(bytes: ArrayBuffer, rateHz: number): Promise<Uint8Array> {
   const AC: typeof AudioContext = window.AudioContext
     || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;

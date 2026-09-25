@@ -387,14 +387,15 @@ console.log('\n[7] 作废列清理');
   upsertTemplateV2(db, legacy);
   db.exec('ALTER TABLE provider_template ADD COLUMN headers_json TEXT');
   db.exec('ALTER TABLE provider_template ADD COLUMN download_json TEXT');   // 他机器上这列也在（下载桥接那一代留的）
+  db.exec('ALTER TABLE provider_template ADD COLUMN ref_sample_rate INTEGER');  // 参考音频采样率也不再是字段
   db.prepare('UPDATE provider_template SET headers_json = ?').run(JSON.stringify(shared));
   check('7.7 造出「头在模板级、槽里没有」的现场',
     db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'headers_json')
     && !listTemplatesV2(db)[0].sync.submit.headers);
   ensureV2Schema(db);
   const cols = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
-  check('7.8 下次启动删掉 headers_json 与 download_json（不让位、不重建）',
-    !cols.includes('headers_json') && !cols.includes('download_json'), cols.join(','));
+  check('7.8 下次启动删掉 headers_json / download_json / ref_sample_rate（不让位、不重建）',
+    !cols.includes('headers_json') && !cols.includes('download_json') && !cols.includes('ref_sample_rate'), cols.join(','));
   const got = listTemplatesV2(db).find((t) => t.id === 'verify-image');
   eq('7.9 删列前把那对头并进没有自己 headers 的槽', got.sync.submit.headers, shared);
   check('7.10 已经有自己 headers 的槽原样不动（异步开关头不被覆盖、也不被删）',

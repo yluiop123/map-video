@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 696 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，696 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 695 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，695 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -844,7 +844,7 @@
 
 **职责**：接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）
 
-13 列 · 主键 `tpl_id`
+12 列 · 主键 `tpl_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -857,7 +857,6 @@
 | `async_json` | TEXT | — | 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举） · `CHECK (async_json IS NULL OR json_valid(async_json))` |
 | `upload_json` | TEXT | — | 桥接请求：本地文件 → 文件引用 fileRef（url 或文件号；仅克隆用） · `CHECK (upload_json IS NULL OR json_valid(upload_json))` |
 | `clone_json` | TEXT | — | 克隆音色请求：参考音频 → voiceId · `CHECK (clone_json IS NULL OR json_valid(clone_json))` |
-| `ref_sample_rate` | INTEGER | — | 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k，写死过一次就出事） |
 | `ord` | INTEGER | `NOT NULL` | 列表排序（同分类内） · 默认 `0` |
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |

@@ -70,10 +70,10 @@ function block() {
   out.push('`caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段，全由它推导**（`slotsOf` / `requiredOutputsOf`）。');
   out.push('界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）。');
   out.push('');
-  out.push('| 模板 | 调用方式 | 产物形式 | 建音色 | 建前先上传 | 参考音频采样率 | 推导出的接口槽 |');
-  out.push('|---|---|---|---|---|---|---|');
+  out.push('| 模板 | 调用方式 | 产物形式 | 克隆 | 上传 | 推导出的接口槽 |');
+  out.push('|---|---|---|---|---|---|');
   for (const t of SEED_TEMPLATES) {
-    out.push(`| \`${t.id}\` | ${t.caps.modes} | ${t.caps.artifact} | ${t.caps.clone ? '是' : '否'} | ${t.caps.uploadFirst ? '是' : '否'} | ${t.refSampleRateHz ?? '—'} | ${slotsOf(t).map((k) => `\`${REQ_LABEL[k]}\``).join(' + ') || '（无）'} |`);
+    out.push(`| \`${t.id}\` | ${t.caps.modes} | ${t.caps.artifact} | ${t.caps.clone ? '是' : '否'} | ${t.caps.uploadFirst ? '是' : '否'} | ${slotsOf(t).map((k) => `\`${REQ_LABEL[k]}\``).join(' + ') || '（无）'} |`);
   }
   out.push('');
   out.push('### 9.2 每格必须交出的返回项（名字写死，只能填路径）');
@@ -110,7 +110,7 @@ function block() {
     out.push('');
     out.push(`#### \`${t.id}\``);
     out.push('');
-    out.push(`- 标量列：\`category=${t.category}\`，\`caps_json=${JSON.stringify(t.caps)}\`，\`ref_sample_rate=${t.refSampleRateHz ?? 'NULL'}\``);
+    out.push(`- 标量列：\`category=${t.category}\`，\`caps_json=${JSON.stringify(t.caps)}\``);
     out.push('');
     out.push('- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。');
     out.push('');
