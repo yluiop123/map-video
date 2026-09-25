@@ -51,10 +51,12 @@ export interface RequestDef {
   method?: string;
   /** 这一条请求自己的头；值里同样可写 `${apiKey}` 这类占位符 */
   headers?: Record<string, unknown>;
-  /** 请求级参数：这个请求专属（model / size…），取值存实例的 values.requests[<本 key>] */
+  /**
+   * 这一格的参数声明（只有一张表 —— 原先分「请求级 / 调用级」两张，长得像两套东西，
+   * 其实说的是「值从哪来」，而那由取值优先级决定，不由声明在哪决定）。
+   * 填了值的走实例，没填的由调用点现场给；两者都是同一个 `${key}`。
+   */
   requestParams?: ParamSpec[];
-  /** 调用级参数：每次调用由界面 / 程序给（text / prompt / file / hotFix…） */
-  callParams?: ParamSpec[];
   body?: unknown;
   /** multipart 表单（只有「先上传文件」那一格用得上；file 值由引擎换成文件部分） */
   form?: Record<string, unknown>;
@@ -206,7 +208,7 @@ export function retriable(e: unknown): boolean {
  */
 export function secretKeysOf(tpl: TemplateDef, reqKey: ReqKey): string[] {
   const req = requestOf(tpl, reqKey);
-  return [...(tpl.instanceParams ?? []), ...(req?.requestParams ?? []), ...(req?.callParams ?? [])]
+  return [...(tpl.instanceParams ?? []), ...(req?.requestParams ?? [])]
     .filter((p) => p.valueType === 'secret')
     .map((p) => p.key);
 }
@@ -299,12 +301,34 @@ export function submitKeyOf(sync: boolean): ReqKey {
   return sync ? 'sync.submit' : 'async.submit';
 }
 
-/** 这个请求要调用端给值的参数名（试调用与调用页据此长输入框） */
-export function callKeysOf(tpl: TemplateDef, key: ReqKey): string[] {
-  return (requestOf(tpl, key)?.callParams ?? []).map((p) => p.key);
+/** 这一格引用了哪些名字（按出现顺序去重；`${它.mime}` 记作 `它`） */
+function referencedIn(def: RequestDef): string[] {
+  const out: string[] = [];
+  const scan = (node: unknown) => {
+    if (typeof node === 'string') {
+      for (const m of node.matchAll(new RegExp(WHOLE.source, 'g'))) out.push(m[1].split('.')[0]);
+      for (const m of node.matchAll(EMBED)) out.push(m[1].split('.')[0]);
+      return;
+    }
+    if (Array.isArray(node)) node.forEach(scan);
+    else if (node && typeof node === 'object') Object.values(node).forEach(scan);
+  };
+  scan(def.path); scan(def.headers); scan(def.body); scan(def.form);
+  return [...new Set(out)];
 }
 
-/** 这个请求的请求级参数（实例设置页按请求分区渲染） */
+/**
+ * 这一格要「现场给值」的参数 = 引用到了、但实例与默认值都没给来源的名字。
+ * 声明只有一张表，谁在调用时给不用另外标 —— 从占位符反推（试调用与调用页据此长输入框）。
+ */
+export function openKeysOf(tpl: TemplateDef, inst: InstanceDef, key: ReqKey): string[] {
+  const def = requestOf(tpl, key);
+  if (!def) return [];
+  const s = scopeOf(tpl, inst, key, {}, {});
+  return referencedIn(def).filter((n) => !(n in s.values));
+}
+
+/** 这一格声明的参数（实例设置页按格分区渲染） */
 export function requestParamsOf(tpl: TemplateDef, key: ReqKey): ParamSpec[] {
   return requestOf(tpl, key)?.requestParams ?? [];
 }
@@ -312,8 +336,7 @@ export function requestParamsOf(tpl: TemplateDef, key: ReqKey): ParamSpec[] {
 /** 参数的显示名：模板声明了 label 就用它，否则退回 key —— 界面上不该露一排裸英文变量名 */
 export function paramLabelOf(tpl: TemplateDef, reqKey: ReqKey, paramKey: string): string {
   const def = requestOf(tpl, reqKey);
-  const spec = [...(def?.callParams ?? []), ...(def?.requestParams ?? []), ...(tpl.instanceParams ?? [])]
-    .find((p) => p.key === paramKey);
+  const spec = [...(def?.requestParams ?? []), ...(tpl.instanceParams ?? [])].find((p) => p.key === paramKey);
   return spec?.label || paramKey;
 }
 
@@ -379,13 +402,12 @@ export function scopeOf(
   const specs = new Map<string, ParamSpec>();
   for (const p of tpl.instanceParams ?? []) specs.set(p.key, p);
   for (const p of req?.requestParams ?? []) specs.set(p.key, p);
-  for (const p of req?.callParams ?? []) specs.set(p.key, p);
 
   const values: Record<string, unknown> = {};
   const put = (k: string, v: unknown) => { if (v !== undefined) values[k] = castParam(specs.get(k), v); };
 
   // 先铺声明里的默认值，再逐层往上覆盖
-  for (const p of [...(tpl.instanceParams ?? []), ...(req?.requestParams ?? []), ...(req?.callParams ?? [])]) {
+  for (const p of [...(tpl.instanceParams ?? []), ...(req?.requestParams ?? [])]) {
     if (p.defaultValue !== undefined) put(p.key, p.defaultValue);
   }
   // 实例级取值（含 baseUrl / 密钥）
@@ -755,7 +777,7 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
     const def = requestOf(tpl, key);
     if (!def) continue;
     const declared = new Set<string>(produced);
-    for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? []), ...(def.callParams ?? [])]) declared.add(p.key);
+    for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? [])]) declared.add(p.key);
     scan(key, def.path, declared);
     scan(key, def.headers, declared);
     scan(key, def.body, declared);
@@ -814,7 +836,7 @@ export function validateTemplate(tpl: TemplateDef): string[] {
   for (const key of slots) {
     const def = requestOf(tpl, key);
     if (!def) continue;
-    for (const p of [...(def.requestParams ?? []), ...(def.callParams ?? [])]) declared.add(`${key}:${p.key}`);
+    for (const p of [...(def.requestParams ?? [])]) declared.add(`${key}:${p.key}`);
     const fixed = new Set(requiredOutputsOf(tpl, key).map((o) => o.name));
     for (const name of Object.keys(def.outputs ?? {})) {
       if (fixed.has(name)) continue;

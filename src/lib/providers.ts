@@ -59,10 +59,10 @@ export function submitKeyOfInstance(inst: InstanceDef): ReqKey {
   return key;
 }
 
-/** 这份模板声明的默认音色（callParams 里 voice 的 defaultValue）；没声明返回空，由界面要求用户选 */
+/** 这份模板声明的默认音色（参数表里 voice 的 defaultValue）；没声明返回空，由界面要求用户选 */
 export function defaultVoiceOf(inst: InstanceDef | null | undefined): string {
   const tpl = inst ? templateOf(inst) : undefined;
-  const spec = (tpl ? requestOf(tpl, 'sync.submit')?.callParams ?? [] : []).find((x) => x.key === 'voice');
+  const spec = (tpl ? requestOf(tpl, 'sync.submit')?.requestParams ?? [] : []).find((x) => x.key === 'voice');
   return String(spec?.defaultValue ?? '');
 }
 

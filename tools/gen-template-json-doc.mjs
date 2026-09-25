@@ -55,8 +55,7 @@ function paramRows(t) {
     const def = slot === 'sync.submit' ? t.sync?.submit : slot === 'async.submit' ? t.async?.submit
       : slot === 'upload' ? t.upload : t.clone;
     if (!def) continue;
-    push(`请求级 \`${slot}\``, def.requestParams);
-    push(`调用级 \`${slot}\``, def.callParams);
+    push(`这一格 \`${slot}\``, def.requestParams);
   }
   return rows;
 }
@@ -93,7 +92,7 @@ function block() {
   out.push('');
   out.push('### 9.3 三份模板各自声明了哪些参数');
   out.push('');
-  out.push('「层」就是取值的三级：实例级整条实例共用、请求级按接口槽各存各的、调用级不落库（由业务界面或试调用现场给）。');
+  out.push('「层」只有两处声明：实例级整条实例共用、每一格各一张表。同一格里填了值的走实例，没填的由调用点现场给（业务界面或试调用）—— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。');
   for (const t of SEED_TEMPLATES) {
     out.push('');
     out.push(`#### \`${t.id}\` · ${t.name}（${t.category}）`);

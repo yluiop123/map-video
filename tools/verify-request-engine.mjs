@@ -9,7 +9,7 @@
  * 运行：node --experimental-strip-types tools/verify-request-engine.mjs
  */
 import {
-  REQ_KEYS, applyOutputs, buildRequest, callKeysOf, classify, readPath,
+  REQ_KEYS, applyOutputs, buildRequest, classify, openKeysOf, readPath,
   redact, requestOf, runClone, runSync, secretsOf, submitAsync, queryOnce, validateTemplate, EngineError,
   retriable,
 } from '../src/lib/request-engine.ts';
@@ -91,6 +91,26 @@ console.log('\n[2] 三层参数与求值');
   eq('2.11 枚举值原样进嵌套对象', deep.body.thinking, { type: 'enabled' });
   check('2.12 没选思考强度时整个 thinking 键消失', !('thinking' in buildRequest(tpl, i, 'sync.submit', { systemPrompt: 'a', userPrompt: 'b' }).req.body));
   eq('2.13 枚举参数按原值发出', deep.body.reasoning_effort, 'high');
+
+  // 一张参数表：谁「现场给」不看声明在哪张表，看这一格引用了谁、谁没有来源
+  const tOpen = {
+    ...tpl,
+    sync: {
+      submit: {
+        path: '${baseUrl}/x?m=${mark}',
+        requestParams: [
+          { key: 'mark', label: '标记' },                        // 没来源 → 现场给
+          { key: 'size', label: '尺寸', defaultValue: '1024' },   // 有默认值 → 不用问
+          { key: 'model', label: '模型' },                        // 实例里填了 → 不用问
+          { key: 'prompt', label: '画面描述' },                   // 没来源 → 现场给
+        ],
+        body: { prompt: '${prompt}', size: '${size}', model: '${model}' },
+      },
+    },
+  };
+  eq('2.14 引用了又没来源的才算「现场给」（不看声明在哪张表）', openKeysOf(tOpen, i, 'sync.submit'), ['mark', 'prompt']);
+  const filled = { ...i, values: { ...i.values, requests: { 'sync.submit': { prompt: '一只猫' } } } };
+  eq('2.15 在实例里填上之后就不再要现场给', openKeysOf(tOpen, filled, 'sync.submit'), ['mark']);
 }
 
 // ========== 3. headers 覆盖 / outputs / 发音修正 ==========
@@ -114,7 +134,7 @@ console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
   eq('3.4 查询请求直接 ${taskId}', buildRequest(tpl, i, 'async.query', {}, { taskId: 'T9' }).req.url, 'https://x.example/v1/tasks/T9');
   // 千问 CosyVoice 端点（/services/audio/tts/SpeechSynthesizer）要的就是上游那份对象形状：
   // 界面存进项目 hotFix 的就是它，声明成 json 就原样进 body —— 引擎不再按厂商改名（没有 transform 那格了）
-  const t4 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { input: { text: '${text}', hot_fix: '${hotFix}' } }, callParams: [{ key: 'text', label: '文本' }, { key: 'hotFix', label: '发音修正', valueType: 'json' }] } } };
+  const t4 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { input: { text: '${text}', hot_fix: '${hotFix}' } }, requestParams: [{ key: 'text', label: '文本' }, { key: 'hotFix', label: '发音修正', valueType: 'json' }] } } };
   eq('3.5 hotFix 按声明原样进 body（上游对象形状）',
     buildRequest(t4, inst('x'), 'sync.submit', { text: '重庆', hotFix: { pronunciation: [{ 重庆: 'chong2 qing4' }], replace: [] } }).req.body.input.hot_fix,
     { pronunciation: [{ 重庆: 'chong2 qing4' }], replace: [] });
@@ -123,7 +143,7 @@ console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
     { replace: [{ AI: '人工智能' }] });
   check('3.7 没填修正 → hot_fix 这个键整个消失（不发给上游）',
     buildRequest(t4, inst('x'), 'sync.submit', { text: '重庆' }).req.body.input.hot_fix === undefined);
-  const t3 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { n: '${n}' }, callParams: [{ key: 'n', label: '个数', valueType: 'number' }] } } };
+  const t3 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { n: '${n}' }, requestParams: [{ key: 'n', label: '个数', valueType: 'number' }] } } };
   eq('3.8 字符串数字按声明转成数字（只看 valueType，没有加工那格）', buildRequest(t3, inst('x'), 'sync.submit', { n: '3' }).req.body.n, 3);
 }
 
@@ -211,7 +231,7 @@ console.log('\n[6] 音色克隆');
     // 形状二「先上传拿文件号」：这一格发的是 multipart 表单，文件保持成分片（不转 base64）
     upload: {
       path: '${baseUrl}/files/upload', method: 'POST', headers: { Authorization: 'Bearer ${apiKey}' },
-      callParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file' }],
+      requestParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file' }],
       form: { file: '${voiceData}', purpose: 'voice_clone', mime_type: '${voiceData.mime}' }, outputs: { fileRef: 'file.file_id' },
     },
     clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileRef}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
@@ -292,7 +312,7 @@ for (const t of SEED_TEMPLATES) {
     try {
       const i = inst(t.id, { sync: !(k === 'async.submit' || k === 'async.query') });
       const args = {};
-      for (const x of callKeysOf(t, k)) args[x] = `v-${x}`;
+      for (const x of openKeysOf(t, i, k)) args[x] = `v-${x}`;
       if (k === 'async.query') args.taskId = 'T1';
       const built = buildRequest(t, i, k, args, k === 'async.query' ? { taskId: 'T1' } : {});
       if (built.missing.size) { ok = false; why = `没人给值：${[...built.missing].join(',')}`; break; }

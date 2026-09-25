@@ -96,12 +96,12 @@ const blankRequest = (key: ReqKey): RequestDef => {
   // 上传那一格发的是 multipart 表单，不是 JSON 体：入参只有一个文件，随附字段写在表单里
   if (key === 'upload') {
     return {
-      path: '${baseUrl}/files', method: 'POST', headers: { ...AUTH_HDR }, requestParams: [],
-      callParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
+      path: '${baseUrl}/files', method: 'POST', headers: { ...AUTH_HDR },
+      requestParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
       form: { file: '${voiceData}', purpose: 'voice_clone' }, outputs: {},
     };
   }
-  return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
+  return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
 };
 
 /** 移除一格（同步 / 异步的提交与查询是同一行里的键，删干净要连父对象一起处理） */
@@ -377,23 +377,12 @@ function RequestEditor({ tpl, reqKey, onChange }: {
           )}
         </Group>
 
-        {/* 上传那一格的入参与别的接口不同：只有一个要传的文件，model / size 那类请求级参数对它没意义 */}
-        <Group title={t('要填的参数', 'Parameters')}>
-          {isUpload ? (
-            <ParamTable variant="flush" title={t('要传的文件', 'File to upload')}
-              hint={t('引用写 ${它的名字}：进 multipart 表单就是那个二进制分片（自带 mime 与文件名），进 JSON 体就是 data:<mime>;base64,…；单取格式写 ${它的名字.mime}。',
-                'reference it as ${name}: a binary part in the form, a data: URI in a JSON body; ${name.mime} for the type alone')}
-              params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
-          ) : (
-            <>
-              <ParamTable variant="framed" title={t('请求级参数', 'Request params')}
-                hint={t('这一格专属，取值存在实例里；同名参数在别的格可以取不同值（比如同步与异步的 model 不同）。', 'specific to this endpoint; the same name may hold a different value elsewhere')}
-                params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
-              <ParamTable variant="flush" title={t('调用级参数', 'Call params')}
-                hint={t('每次调用现场给（正文文本、画面描述、文件），不落库；调用页与「试调用」按这些长输入框。', 'given per call; the call UI and 试调用 build inputs from these')}
-                params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
-            </>
-          )}
+        {/* 一张参数表：填了值的走实例，没填的由调用点现场给 —— 都是同一个 ${key}，不再分两张表 */}
+        <Group title={t('参数', 'Parameters')}>
+          <ParamTable variant="framed" title={isUpload ? t('要传的文件', 'File to upload') : t('这一格的参数', 'Endpoint params')}
+            hint={t('引用写 ${名字}。填了值的存在实例里（同名参数在别的格可以取不同值），没填的由调用点现场给（正文文本、画面描述、文件）；文件进 multipart 表单就是那个二进制分片，进 JSON 体就是 data:<mime>;base64,…，单取格式写 ${名字.mime}。',
+              'reference as ${name}. Filled ones persist on the instance; the rest come from the call site. A file becomes a binary part in a form, a data: URI in a JSON body; ${name.mime} for the type alone')}
+            params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
         </Group>
 
         {/* 引擎要读的返回项：名字写死（写错就没有消费者），只能填路径 */}

@@ -48,7 +48,7 @@ const TPL = {
     { key: 'apiKey', label: 'API Key', valueType: 'secret' },
     { key: 'timeoutMs', label: '超时', valueType: 'number', defaultValue: 30000 },
   ],
-  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' }, requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }], callParams: [{ key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { fileRef: 'output.url' } } },
+  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' }, requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }, { key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { fileRef: 'output.url' } } },
   async: {
     submit: { path: '${baseUrl}/submit', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}', 'X-DashScope-Async': 'enable' }, body: { prompt: '${prompt}' }, outputs: { taskId: 'output.task_id' } },
     query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { status: 'output.task_status', fileRef: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },

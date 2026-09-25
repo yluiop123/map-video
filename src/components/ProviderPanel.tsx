@@ -19,7 +19,7 @@ import { Button } from './ui/button';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  REQ_KEYS, callKeysOf, paramLabelOf, requestOf, validateTemplate,
+  REQ_KEYS, openKeysOf, paramLabelOf, requestOf, validateTemplate,
   type Category, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
 } from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
@@ -157,7 +157,7 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
 
       {tpl && REQ_KEYS.filter((k) => k !== 'async.query' && !!requestOf(tpl, k)?.requestParams?.length).map((k) => (
         <Group key={k} title={`${t(REQ_TITLE[k].zh, REQ_TITLE[k].en)} · ${t('参数', 'params')}`}
-          hint={t('这个请求专属，同名参数不同请求可以取不同值', 'per-request values')}>
+          hint={t('填了值的存这条实例（同名参数在别的格可以取不同值）；留空的由调用点现场给，会出现在下面的试调用里', 'fill what this account pins; leave the rest to the call site')}>
           {(requestOf(tpl, k)?.requestParams ?? []).map((p) => (
             <ParamControl key={p.key} p={p} value={inst.values.requests?.[k]?.[p.key]}
               onChange={(v) => setValues({}, { requests: { [k]: { ...(inst.values.requests?.[k] ?? {}), [p.key]: v } } })} />
@@ -173,7 +173,8 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
 }
 
 /**
- * 试调用：真发一条，用**这条实例**的取值与 Key（模板页只有零网络的预览）。
+ * 试调用：真发一条，用**这条实例**的取值与 Key（模板页不发请求）。
+ * 要现场给哪些参数 = 这一格引用了、而实例里没填的那些名字（从占位符反推，不靠第二张声明表）。
  * 产物只回显字节数与取到的字段，不落库 —— 落库是各业务动作自己的事。
  */
 function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
@@ -185,7 +186,7 @@ function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
   const [out, setOut] = useState('');
   const cur = keys.includes(key) ? key : keys[0];
   if (!cur) return null;
-  const callKeys = callKeysOf(tpl, cur);
+  const callKeys = openKeysOf(tpl, inst, cur);
   const args = (): Record<string, unknown> => {
     const o: Record<string, unknown> = {};
     for (const k of callKeys) {

@@ -52,8 +52,9 @@ const deepseekChat: TemplateDef = {
         en('thinking', '深度思考', ['enabled', 'disabled']),
         num('temperature', '温度', { min: 0, max: 2, step: 0.1 }),
         num('maxTokens', '最大输出 token'),
+        // 这两条不在这儿填值 —— 每次调用由字幕生成那边给；声明出来是为了有中文名与类型
+        text('systemPrompt', '系统提示词'), text('userPrompt', '用户提示词'),
       ],
-      callParams: [text('systemPrompt', '系统提示词'), text('userPrompt', '用户提示词')],
       body: {
         model: '${model}',
         messages: [{ role: 'system', content: '${systemPrompt}' }, { role: 'user', content: '${userPrompt}' }],
@@ -71,7 +72,8 @@ const deepseekChat: TemplateDef = {
 
 // ========== 图片：千问 文生图（同步 + 异步 + 任务查询） ==========
 
-const imageCall: ParamSpec[] = [text('prompt', '画面描述')];
+// 画面描述每次调用由出图那一栏给；声明出来是为了有中文名与类型
+const imagePrompt: ParamSpec[] = [text('prompt', '画面描述')];
 const imageOutputs = { fileRef: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' };
 
 const qwenImage: TemplateDef = {
@@ -86,8 +88,8 @@ const qwenImage: TemplateDef = {
         en('model', '模型', ['qwen-image-3.0-pro'], { defaultValue: 'qwen-image-3.0-pro' }),
         p('size', '出图尺寸', { defaultValue: '2048*2048' }),
         bool('watermark', '水印'),
+        ...imagePrompt,
       ],
-      callParams: imageCall,
       body: {
         model: '${model}',
         input: { messages: [{ role: 'user', content: [{ text: '${prompt}' }] }] },
@@ -103,8 +105,8 @@ const qwenImage: TemplateDef = {
         en('model', '模型', ['qwen-image-3.0-pro'], { defaultValue: 'qwen-image-3.0-pro' }),
         p('size', '出图尺寸', { defaultValue: '2048*2048' }),
         num('n', '张数', { defaultValue: 1, min: 1, max: 4 }),
+        ...imagePrompt,
       ],
-      callParams: imageCall,
       body: {
         model: '${model}',
         input: { messages: [{ role: 'user', content: [{ text: '${prompt}' }] }] },
@@ -136,8 +138,9 @@ const qwenTts: TemplateDef = {
       requestParams: [
         en('model', '模型', ['qwen3-tts-flash', 'qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-flash' }),
         en('languageType', '语种', ['Chinese', 'English', 'Auto'], { defaultValue: 'Chinese' }),
+        // 这两条每次调用由字幕生成那一行给（voice 也可以在这儿钉死一个默认音色）
+        text('text', '合成文本'), p('voice', '音色 ID', { defaultValue: 'Ethan' }),
       ],
-      callParams: [text('text', '合成文本'), p('voice', '音色 ID', { defaultValue: 'Ethan' })],
       body: {
         model: '${model}',
         input: { text: '${text}', voice: '${voice}' },
@@ -150,11 +153,10 @@ const qwenTts: TemplateDef = {
     requestParams: [
       en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
       p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
+      // 交过来的是一个文件值（字节 + mime + 文件名）。`${voiceData}` 在 JSON 体里就是
+      // `data:<mime>;base64,…`（这一家要的形状），在 multipart 表单里则是那个二进制分片。
+      { key: 'voiceData', label: '参考音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 },
     ],
-    // 交过来的是一个文件值（字节 + mime + 文件名）。`${voiceData}` 在 JSON 体里就是
-    // `data:<mime>;base64,…`（这一家要的形状），在 multipart 表单里则是那个二进制分片。
-    // 要单独拿 mime 就写 `${voiceData.mime}`（如 audio/x-wav）。
-    callParams: [{ key: 'voiceData', label: '参考音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
     body: {
       model: 'qwen-voice-enrollment',
       input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${voiceData}' } },
@@ -177,7 +179,7 @@ export function blankTemplate(category: Category): TemplateDef {
     instanceParams: net(''),
     sync: {
       submit: jsonReq('${baseUrl}', {
-        callParams: [text(category === 'image' ? 'prompt' : 'text', category === 'image' ? '画面描述' : '文本')],
+        requestParams: [text(category === 'image' ? 'prompt' : 'text', category === 'image' ? '画面描述' : '文本')],
         body: { model: '${model}' },
       }),
     },
