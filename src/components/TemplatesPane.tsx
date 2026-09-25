@@ -27,6 +27,7 @@ import { useProviderStore } from '../stores/providerStore';
 import { seedTemplate } from '../lib/template-seed';
 import {
   ARTIFACT_KEY, REQ_KEYS, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
+  REQ_LABEL as SLOT_LABEL,
   type ArtifactEncoding, type Caps, type Category, type ParamSpec, type ReqKey,
   type RequestDef, type TemplateDef, type ValueType,
 } from '../lib/request-engine';
@@ -37,13 +38,16 @@ const CATEGORY_LABEL: Record<Category, { zh: string; en: string }> = {
   image: { zh: '图片', en: 'Image' },
 };
 
-/** 页签上的名字（界面自身的文案，所以中英两份）；顺序就是调用顺序：上传 → 克隆 → 提交 → 查询 */
+/**
+ * 页签上的名字。同一排右边的「同步 | 异步」切换已经说明在看哪一侧，所以这里只留动作名 ——
+ * 校验消息用的是引擎那份 `REQ_LABEL`（带「同步 · / 异步 ·」前缀），两边同时报错时才分得清是谁。
+ */
 const REQ_LABEL: Record<ReqKey, { zh: string; en: string }> = {
   upload: { zh: '上传', en: 'Upload' },
   clone: { zh: '克隆', en: 'Clone' },
-  'sync.submit': { zh: '同步 · 提交', en: 'Sync · submit' },
-  'async.submit': { zh: '异步 · 提交', en: 'Async · submit' },
-  'async.query': { zh: '异步 · 查询', en: 'Async · query' },
+  'sync.submit': { zh: '提交', en: 'Submit' },
+  'async.submit': { zh: '提交', en: 'Submit' },
+  'async.query': { zh: '查询', en: 'Query' },
 };
 
 const VALUE_TYPES: ValueType[] = ['string', 'text', 'number', 'boolean', 'enum', 'multiEnum', 'array', 'secret', 'file', 'json'];
@@ -154,7 +158,8 @@ export function TemplatesPane() {
     const after = withCaps(tpl, next);
     const dropped = REQ_KEYS.filter((k) => present(tpl, k) && !slotsOf(after).includes(k));
     if (!dropped.length) { patch(after); return; }
-    const names = dropped.map((k) => `「${t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}」`).join('、');
+    // 这里要说清是哪一侧的提交 / 查询，所以用引擎那份全名（页签上的是短名）
+    const names = dropped.map((k) => `「${SLOT_LABEL[k]}」`).join('、');
     const ok = await confirm({
       message: t(`关掉之后${names}不再被调用，一起移除吗？填过的内容会删掉。`,
         `These endpoints are no longer called — remove them? Their content goes too.`),
