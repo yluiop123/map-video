@@ -65,9 +65,11 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   "body": { "model": "${model}", "input": { "text": "${text}" } },
   "form": { "file": "${audioFile}", "purpose": "voice_clone" },   // 只有 upload 那一格用（multipart）
   "outputs": { "taskId": "output.task_id", "error": "message" },  // 固定项 + 自定义变量，见下
-  "successValues": ["SUCCEEDED"], "failureValues": ["FAILED","CANCELED","UNKNOWN"],  // 只有 query 用
-  "timeoutMs": 60000 }
+  "successValues": ["SUCCEEDED"], "failureValues": ["FAILED","CANCELED","UNKNOWN"] }  // 只有 query 用
 ```
+
+- **超时只有实例级那一份**（模板把 `timeoutMs` 声明成一条实例参数）：槽上曾有过一格 `timeoutMs`，
+  但没有任何生产者，删了。
 
 - **请求头整份模板只有 `headers_json` 一份**，槽上不再有 `headers`。理由：同一家怎么认证是固定的，
   多一格「附加请求头」只会多一个看不懂又可能写错的地方。代价是异步开关头（`X-DashScope-Async: enable`）
@@ -154,7 +156,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 | 步 | 做什么 | 由哪格决定 |
 |---|---|---|
 | ① 求值 | 三层取值 + 上游变量拼出真实请求；有占位符没来源 → 当场点名 | `path` / `headers` / `body` / `form` + 三层声明 |
-| ② 发送 | 桌面走主进程 `net:request`（无 CORS、Key 不出本机），网页走 `fetch` | 该槽的 `timeoutMs` |
+| ② 发送 | 桌面走主进程 `net:request`（无 CORS、Key 不出本机），网页走 `fetch` | 实例参数 `timeoutMs` |
 | ③ 取字段 | 按 `outputs` 从响应里取名字，取到的进作用域 | `outputs` |
 | ④ 判状态 | `classify(status, successValues, failureValues)`；中间态就再来一轮 | `async.query` 两个枚举 |
 | ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从固定项 `artifact` 解；`url` **当场下载**（`viaDownload` 则先走 `download` 桥接拿地址） | `caps.artifact` + `artifact` 那格的路径 |
@@ -202,7 +204,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **一小节「这一家怎么交活」**（接法 / 产物形式 / 建音色 / 建前先上传 / 采样率，按 category 只显示问得上的）→ **请求头（折叠，标题带条数）** → 开关推导出的接口槽卡片，卡片内按小节排：**要填的参数**（请求级 / 调用级两张表）→ **发出去的内容**（body；upload 那格换成 multipart 表单）→ **从响应里取**（固定项逐行 + 折叠的自定义变量）→ **这一步的判定与超时**（两个状态值只在 query 出现）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **一小节「这一家怎么交活」**（接法 / 产物形式 / 建音色 / 建前先上传 / 采样率，按 category 只显示问得上的）→ **请求头（折叠，标题带条数）** → 开关推导出的接口槽卡片，卡片内按小节排：**要填的参数**（请求级 / 调用级两张表）→ **发出去的内容**（body；upload 那格换成 multipart 表单）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - 「预览请求 → 试调用」是这套设计的验收口，两件事分在两页：**预览**在模板页（只跑求值 + 按声明打码，一个字节都不发），**试调用**在实例页（真发一条要的是这条实例的 Key）。改完模板先看形状，再决定要不要花一次真调用。
