@@ -77,9 +77,9 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 - **超时只有实例级那一份**（模板把 `timeoutMs` 声明成一条实例参数）：槽上曾有过一格 `timeoutMs`，
   但没有任何生产者，删了。
 
-- **请求头逐条接口各配一份**，值里同样能写 `${apiKey}` 这类占位符。中间版本曾把整份模板合成一份 `headers_json`，
-  代价是异步开关头（`X-DashScope-Async: enable`）被同步端点也收走一份 —— 同一家不同端点要的头本来就不一样
-  （查询是 GET，没什么 Content-Type 可声明），所以那一列删了，头回到每条请求自己身上。
+- **请求头逐条接口各配一份**，值里同样能写 `${apiKey}` 这类占位符。**没有模板级那一份**：同一家不同端点要的头本来就不一样
+  （查询是 GET，没什么 Content-Type 可声明；异步开关头 `X-DashScope-Async` 只有异步提交那条该带），
+  共用一份等于替别的端点也塞上它。
 
 - **`outputs` 分两种，界面上也分两处**：
   - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`artifact`（产物）、
@@ -147,9 +147,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 | `itemType`/`item` | list 的行编辑器（`item` 可给元素子模板） |
 
 - **声明里没有「必填」也没有「加工方式」这两格**：一份声明出来的参数只有两个来源 —— 要么在实例里填，要么在调用时给，
-  「必不必填」问得没意义（没给值就是那个键删掉，级联到空父键，见 §四）；取值成形只看 `valueType`。
-  原先的 `transform` 三选一里，`json` 与 `valueType:'json'` 重复，`base64DataUri` 在引擎里是个空操作
-  （文件本来就是调用点编好的），`hotFixArray` 三家内置模板一个都没用到 —— 整列删了。
+  「必不必填」问得没意义（没给值就是那个键删掉，级联到空父键，见 §四）；取值成形只看 `valueType`，不叠加第二层加工选项。
 - **全项目只有一处要把文件转成 base64**：语音克隆且「建音色前不单独上传」（= 直接克隆）。那一步在调用点
   （`providers.ts` 的 `cloneVoice`：参考音频 → 单声道 WAV → `data:audio/wav;base64,…` 交给 `${audioDataUri}`），
   模板这边只声明「这是个文件、收什么格式、多大为止」。走「先上传再克隆」的那家传的是 multipart 二进制分片，不编码。

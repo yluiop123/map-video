@@ -71,6 +71,7 @@ export function ensureV2Schema(db) {
     db.exec(ddl);
     // 删作废列**必须在建表之后**：ALTER TABLE DROP COLUMN 会重校验依赖该表的视图，
     // 而让位那一刻 provider_template 已被改名成 __stale、还没重建回来，视图于是指着一张不存在的表 → 删列直接失败（实测踩过）。
+    foldTemplateHeadersIntoSlots(db);
     dropRetiredColumns(db);
     restoreTaskRows(db, taskCols);
     // 旧实例行的搬迁要等模板铺好之后（provider.tpl_id 是真外键）→ 由渲染端 hydrate 触发
@@ -137,6 +138,44 @@ function ensureAllColumns(db, ddl) {
       }
     }
   }
+}
+
+/**
+ * 请求头改回**逐条接口各配一份**，模板级 `headers_json` 那列要删。
+ * 库里停在「整份共用一对」那一代的行，各槽 JSON 里根本没有 headers —— 直接删列等于把认证头删了，
+ * 下次真调用全 401（而且没人会想到是这里掉的）。所以删列前把那一对并进每个还没有自己 headers 的槽。
+ * 认**正标志**（列还在）：跑完列就没了，下次启动不再进这里 —— 这是全库唯一一处一次性搬迁，理由是「不并就丢数据」。
+ * GET 那条顺手去掉 Content-Type：那条端点没有请求体，原先是被共用那一对带上的。
+ */
+const HDR_COLS = [['sync_json', ['submit']], ['async_json', ['submit', 'query']], ['download_json', ['']], ['upload_json', ['']], ['clone_json', ['']]];
+function foldTemplateHeadersIntoSlots(db) {
+  if (!db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'headers_json')) return;
+  let folded = 0;
+  for (const row of db.prepare(`SELECT tpl_id, headers_json, ${HDR_COLS.map(([c]) => c).join(', ')} FROM provider_template`).all()) {
+    const shared = parseCol(row.headers_json, null);
+    if (!shared || !Object.keys(shared).length) continue;
+    const sets = {};
+    let changed = false;
+    for (const [col, subs] of HDR_COLS) {
+      const raw = parseCol(row[col], null);
+      if (!raw || typeof raw !== 'object') continue;
+      for (const sub of subs) {
+        const slot = sub ? raw[sub] : raw;
+        if (!slot || typeof slot !== 'object' || Object.keys(slot.headers ?? {}).length) continue;
+        slot.headers = String(slot.method ?? 'POST').toUpperCase() === 'GET'
+          ? Object.fromEntries(Object.entries(shared).filter(([k]) => k.toLowerCase() !== 'content-type'))
+          : { ...shared };
+        if (sub && !Object.keys(slot.headers).length) delete slot.headers;
+        changed = true;
+      }
+      if (changed) sets[col] = jsonCol(raw);
+    }
+    if (!changed) continue;
+    db.prepare(`UPDATE provider_template SET ${Object.keys(sets).map((c) => `${c} = ?`).join(', ')} WHERE tpl_id = ?`)
+      .run(...Object.values(sets), row.tpl_id);
+    folded += 1;
+  }
+  if (folded) console.log(`[db-v2] 模板级请求头已并进各条接口（${folded} 份模板），随后删掉 headers_json 列`);
 }
 
 /**

@@ -375,21 +375,27 @@ console.log('\n[7] 作废列清理');
 
 {
   // 用户机器现在正停在这一代：表形状与新版只差一列 headers_json（没有 use_clone / upload 那些换代标志），
-  // 所以启动必须走「删作废列」这条路把行留住，而不是让位重建。
+  // 而那一对头存在模板级、各槽 JSON 里压根没有 headers。直接删列 = 认证头没了、真调用全 401。
   const db = fresh();
-  upsertTemplateV2(db, TPL);
-  db.exec("ALTER TABLE provider_template ADD COLUMN headers_json TEXT");
-  db.exec(`UPDATE provider_template SET headers_json = '{"Authorization":"Bearer old-shared-header"}'`);
-  check('7.7 造出「只差 headers_json 一列」的现场',
-    db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'headers_json'));
+  const shared = { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' };
+  const legacy = structuredClone(TPL);
+  delete legacy.sync.submit.headers;
+  delete legacy.async.query.headers;   // async.submit 留着它自己的（含异步开关头），不该被覆盖
+  upsertTemplateV2(db, legacy);
+  db.exec('ALTER TABLE provider_template ADD COLUMN headers_json TEXT');
+  db.prepare('UPDATE provider_template SET headers_json = ?').run(JSON.stringify(shared));
+  check('7.7 造出「头在模板级、槽里没有」的现场',
+    db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'headers_json')
+    && !listTemplatesV2(db)[0].sync.submit.headers);
   ensureV2Schema(db);
   const cols = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
   check('7.8 下次启动删掉 headers_json（不让位、不重建）', !cols.includes('headers_json'), cols.join(','));
   const got = listTemplatesV2(db).find((t) => t.id === 'verify-image');
-  check('7.9 行没丢，逐槽请求头原样在（模板级那份没人读了）',
-    got?.sync.submit.headers['X-DashScope-Async'] === undefined
-    && got?.async.submit.headers['X-DashScope-Async'] === 'enable',
-    JSON.stringify(got?.async.submit.headers));
+  eq('7.9 删列前把那对头并进没有自己 headers 的槽', got.sync.submit.headers, shared);
+  check('7.10 已经有自己 headers 的槽原样不动（异步开关头不被覆盖、也不被删）',
+    got.async.submit.headers['X-DashScope-Async'] === 'enable' && got.async.submit.headers['Content-Type'] === 'application/json',
+    JSON.stringify(got.async.submit.headers));
+  eq('7.11 GET 那条并进来时去掉 Content-Type（那条没有请求体）', got.async.query.headers, { Authorization: 'Bearer ${apiKey}' });
   db.close();
 }
 
