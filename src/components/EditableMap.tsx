@@ -286,7 +286,7 @@ export function EditableMap({ project }: EditableMapProps) {
     if (!map) return;
     try {
       // 编辑端：传 interactive=true（绘制编辑辅助图形；导出端 MapScene 不传）
-      renderElements(map, project.elements, currentFrame, project.globalConfig.defaultFPS, true);
+      renderElements(map, project.elements, currentFrame, project.globalConfig.defaultFPS, true, styleTick);
       // 列表顺序 = 地图叠放顺序（靠前的在上层）
       restackByLayerOrder(map, project.elements.map((el) => el.id));
     } catch { /* style 未就绪，下一帧重试 */ }

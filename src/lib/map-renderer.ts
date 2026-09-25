@@ -128,12 +128,23 @@ function styleLayerIds(map: maplibregl.Map): string[] {
  * 于是缓存天然作废，不会拿旧签名把新 source 的空数据误判成「已经推过了」。
  */
 const pushedDataSig = new WeakMap<GeoJSONSource, string>();
+/**
+ * 上一帧推给这个 source 的**就是这同一个对象**时，内容必然没变，直接返回——
+ * 连 `JSON.stringify` 那趟比对都省了。几何缓存（lineEffectiveCoordinates / staticLineData）
+ * 逐帧交回同一份引用，靠的就是这一条。
+ */
+const pushedDataRef = new WeakMap<GeoJSONSource, SourceData>();
 type SourceData = Parameters<GeoJSONSource['setData']>[0];
 export function putGeoJSON(src: GeoJSONSource | undefined, data: SourceData): void {
   if (!src) return;
+  if (data && typeof data === 'object' && pushedDataRef.get(src) === data) return;
   const sig = JSON.stringify(data);
-  if (pushedDataSig.get(src) === sig) return;
+  if (pushedDataSig.get(src) === sig) {
+    pushedDataRef.set(src, data);
+    return;
+  }
   pushedDataSig.set(src, sig);
+  pushedDataRef.set(src, data);
   src.setData(data);
 }
 
@@ -197,15 +208,58 @@ export function restackByLayerOrder(map: maplibregl.Map, elementIdsTopToBottom: 
 
 
 /**
+ * 「这一帧没有东西要重算」的判据：返回 true 才允许整帧跳过该元素的渲染器。
+ *
+ * 默认**不跳**。只有确认渲染器对该元素既不读 `frame`、也不读相机时才可能跳，
+ * 而项目数据不可变（编辑一次就换元素对象引用），所以「同一个对象 + 同一个刷新计数」
+ * 就等价于「渲染器的输入一个都没变」。
+ *
+ * 新增任何逐帧或逐相机的渲染分支时，**必须让它在这里判 false**，否则画面会停在
+ * 最后一次真跑的那一帧（gif 逐帧、模型自转、透明度关键帧就是这么被排除进来的）。
+ */
+function isFrameStatic(el: MapElement): boolean {
+  switch (el.type) {
+    case 'flag':
+    case 'geo_image':
+      // 这两个渲染器压根没有 frame 形参
+      return true;
+    case 'point': {
+      if (el.style?.opacity?.length) return false;      // getOpacity(el.style.opacity, frame)
+      if (el.shape === 'gif') return false;             // ensureGifFrame → elapsedMsOf(frame)
+      if (el.shape === 'model' && el.visualMeta?.autoRotate) return false;  // modelAngle
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+/** 每个地图一份：元素 id → 上次真跑时看到的那个元素对象与刷新计数 */
+const renderedStaticByMap = new WeakMap<maplibregl.Map, Map<string, { el: MapElement; epoch: number }>>();
+
+function staticCacheFor(map: maplibregl.Map): Map<string, { el: MapElement; epoch: number }> {
+  let m = renderedStaticByMap.get(map);
+  if (!m) {
+    m = new Map();
+    renderedStaticByMap.set(map, m);
+  }
+  return m;
+}
+
+/**
  * @param interactive 是否**编辑端**。编辑辅助图形（如移动点全程虚线引导）仅在此为
  *   true 时绘制，避免泄漏进导出画面。默认 false —— 新调用点默认面向导出更安全。
+ * @param renderEpoch 编辑器的一次刷新计数（`styleTick`）：底图 `setStyle` 之后地图上的
+ *   source/图层全没了、异步位图首次就绪之后占位图要换成真图 —— 这两种情况都必须让
+ *   「这一帧没有东西要重算」的门禁整体作废，所以把它并进门禁的签名。
  */
 export function renderElements(
   map: maplibregl.Map,
   elements: MapElement[],
   frame: number,
   _fps: number,
-  interactive = false
+  interactive = false,
+  renderEpoch = 0
 ): void {
   const currentIds = new Set(elements.map((e) => e.id));
   const rendered = renderedByMap.get(map) || new Set<string>();
@@ -233,23 +287,40 @@ export function renderElements(
   const hiddenEls = hiddenElByMap.get(map) || new Map<string, string>();
   hiddenElByMap.set(map, hiddenEls);
   // 图层 id 列表整帧只读一次（见 styleLayerIds 注释），并拿它当这一帧的签名。
-  const layerIds = styleLayerIds(map);
-  const frameSig = layerIds.join('|');
+  // **按需**读：显隐簿记是唯一用得上它的地方，全部元素都在显示区间内时一次都不该读
+  // （340 元素 / 1491 图层场景实测那一下 4ms/帧）。
+  let layerIdsCache: string[] | null = null;
+  let frameSigCache = '';
+  const thisFrameLayers = () => {
+    if (!layerIdsCache) {
+      layerIdsCache = styleLayerIds(map);
+      frameSigCache = layerIdsCache.join('|');
+    }
+    return { ids: layerIdsCache, sig: frameSigCache };
+  };
   for (const element of elements) {
     if (!isVisible(element, frame)) {
       // 不可见：隐藏该元素所有图层（避免上一帧残留导致"显示时间之外仍显示"）。
       // 只在「图层集合与上次隐藏时不同」才重扫：一个已经整组 none 的元素，只有新图层出现
       // （id 名单变了）才可能被重新点亮，而隐藏期间不会有渲染函数给它建层。
-      if (hiddenEls.get(element.id) !== frameSig) {
-        hideElementLayers(map, element.id, layerIds);
-        hiddenEls.set(element.id, frameSig);
+      const { ids, sig } = thisFrameLayers();
+      if (hiddenEls.get(element.id) !== sig) {
+        hideElementLayers(map, element.id, ids);
+        hiddenEls.set(element.id, sig);
       }
       continue;
     }
     if (hiddenEls.delete(element.id)) {
       // 曾被隐藏过（时间窗瞬时越界，如播放首帧负 dt）：先整体恢复可见，
       // 渲染函数随后按条件修正（否则渲染器不逐帧重设 visibility 的层如 terr 填充会永久消失）
-      showElementLayers(map, element.id, layerIds);
+      showElementLayers(map, element.id, thisFrameLayers().ids);
+      renderedStaticByMap.get(map)?.delete(element.id);
+    }
+    // 静态元素：对象没换、刷新计数没动 → 渲染器的输入一个都没变，整帧跳过
+    const gate = isFrameStatic(element) ? staticCacheFor(map) : null;
+    if (gate) {
+      const prev = gate.get(element.id);
+      if (prev && prev.el === element && prev.epoch === renderEpoch) continue;
     }
 
     switch (element.type) {
@@ -265,6 +336,7 @@ export function renderElements(
       case 'territory': renderTerritory(map, element as TerritoryElement, frame); break;
       case 'geo_image': renderGeoImage(map, element as GeoImageElement); break;
     }
+    gate?.set(element.id, { el: element, epoch: renderEpoch });
   }
 }
 
@@ -1000,8 +1072,38 @@ function renderMovingPoint(map: maplibregl.Map, element: MovingPointElement, fra
 
 // ========== 线（直线 / 贝塞尔） ==========
 
-/** 计算线的实际几何（含贝塞尔/大圆弧展开），供渲染与选中高亮共用 */
+const effectiveByElement = new WeakMap<LineElement, [number, number][]>();
+
+/**
+ * 线的实际几何（含贝塞尔 / 大圆弧展开），供渲染与选中高亮共用；同一份输入只展开一次。
+ * 项目数据不可变（编辑一次就换元素对象），所以**按元素身份**缓存不会读到旧几何。
+ * 不缓存的代价实测很贵：42 条贝塞尔线在 340 元素场景里每帧重建
+ * `bezierSpline(resolution: 8000)`，且每次换出新数组 → `interpolatePath` 的累计里程表
+ * （按数组身份缓存）也永不命中，沿线标记又重走一遍全表。
+ */
 export function lineEffectiveCoordinates(element: LineElement): [number, number][] {
+  let cached = effectiveByElement.get(element);
+  if (!cached) {
+    cached = buildLineGeometry(element);
+    effectiveByElement.set(element, cached);
+  }
+  return cached;
+}
+
+/** 「整条线一次画完」那份 GeoJSON：内容只由元素决定，缓存后逐帧传同一对象引用，
+ *  putGeoJSON 走引用短路直接返回（连 JSON.stringify 比对都省）。 */
+const staticLineDataByElement = new WeakMap<LineElement, any>();
+
+function staticLineData(element: LineElement, effective: [number, number][]): any {
+  let d = staticLineDataByElement.get(element);
+  if (!d) {
+    d = turf.featureCollection([turf.lineString(effective)]);
+    staticLineDataByElement.set(element, d);
+  }
+  return d;
+}
+
+function buildLineGeometry(element: LineElement): [number, number][] {
   if (element.lineType === 'bezier' && element.coordinates.length >= 2) {
     try {
       const spline = turf.bezierSpline(turf.lineString(element.coordinates), { resolution: 8000, sharpness: 0.6 });
@@ -1100,7 +1202,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   if (isMarch && marchBright) {
     data = marchBright;
   } else if ((!isGrowOrFill && !nonUniform) || progress >= 1) {
-    data = turf.featureCollection([turf.lineString(effective)]);
+    data = staticLineData(element, effective);
   } else {
     const full = turf.lineString(effective);
     const totalLength = turf.length(full);
@@ -3165,14 +3267,10 @@ function ensureImageIcon(map: maplibregl.Map, imageId: string, url: string, _siz
   img.src = url;
 }
 
-/** 计算线的中点坐标 */
+/** 计算线的中点坐标 = 全程 50% 处：直接走 interpolatePath（它按数组身份缓存累计里程表，
+ *  自己再 `turf.length` + `turf.along` 就是每帧把整条线重走两遍） */
 function getLineMidpoint(coords: [number, number][]): [number, number] {
-  if (coords.length === 0) return [0, 0];
-  if (coords.length === 1) return coords[0];
-  const line = turf.lineString(coords);
-  const len = turf.length(line);
-  const mid = turf.along(line, len / 2);
-  return mid.geometry.coordinates as [number, number];
+  return interpolatePath(coords, 0.5);
 }
 
 // ========== 渲染：旗帜（canvas 动态生成） ==========
