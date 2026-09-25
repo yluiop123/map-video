@@ -72,8 +72,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 { "path": "${baseUrl}/services/aigc/image-generation/generation",  // 查询串直接拼在串上
   "method": "POST",
   "headers": { "Content-Type": "application/json", "Authorization": "Bearer ${apiKey}", "X-DashScope-Async": "enable" },
-  "requestParams": [ /* 这个请求专属的参数声明：model / size… */ ],
-  "callParams":    [ /* 每次调用由界面或程序给的参数：text / prompt / 文件… */ ],
+  "requestParams": [ /* 这一格的参数声明：model / size / prompt / 文件… 一张表，不再分两张 */ ],
   "body": { "model": "${model}", "input": { "text": "${text}" } },
   "form": { "file": "${voiceData}", "purpose": "voice_clone" },   // 只有 upload 那一格用（multipart）
   "outputs": { "taskId": "output.task_id", "error": "message" },  // 固定项 + 自定义变量，见下
@@ -125,17 +124,20 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 - `sync` 在这一处：决定这次走 `sync.submit` 还是 `async.submit` + `async.query`。该模板没有 async 时界面上这一格直接不出现（**显式不可用，不做隐式降级**）。
 - 同一份模板挂两条实例 = 两套账号；界面在 ⚙ 里以芯片列出，调用处选一条。
 
-## 五、三层参数与取值优先级
+## 五、参数声明与取值优先级
 
-| 层 | 声明在哪 | 取值存哪 | 界面 |
-|---|---|---|---|
-| **实例级** | `instance_params_json`（所有请求共用一份） | `values.instance[key]` | ⚙ 实例设置页 |
-| **请求级** | 该接口槽的 `requestParams` | `values.requests[<ReqKey>][key]` | ⚙ 实例设置页，按请求分区 |
-| **调用级** | 该接口槽的 `callParams` | **不落库**，每次调用由代码给 | 业务界面（字幕行文本、出图描述、上传的文件） |
+**声明只有两处**：整份模板共用的实例级参数，和每一格自己的一张参数表（`requestParams`）。
+同一格里的参数，填了值的走实例、没填的由调用点现场给 —— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。
+
+| 声明在哪 | 取值 | 界面上在哪填 |
+|---|---|---|
+| `instance_params_json`（整份模板共用） | `values.instance[key]`（落库） | ⚙ 实例设置页 |
+| 该接口槽的 `requestParams`（一格一张表） | 填了 → `values.requests[<ReqKey>][key]`（落库）；没填 → 每次调用现场给，不落库 | ⚙ 实例设置页按格分区；没填的出现在试调用与业务界面 |
 
 求值时一个 `${name}` 的取值顺序：**声明的默认值 → `values.instance` → `values.requests[<本槽>]` → 上游 `outputs` 产出的同名变量 → 调用参数**。
 
-- 三层**不是三张表**，就是上面那几个 JSON 字段里的键。
+- 两处声明**都不是表**，就是那几个 JSON 字段里的键。
+- 「这一格要现场给哪些参数」不靠第二张表标，由 `openKeysOf` 反推：这一格引用了、而上面几层都没给来源的名字。
 - 谁都没给的占位符 = 直接**点名报错**（`这些占位符没有任何来源给值：${size}`），不发半个请求。
 - 声明了但这次没填值 → **删键**（父对象被删空则连父键一起删）。这是「可选参数」的正确形态：不少上游拒绝 `"thinking":{}` 但接受不含该键。
 - `${x}` 用在整串位置保留原类型（`${n}` 是数字就发数字）；嵌在字符串里就是插值。
@@ -276,7 +278,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 
 ### 9.3 三份模板各自声明了哪些参数
 
-「层」就是取值的三级：实例级整条实例共用、请求级按接口槽各存各的、调用级不落库（由业务界面或试调用现场给）。
+「层」只有两处声明：实例级整条实例共用、每一格各一张表。同一格里填了值的走实例，没填的由调用点现场给（业务界面或试调用）—— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。
 
 #### `deepseek-chat` · DeepSeek 对话（llm）
 
@@ -285,13 +287,13 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 实例级 | `baseUrl` | 服务地址 | string | `"https://api.deepseek.com"` | — |
 | 实例级 | `apiKey` | API Key | secret | — | — |
 | 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
-| 请求级 `sync.submit` | `model` | 模型 | enum | `"deepseek-flash"` | deepseek-flash · deepseek-v4-pro |
-| 请求级 `sync.submit` | `reasoningEffort` | 思考强度 | enum | — | high · medium · low |
-| 请求级 `sync.submit` | `thinking` | 深度思考 | enum | — | enabled · disabled |
-| 请求级 `sync.submit` | `temperature` | 温度 | number | — | ≥0 ≤2 步长 0.1 |
-| 请求级 `sync.submit` | `maxTokens` | 最大输出 token | number | — | — |
-| 调用级 `sync.submit` | `systemPrompt` | 系统提示词 | text | — | — |
-| 调用级 `sync.submit` | `userPrompt` | 用户提示词 | text | — | — |
+| 这一格 `sync.submit` | `model` | 模型 | enum | `"deepseek-flash"` | deepseek-flash · deepseek-v4-pro |
+| 这一格 `sync.submit` | `reasoningEffort` | 思考强度 | enum | — | high · medium · low |
+| 这一格 `sync.submit` | `thinking` | 深度思考 | enum | — | enabled · disabled |
+| 这一格 `sync.submit` | `temperature` | 温度 | number | — | ≥0 ≤2 步长 0.1 |
+| 这一格 `sync.submit` | `maxTokens` | 最大输出 token | number | — | — |
+| 这一格 `sync.submit` | `systemPrompt` | 系统提示词 | text | — | — |
+| 这一格 `sync.submit` | `userPrompt` | 用户提示词 | text | — | — |
 
 #### `qwen-image` · 千问 文生图（image）
 
@@ -302,14 +304,14 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
 | 实例级 | `queryIntervalMs` | 查询间隔 ms | number | `5000` | — |
 | 实例级 | `queryMaxAttempts` | 查询次数上限 | number | `360` | — |
-| 请求级 `sync.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |
-| 请求级 `sync.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |
-| 请求级 `sync.submit` | `watermark` | 水印 | boolean | `false` | — |
-| 调用级 `sync.submit` | `prompt` | 画面描述 | text | — | — |
-| 请求级 `async.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |
-| 请求级 `async.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |
-| 请求级 `async.submit` | `n` | 张数 | number | `1` | ≥1 ≤4 |
-| 调用级 `async.submit` | `prompt` | 画面描述 | text | — | — |
+| 这一格 `sync.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |
+| 这一格 `sync.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |
+| 这一格 `sync.submit` | `watermark` | 水印 | boolean | `false` | — |
+| 这一格 `sync.submit` | `prompt` | 画面描述 | text | — | — |
+| 这一格 `async.submit` | `model` | 模型 | enum | `"qwen-image-3.0-pro"` | qwen-image-3.0-pro |
+| 这一格 `async.submit` | `size` | 出图尺寸 | string | `"2048*2048"` | — |
+| 这一格 `async.submit` | `n` | 张数 | number | `1` | ≥1 ≤4 |
+| 这一格 `async.submit` | `prompt` | 画面描述 | text | — | — |
 
 #### `qwen-tts` · 千问 TTS（tts）
 
@@ -318,13 +320,13 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |
 | 实例级 | `apiKey` | API Key | secret | — | — |
 | 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
-| 请求级 `sync.submit` | `model` | 模型 | enum | `"qwen3-tts-flash"` | qwen3-tts-flash · qwen3-tts-vc-2026-01-22 |
-| 请求级 `sync.submit` | `languageType` | 语种 | enum | `"Chinese"` | Chinese · English · Auto |
-| 调用级 `sync.submit` | `text` | 合成文本 | text | — | — |
-| 调用级 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |
-| 请求级 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
-| 请求级 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
-| 调用级 `clone` | `voiceData` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |
+| 这一格 `sync.submit` | `model` | 模型 | enum | `"qwen3-tts-flash"` | qwen3-tts-flash · qwen3-tts-vc-2026-01-22 |
+| 这一格 `sync.submit` | `languageType` | 语种 | enum | `"Chinese"` | Chinese · English · Auto |
+| 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
+| 这一格 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |
+| 这一格 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
+| 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
+| 这一格 `clone` | `voiceData` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |
 
 ### 9.4 逐列 JSON（照抄可用）
 
@@ -413,9 +415,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
         "key": "maxTokens",
         "label": "最大输出 token",
         "valueType": "number"
-      }
-    ],
-    "callParams": [
+      },
       {
         "key": "systemPrompt",
         "label": "系统提示词",
@@ -548,9 +548,7 @@ null
         "label": "水印",
         "valueType": "boolean",
         "defaultValue": false
-      }
-    ],
-    "callParams": [
+      },
       {
         "key": "prompt",
         "label": "画面描述",
@@ -620,9 +618,7 @@ null
         "defaultValue": 1,
         "min": 1,
         "max": 4
-      }
-    ],
-    "callParams": [
+      },
       {
         "key": "prompt",
         "label": "画面描述",
@@ -752,9 +748,7 @@ null
           "Auto"
         ],
         "defaultValue": "Chinese"
-      }
-    ],
-    "callParams": [
+      },
       {
         "key": "text",
         "label": "合成文本",
@@ -823,9 +817,7 @@ null
       "label": "音色名",
       "valueType": "string",
       "defaultValue": "mapvideo"
-    }
-  ],
-  "callParams": [
+    },
     {
       "key": "voiceData",
       "label": "参考音频",
