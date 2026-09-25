@@ -55,14 +55,14 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 | `upload` | `upload_json` | 桥接：本地文件 → 文件引用（`fileRef`：url 或文件号） | `clone` 且 `uploadFirst` |
 | `clone` | `clone_json` | 核心：参考音频 → `voiceId` | `clone`（仅 tts） |
 
-**产物只有四种到手方式**（`caps.artifact` = `binary` 响应体即产物 / `base64` / `hex` / `url` 带时效的链接），
-`url` 一律**当场下载**成字节 —— 原先那第五种「链接要先问一次才有」（`viaDownload` + `download` 桥接格）已整条下线：
-它把「取地址」拆成两问，多一格要配、多一处会写错，而三家上游里没有一家真的需要（`url` 那两家都是直接给地址）。
+**产物只有四种到手方式**（`caps.artifact` = `bin` 响应体即产物 / `base64` / `hex` / `url` 链接），
+`url` 一律**当场下载**成字节 —— 没有「先问一次才拿到地址」那种中间档：它把一件事拆成两问，多一格要配、多一处会写错，
+而三家上游里没有一家真的需要。
 
 **`upload` 那一格的入参和别的接口不一样**：别的接口发的是一个 JSON 体、入参是 model / size / text 这些字段，
 它发的是一张 multipart 表单 —— 要传的只有一个**文件**（调用时给，界面按 `valueType:'file'` 长控件），
 随文件一起发的字段（`purpose` 那类）写在表单里。所以模板页在这一格不放请求级参数表、也不给 Body，
-排布是「要上传的文件 → multipart 表单 → 从响应里取（固定项就一个「文件地址 / 文件号」，交回 url 还是文件号由模板填的路径决定）」。表单是空的会被 `validateTemplate` 点名。
+卡片里还是那三节，只是内容换成：**发出去的内容**（Headers → multipart 表单）→ **要填的参数**（只一张「要上传的文件」表）→ **从响应里取**（固定项就一个 `fileRef`：交回 url 还是文件号由你填的路径决定）。表单是空的会被 `validateTemplate` 点名。
 
 **建音色一共三种形状，全靠数据表达，代码里没有分支**：① 上传返回 **url** → 克隆引用 `${fileRef}`；② 上传返回 **fileId** → 克隆引用 `${fileRef}`（①② 只差固定项那一格填的路径）；③ **直接克隆** → 克隆请求体里写 `${voiceData}`，引擎把它换成 `data:<mime>;base64,…`。
 
@@ -80,8 +80,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   "successValues": ["SUCCEEDED"], "failureValues": ["FAILED","CANCELED","UNKNOWN"] }  // 只有 query 用
 ```
 
-- **超时只有实例级那一份**（模板把 `timeoutMs` 声明成一条实例参数）：槽上曾有过一格 `timeoutMs`，
-  但没有任何生产者，删了。
+- **超时只有实例级那一份**（模板把 `timeoutMs` 声明成一条实例参数），槽上没有这一格。
 
 - **请求头逐条接口各配一份**，值里同样能写 `${apiKey}` 这类占位符。**没有模板级那一份**：同一家不同端点要的头本来就不一样
   （查询是 GET，没什么 Content-Type 可声明；异步开关头 `X-DashScope-Async` 只有异步提交那条该带），
