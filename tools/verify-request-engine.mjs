@@ -270,7 +270,8 @@ console.log('\n[8] 保存前自检');
   const shadow = { ...base, sync: { submit: { ...base.sync.submit, outputs: { ...base.sync.submit.outputs, size: 'x.y' } } } };
   check('8.9 自定义变量与参数同名 → 点名（同一个 ${size} 会有两个来源）', validateTemplate(shadow).some((x) => x.includes('size')), validateTemplate(shadow));
   const stray = { ...base, clone: { path: '${baseUrl}/x', body: {} } };
-  check('8.10 开关里不需要 clone、却留着 clone 那一格 → 点名', validateTemplate(stray).some((x) => x.includes('克隆音色')), validateTemplate(stray));
+  check('8.10 开关里不需要 clone、却留着 clone 那一格 → 点名（并说清怎么消掉）',
+    validateTemplate(stray).some((x) => x.includes('克隆音色') && x.includes('移除这一格')), validateTemplate(stray));
   check('8.11 文案类不该有产物 / 克隆开关', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'sync', artifact: 'url' } }).length > 0);
   // 上传那一格发出去的就是一张 multipart 表单：表是空的等于什么都没传
   const emptyForm = {

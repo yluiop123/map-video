@@ -24,7 +24,7 @@ import { useConfirm } from './ui/ConfirmHost';
 import { useProviderStore } from '../stores/providerStore';
 import { seedTemplate } from '../lib/template-seed';
 import {
-  ARTIFACT_KEY, callKeysOf, paramLabelOf, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
+  ARTIFACT_KEY, callKeysOf, paramLabelOf, REQ_KEYS, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
   type ArtifactEncoding, type Caps, type Category, type InstanceDef, type ParamSpec, type ReqKey,
   type RequestDef, type TemplateDef, type ValueType,
 } from '../lib/request-engine';
@@ -102,6 +102,16 @@ const blankRequest = (key: ReqKey): RequestDef => {
   return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
 };
 
+/** 移除一格（同步/异步的提交与查询是同一行里的键，删干净要连父对象一起处理） */
+function dropSlotOf(tpl: TemplateDef, key: ReqKey): TemplateDef {
+  const next: TemplateDef = { ...tpl };
+  if (key === 'sync.submit') next.sync = { ...next.sync, submit: undefined };
+  else if (key === 'async.submit') next.async = { ...next.async, submit: undefined };
+  else if (key === 'async.query') next.async = { ...next.async, query: undefined };
+  else next[key as 'upload' | 'clone'] = undefined;
+  return next;
+}
+
 export function TemplatesPane() {
   const t = useT();
   const templates = useProviderStore((s) => s.templates);
@@ -119,13 +129,28 @@ export function TemplatesPane() {
   const tpl = mine.find((x) => x.id === selId) ?? mine[0];
   /** 该出现哪些接口槽：能力开关推出来的，不是让人挑的 */
   const slots = useMemo(() => (tpl ? slotsOf(tpl) : []), [tpl]);
-  const curReq = slots.includes(selReq) ? selReq : slots[0];
+  /**
+   * 关开关**不删内容**（来回切不该把人填的弄没），于是这一格会留下 —— 它是「孤儿格」：
+   * 校验会点名，所以必须在界面上进得去，并且给一个显式的「移除这一格」。
+   */
+  const orphans = tpl ? REQ_KEYS.filter((k) => !slots.includes(k) && present(tpl, k)) : [];
+  const visible = [...slots, ...orphans];
+  const curReq = visible.includes(selReq) ? selReq : visible[0];
   useEffect(() => { if (tpl && tpl.id !== selId) setSelId(tpl.id); }, [tpl, selId]);
   useEffect(() => {
-    if (tpl && !present(tpl, selReq)) setSelReq(slots[0] ?? 'sync.submit');
-  }, [tpl, selReq, slots]);
+    if (tpl && !present(tpl, selReq)) setSelReq(visible[0] ?? 'sync.submit');
+  }, [tpl, selReq, visible.join(',')]);
 
   const patch = (next: TemplateDef) => { if (next.id) saveTemplate(next); };
+  const dropSlot = async (key: ReqKey) => {
+    if (!tpl) return;
+    const ok = await confirm({
+      message: t(`移除「${REQ_LABEL[key].zh}」这一格？填的内容会一起删掉（对应开关再打开会重新长出一份空白的）。`,
+        `Remove this endpoint? What you filled in goes with it.`),
+      danger: true,
+    });
+    if (ok) patch(dropSlotOf(tpl, key));
+  };
   const toggleMode = (which: 'sync' | 'async', on: boolean) => {
     if (!tpl) return;
     const modes = nextModes(tpl.caps.modes, which, on);
@@ -250,16 +275,19 @@ export function TemplatesPane() {
                 异步开关头更只有提交那条要 —— 共用一份等于替同步端点也带上它。 */}
             <Separator />
 
-            {/* 槽位 = 上面那几个开关推出来的，不给手动加删 */}
+            {/* 槽位 = 上面那几个开关推出来的，不给手动加；开关关掉留下的那一格标 ⚠ 并给「移除」 */}
             <Tabs value={curReq} onValueChange={(k) => setSelReq(k as ReqKey)} className="w-full">
               <TabsList className="h-8 flex-wrap">
-                {slots.map((k) => (
-                  <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}</TabsTrigger>
+                {visible.map((k) => (
+                  <TabsTrigger key={k} value={k} className={`text-[11px] ${orphans.includes(k) ? 'text-red-400' : ''}`}>
+                    {t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}{orphans.includes(k) && ' ⚠'}
+                  </TabsTrigger>
                 ))}
               </TabsList>
               {curReq && present(tpl, curReq) && (
                 <div className="mt-2">
-                  <RequestEditor tpl={tpl} reqKey={curReq} inst={usedBy(tpl.id)[0] ?? null} onChange={patch} />
+                  <RequestEditor tpl={tpl} reqKey={curReq} inst={usedBy(tpl.id)[0] ?? null}
+                    orphan={orphans.includes(curReq)} onDropSlot={() => void dropSlot(curReq)} onChange={patch} />
                 </div>
               )}
             </Tabs>
@@ -283,8 +311,11 @@ export function TemplatesPane() {
 
 // ========== 选中请求 ==========
 
-function RequestEditor({ tpl, reqKey, inst, onChange }: {
-  tpl: TemplateDef; reqKey: ReqKey; inst: InstanceDef | null; onChange: (t: TemplateDef) => void;
+function RequestEditor({ tpl, reqKey, inst, orphan, onDropSlot, onChange }: {
+  tpl: TemplateDef; reqKey: ReqKey; inst: InstanceDef | null;
+  /** 开关用不到这一格，但内容还在（关开关不删东西）—— 标出来并给一个显式移除 */
+  orphan?: boolean; onDropSlot?: () => void;
+  onChange: (t: TemplateDef) => void;
 }) {
   const t = useT();
   const def = requestOf(tpl, reqKey)!;
@@ -331,6 +362,17 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
         </div>
       </CardHeader>
       <CardContent className="space-y-1 p-2 pt-0">
+      {orphan && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-400/40 bg-red-400/10 px-2 py-1.5 text-[10px]">
+          <span className="min-w-0 flex-1 text-red-300">
+            {t('上面的开关用不到这一格，所以它不会被调用；填着的内容替你留着。要么把对应开关打开，要么移除这一格。',
+              'No capability asks for this endpoint, so it is never called. Turn the matching switch on, or remove it.')}
+          </span>
+          <Button variant="outline" size="sm" className="h-6 text-[10px] text-red-300" onClick={onDropSlot}>
+            {t('移除这一格', 'Remove')}
+          </Button>
+        </div>
+      )}
 
       {/* 顺序照发出去的样子排：先这条请求自己的头与体，再声明它引用了哪些参数 */}
       <Group title={reqKey === 'upload' ? t('上传时发出去的内容', 'Upload payload') : t('发出去的内容', 'Request body')}
@@ -549,6 +591,14 @@ function JsonBox({ label, value, onChange, hint, rows = 3 }: { label: string; va
     setText(next);
     try { onChange(JSON.parse(next || '{}')); setBad(false); } catch { setBad(true); }
   };
+  /**
+   * 换到别的一格时这份文本必须跟着换：切页签不会重挂载这个框（同一位置的同种组件），
+   * 于是上一格的 JSON 会留在框里 —— 看着像内容，落库就写进另一格了。
+   */
+  useEffect(() => {
+    try { if (JSON.stringify(JSON.parse(text || 'null')) === JSON.stringify(value ?? null)) return; } catch { return; }
+    setText(JSON.stringify(value ?? {}, null, 1)); setBad(false);
+  }, [value]);
   return (
     <div className="space-y-1">
       <Label htmlFor={id} className="block text-[10px] font-normal text-muted-foreground">

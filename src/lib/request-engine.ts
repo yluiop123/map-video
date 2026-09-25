@@ -795,7 +795,9 @@ export function validateTemplate(tpl: TemplateDef): string[] {
   }
   // 开关没要求的槽不该存在（否则就是开关与内容对不上，运行时按开关走、那一格永远用不到）
   for (const key of REQ_KEYS) {
-    if (!slots.includes(key) && requestOf(tpl, key)) problems.push(`${REQ_LABEL[key]}：能力开关里不需要这一格，要么改开关要么删掉它`);
+    // 关开关不删内容（来回切不该把人填的弄没），于是这一格会变成界面上带 ⚠ 的孤儿格：
+    // 要么把对应开关打开，要么在那一格里点「移除这一格」
+    if (!slots.includes(key) && requestOf(tpl, key)) problems.push(`${REQ_LABEL[key]}：能力开关用不到这一格，界面上标着 ⚠ —— 打开对应开关，或点那一格里的「移除这一格」`);
   }
   if (slots.includes('async.query') && !(requestOf(tpl, 'async.query')?.successValues ?? []).length) {
     problems.push('异步查询：没配「算成功的状态值」，不知道查成什么样算完成');
