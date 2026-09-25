@@ -1084,7 +1084,7 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板：一行 = 一�
   instance_params_json TEXT CHECK (instance_params_json IS NULL OR json_valid(instance_params_json)),  -- 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json）
   sync_json   TEXT CHECK (sync_json IS NULL OR json_valid(sync_json)),  -- 同步接法 { submit }（一条请求直接拿产物；地址 / 请求头 / 参数声明 / body / 取字段都在这一格里）
   async_json  TEXT CHECK (async_json IS NULL OR json_valid(async_json)),  -- 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举）
-  upload_json TEXT CHECK (upload_json IS NULL OR json_valid(upload_json)),  -- 桥接请求：本地文件 → fileId（仅克隆用）
+  upload_json TEXT CHECK (upload_json IS NULL OR json_valid(upload_json)),  -- 桥接请求：本地文件 → 文件引用 fileRef（url 或文件号；仅克隆用）
   clone_json  TEXT CHECK (clone_json IS NULL OR json_valid(clone_json)),  -- 克隆音色请求：参考音频 → voiceId
   ref_sample_rate INTEGER,  -- 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k，写死过一次就出事）
   ord        INTEGER NOT NULL DEFAULT 0,  -- 列表排序（同分类内）
@@ -1113,7 +1113,7 @@ CREATE TABLE IF NOT EXISTS voice (  -- 克隆音色账本：同一份参考音�
   target_model TEXT NOT NULL,  -- 绑定的模型（实测：voiceId 换模型即失效，所以它必须进唯一键）
   source_asset_id TEXT NOT NULL REFERENCES asset(asset_id) ON DELETE RESTRICT,  -- 参考音频原件（失效时靠它重建；删素材会被拦）
   label        TEXT NOT NULL DEFAULT '',  -- 界面显示名（如「男声·内置」「客服音色」）
-  file_id      TEXT,  -- 上传桥接返回的 fileId（一体式厂商留空）
+  file_id      TEXT,  -- 上传桥接返回的文件引用 fileRef（url 或文件号；一体式厂商留空）
   voice_id     TEXT,  -- 克隆返回的厂商音色 ID
   status       TEXT NOT NULL DEFAULT 'cloning',  -- 状态机：cloning / ready / failed / expired（抢占靠它，只建一次）
   error        TEXT,  -- 失败原因（原样带上游 code/message）

@@ -63,7 +63,7 @@ const ARTIFACT_OPTIONS = (t: (a: string, b: string) => string) => [
   { value: 'binary' as const, label: t('响应体就是', 'Body'), hint: t('图片和音频直接在响应体里，不用从字段中取', 'the response body is the artifact') },
   { value: 'base64' as const, label: 'base64', hint: t('字节以 base64 写在某个字段里', 'bytes as base64 in a field') },
   { value: 'hex' as const, label: 'hex', hint: t('字节以十六进制写在某个字段里', 'bytes as hex in a field') },
-  { value: 'url' as const, label: t('下载链接', 'URL'), hint: t('响应给一个带时效的链接，当场下载下来', 'a time-limited URL, downloaded on the spot') },
+  { value: 'url' as const, label: 'url', hint: t('响应给一个带时效的链接，当场下载下来', 'a time-limited URL, downloaded on the spot') },
 ];
 
 const present = (t: TemplateDef, key: ReqKey) => !!requestOf(t, key);
@@ -354,7 +354,7 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
           model / size 那类请求级 JSON 参数对它没意义。 */}
       <Group title={reqKey === 'upload' ? t('要上传的文件', 'File to upload') : t('要填的参数', 'Parameters')}
         hint={reqKey === 'upload'
-          ? t('表单里用 ${它的名字} 引用；格式与体积上限就在这儿声明', 'reference it from the form as ${name}')
+          ? t('引用写 ${它的名字}：进 multipart 表单就是那个二进制分片（自带 mime 与文件名），进 JSON 体就是 data:<mime>;base64,…；要单独拿格式写 ${它的名字.mime}', 'reference it as ${name}: a binary part in the form (with its own mime), a data: URI in a JSON body; ${name.mime} for the type alone')
           : t('请求级存进实例的「按请求」那一区；调用级不落库，每次现场给', 'request params persist per request on the instance; call params never do')}>
         {reqKey === 'upload' ? (
           <ParamTable title={t('要传的文件（调用时给）', 'File param')}

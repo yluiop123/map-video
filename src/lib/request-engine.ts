@@ -84,7 +84,7 @@ export interface Caps {
   artifact: ArtifactEncoding;
   /** 要不要建音色（仅 tts） */
   clone?: boolean;
-  /** 建音色前要不要先上传文件拿 fileId（false = 音频 base64 直接塞 body） */
+  /** 建音色前要不要先上传文件拿文件引用（false = 直接把文件塞进克隆请求体） */
   uploadFirst?: boolean;
 }
 
@@ -99,7 +99,7 @@ export interface TemplateDef {
   instanceParams?: ParamSpec[];
   sync?: { submit?: RequestDef };
   async?: { submit?: RequestDef; query?: RequestDef };
-  /** 桥接：本地文件 → fileId */
+  /** 桥接：本地文件 → 文件引用（url 或文件号） */
   upload?: RequestDef;
   /** 核心：参考音频 → 音色 ID */
   clone?: RequestDef;
@@ -129,13 +129,36 @@ export interface InstanceDef {
   values: InstanceValues;
 }
 
+/**
+ * 一个文件值 —— 调用端给文件时交的就是这个形状（不是裸字节）。
+ * 有了 `mime`，模板才谈得上注入：`data:<mime>;base64,…` 与 multipart 分片都要它。
+ */
+export interface FileValue { bytes: Uint8Array; mime: string; name?: string }
+
+export const isFileValue = (v: unknown): v is FileValue =>
+  !!v && typeof v === 'object' && (v as FileValue).bytes instanceof Uint8Array && typeof (v as FileValue).mime === 'string';
+
+const b64 = (bytes: Uint8Array): string => {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 4096) s += String.fromCharCode(...bytes.subarray(i, i + 4096));
+  return btoa(s);
+};
+/** 文件 → 纯 base64（`${它.base64}`） */
+export const fileBase64 = (f: FileValue): string => b64(f.bytes);
+/** 文件 → data URI（`${它}`、`${它.dataUri}`：直接克隆那类要的形状） */
+export const fileDataUri = (f: FileValue): string => `data:${f.mime};base64,${fileBase64(f)}`;
+/** 文件值上能被 `${它.什么}` 取到的名字 */
+const FILE_FIELD = (f: FileValue, what: string): unknown =>
+  what === 'mime' ? f.mime : what === 'name' ? f.name : what === 'base64' ? fileBase64(f) : what === 'dataUri' ? fileDataUri(f) : undefined;
+
 /** 求值后的请求 */
 export interface ResolvedRequest {
   method: string;
   url: string;
   headers: Record<string, string>;
   body?: unknown;
-  form?: Record<string, string | Uint8Array>;
+  /** multipart 表单：字符串是普通字段，文件值是那一个二进制分片（带自己的 mime 与文件名） */
+  form?: Record<string, string | FileValue>;
   timeoutMs?: number;
 }
 
@@ -180,7 +203,7 @@ export function retriable(e: unknown): boolean {
 
 /**
  * **没有任何内置占位符**：`${baseUrl}` `${apiKey}` 都是模板 instanceParams 里声明出来的参数，
- * 取值落在实例的 values.instance；中间变量（taskId / fileId / voiceId）靠 outputs 流转，也不进声明表。
+ * 取值落在实例的 values.instance；中间变量（taskId / fileRef / voiceId）靠 outputs 流转，也不进声明表。
  * 于是"这一份模板要人填什么"只有一处答案 —— 模板本身，界面照它渲染，密钥那几条渲染成密码框。
  */
 export function secretKeysOf(tpl: TemplateDef, reqKey: ReqKey): string[] {
@@ -238,7 +261,8 @@ export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
         ...artifact, ...err,
       ];
     case 'upload':
-      return [{ name: 'fileId', label: '文件号', hint: '下一步建音色要用它', required: true }, ...err];
+      // 上传交回来的可能是地址、也可能是文件号 —— 引擎不读它，只是下一步 `${fileRef}` 要引用，所以名字统一
+      return [{ name: 'fileRef', label: '文件地址 / 文件号', hint: '下一步建音色要用它：克隆请求里写 ${fileRef}', required: true }, ...err];
     case 'clone':
       return [{ name: 'voiceId', label: '音色 ID', hint: '存进音色账本，绑这条实例与目标模型', required: true }, ...err];
   }
@@ -379,24 +403,41 @@ export function scopeOf(
 const WHOLE = /^\$\{([A-Za-z_][A-Za-z0-9_.]*)\}$/;
 const EMBED = /\$\{([A-Za-z_][A-Za-z0-9_.]*)\}/g;
 
+/**
+ * 取一个占位符的值：整名命中最直接；`它.什么` 只认文件值的那几个派生字段
+ * （`${audioFile}` 是 data URI，`${audioFile.mime}` 是 audio/x-wav —— 上传与克隆两类接口都要把 mime 注进去）。
+ */
+function lookup(s: Scope, name: string): { found: boolean; value?: unknown } {
+  if (name in s.values) return { found: true, value: s.values[name] };
+  const dot = name.indexOf('.');
+  if (dot > 0) {
+    const root = s.values[name.slice(0, dot)];
+    if (isFileValue(root)) return { found: true, value: FILE_FIELD(root, name.slice(dot + 1)) };
+  }
+  return { found: false };
+}
+
 /** 递归求值：返回 undefined 表示「这个键 / 这个元素应当删掉」（没给值就不把空键发给上游） */
 function walk(node: unknown, s: Scope): unknown {
   if (typeof node === 'string') {
     const whole = WHOLE.exec(node);
     if (whole) {
       const name = whole[1];
-      if (name in s.values) return s.values[name];
+      const got = lookup(s, name);
+      if (got.found) return got.value;
       // 声明过 → 只是这个可选参数没填：删键；没声明 → 十有八九是占位符写错，点名
-      if (!s.declared.has(name)) s.missing.add(name);
+      if (!s.declared.has(name.split('.')[0])) s.missing.add(name);
       return undefined;
     }
     if (!node.includes('${')) return node;
     return node.replace(EMBED, (_m, name: string) => {
-      if (!(name in s.values)) {
-        if (!s.declared.has(name)) s.missing.add(name);
+      const got = lookup(s, name);
+      if (!got.found) {
+        if (!s.declared.has(name.split('.')[0])) s.missing.add(name);
         return '';
       }
-      const v = s.values[name];
+      const v = got.value;
+      if (isFileValue(v)) return fileDataUri(v);
       return typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '');
     });
   }
@@ -420,6 +461,19 @@ function walk(node: unknown, s: Scope): unknown {
   return node;
 }
 
+/**
+ * JSON 体里的文件值一律换成 data URI —— 只有 multipart 那一格保留成文件（它要的是分片本身）。
+ * 于是 `${audioFile}` 在 body 里是 `data:audio/x-wav;base64,…`，在 form 里是那个二进制分片。
+ */
+function inlineFiles(node: unknown): unknown {
+  if (isFileValue(node)) return fileDataUri(node);
+  if (Array.isArray(node)) return node.map(inlineFiles);
+  if (node && typeof node === 'object') {
+    return Object.fromEntries(Object.entries(node as Record<string, unknown>).map(([k, v]) => [k, inlineFiles(v)]));
+  }
+  return node;
+}
+
 /** 求值成一条可发出的请求（不发送；预览与发送共用这一份） */
 export function buildRequest(
   tpl: TemplateDef,
@@ -436,15 +490,16 @@ export function buildRequest(
   // （早先整份模板共用一份，同步端点也被塞了那个头）。
   for (const [k, v] of Object.entries(def.headers ?? {})) {
     const rv = walk(v, s);
-    if (rv !== undefined && rv !== '') headers[k] = String(rv);
+    if (rv !== undefined && rv !== '') headers[k] = isFileValue(rv) ? fileDataUri(rv) : String(rv);
   }
   const url = String(walk(def.path, s) ?? '');
-  const body = def.body === undefined ? undefined : walk(structuredClone(def.body), s);
-  const form: Record<string, string | Uint8Array> = {};
+  const body = def.body === undefined ? undefined : inlineFiles(walk(structuredClone(def.body), s));
+  const form: Record<string, string | FileValue> = {};
   for (const [k, v] of Object.entries(def.form ?? {})) {
     const rv = walk(v, s);
+    // 文件值在这一格保持成文件（传输层要拿它的字节与 mime 去拼 multipart 分片）
     if (typeof rv === 'string') form[k] = rv;
-    else if (rv instanceof Uint8Array) form[k] = rv;
+    else if (isFileValue(rv)) form[k] = rv;
   }
   return {
     req: {
@@ -493,7 +548,12 @@ export function redact(r: ResolvedRequest, secrets: string[]): ResolvedRequest {
   for (const [k, v] of Object.entries(r.headers)) {
     headers[k] = secrets.some((s) => s && v.includes(s)) ? v.replace(/(Bearer |bearer )?\S*$/, '$1****') : v;
   }
-  return { ...r, url: redactUrl(r.url, secrets), headers };
+  // 文件值不能整个序列化（几 MB 字节会糊满预览框），只留「这是什么文件」
+  const form: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(r.form ?? {})) {
+    form[k] = isFileValue(v) ? { mime: v.mime, name: v.name, bytes: `${v.bytes.length} 字节` } : v;
+  }
+  return { ...r, url: redactUrl(r.url, secrets), headers, form: Object.keys(form).length ? form as ResolvedRequest['form'] : r.form };
 }
 
 // ========== 状态判定 ==========
@@ -650,7 +710,7 @@ export async function queryOnce(
   return { outcome, status: String(got.values.status ?? ''), values, bytes, mime, step };
 }
 
-/** 上传 + 克隆：一体式的厂商直接把音频塞 body，分离式的先传拿 fileId */
+/** 上传 + 克隆：一体式直接把文件塞进克隆请求体，分离式的先传拿文件引用 */
 export async function runClone(
   tpl: TemplateDef, inst: InstanceDef, deps: Deps, callArgs: Record<string, unknown>,
 ): Promise<RunResult> {
@@ -677,8 +737,10 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
   const out: { key: ReqKey; name: string }[] = [];
   const scan = (key: ReqKey, node: unknown, declared: Set<string>) => {
     if (typeof node === 'string') {
-      for (const m of node.matchAll(new RegExp(WHOLE.source, 'g'))) if (!declared.has(m[1])) out.push({ key, name: m[1] });
-      for (const m of node.matchAll(EMBED)) if (!declared.has(m[1])) out.push({ key, name: m[1] });
+      // `${它.mime}` 这类点号取的是文件值自己的字段，所以只按根名字判断有没有声明
+      const root = (n: string) => n.split('.')[0];
+      for (const m of node.matchAll(new RegExp(WHOLE.source, 'g'))) if (!declared.has(root(m[1]))) out.push({ key, name: m[1] });
+      for (const m of node.matchAll(EMBED)) if (!declared.has(root(m[1]))) out.push({ key, name: m[1] });
       return;
     }
     if (Array.isArray(node)) node.forEach((x) => scan(key, x, declared));

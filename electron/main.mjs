@@ -61,7 +61,10 @@ async function httpRequest(req) {
       const fd = new FormData();
       for (const [k, v] of Object.entries(req.form)) {
         if (v == null) continue;
-        fd.append(k, typeof v === 'string' ? v : new Blob([v]), typeof v === 'string' ? undefined : String(k));
+        if (typeof v === 'string') { fd.append(k, v); continue; }
+        // 文件值：分片要带自己的 mime（上游按它认格式），文件名没给就用字段名
+        const bytes = v.bytes instanceof Uint8Array ? v.bytes : new Uint8Array(v.bytes);
+        fd.append(k, new Blob([bytes], { type: v.mime || 'application/octet-stream' }), v.name || String(k));
       }
       body = fd;
     } else if (req.body != null) {

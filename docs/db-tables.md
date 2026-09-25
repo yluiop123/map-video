@@ -855,7 +855,7 @@
 | `instance_params_json` | TEXT | — | 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json） · `CHECK (instance_params_json IS NULL OR json_valid(instance_params_json))` |
 | `sync_json` | TEXT | — | 同步接法 { submit }（一条请求直接拿产物；地址 / 请求头 / 参数声明 / body / 取字段都在这一格里） · `CHECK (sync_json IS NULL OR json_valid(sync_json))` |
 | `async_json` | TEXT | — | 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举） · `CHECK (async_json IS NULL OR json_valid(async_json))` |
-| `upload_json` | TEXT | — | 桥接请求：本地文件 → fileId（仅克隆用） · `CHECK (upload_json IS NULL OR json_valid(upload_json))` |
+| `upload_json` | TEXT | — | 桥接请求：本地文件 → 文件引用 fileRef（url 或文件号；仅克隆用） · `CHECK (upload_json IS NULL OR json_valid(upload_json))` |
 | `clone_json` | TEXT | — | 克隆音色请求：参考音频 → voiceId · `CHECK (clone_json IS NULL OR json_valid(clone_json))` |
 | `ref_sample_rate` | INTEGER | — | 克隆参考音频要求采样率 Hz（CosyVoice 16k / Qwen-TTS 24k，写死过一次就出事） |
 | `ord` | INTEGER | `NOT NULL` | 列表排序（同分类内） · 默认 `0` |
@@ -892,7 +892,7 @@
 | `target_model` | TEXT | `NOT NULL` | 绑定的模型（实测：voiceId 换模型即失效，所以它必须进唯一键） |
 | `source_asset_id` | TEXT | `NOT NULL` `FK → asset RESTRICT` | 参考音频原件（失效时靠它重建；删素材会被拦） |
 | `label` | TEXT | `NOT NULL` | 界面显示名（如「男声·内置」「客服音色」） · 默认 `''` |
-| `file_id` | TEXT | — | 上传桥接返回的 fileId（一体式厂商留空） |
+| `file_id` | TEXT | — | 上传桥接返回的文件引用 fileRef（url 或文件号；一体式厂商留空） |
 | `voice_id` | TEXT | — | 克隆返回的厂商音色 ID |
 | `status` | TEXT | `NOT NULL` | 状态机：cloning / ready / failed / expired（抢占靠它，只建一次） · 默认 `'cloning'` |
 | `error` | TEXT | — | 失败原因（原样带上游 code/message） |

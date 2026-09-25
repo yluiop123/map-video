@@ -198,31 +198,43 @@ console.log('\n[6] 音色克隆');
 {
   const qwen = seedTemplate('qwen-tts');
   const d = mk([{ on: 'customization', res: json({ output: { voice: 'qwen-voice-77' } }) }]);
-  const r = await runClone(qwen, inst('qwen-tts'), d.deps, { audioDataUri: 'data:audio/wav;base64,AA==', model: 'qwen3-tts-vc-2026-01-22', preferredName: 'mv' });
-  eq('6.1 一体式：data URI 直接进 body，一步拿音色 ID', [r.values.voiceId, d.sent.length], ['qwen-voice-77', 1]);
+  const wav = { bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]), mime: 'audio/x-wav', name: 'reference.wav' };
+  const r = await runClone(qwen, inst('qwen-tts'), d.deps, { audioFile: wav, model: 'qwen3-tts-vc-2026-01-22', preferredName: 'mv' });
+  eq('6.1 形状三「直接克隆」：文件进 body 就是 data URI，一步拿音色 ID', [r.values.voiceId, d.sent.length], ['qwen-voice-77', 1]);
   const body = d.sent[0].body;
   eq('6.2 复刻目标模型走请求级参数（合成必须同款）', body.input.target_model, 'qwen3-tts-vc-2026-01-22');
-  eq('6.3 外层 model 是写死的注册服务名', body.model, 'qwen-voice-enrollment');
+  eq('6.3 data URI 用的就是这个文件自己的 mime', body.input.audio.data, `data:audio/x-wav;base64,${btoa('RIFF')}`);
+  eq('6.3b 外层 model 是写死的注册服务名', body.model, 'qwen-voice-enrollment');
 
   const up = {
     ...qwen, caps: { ...qwen.caps, clone: true, uploadFirst: true },
-    // 上传那一格与别的接口不同：入参只有一个文件，发出去的是 multipart 表单（不是 JSON 体）
+    // 形状二「先上传拿文件号」：这一格发的是 multipart 表单，文件保持成分片（不转 base64）
     upload: {
       path: '${baseUrl}/files/upload', method: 'POST', headers: { Authorization: 'Bearer ${apiKey}' },
       callParams: [{ key: 'audioFile', label: '要上传的音频', valueType: 'file' }],
-      form: { file: '${audioFile}', purpose: 'voice_clone' }, outputs: { fileId: 'file.file_id' },
+      form: { file: '${audioFile}', purpose: 'voice_clone', mime_type: '${audioFile.mime}' }, outputs: { fileRef: 'file.file_id' },
     },
-    clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileId}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
+    clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileRef}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
   };
   const d2 = mk([{ on: 'files/upload', res: json({ file: { file_id: 'F7' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-7' }) }]);
-  const bytes = new Uint8Array([1, 2, 3, 4]);
-  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { audioFile: bytes, preferredName: 'mv' });
-  eq('6.4 分离式：先上传拿 fileId 再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
-  eq('6.5 中间变量 fileId 自动流进克隆请求体', d2.sent[1].body.file_id, 'F7');
-  // 走「先上传」这条路时文件不转 base64：交出去的是二进制分片 + 普通字段，Content-Type 归传输层拼
-  eq('6.6 上传那条交的是 multipart：文件仍是字节、别的字段是字符串',
-    [d2.sent[0].form.file === bytes, d2.sent[0].form.purpose, d2.sent[0].body], [true, 'voice_clone', undefined]);
-  eq('6.7 上传那条没带模板级 Content-Type（逐槽各配一份）', d2.sent[0].headers, { Authorization: 'Bearer sk-abcdefghij1234' });
+  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { audioFile: wav, preferredName: 'mv' });
+  eq('6.4 分离式：先上传拿文件引用再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
+  eq('6.5 中间变量 fileRef 自动流进克隆请求体', d2.sent[1].body.file_id, 'F7');
+  // 走「先上传」这条路时文件不转 base64：交出去的是二进制分片（带自己的 mime 与文件名）+ 普通字段
+  eq('6.6 上传那条交的是 multipart：分片仍是文件值、别的字段是字符串',
+    [d2.sent[0].form.file === wav, d2.sent[0].form.purpose, d2.sent[0].body], [true, 'voice_clone', undefined]);
+  eq('6.7 ${它.mime} 单独注入：拿到的就是 audio/x-wav 这个串', d2.sent[0].form.mime_type, 'audio/x-wav');
+  eq('6.8 上传那条没带模板级 Content-Type（逐槽各配一份）', d2.sent[0].headers, { Authorization: 'Bearer sk-abcdefghij1234' });
+
+  // 形状一「先上传拿 url」：同一格、同一个名字，只是路径指向响应里的地址字段
+  const upUrl = {
+    ...up,
+    upload: { ...up.upload, form: { file: '${audioFile}' }, outputs: { fileRef: 'file.url' } },
+    clone: { path: '${baseUrl}/v1/voice_clone', body: { audio_url: '${fileRef}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
+  };
+  const d3 = mk([{ on: 'files/upload', res: json({ file: { url: 'https://cdn/ref.wav' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-8' }) }]);
+  await runClone(upUrl, inst('qwen-tts'), d3.deps, { audioFile: wav, preferredName: 'mv' });
+  eq('6.9 上传返回 url 的那类：${fileRef} 引用的就是那个地址', d3.sent[1].body.audio_url, 'https://cdn/ref.wav');
 }
 
 // ========== 7. 打码 ==========

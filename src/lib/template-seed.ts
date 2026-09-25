@@ -151,13 +151,13 @@ const qwenTts: TemplateDef = {
       en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
       p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
     ],
-    // 全项目**只有一处**要把文件转成 base64：语音克隆且「建音色前不单独上传」（直接克隆）。
-    // 那一步由调用点把参考音频编成 data URI 交给 ${audioDataUri}（providers.ts 的 cloneVoice），
-    // 模板这边只管声明「这是个文件、收什么格式、多大为止」。
-    callParams: [{ key: 'audioDataUri', label: '参考音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
+    // 交过来的是一个文件值（字节 + mime + 文件名）。`${audioFile}` 在 JSON 体里就是
+    // `data:<mime>;base64,…`（这一家要的形状），在 multipart 表单里则是那个二进制分片。
+    // 要单独拿 mime 就写 `${audioFile.mime}`（如 audio/x-wav）。
+    callParams: [{ key: 'audioFile', label: '参考音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
     body: {
       model: 'qwen-voice-enrollment',
-      input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${audioDataUri}' } },
+      input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${audioFile}' } },
     },
     outputs: { voiceId: 'output.voice', errorCode: 'code', error: 'message' },
   }),

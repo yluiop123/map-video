@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 | `sync.submit` | `sync_json.submit` | 一把梭：发出去就拿到产物或结果字段 | `modes` 含 sync（llm 恒有） |
 | `async.submit` | `async_json.submit` | 只负责提交并交出任务号 | `modes` 含 async |
 | `async.query` | `async_json.query` | 怎么查、什么算成/败、产物在哪 | 同上 —— **与 submit 成对，缺一即报错** |
-| `upload` | `upload_json` | 桥接：本地文件 → `fileId` | `clone` 且 `uploadFirst` |
+| `upload` | `upload_json` | 桥接：本地文件 → 文件引用（`fileRef`：url 或文件号） | `clone` 且 `uploadFirst` |
 | `clone` | `clone_json` | 核心：参考音频 → `voiceId` | `clone`（仅 tts） |
 
 **产物只有四种到手方式**（`caps.artifact` = `binary` 响应体即产物 / `base64` / `hex` / `url` 带时效的链接），
@@ -61,7 +61,9 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 **`upload` 那一格的入参和别的接口不一样**：别的接口发的是一个 JSON 体、入参是 model / size / text 这些字段，
 它发的是一张 multipart 表单 —— 要传的只有一个**文件**（调用时给，界面按 `valueType:'file'` 长控件），
 随文件一起发的字段（`purpose` 那类）写在表单里。所以模板页在这一格不放请求级参数表、也不给 Body，
-排布是「要上传的文件 → multipart 表单 → 从响应里取（固定项就一个「文件号」）」。表单是空的会被 `validateTemplate` 点名。
+排布是「要上传的文件 → multipart 表单 → 从响应里取（固定项就一个「文件地址 / 文件号」，交回 url 还是文件号由模板填的路径决定）」。表单是空的会被 `validateTemplate` 点名。
+
+**建音色一共三种形状，全靠数据表达，代码里没有分支**：① 上传返回 **url** → 克隆引用 `${fileRef}`；② 上传返回 **fileId** → 克隆引用 `${fileRef}`（①② 只差固定项那一格填的路径）；③ **直接克隆** → 克隆请求体里写 `${audioFile}`，引擎把它换成 `data:<mime>;base64,…`。
 
 每个接口槽的结构（`RequestDef`）：
 
@@ -86,7 +88,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 - **`outputs` 分两种，界面上也分两处**：
   - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`artifact`（产物）、
-    `taskId`（任务号）、`status`（任务状态）、`fileId`、`voiceId`、`error` / `errorCode`。
+    `taskId`（任务号）、`status`（任务状态）、`fileRef`（文件地址 / 文件号）、`voiceId`、`error` / `errorCode`。
     产物**只有一个名字** `artifact`，早先代码里那串 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`
     是同一条事实的五份真相，填对了五个之一才碰巧能用 —— 现在没有「碰巧」这回事，`validateTemplate` 会要求必填的固定项必须填路径。
   - **自定义变量**（可选、界面默认折叠）—— 只用于在别的请求里写 `${它}`，引擎从不读它们。
@@ -136,6 +138,9 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 - 谁都没给的占位符 = 直接**点名报错**（`这些占位符没有任何来源给值：${size}`），不发半个请求。
 - 声明了但这次没填值 → **删键**（父对象被删空则连父键一起删）。这是「可选参数」的正确形态：不少上游拒绝 `"thinking":{}` 但接受不含该键。
 - `${x}` 用在整串位置保留原类型（`${n}` 是数字就发数字）；嵌在字符串里就是插值。
+- **文件参数交的是「文件值」`{ bytes, mime, name }`，不是裸字节** —— 上传与克隆两类接口都要把 mime 注进去，写死过一次就会和实际字节不一致。同一个 `${file}` 在两个位置长成两种样子：
+  进 **JSON 体** = `data:<mime>;base64,…`（直接克隆那类要的形状），进 **multipart 表单** = 那个二进制分片（分片自带 `mime` 与文件名，由主进程拼 FormData）。
+  要单独拿某一项就写点号：`${file.mime}`（如 `audio/x-wav`）、`${file.base64}`、`${file.name}`、`${file.dataUri}`。
 - 参数字段表（`ParamSpec`）：
 
 | 字段 | 含义 |
@@ -177,7 +182,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 ```
 同步：sync.submit → 字节
 异步：async.submit 交出 taskId → 调度器/内存轮询按节奏打 async.query → SUCCEEDED → 字节
-克隆：(upload 拿 fileId) → clone 交出 voiceId
+克隆：(upload 交出 fileRef) → clone 交出 voiceId
 ```
 
 两条硬规矩：
@@ -318,7 +323,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 调用级 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |
 | 请求级 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
 | 请求级 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
-| 调用级 `clone` | `audioDataUri` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |
+| 调用级 `clone` | `audioFile` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |
 
 ### 9.4 逐列 JSON（照抄可用）
 
@@ -821,7 +826,7 @@ null
   ],
   "callParams": [
     {
-      "key": "audioDataUri",
+      "key": "audioFile",
       "label": "参考音频",
       "valueType": "file",
       "accept": ".mp3,.wav,.m4a",
@@ -835,7 +840,7 @@ null
       "target_model": "${model}",
       "preferred_name": "${preferredName}",
       "audio": {
-        "data": "${audioDataUri}"
+        "data": "${audioFile}"
       }
     }
   },

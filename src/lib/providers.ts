@@ -252,9 +252,11 @@ export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targe
   const declared = String(inst.values.requests?.clone?.preferredName ?? '').trim();
   const preferred = (declared || label).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv';
   const one: InstanceDef = { ...inst, values: { ...inst.values, instance: { ...inst.values.instance, model: targetModel || inst.values.instance?.model } } };
+  // 交出去的是一个**文件值**（字节 + 自己认出来的 mime + 文件名）：
+  // 直接克隆的模板在 body 里写 `${audioFile}`（引擎换成 data:<mime>;base64,…），
+  // 先上传那类在 multipart 表单里写 `${audioFile}`（分片带这个 mime）。
   const r = await runClone(tpl, one, deps, {
-    file: wav,
-    audioDataUri: `data:audio/wav;base64,${bytesToBase64(wav)}`,
+    audioFile: { bytes: wav, mime: sniffAudioMime(wav), name: 'reference.wav' },
     prefix: preferred, preferredName: preferred,
   });
   const vid = r.values.voiceId;
@@ -324,6 +326,20 @@ async function toWavMono(bytes: ArrayBuffer, rateHz: number): Promise<Uint8Array
     dv.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
   return new Uint8Array(buf);
+}
+
+/**
+ * 从字节头认音频格式。mime 必须由文件自己带：上传分片与 data URI 都要它，
+ * 写死过一次就会和实际字节不一致（上游按这个字段认格式，错了就是 400 / 静音）。
+ */
+function sniffAudioMime(b: Uint8Array): string {
+  const at = (off: number, n: number) => String.fromCharCode(...b.subarray(off, off + n));
+  if (b.length > 12 && at(0, 4) === 'RIFF' && at(8, 4) === 'WAVE') return 'audio/x-wav';
+  if (b.length > 3 && at(0, 3) === 'ID3') return 'audio/mpeg';
+  if (b.length > 12 && at(4, 4) === 'ftyp') return 'audio/mp4';
+  if (b.length > 4 && at(0, 4) === 'OggS') return 'audio/ogg';
+  if (b.length > 2 && b[0] === 0xff && (b[1] & 0xe0) === 0xe0) return 'audio/mpeg';
+  return 'application/octet-stream';
 }
 
 export function bytesToBase64(bytes: Uint8Array): string {
