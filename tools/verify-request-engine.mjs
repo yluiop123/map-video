@@ -259,7 +259,7 @@ console.log('\n[8] 保存前自检');
   check('8.2 开关要求异步、却没配查询 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit } }).some((x) => x.includes('查询')));
   check('8.3 查询没配成功值 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit, query: { ...base.async.query, successValues: [] } } }).some((x) => x.includes('状态值')));
   check('8.4 实例参数同名重复 → 点名', validateTemplate({ ...base, instanceParams: [...base.instanceParams, { key: 'baseUrl', label: '重' }] }).some((x) => x.includes('重复')));
-  check('8.5 开了克隆却没配 clone 那一格 → 点名', validateTemplate({ ...base, category: 'tts', caps: { ...base.caps, clone: true } }).some((x) => x.includes('克隆音色')));
+  check('8.5 开了克隆却没配 clone 那一格 → 点名', validateTemplate({ ...base, category: 'tts', caps: { ...base.caps, clone: true } }).some((x) => x.includes('能力开关要求这一格')));
   check('8.6 谁都能自己加异步（分类不限制接口形状）', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: base.async }).length === 0,
     validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: base.async }));
   // 固定项：名字写死、路径必填 —— 漏了要在保存前就点名，而不是等运行时（status 漏填会一路查到超时）
@@ -271,7 +271,7 @@ console.log('\n[8] 保存前自检');
   check('8.9 自定义变量与参数同名 → 点名（同一个 ${size} 会有两个来源）', validateTemplate(shadow).some((x) => x.includes('size')), validateTemplate(shadow));
   const stray = { ...base, clone: { path: '${baseUrl}/x', body: {} } };
   check('8.10 开关里不需要 clone、却留着 clone 那一格 → 点名（并说清怎么消掉）',
-    validateTemplate(stray).some((x) => x.includes('克隆音色') && x.includes('移除这一格')), validateTemplate(stray));
+    validateTemplate(stray).some((x) => x.includes('克隆') && x.includes('移除这一格')), validateTemplate(stray));
   check('8.11 文案类不该有产物 / 克隆开关', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'sync', artifact: 'url' } }).length > 0);
   // 上传那一格发出去的就是一张 multipart 表单：表是空的等于什么都没传
   const emptyForm = {

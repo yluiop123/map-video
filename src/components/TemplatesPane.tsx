@@ -1,19 +1,22 @@
 /**
  * TemplatesPane.tsx — ⚙ 设置 · AI 左侧的「接口模板」页（三栏）
  *
- * 一份模板 = 数据库一行，里面同时装着：实例级参数、同步 / 异步两套接口、上传桥接、克隆音色。
+ * 一份模板 = 数据库一行，里面同时装着：实例级参数、同步 / 异步两套接口、上传、克隆。
  * 请求头与参数都挂在各条接口自己身上（同一家不同端点要的头并不相同）；三层参数（实例级 / 请求级 /
  * 调用级）都在这页自由增删改 —— 引擎里没有任何按厂商名写的分支，界面配不出来的东西就不该存在。
  *
- * 「预览请求」零网络（只跑求值 + 密钥打码），「试调用」真发一条。
+ * 「预览请求」零网络（只跑求值 + 密钥打码），「试调用」真发一条（在实例页）。
+ * 页面上不写解释性长句：小节名旁边一枚 ⓘ，点开才看说明。
  */
 import { useEffect, useId, useMemo, useState } from 'react';
+import { Info } from 'lucide-react';
 import { OptionBlocks, ProblemList, useT } from './ui/primitives';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Badge } from './ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Separator } from './ui/separator';
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { Textarea } from './ui/textarea';
@@ -36,13 +39,13 @@ const CATEGORY_LABEL: Record<Category, { zh: string; en: string }> = {
   image: { zh: '图片', en: 'Image' },
 };
 
-/** 每条请求在界面上的名字（这是界面自身的文案，所以中英两份） */
+/** 页签上的名字（界面自身的文案，所以中英两份）；顺序就是调用顺序：上传 → 克隆 → 提交 → 查询 */
 const REQ_LABEL: Record<ReqKey, { zh: string; en: string }> = {
+  upload: { zh: '上传', en: 'Upload' },
+  clone: { zh: '克隆', en: 'Clone' },
   'sync.submit': { zh: '同步 · 提交', en: 'Sync · submit' },
   'async.submit': { zh: '异步 · 提交', en: 'Async · submit' },
   'async.query': { zh: '异步 · 查询', en: 'Async · query' },
-  upload: { zh: '桥接 · 上传', en: 'Bridge · upload' },
-  clone: { zh: '核心 · 克隆音色', en: 'Core · voice clone' },
 };
 
 const VALUE_TYPES: ValueType[] = ['string', 'text', 'number', 'boolean', 'enum', 'multiEnum', 'array', 'secret', 'file', 'json'];
@@ -58,20 +61,17 @@ function nextModes(cur: Caps['modes'], which: 'sync' | 'async', on: boolean): Ca
   return next.sync && next.async ? 'both' : next.async ? 'async' : 'sync';
 }
 
-/** 产物以什么形式给 —— 整份模板问一次，同步与异步共用 */
+/** 产物以什么形式给 —— 整份模板问一次，同步与异步共用；下载没有接口，按这一档直接生成 */
 const ARTIFACT_OPTIONS = (t: (a: string, b: string) => string) => [
   { value: 'binary' as const, label: t('响应体就是', 'Body'), hint: t('图片和音频直接在响应体里，不用从字段中取', 'the response body is the artifact') },
   { value: 'base64' as const, label: 'base64', hint: t('字节以 base64 写在某个字段里', 'bytes as base64 in a field') },
   { value: 'hex' as const, label: 'hex', hint: t('字节以十六进制写在某个字段里', 'bytes as hex in a field') },
-  { value: 'url' as const, label: 'url', hint: t('响应给一个带时效的链接，当场下载下来', 'a time-limited URL, downloaded on the spot') },
+  { value: 'url' as const, label: 'url', hint: t('响应给一个链接，当场下载成字节（没有单独的下载接口）', 'a URL, downloaded on the spot — there is no download endpoint') },
 ];
 
 const present = (t: TemplateDef, key: ReqKey) => !!requestOf(t, key);
 
-/**
- * 改能力开关 → 该出现的槽自动补一份空白。
- * **不需要的槽留着不删**（校验会点名「开关里不需要这一格」）—— 来回切开关不该把人已填的内容弄丢。
- */
+/** 改能力开关 → 该出现的槽自动补一份空白 */
 function withCaps(tpl: TemplateDef, caps: Caps): TemplateDef {
   const next: TemplateDef = { ...tpl, caps };
   for (const key of slotsOf(next)) {
@@ -102,7 +102,7 @@ const blankRequest = (key: ReqKey): RequestDef => {
   return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
 };
 
-/** 移除一格（同步/异步的提交与查询是同一行里的键，删干净要连父对象一起处理） */
+/** 移除一格（同步 / 异步的提交与查询是同一行里的键，删干净要连父对象一起处理） */
 function dropSlotOf(tpl: TemplateDef, key: ReqKey): TemplateDef {
   const next: TemplateDef = { ...tpl };
   if (key === 'sync.submit') next.sync = { ...next.sync, submit: undefined };
@@ -124,37 +124,53 @@ export function TemplatesPane() {
   const [category, setCategory] = useState<Category>('llm');
   const [selId, setSelId] = useState('');
   const [selReq, setSelReq] = useState<ReqKey>('sync.submit');
+  /** 两套都勾了才用得上：页签只看这一侧 */
+  const [view, setView] = useState<'sync' | 'async'>('sync');
 
   const mine = useMemo(() => templates.filter((x) => x.category === category), [templates, category]);
   const tpl = mine.find((x) => x.id === selId) ?? mine[0];
-  /** 该出现哪些接口槽：能力开关推出来的，不是让人挑的 */
   const slots = useMemo(() => (tpl ? slotsOf(tpl) : []), [tpl]);
-  /**
-   * 关开关**不删内容**（来回切不该把人填的弄没），于是这一格会留下 —— 它是「孤儿格」：
-   * 校验会点名，所以必须在界面上进得去，并且给一个显式的「移除这一格」。
-   */
+  // 开关是数据改出来的（别的机器改过、恢复默认之前），这一格可能还在：让它进得去，别报一条没法执行的错
   const orphans = tpl ? REQ_KEYS.filter((k) => !slots.includes(k) && present(tpl, k)) : [];
-  const visible = [...slots, ...orphans];
-  const curReq = visible.includes(selReq) ? selReq : visible[0];
+  const both = tpl?.caps.modes === 'both';
+  const all = [...slots, ...orphans];
+  const tabs = REQ_KEYS.filter((k) => all.includes(k) && !hiddenByView(k));
+  /** 只勾一种时没有「藏起来」这回事；两套都勾了才按下拉的选择只看一侧 */
+  function hiddenByView(k: ReqKey) {
+    if (!both) return false;
+    return view === 'sync' ? k.startsWith('async.') : k === 'sync.submit';
+  }
+  const curReq = tabs.includes(selReq) ? selReq : tabs[0];
   useEffect(() => { if (tpl && tpl.id !== selId) setSelId(tpl.id); }, [tpl, selId]);
   useEffect(() => {
-    if (tpl && !present(tpl, selReq)) setSelReq(visible[0] ?? 'sync.submit');
-  }, [tpl, selReq, visible.join(',')]);
+    if (tpl && !present(tpl, selReq)) setSelReq(tabs[0] ?? 'sync.submit');
+  }, [tpl, selReq, tabs.join(',')]);
 
   const patch = (next: TemplateDef) => { if (next.id) saveTemplate(next); };
-  const dropSlot = async (key: ReqKey) => {
+  /**
+   * 改能力开关。关掉之后不再被调用的那一格**当场问一次、确定就移除** ——
+   * 而不是留着它、回头在页签上挂一条消不掉的报错。取消 = 开关不动。
+   */
+  const setCaps = async (next: Caps) => {
     if (!tpl) return;
+    const after = withCaps(tpl, next);
+    const dropped = REQ_KEYS.filter((k) => present(tpl, k) && !slotsOf(after).includes(k));
+    if (!dropped.length) { patch(after); return; }
+    const names = dropped.map((k) => `「${t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}」`).join('、');
     const ok = await confirm({
-      message: t(`移除「${REQ_LABEL[key].zh}」这一格？填的内容会一起删掉（对应开关再打开会重新长出一份空白的）。`,
-        `Remove this endpoint? What you filled in goes with it.`),
-      danger: true,
+      message: t(`关掉之后${names}不再被调用，一起移除吗？填过的内容会删掉。`,
+        `These endpoints are no longer called — remove them? Their content goes too.`),
+      confirmText: t('移除', 'Remove'), danger: true,
     });
-    if (ok) patch(dropSlotOf(tpl, key));
+    if (!ok) return;
+    let cut = after;
+    for (const k of dropped) cut = dropSlotOf(cut, k);
+    patch(cut);
   };
   const toggleMode = (which: 'sync' | 'async', on: boolean) => {
     if (!tpl) return;
     const modes = nextModes(tpl.caps.modes, which, on);
-    if (modes !== tpl.caps.modes) patch(withCaps(tpl, { ...tpl.caps, modes }));
+    if (modes !== tpl.caps.modes) void setCaps({ ...tpl.caps, modes });
   };
   const usedBy = (id: string) => instances.filter((i) => i.tplId === id);
   const problems = tpl ? validateTemplate(tpl) : [];
@@ -215,79 +231,86 @@ export function TemplatesPane() {
               </div>
             </div>
 
-            {/* 能力开关：文案生成只取一段文本，这几问都用不上，整块不显示。
-                同步 / 异步 是**两个复选框**（勾掉最后一个不动 —— 两个都不勾等于这份模板没有接口可配）。 */}
+            {/* 能力开关：文案生成只取一段文本，这几问都用不上，整块不显示 */}
             {tpl.category !== 'llm' && (
-            <>
-            <Separator />
-            <div className="space-y-2 text-[11px]">
-              <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
-                <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('调用方式', 'Call mode')}</Label>
-                <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
-                  {([['sync', t('同步', 'Sync')], ['async', t('异步', 'Async')]] as const).map(([k, label]) => (
-                    <label key={k} className="flex items-center gap-2">
-                      <Checkbox id={`tpl-mode-${k}`}
-                        checked={k === 'sync' ? tpl.caps.modes !== 'async' : tpl.caps.modes !== 'sync'}
-                        onCheckedChange={(on) => toggleMode(k, !!on)} />
-                      <Label htmlFor={`tpl-mode-${k}`} className="text-[11px] font-normal">{label}</Label>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <div className="grid grid-cols-[86px_minmax(0,1fr)] items-start gap-x-3">
-                <Label className="pt-1 text-right text-[10px] font-normal text-muted-foreground">{t('产物形式', 'Artifact')}</Label>
-                <div>
-                  <OptionBlocks<ArtifactEncoding> value={tpl.caps.artifact} options={ARTIFACT_OPTIONS(t).map((o) => ({ value: o.value, label: o.label }))}
-                    onChange={(artifact) => patch(withCaps(tpl, { ...tpl.caps, artifact }))} />
-                  <p className="mt-1 text-[10px] text-muted-foreground/70">
-                    {ARTIFACT_OPTIONS(t).find((o) => o.value === tpl.caps.artifact)?.hint}
-                  </p>
-                </div>
-              </div>
-              {tpl.category === 'tts' && (
-                <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-                  <label className="flex items-center gap-2">
-                    <Switch id="tpl-clone" checked={!!tpl.caps.clone}
-                      onCheckedChange={(clone) => patch(withCaps(tpl, { ...tpl.caps, clone, uploadFirst: clone ? tpl.caps.uploadFirst : undefined }))} />
-                    <Label htmlFor="tpl-clone" className="text-[11px] font-normal">{t('要能建自己的音色', 'voice cloning')}</Label>
-                  </label>
-                  {tpl.caps.clone && (
-                    <>
-                      <label className="flex items-center gap-2">
-                        <Switch id="tpl-upload" checked={!!tpl.caps.uploadFirst}
-                          onCheckedChange={(uploadFirst) => patch(withCaps(tpl, { ...tpl.caps, uploadFirst }))} />
-                        <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('建音色前要先上传音频文件', 'upload the sample first')}</Label>
-                      </label>
-                      <label className="flex items-center gap-2">
-                        <span className="text-muted-foreground text-[10px]">{t('参考音频采样率', 'ref rate')}</span>
-                        <Input type="number" value={tpl.refSampleRateHz ?? ''} className="h-6 w-24 text-[10px]"
-                          onChange={(e) => patch({ ...tpl, refSampleRateHz: e.target.value ? Number(e.target.value) : undefined })} />
-                      </label>
-                    </>
+              <>
+                <Separator />
+                <div className="space-y-2 text-[11px]">
+                  <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
+                    <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('调用方式', 'Call mode')}</Label>
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+                      {([['sync', t('同步', 'Sync')], ['async', t('异步', 'Async')]] as const).map(([k, label]) => (
+                        <label key={k} className="flex items-center gap-2">
+                          <Checkbox id={`tpl-mode-${k}`}
+                            checked={k === 'sync' ? tpl.caps.modes !== 'async' : tpl.caps.modes !== 'sync'}
+                            onCheckedChange={(on) => toggleMode(k, !!on)} />
+                          <Label htmlFor={`tpl-mode-${k}`} className="text-[11px] font-normal">{label}</Label>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
+                    <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('产物形式', 'Artifact')}</Label>
+                    <div className="flex items-center gap-1.5">
+                      <OptionBlocks<ArtifactEncoding> value={tpl.caps.artifact}
+                        options={ARTIFACT_OPTIONS(t).map((o) => ({ value: o.value, label: o.label }))}
+                        onChange={(artifact) => void setCaps({ ...tpl.caps, artifact })} />
+                      <InfoHint text={ARTIFACT_OPTIONS(t).find((o) => o.value === tpl.caps.artifact)?.hint} />
+                    </div>
+                  </div>
+                  {tpl.category === 'tts' && (
+                    <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
+                      <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('建音色', 'Voice clone')}</Label>
+                      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                        <label className="flex items-center gap-2">
+                          <Switch id="tpl-clone" checked={!!tpl.caps.clone}
+                            onCheckedChange={(clone) => void setCaps({ ...tpl.caps, clone, uploadFirst: clone ? tpl.caps.uploadFirst : undefined })} />
+                          <Label htmlFor="tpl-clone" className="text-[11px] font-normal">{t('克隆', 'Clone')}</Label>
+                        </label>
+                        {tpl.caps.clone && (
+                          <>
+                            <label className="flex items-center gap-2">
+                              <Switch id="tpl-upload" checked={!!tpl.caps.uploadFirst}
+                                onCheckedChange={(uploadFirst) => void setCaps({ ...tpl.caps, uploadFirst })} />
+                              <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('上传', 'Upload')}</Label>
+                            </label>
+                            <label className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-muted-foreground">{t('参考音频采样率', 'ref rate')}</span>
+                              <Input type="number" value={tpl.refSampleRateHz ?? ''} className="h-6 w-24 text-[10px]"
+                                onChange={(e) => patch({ ...tpl, refSampleRateHz: e.target.value ? Number(e.target.value) : undefined })} />
+                            </label>
+                          </>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </div>
-              )}
-            </div>
-            </>
+              </>
             )}
 
-            {/* 请求头**逐条接口各一份**（在下面的接口卡片里配）：认证头家家不同，
-                异步开关头更只有提交那条要 —— 共用一份等于替同步端点也带上它。 */}
             <Separator />
 
-            {/* 槽位 = 上面那几个开关推出来的，不给手动加；开关关掉留下的那一格标 ⚠ 并给「移除」 */}
+            {/* 页签 = 开关推出来的那几格，按调用顺序排；两套都勾了才给这一排右侧一个视图下拉 */}
             <Tabs value={curReq} onValueChange={(k) => setSelReq(k as ReqKey)} className="w-full">
-              <TabsList className="h-8 flex-wrap">
-                {visible.map((k) => (
-                  <TabsTrigger key={k} value={k} className={`text-[11px] ${orphans.includes(k) ? 'text-red-400' : ''}`}>
-                    {t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}{orphans.includes(k) && ' ⚠'}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
+              <div className="flex flex-wrap items-center gap-2">
+                <TabsList className="h-8 flex-wrap">
+                  {tabs.map((k) => (
+                    <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_LABEL[k].zh, REQ_LABEL[k].en)}</TabsTrigger>
+                  ))}
+                </TabsList>
+                {both && (
+                  <Select value={view} onValueChange={(v) => setView(v as 'sync' | 'async')}>
+                    <SelectTrigger className="h-8 w-[86px] text-[11px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="sync" className="text-[11px]">{t('只看同步', 'Sync only')}</SelectItem>
+                      <SelectItem value="async" className="text-[11px]">{t('只看异步', 'Async only')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
               {curReq && present(tpl, curReq) && (
                 <div className="mt-2">
-                  <RequestEditor tpl={tpl} reqKey={curReq} inst={usedBy(tpl.id)[0] ?? null}
-                    orphan={orphans.includes(curReq)} onDropSlot={() => void dropSlot(curReq)} onChange={patch} />
+                  <RequestEditor tpl={tpl} reqKey={curReq} inst={usedBy(tpl.id)[0] ?? null} onChange={patch} />
                 </div>
               )}
             </Tabs>
@@ -296,11 +319,11 @@ export function TemplatesPane() {
           </div>
         )}
 
-        {/* 右：实例级参数（整份模板共用）。窄屏时不再「藏起来就摸不到」—— 换到第二行整宽显示 */}
+        {/* 右：实例级参数（整份模板共用）。窄屏时换到第二行整宽显示，别「藏起来就摸不到」 */}
         {tpl && (
           <div className="col-span-2 min-h-0 min-w-0 overflow-y-auto border-t border-white/10 pt-2 xl:col-span-1 xl:border-l xl:border-t-0 xl:pl-3 xl:pt-0">
-            <ParamTable title={t('实例级参数', 'Instance params')}
-              hint={t('全请求共用；Base URL 与密钥就在这儿声明，secret 渲染成密码框', 'declare baseUrl / keys here')}
+            <ParamTable tone="instance" title={t('实例级参数', 'Instance params')}
+              hint={t('整份模板共用；Base URL 与密钥就在这儿声明，声明成 secret 的渲染成密码框。', 'shared by every request; declare baseUrl and keys here')}
               params={tpl.instanceParams ?? []} onChange={(instanceParams) => patch({ ...tpl, instanceParams })} />
           </div>
         )}
@@ -311,11 +334,8 @@ export function TemplatesPane() {
 
 // ========== 选中请求 ==========
 
-function RequestEditor({ tpl, reqKey, inst, orphan, onDropSlot, onChange }: {
-  tpl: TemplateDef; reqKey: ReqKey; inst: InstanceDef | null;
-  /** 开关用不到这一格，但内容还在（关开关不删东西）—— 标出来并给一个显式移除 */
-  orphan?: boolean; onDropSlot?: () => void;
-  onChange: (t: TemplateDef) => void;
+function RequestEditor({ tpl, reqKey, inst, onChange }: {
+  tpl: TemplateDef; reqKey: ReqKey; inst: InstanceDef | null; onChange: (t: TemplateDef) => void;
 }) {
   const t = useT();
   const def = requestOf(tpl, reqKey)!;
@@ -335,6 +355,7 @@ function RequestEditor({ tpl, reqKey, inst, orphan, onDropSlot, onChange }: {
   /** 固定项之外的 outputs 就是自定义变量（引擎不读它们） */
   const fixedNames = new Set(requiredOutputsOf(tpl, reqKey).map((o) => o.name));
   const custom = Object.entries(def.outputs ?? {}).filter(([k]) => !fixedNames.has(k));
+  const isUpload = reqKey === 'upload';
 
   const args = (): Record<string, unknown> => {
     const out: Record<string, unknown> = {};
@@ -353,138 +374,126 @@ function RequestEditor({ tpl, reqKey, inst, orphan, onDropSlot, onChange }: {
   return (
     <Card className="gap-0 p-0">
       <CardHeader className="px-2 py-2">
-        <div className="flex flex-wrap items-center gap-2">
+        <CardTitle className="flex flex-wrap items-center gap-2 text-[11px] font-medium text-muted-foreground">
+          {t(REQ_LABEL[reqKey].zh, REQ_LABEL[reqKey].en)}
           <Select value={def.method ?? 'POST'} onValueChange={(method) => set({ method })}>
             <SelectTrigger className="h-7 w-[70px] text-[11px]"><SelectValue /></SelectTrigger>
             <SelectContent>{['GET', 'POST', 'PUT'].map((m) => <SelectItem key={m} value={m} className="text-[11px]">{m}</SelectItem>)}</SelectContent>
           </Select>
           <Input value={def.path} onChange={(e) => set({ path: e.target.value })} className="h-7 min-w-40 flex-1 text-xs font-mono" placeholder="${baseUrl}/…" />
-        </div>
+        </CardTitle>
       </CardHeader>
       <CardContent className="space-y-1 p-2 pt-0">
-      {orphan && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-400/40 bg-red-400/10 px-2 py-1.5 text-[10px]">
-          <span className="min-w-0 flex-1 text-red-300">
-            {t('上面的开关用不到这一格，所以它不会被调用；填着的内容替你留着。要么把对应开关打开，要么移除这一格。',
-              'No capability asks for this endpoint, so it is never called. Turn the matching switch on, or remove it.')}
-          </span>
-          <Button variant="outline" size="sm" className="h-6 text-[10px] text-red-300" onClick={onDropSlot}>
-            {t('移除这一格', 'Remove')}
-          </Button>
-        </div>
-      )}
 
-      {/* 顺序照发出去的样子排：先这条请求自己的头与体，再声明它引用了哪些参数 */}
-      <Group title={reqKey === 'upload' ? t('上传时发出去的内容', 'Upload payload') : t('发出去的内容', 'Request body')}
-        hint={reqKey === 'upload'
-          ? t('一层键值：值是 ${某参数} 时，字符串当普通字段、文件当二进制分片', 'flat fields; a ${param} holding a file becomes the binary part')
-          : t('值里写 ${key} 引用下面声明的参数；没给值的键会整个删掉', 'use ${key} to reference the params declared below; unset keys are dropped')}>
-        <JsonBox label="Headers" rows={3} value={def.headers ?? {}}
-          hint={reqKey === 'upload'
-            ? t('认证头写在这儿；multipart 的 Content-Type 由传输层生成，不用写', "auth headers; the multipart Content-Type comes from the transport")
-            : t('这一条自己的头，${apiKey} 会换成实例里填的 Key', "this request's own headers; ${apiKey} comes from the instance")}
-          onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
-        {reqKey === 'upload' ? (
-          <JsonBox label={t('上传表单（multipart 字段）', 'Upload form')} value={def.form ?? {}} onChange={(form) => set({ form: form as Record<string, unknown> })}
-            hint={t('例 { "file": "${audioFile}", "purpose": "voice_clone" }', 'e.g. { "file": "${audioFile}", "purpose": "voice_clone" }')} />
-        ) : (
-          <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />
-        )}
-      </Group>
+        {/* 顺序照发出去的样子排：先这条请求自己的头与体，再声明它引用了哪些参数 */}
+        <Group title={t('发出去的内容', 'Payload')}
+          hint={isUpload
+            ? t('一层键值：值是 ${某参数} 时，字符串当普通字段、文件当二进制分片。', 'flat fields; a ${param} holding a file becomes the binary part')
+            : t('值里写 ${key} 引用下面声明的参数；没给值的键整个删掉。', 'use ${key} to reference the params declared below; unset keys are dropped')}>
+          <JsonBox label="Headers" rows={3} value={def.headers ?? {}}
+            hint={isUpload
+              ? t('认证头写在这儿。multipart 的 Content-Type 由传输层生成，不用写。', 'auth headers; the multipart Content-Type comes from the transport')
+              : t('这一条自己的头。${apiKey} 会换成实例里填的那把 Key。', "this endpoint's own headers; ${apiKey} comes from the instance")}
+            onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
+          {isUpload ? (
+            <JsonBox label={t('表单（multipart 字段）', 'Form')} value={def.form ?? {}}
+              hint={t('例 { "file": "${audioFile}", "purpose": "voice_clone" }', 'e.g. { "file": "${audioFile}", "purpose": "voice_clone" }')}
+              onChange={(form) => set({ form: form as Record<string, unknown> })} />
+          ) : (
+            <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />
+          )}
+        </Group>
 
-      {/* 上传那一格的入参与别的接口不同：要传的只有一个**文件**（调用时给），
-          model / size 那类请求级 JSON 参数对它没意义。 */}
-      <Group title={reqKey === 'upload' ? t('要上传的文件', 'File to upload') : t('要填的参数', 'Parameters')}
-        hint={reqKey === 'upload'
-          ? t('引用写 ${它的名字}：进 multipart 表单就是那个二进制分片（自带 mime 与文件名），进 JSON 体就是 data:<mime>;base64,…；要单独拿格式写 ${它的名字.mime}', 'reference it as ${name}: a binary part in the form (with its own mime), a data: URI in a JSON body; ${name.mime} for the type alone')
-          : t('请求级存进实例的「按请求」那一区；调用级不落库，每次现场给', 'request params persist per request on the instance; call params never do')}>
-        {reqKey === 'upload' ? (
-          <ParamTable title={t('要传的文件（调用时给）', 'File param')}
-            params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
-        ) : (
-          <>
-            <ParamTable title={t('请求级参数（这个请求专属）', 'Request params')}
-              hint={t('同名参数在不同请求可取不同值', 'same name, different value per request')}
-              params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
-            <ParamTable title={t('调用级参数（每次调用现场给）', 'Call params')}
-              hint={t('调用页与「试调用」按这些长输入框', 'the call UI and 试调用 build inputs from these')}
+        {/* 上传那一格的入参与别的接口不同：只有一个要传的文件，model / size 那类请求级参数对它没意义 */}
+        <Group title={t('要填的参数', 'Parameters')}
+          hint={t('请求级存在实例里、按这一格各存一份；调用级不落库，每次调用现场给。', 'request params persist on the instance; call params never do')}>
+          {isUpload ? (
+            <ParamTable tone="call" title={t('要传的文件', 'File to upload')}
+              hint={t('引用写 ${它的名字}：进 multipart 表单就是那个二进制分片（自带 mime 与文件名），进 JSON 体就是 data:<mime>;base64,…；单取格式写 ${它的名字.mime}。',
+                'reference it as ${name}: a binary part in the form, a data: URI in a JSON body; ${name.mime} for the type alone')}
               params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
-          </>
-        )}
-      </Group>
+          ) : (
+            <>
+              <ParamTable tone="request" title={t('请求级参数', 'Request params')}
+                hint={t('这一格专属；同名参数在别的格可以取不同值（比如同步与异步的 model 不同）。', 'specific to this endpoint; the same name may hold a different value elsewhere')}
+                params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
+              <ParamTable tone="call" title={t('调用级参数', 'Call params')}
+                hint={t('每次调用现场给（正文文本、画面描述、文件）；调用页与「试调用」按这些长输入框。', 'given per call; the call UI and 试调用 build inputs from these')}
+                params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
+            </>
+          )}
+        </Group>
 
-      {/* 引擎要读的返回项：名字写死（写错就没有消费者），只能填路径 */}
-      <Group title={t('从响应里取', 'Read from response')} hint={t('左列名字由引擎写死，只能填路径', 'names are fixed by the engine; fill the path only')}>
-      <div className="space-y-1">
-        {requiredOutputsOf(tpl, reqKey).map((o) => {
-          const filled = !!def.outputs?.[o.name]?.trim();
-          return (
-            <div key={o.name} className="grid grid-cols-[96px_minmax(0,1fr)] items-start gap-x-2">
-              <Label className="pt-1.5 text-right text-[10px] font-normal text-muted-foreground" title={o.name}>
-                {o.label}{o.required && !filled && <span className="text-red-400"> *</span>}
-              </Label>
-              <div className="min-w-0">
-                <Input value={def.outputs?.[o.name] ?? ''} className="h-7 text-[11px] font-mono"
-                  placeholder={o.name === 'status' ? 'output.task_status' : o.name === ARTIFACT_KEY ? 'output.choices[0].message.content[0].image' : 'error.message'}
-                  onChange={(e) => set({ outputs: { ...mapOf(def), [o.name]: e.target.value } })} />
-                <p className="mt-0.5 text-[9px] text-muted-foreground/60">{t(o.hint, o.hint)}</p>
-              </div>
-            </div>
-          );
-        })}
-        {/* 剩下的就是自定义变量：引擎不认，只给下一个请求的 ${它} 用 */}
-        <button type="button" className="text-[10px] text-muted-foreground/80 underline-offset-2 hover:underline"
-          onClick={() => setShowVars((v) => !v)}>
-          {showVars ? '▾' : '▸'} {t(`给下一个请求用的变量（${custom.length}）`, `Variables for the next request (${custom.length})`)}
-        </button>
-        {showVars && (
+        {/* 引擎要读的返回项：名字写死（写错就没有消费者），只能填路径 */}
+        <Group title={t('从响应里取', 'Read from response')}
+          hint={t('左列名字由引擎写死，只能填路径；剩下的写在折叠的「给下一个请求用的变量」里。', 'names are fixed by the engine — fill the path only')}>
           <div className="space-y-1">
-            <p className="text-[9px] text-muted-foreground/60">
-              {t('引擎不认这些名字，它们只用于在别的请求里写 ${这个名字}。', 'The engine never reads these; they exist to be referenced as ${name} elsewhere.')}
-            </p>
-            {custom.map(([k, v]) => (
-              <div key={k} className="flex min-w-0 items-center gap-1">
-                <Input value={k} className="h-6 w-28 min-w-0 text-[10px] font-mono" placeholder="requestId"
-                  onChange={(e) => set({ outputs: rename(mapOf(def), k, e.target.value) })} />
-                <Input value={String(v)} className="h-6 min-w-0 flex-1 text-[10px] font-mono" placeholder="output.request_id"
-                  onChange={(e) => set({ outputs: { ...mapOf(def), [k]: e.target.value } })} />
-                <Button variant="ghost" size="sm" className="h-6 w-6 text-[10px]"
-                  onClick={() => { const n = { ...mapOf(def) }; delete n[k]; set({ outputs: n }); }}>✕</Button>
+            {requiredOutputsOf(tpl, reqKey).map((o) => {
+              const filled = !!def.outputs?.[o.name]?.trim();
+              return (
+                <div key={o.name} className="grid grid-cols-[96px_minmax(0,1fr)] items-start gap-x-2">
+                  <Label className="pt-1.5 text-right text-[10px] font-normal text-muted-foreground" title={o.name}>
+                    {o.label}{o.required && !filled && <span className="text-red-400"> *</span>}
+                  </Label>
+                  <div className="min-w-0">
+                    <Input value={def.outputs?.[o.name] ?? ''} className="h-7 text-[11px] font-mono"
+                      placeholder={o.name === 'status' ? 'output.task_status' : o.name === ARTIFACT_KEY ? 'output.choices[0].message.content[0].image' : 'error.message'}
+                      onChange={(e) => set({ outputs: { ...mapOf(def), [o.name]: e.target.value } })} />
+                  </div>
+                </div>
+              );
+            })}
+            {/* 剩下的就是自定义变量：引擎不认，只给下一个请求的 ${它} 用 */}
+            <div className="flex items-center gap-1.5">
+              <button type="button" className="text-[10px] text-muted-foreground/80 underline-offset-2 hover:underline"
+                onClick={() => setShowVars((v) => !v)}>
+                {showVars ? '▾' : '▸'} {t(`给下一个请求用的变量（${custom.length}）`, `Variables for the next request (${custom.length})`)}
+              </button>
+              <InfoHint text={t('引擎不读这些名字，它们只用于在别的请求里写 ${这个名字}。', 'The engine never reads these; they exist to be referenced as ${name} elsewhere.')} />
+            </div>
+            {showVars && (
+              <div className="space-y-1">
+                {custom.map(([k, v]) => (
+                  <div key={k} className="flex min-w-0 items-center gap-1">
+                    <Input value={k} className="h-6 w-28 min-w-0 text-[10px] font-mono" placeholder="requestId"
+                      onChange={(e) => set({ outputs: rename(mapOf(def), k, e.target.value) })} />
+                    <Input value={String(v)} className="h-6 min-w-0 flex-1 text-[10px] font-mono" placeholder="output.request_id"
+                      onChange={(e) => set({ outputs: { ...mapOf(def), [k]: e.target.value } })} />
+                    <Button variant="ghost" size="sm" className="h-6 w-6 text-[10px]"
+                      onClick={() => { const n = { ...mapOf(def) }; delete n[k]; set({ outputs: n }); }}>✕</Button>
+                  </div>
+                ))}
+                <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => set({ outputs: { ...mapOf(def), '': '' } })}>
+                  ＋ {t('变量', 'variable')}
+                </Button>
               </div>
-            ))}
-            <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => set({ outputs: { ...mapOf(def), '': '' } })}>
-              ＋ {t('变量', 'variable')}
-            </Button>
+            )}
+            {/* 查询这一格判的就是上面取到的 status，所以并在这里，不再单开一节 */}
+            {reqKey === 'async.query' && (
+              <div className="mt-1.5 space-y-1.5">
+                <ListField label={t('算成功的状态值', 'successValues')} value={def.successValues ?? []} onChange={(successValues) => set({ successValues })}
+                  hint={t('取到的 status 等于其中任一个 = 查完了，去拿产物。', 'any match means the job is done')} />
+                <ListField label={t('算失败的状态值', 'failureValues')} value={def.failureValues ?? []} onChange={(failureValues) => set({ failureValues })}
+                  hint={t('两个列表都没命中就继续查，所以中间态不用配。', 'anything unlisted keeps polling')} />
+              </div>
+            )}
           </div>
-        )}
-        {/* 查询这一格：取到的 status 等于哪些词算查完 —— 判的就是上面那个字段，所以并在这里，
-            不再单开一节（超时只有实例级那一份，槽上那一格没有生产者，已删） */}
-        {reqKey === 'async.query' && (
-          <div className="mt-1.5 space-y-1.5">
-            <ListField label={t('算成功的状态值', 'successValues')} value={def.successValues ?? []} onChange={(successValues) => set({ successValues })} />
-            <ListField label={t('算失败的状态值', 'failureValues')} value={def.failureValues ?? []} onChange={(failureValues) => set({ failureValues })} />
-            <p className="text-[10px] text-muted-foreground/70">{t('中间态不用配：两个列表都没命中就继续查。', 'Anything unlisted keeps polling.')}</p>
-          </div>
-        )}
-      </div>
-      </Group>
+        </Group>
 
-      <div className="flex flex-wrap items-center gap-1.5 pt-1">
-        {callKeys.map((k) => (
-          <label key={k} className="flex items-center gap-1 text-[10px]">
-            {/* 显示声明的显示名，裸 key 只作 title —— 界面上一排英文变量名没人看得懂 */}
-            <span className="text-muted-foreground" title={k}>{paramLabelOf(tpl, reqKey, k)}</span>
-            <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-28 text-[11px]" onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
-          </label>
-        ))}
-        <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={doPreview}>🔍 {t('预览请求', 'Preview')}</Button>
-        <span className="text-[10px] text-muted-foreground/60">
-          {t('只算不发；真发一条去「实例设置」页的试调用', 'no bytes sent; real calls live on the instance page')}
-        </span>
-      </div>
-      {preview && (
-        <pre className="max-h-40 overflow-auto rounded-md border border-white/10 bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{preview}</pre>
-      )}
+        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          {callKeys.map((k) => (
+            <label key={k} className="flex items-center gap-1 text-[10px]">
+              {/* 显示声明的显示名，裸 key 只作 title —— 界面上一排英文变量名没人看得懂 */}
+              <span className="text-muted-foreground" title={k}>{paramLabelOf(tpl, reqKey, k)}</span>
+              <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-28 text-[11px]" onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
+            </label>
+          ))}
+          <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={doPreview}>{t('预览请求', 'Preview')}</Button>
+          <InfoHint text={t('只算不发（密钥按声明打码）；真发一条去「实例设置」页的试调用。', 'no bytes sent; real calls live on the instance page')} />
+        </div>
+        {!!preview && (
+          <pre className="max-h-40 overflow-auto rounded-md border border-white/10 bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{preview}</pre>
+        )}
       </CardContent>
     </Card>
   );
@@ -496,23 +505,30 @@ const rename = (map: Record<string, string>, from: string, to: string) => {
   for (const [k, v] of Object.entries(map)) next[k === from ? to : k] = v;
   return next;
 };
-// ========== 三层参数共用的编辑器 ==========
 
-function ParamTable({ title, hint, params, onChange }: {
-  title: string; hint?: string; params: ParamSpec[]; onChange: (p: ParamSpec[]) => void;
+// ========== 参数表：三层各一种色调，免得两排长得很像分不清 ==========
+
+const TONE = {
+  instance: { chip: 'bg-violet-400/15 text-violet-300 border-violet-400/30', edge: 'border-l-violet-400/50' },
+  request: { chip: 'bg-sky-400/15 text-sky-300 border-sky-400/30', edge: 'border-l-sky-400/50' },
+  call: { chip: 'bg-amber-400/15 text-amber-300 border-amber-400/30', edge: 'border-l-amber-400/50' },
+} as const;
+
+function ParamTable({ title, hint, tone, params, onChange }: {
+  title: string; hint?: string; tone: keyof typeof TONE; params: ParamSpec[]; onChange: (p: ParamSpec[]) => void;
 }) {
   const t = useT();
   const at = (i: number, p: Partial<ParamSpec>) => onChange(params.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const optsText = (p: ParamSpec) => (p.options ?? []).map((o) => (typeof o === 'object' && o !== null ? `${o.value}${o.label ? `=${o.label}` : ''}` : String(o))).join(', ');
   return (
-    <Card className="gap-0 bg-transparent p-0">
-      <CardHeader className="px-0 py-0 space-y-0">
-        <CardTitle className="text-[10px] font-medium text-muted-foreground">{title}</CardTitle>
-        {!!hint && <CardDescription className="text-[10px] leading-4">{hint}</CardDescription>}
-      </CardHeader>
-      <CardContent className="space-y-1 p-0 pt-1.5">
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1.5">
+        <Badge variant="outline" className={`px-1.5 py-0 text-[9px] font-normal ${TONE[tone].chip}`}>{title}</Badge>
+        <InfoHint text={hint} />
+      </div>
+      <div className="space-y-1">
         {params.map((p, i) => (
-          <div key={i} className="min-w-0 space-y-1 rounded-md border border-white/10 bg-white/[0.02] p-1.5">
+          <div key={i} className={`min-w-0 space-y-1 rounded-md border border-white/10 border-l-2 bg-white/[0.02] p-1.5 ${TONE[tone].edge}`}>
             <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_86px_22px] items-center gap-1">
               <Input value={p.key} onChange={(e) => at(i, { key: e.target.value })} className="h-6 min-w-0 text-[10px] font-mono" placeholder="key" />
               <Select value={p.valueType ?? 'string'} onValueChange={(v) => at(i, { valueType: v as ValueType })}>
@@ -549,8 +565,8 @@ function ParamTable({ title, hint, params, onChange }: {
         <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => onChange([...params, { key: '', label: '', valueType: 'string' }])}>
           ＋ {t('参数', 'param')}
         </Button>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -569,13 +585,30 @@ function parseList(s: string): ParamSpec['options'] {
 
 // ========== 小块 ==========
 
-/** 一小节：分隔线 + 小标题（+ 一句什么时候用得上）。中栏与卡片内部都用它，别让一堆框平铺着没层次 */
+/** 小节名旁边那枚 ⓘ：说明收在弹层里，页面不铺长句 */
+function InfoHint({ text }: { text?: string }) {
+  if (!text) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button type="button" className="shrink-0 rounded-full text-muted-foreground/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+          <Info size={11} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" className="w-64 rounded-md border-white/15 bg-card p-2 text-[10px] leading-4 text-muted-foreground">
+        {text}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** 一小节：分隔线 + 小节名（+ ⓘ） */
 function Group({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
       <Separator />
-      <div className="text-[10px] font-medium text-muted-foreground">
-        {title}{hint && <span className="font-normal text-muted-foreground/60"> · {hint}</span>}
+      <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+        {title}<InfoHint text={hint} />
       </div>
       <div className="space-y-1.5">{children}</div>
     </div>
@@ -601,19 +634,21 @@ function JsonBox({ label, value, onChange, hint, rows = 3 }: { label: string; va
   }, [value]);
   return (
     <div className="space-y-1">
-      <Label htmlFor={id} className="block text-[10px] font-normal text-muted-foreground">
-        {label} · {hint ?? t('JSON', 'JSON')}{bad && <span className="text-red-400"> · {t('还不成形，暂不应用', 'not valid yet')}</span>}
-      </Label>
+      <div className="flex items-center gap-1.5">
+        <Label htmlFor={id} className="text-[10px] font-normal text-muted-foreground">{label}</Label>
+        <InfoHint text={hint ?? t('JSON，值里可写 ${key}。', 'JSON; ${key} references a param.')} />
+        {bad && <span className="text-[10px] text-red-400">{t('还不成形，暂不应用', 'not valid yet')}</span>}
+      </div>
       <Textarea id={id} value={text} onChange={(e) => commit(e.target.value)} rows={rows} className={`min-h-0 text-[10px] font-mono ${bad ? 'border-red-400/60' : ''}`} />
     </div>
   );
 }
 
-function ListField({ label, value, onChange }: { label: string; value: string[]; onChange: (v: string[]) => void }) {
+function ListField({ label, value, hint, onChange }: { label: string; value: string[]; hint?: string; onChange: (v: string[]) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-      <span className="w-28 shrink-0 text-muted-foreground">{label}</span>
-      <Input value={value.join(', ')} className="h-6 flex-1 min-w-40 text-[10px] font-mono"
+      <span className="flex w-28 shrink-0 items-center gap-1 text-muted-foreground">{label}<InfoHint text={hint} /></span>
+      <Input value={value.join(', ')} className="h-6 min-w-40 flex-1 text-[10px] font-mono"
         onChange={(e) => onChange(e.target.value.split(/[,，]/).map((x) => x.trim()).filter(Boolean))} />
     </div>
   );

@@ -213,7 +213,8 @@ export function secretKeysOf(tpl: TemplateDef, reqKey: ReqKey): string[] {
     .map((p) => p.key);
 }
 
-export const REQ_KEYS: ReqKey[] = ['sync.submit', 'async.submit', 'async.query', 'upload', 'clone'];
+/** 页签与校验都按**调用顺序**排：上传 → 克隆 → 提交 → 查询 */
+export const REQ_KEYS: ReqKey[] = ['upload', 'clone', 'sync.submit', 'async.submit', 'async.query'];
 
 export const CATEGORY_LABEL: Record<Category, string> = { llm: '文案生成', tts: '语音', image: '图片' };
 
@@ -764,11 +765,11 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
 /** 整份模板的问题清单；空数组 = 可用 */
 /** 槽位的中文名：校验消息、界面标题、文档都用这一份（原先在两个组件里各写了一份） */
 export const REQ_LABEL: Record<ReqKey, string> = {
+  upload: '上传',
+  clone: '克隆',
   'sync.submit': '同步 · 提交',
   'async.submit': '异步 · 提交',
   'async.query': '异步 · 查询',
-  upload: '桥接 · 上传',
-  clone: '核心 · 克隆音色',
 };
 
 export function validateTemplate(tpl: TemplateDef): string[] {
@@ -797,7 +798,7 @@ export function validateTemplate(tpl: TemplateDef): string[] {
   for (const key of REQ_KEYS) {
     // 关开关不删内容（来回切不该把人填的弄没），于是这一格会变成界面上带 ⚠ 的孤儿格：
     // 要么把对应开关打开，要么在那一格里点「移除这一格」
-    if (!slots.includes(key) && requestOf(tpl, key)) problems.push(`${REQ_LABEL[key]}：能力开关用不到这一格，界面上标着 ⚠ —— 打开对应开关，或点那一格里的「移除这一格」`);
+    if (!slots.includes(key) && requestOf(tpl, key)) problems.push(`${REQ_LABEL[key]}：能力开关用不到这一格，把对应开关打开再关掉，会问你要不要移除这一格`);
   }
   if (slots.includes('async.query') && !(requestOf(tpl, 'async.query')?.successValues ?? []).length) {
     problems.push('异步查询：没配「算成功的状态值」，不知道查成什么样算完成');
