@@ -93,6 +93,47 @@ export function interpolateCoordinates(
 
 // ========== 路径插值 ==========
 
+/**
+ * 折线的累计里程表，按**数组身份**缓存：项目数据不可变（每次编辑都换对象引用），
+ * 所以同一个数组就是同一份几何，不会有「数组被原地改过而表还是旧的」这种情况。
+ * 求和顺序与 `turf.length` 的 segmentReduce 一致 → 总长逐字相同。
+ */
+const cumLenByPath = new WeakMap<[number, number][], number[]>();
+
+function cumulativeLengths(path: [number, number][]): number[] {
+  let cum = cumLenByPath.get(path);
+  if (!cum) {
+    cum = [0];
+    for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + turf.distance(path[i - 1], path[i]));
+    cumLenByPath.set(path, cum);
+  }
+  return cum;
+}
+
+/**
+ * 等价于 `turf.along(lineString(path), distance)`，但不逐段走：二分找线段 + 一次
+ * destination。保持 turf 那套「从 coords[i] 往回走 overshot」的算法，输出逐字相同
+ * （差一点就会让沿线标记与拱形错开，见 map-renderer 里 flyMode 那段注释）。
+ */
+function alongPath(path: [number, number][], cum: number[], distance: number): [number, number] {
+  const n = path.length;
+  if (distance <= 0) return path[0];
+  const total = cum[n - 1];
+  if (distance >= total) return path[n - 1];
+  // 最小的 i 使 cum[i] >= distance（turf.along 走到该点时 travelled 正好是 cum[i]）
+  let lo = 1;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cum[mid] >= distance) hi = mid;
+    else lo = mid + 1;
+  }
+  const overshot = distance - cum[lo];
+  if (overshot === 0) return path[lo];
+  const direction = turf.bearing(path[lo], path[lo - 1]) - 180;
+  return turf.destination(path[lo], overshot, direction).geometry.coordinates as [number, number];
+}
+
 export function interpolatePath(
   path: [number, number][],
   progress: number
@@ -100,11 +141,8 @@ export function interpolatePath(
   if (path.length === 0) return [0, 0];
   if (path.length === 1) return path[0];
 
-  const line = turf.lineString(path);
-  const length = turf.length(line);
-  const distance = length * Math.max(0, Math.min(1, progress));
-  const point = turf.along(line, distance);
-  return point.geometry.coordinates as [number, number];
+  const cum = cumulativeLengths(path);
+  return alongPath(path, cum, cum[cum.length - 1] * Math.max(0, Math.min(1, progress)));
 }
 
 // ========== 相机插值 ==========
