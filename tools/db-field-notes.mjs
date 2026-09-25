@@ -468,7 +468,7 @@ const NOTES = {
     "tpl_id": "模板 id（一行 = 一份完整模板）：deepseek-chat / qwen-image / qwen-tts / custom-1 …",
     "name": "模板名（用户自填的单个字符串，不做中英两份）",
     "category": "分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK）",
-    "caps_json": "能力开关 JSON { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, uploadFirst }：该有哪些接口槽、每槽必须交出哪些字段，全由它推（原先 use_clone / upload 两列与「clone_json 空不空」是三份真相）",
+    "caps_json": "能力开关 JSON { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, cloneVia: upload|base64|form }：该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，全由它推",
     "instance_params_json": "实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json）",
     "sync_json": "同步接法 { submit }（一条请求直接拿产物；地址 / 请求头 / 参数声明 / body / 取字段都在这一格里）",
     "async_json": "异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举）",

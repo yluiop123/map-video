@@ -58,7 +58,7 @@ export interface RequestDef {
    */
   requestParams?: ParamSpec[];
   body?: unknown;
-  /** multipart 表单（只有「先上传文件」那一格用得上；file 值由引擎换成文件部分） */
+  /** multipart 表单（发这一格的判据见 `multipartSlotOf`：上传那格恒用，克隆格在 `cloneVia:'form'` 时用） */
   form?: Record<string, unknown>;
   /** 从响应里取字段：固定项名字写死（见 requiredOutputsOf），其余键是留给下游 `${x}` 的变量 */
   outputs?: Record<string, string>;
@@ -75,9 +75,12 @@ export type ArtifactEncoding = 'none' | 'binary' | 'base64' | 'hex' | 'url';
 /** 真要还原成字节时的四种封装（`none` 没有产物可言） */
 export type ArtifactFormat = Exclude<ArtifactEncoding, 'none'>;
 
+/** 参考音频交到克隆接口手里的三种形式（一家一种，全是数据，不是代码分支） */
+export type CloneVia = 'upload' | 'base64' | 'form';
+
 /**
  * 能力开关：模板头上那几个问题的答案。**这是唯一输入** —— 该有哪些接口槽、
- * 每槽必须交出哪些字段，全部由它推导，不再让人自己挑。
+ * 每槽必须交出哪些字段、那一格发 JSON 体还是表单，全部由它推导，不再让人自己挑。
  */
 export interface Caps {
   /** 调用方式：只同步 / 只异步 / 两套都有（llm 恒 sync）；界面上是两个复选框 */
@@ -86,8 +89,13 @@ export interface Caps {
   artifact: ArtifactEncoding;
   /** 要不要建音色（仅 tts） */
   clone?: boolean;
-  /** 建音色前要不要先上传文件拿文件引用（false = 直接把文件塞进克隆请求体） */
-  uploadFirst?: boolean;
+  /**
+   * 建音色时，参考音频以什么形式交过去（仅 clone 开着时有意义）：
+   * - `upload`：先单独上传拿文件引用，克隆请求里写 `${fileRef}`（于是多出「上传」那一格）
+   * - `base64`：文件转成 `data:<mime>;base64,…` 当 JSON 字段（克隆那格写 `${voiceData}`）
+   * - `form`：克隆那一格自己发 multipart 表单 —— 文件是其中的分片，没有 Body
+   */
+  cloneVia?: CloneVia;
 }
 
 /** 一份完整模板 */
@@ -227,6 +235,12 @@ export const ARTIFACT_KEY = 'fileRef';
 
 // ========== 能力开关 → 槽位与承重输出（唯一推导处） ==========
 
+/**
+ * 参考音频的接法。**没选过时按 `base64` 算**（千问那类，也是 seed 用的那份）——
+ * 这一句只写一次，界面与推导都读它，不在两处各写一个兜底。
+ */
+export const cloneViaOf = (tpl: TemplateDef): CloneVia => tpl.caps.cloneVia ?? 'base64';
+
 /** 这一份模板该有哪些接口槽 —— 由 caps 推出来，不是让人一条条加 */
 export function slotsOf(tpl: TemplateDef): ReqKey[] {
   const c = tpl.caps;
@@ -234,10 +248,20 @@ export function slotsOf(tpl: TemplateDef): ReqKey[] {
   if (c.modes !== 'async') out.push('sync.submit');
   if (c.modes !== 'sync') out.push('async.submit', 'async.query');
   if (tpl.category === 'tts' && c.clone) {
-    if (c.uploadFirst) out.push('upload');
+    // 只有「先单独上传拿文件引用」这一种接法需要多一格；另两种都是文件直接进克隆那一条
+    if (cloneViaOf(tpl) === 'upload') out.push('upload');
     out.push('clone');
   }
   return REQ_KEYS.filter((k) => out.includes(k));
+}
+
+/**
+ * 这一格发的是 multipart 表单还是 JSON 体 —— 界面摆哪一格、校验查哪一格、新建草稿给什么形状、真发什么，全读这一处。
+ * 判据是 caps，不是槽名：上传那一格恒为表单，而克隆那一格跟着 `cloneVia` 变（form 时它发的是文件分片）。
+ */
+export function multipartSlotOf(tpl: TemplateDef, key: ReqKey): boolean {
+  if (key === 'upload') return true;
+  return key === 'clone' && cloneViaOf(tpl) === 'form';
 }
 
 /** 某个槽必须交出的字段：名字写死、界面只能填路径。`required:false` = 建议项（不填错误信息会退化） */
@@ -301,8 +325,8 @@ export function submitKeyOf(sync: boolean): ReqKey {
   return sync ? 'sync.submit' : 'async.submit';
 }
 
-/** 这一格引用了哪些名字（按出现顺序去重；`${它.mime}` 记作 `它`） */
-function referencedIn(def: RequestDef): string[] {
+/** 这一格引用了哪些名字（按出现顺序去重；`${它.mime}` 记作 `它`）—— 只扫真发出去的那部分内容 */
+function referencedIn(def: RequestDef, multipart: boolean): string[] {
   const out: string[] = [];
   const scan = (node: unknown) => {
     if (typeof node === 'string') {
@@ -313,7 +337,8 @@ function referencedIn(def: RequestDef): string[] {
     if (Array.isArray(node)) node.forEach(scan);
     else if (node && typeof node === 'object') Object.values(node).forEach(scan);
   };
-  scan(def.path); scan(def.headers); scan(def.body); scan(def.form);
+  scan(def.path); scan(def.headers);
+  if (multipart) scan(def.form); else scan(def.body);
   return [...new Set(out)];
 }
 
@@ -325,7 +350,7 @@ export function openKeysOf(tpl: TemplateDef, inst: InstanceDef, key: ReqKey): st
   const def = requestOf(tpl, key);
   if (!def) return [];
   const s = scopeOf(tpl, inst, key, {}, {});
-  return referencedIn(def).filter((n) => !(n in s.values));
+  return referencedIn(def, multipartSlotOf(tpl, key)).filter((n) => !(n in s.values));
 }
 
 /** 这一格声明的参数（实例设置页按格分区渲染） */
@@ -518,13 +543,18 @@ export function buildRequest(
     if (rv !== undefined && rv !== '') headers[k] = isFileValue(rv) ? fileDataUri(rv) : String(rv);
   }
   const url = String(walk(def.path, s) ?? '');
-  const body = def.body === undefined ? undefined : inlineFiles(walk(structuredClone(def.body), s));
+  // 一格只发一种内容：发表单的格不会同时塞一份 JSON 体（反过来也一样）——
+  // 换 `cloneVia` 时另一格里留着的内容就地失效，界面上也不摆那一格（判据同为 multipartSlotOf）
+  const multipart = multipartSlotOf(tpl, reqKey);
+  const body = multipart || def.body === undefined ? undefined : inlineFiles(walk(structuredClone(def.body), s));
   const form: Record<string, string | FileValue> = {};
-  for (const [k, v] of Object.entries(def.form ?? {})) {
-    const rv = walk(v, s);
-    // 文件值在这一格保持成文件（传输层要拿它的字节与 mime 去拼 multipart 分片）
-    if (typeof rv === 'string') form[k] = rv;
-    else if (isFileValue(rv)) form[k] = rv;
+  if (multipart) {
+    for (const [k, v] of Object.entries(def.form ?? {})) {
+      const rv = walk(v, s);
+      // 文件值在这一格保持成文件（传输层要拿它的字节与 mime 去拼 multipart 分片）
+      if (typeof rv === 'string') form[k] = rv;
+      else if (isFileValue(rv)) form[k] = rv;
+    }
   }
   return {
     req: {
@@ -735,13 +765,13 @@ export async function queryOnce(
   return { outcome, status: String(got.values.status ?? ''), values, bytes, mime, step };
 }
 
-/** 上传 + 克隆：一体式直接把文件塞进克隆请求体，分离式的先传拿文件引用 */
+/** 建音色：先传文件拿引用那类两步走，另两种（base64 / 表单）一步 —— 差在哪由 slotsOf 说 */
 export async function runClone(
   tpl: TemplateDef, inst: InstanceDef, deps: Deps, callArgs: Record<string, unknown>,
 ): Promise<RunResult> {
   const steps: Step[] = [];
   const up: Record<string, unknown> = {};
-  if (tpl.caps.clone && tpl.caps.uploadFirst && requestOf(tpl, 'upload')) {
+  if (slotsOf(tpl).includes('upload') && requestOf(tpl, 'upload')) {
     const up1 = await http(tpl, inst, 'upload', deps, callArgs, up);
     Object.assign(up, up1.values);
     steps.push({ key: 'upload', url: redact(up1.req, secretsOf(tpl, inst)).url, status: up1.res.status, values: up1.values });
@@ -780,8 +810,8 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
     for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? [])]) declared.add(p.key);
     scan(key, def.path, declared);
     scan(key, def.headers, declared);
-    scan(key, def.body, declared);
-    scan(key, def.form, declared);
+    // 与 buildRequest 同一条判据：这一格不发的那部分内容，引用的名字也不算问题
+    if (multipartSlotOf(tpl, key)) scan(key, def.form, declared); else scan(key, def.body, declared);
   }
   return out;
 }
@@ -809,8 +839,9 @@ export function validateTemplate(tpl: TemplateDef): string[] {
     if (!def) { problems.push(`${REQ_LABEL[key]}：能力开关要求这一格，但还没配`); continue; }
     if (!def.path?.trim()) problems.push(`${REQ_LABEL[key]}：没填地址`);
     // 上传那一格发出去的就是一张 multipart 表单 —— 表是空的等于什么都没传
-    if (key === 'upload' && !Object.keys(def.form ?? {}).length) {
-      problems.push(`${REQ_LABEL[key]}：这一格发的是 multipart 表单，字段一个都没写（要上传的文件也在那张表里引用）`);
+    // 发 multipart 的那些格，表是空的等于什么都没交（文件也在那张表里引用）
+    if (multipartSlotOf(tpl, key) && !Object.keys(def.form ?? {}).length) {
+      problems.push(`${REQ_LABEL[key]}：这一格发的是 multipart 表单，字段一个都没写（要传的文件也在那张表里引用）`);
     }
     for (const o of requiredOutputsOf(tpl, key)) {
       if (o.required && !def.outputs?.[o.name]?.trim()) {

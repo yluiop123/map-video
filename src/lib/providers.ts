@@ -253,9 +253,9 @@ export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targe
   const declared = String(inst.values.requests?.clone?.preferredName ?? '').trim();
   const preferred = (declared || label).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv';
   const one: InstanceDef = { ...inst, values: { ...inst.values, instance: { ...inst.values.instance, model: targetModel || inst.values.instance?.model } } };
-  // 交出去的是一个**文件值**（字节 + 自己认出来的 mime + 文件名）：
-  // 直接克隆的模板在 body 里写 `${voiceData}`（引擎换成 data:<mime>;base64,…），
-  // 先上传那类在 multipart 表单里写 `${voiceData}`（分片带这个 mime）。
+  // 交出去的是一个**文件值**（字节 + 自己认出来的 mime + 文件名）：三种接法用同一份，
+  // 差在模板那一格怎么写 —— `${voiceData}` 进 JSON 体 = data:<mime>;base64,…，
+  // 进 multipart 表单 = 二进制分片；「单独上传」那类则是上传那一格收下它、克隆体里引用 ${fileRef}。
   const r = await runClone(tpl, one, deps, {
     voiceData: { bytes: wav, mime: sniffAudioMime(wav), name: 'reference.wav' },
     prefix: preferred, preferredName: preferred,

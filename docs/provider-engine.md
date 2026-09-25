@@ -33,10 +33,8 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 所有 JSON 列都带 `CHECK (… IS NULL OR json_valid(…))`；`category` 不写 CHECK —— 接一家新供应商不改表、不加 switch。
 
-**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, uploadFirst }`。
-早先是 `use_clone` / `upload` 两个布尔列 —— 它们与「`clone_json` / `upload_json` 空不空」是同一条事实的第二、第三份，
-`validateTemplate` 还得专门写两条报错去拦它们不一致，而判「能不能克隆」的 `supports()` 读的又是槽位。
-现在开关是输入、槽位与固定返回项都是它的推导结果（`slotsOf` / `requiredOutputsOf`），不一致没有发生的余地。
+**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, cloneVia: upload|base64|form }`。
+开关是输入，该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，都是它的推导结果（`slotsOf` / `requiredOutputsOf` / `multipartSlotOf`），界面上没有第二处「配了却没人读」的开关。
 
 内置模板由 seed（`src/lib/template-seed.ts`）在首次建库时铺成行，之后就是普通可编辑数据；「恢复默认」= 用 seed 覆盖那一行。
 
@@ -52,19 +50,24 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 | `sync.submit` | `sync_json.submit` | 一把梭：发出去就拿到产物或结果字段 | `modes` 含 sync（llm 恒有） |
 | `async.submit` | `async_json.submit` | 只负责提交并交出任务号 | `modes` 含 async |
 | `async.query` | `async_json.query` | 怎么查、什么算成/败、产物在哪 | 同上 —— **与 submit 成对，缺一即报错** |
-| `upload` | `upload_json` | 桥接：本地文件 → 文件引用（`fileRef`：url 或文件号） | `clone` 且 `uploadFirst` |
+| `upload` | `upload_json` | 桥接：本地文件 → 文件引用（`fileRef`：url 或文件号） | `clone` 且 `cloneVia=upload` |
 | `clone` | `clone_json` | 核心：参考音频 → `voiceId` | `clone`（仅 tts） |
 
 **产物只有四种到手方式**（`caps.artifact` = `bin` 响应体即产物 / `base64` / `hex` / `url` 链接），
 `url` 一律**当场下载**成字节 —— 没有「先问一次才拿到地址」那种中间档：它把一件事拆成两问，多一格要配、多一处会写错，
 而三家上游里没有一家真的需要。
 
-**`upload` 那一格的入参和别的接口不一样**：别的接口发的是一个 JSON 体、入参是 model / size / text 这些字段，
-它发的是一张 multipart 表单 —— 要传的只有一个**文件**（调用时给，界面按 `valueType:'file'` 长控件），
-随文件一起发的字段（`purpose` 那类）写在表单里。所以模板页在这一格不放请求级参数表、也不给 Body，
-卡片里还是那三节，只是内容换成：**发出去的内容**（Headers → multipart 表单）→ **要填的参数**（只一张「要上传的文件」表）→ **从响应里取**（固定项就一个 `fileRef`：交回 url 还是文件号由你填的路径决定）。表单是空的会被 `validateTemplate` 点名。
+**`upload` 那一格的入参和别的接口不一样**：要传的只有一个**文件**（调用时给，界面按 `valueType:'file'` 长控件），随文件一起发的字段写在表单里。卡片里还是那三节，只是内容换成：**发出去的内容**（Headers → multipart 表单）→ **参数**（一张「要传的文件」表）→ **从响应里取**（固定项就一个 `fileRef`：交回 url 还是文件号由你填的路径决定）。表单是空的会被 `validateTemplate` 点名。
 
-**建音色一共三种形状，全靠数据表达，代码里没有分支**：① 上传返回 **url** → 克隆引用 `${fileRef}`；② 上传返回 **fileId** → 克隆引用 `${fileRef}`（①② 只差固定项那一格填的路径）；③ **直接克隆** → 克隆请求体里写 `${voiceData}`，引擎把它换成 `data:<mime>;base64,…`。
+**`caps.clone`（建音色）开着时再问一句：参考音频以什么形式交过去 —— 三选一（`caps.cloneVia`）**。这一问同时决定该不该多出「上传」那一格、以及克隆那一格发什么：
+
+| `cloneVia` | 接口格 | 克隆格发什么 | 文件怎么写进去 | 参照 |
+|---|---|---|---|---|
+| `upload` 单独上传 | 多一格 `upload` | JSON 体 | 上传交出固定项 `fileRef`（回 url 还是文件号，只差填的路径），克隆体里写 `${fileRef}` | MiniMax `/v1/voice_clone` 的 `file_id` |
+| `base64` | 无 | JSON 体 | 体里写 `${voiceData}`，引擎换成 `data:<mime>;base64,…`；要裸 base64 写 `${voiceData.base64}` | 千问 voice cloning 的 `input.audio.data`（收 Data URL） |
+| `form` 表单带入 | 无 | **multipart 表单，没有 Body** | `${voiceData}` 就是那个二进制分片（自带 mime 与文件名），`name` / `language` 这些参数写成同表的字段 | ElevenLabs IVC 的 `files` + `name` |
+
+于是「发哪部分内容」只有一个判据：`multipartSlotOf(tpl, slot)`（上传那格恒为表单；克隆那格看 `cloneVia`，**这一项没填过按 `base64` 算** —— 兜底写在 `cloneViaOf` 一处）。界面摆 Body 还是表单、`validateTemplate` 查哪一格为空、新建草稿给什么形状、`buildRequest` 真发什么，全读它 —— **一格的两种形状不会同时发出去**，换了接法之后留在另一格里的旧内容就地失效（不报错，也不发半个请求）。
 
 每个接口槽的结构（`RequestDef`）：
 
@@ -74,7 +77,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   "headers": { "Content-Type": "application/json", "Authorization": "Bearer ${apiKey}", "X-DashScope-Async": "enable" },
   "requestParams": [ /* 这一格的参数声明：model / size / prompt / 文件… 一张表，不再分两张 */ ],
   "body": { "model": "${model}", "input": { "text": "${text}" } },
-  "form": { "file": "${voiceData}", "purpose": "voice_clone" },   // 只有 upload 那一格用（multipart）
+  "form": { "file": "${voiceData}", "name": "${voiceName}" },   // 发 multipart 的那格用（判据：multipartSlotOf）
   "outputs": { "taskId": "output.task_id", "error": "message" },  // 固定项 + 自定义变量，见下
   "successValues": ["SUCCEEDED"], "failureValues": ["FAILED","CANCELED","UNKNOWN"] }  // 只有 query 用
 ```
@@ -142,7 +145,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 - 声明了但这次没填值 → **删键**（父对象被删空则连父键一起删）。这是「可选参数」的正确形态：不少上游拒绝 `"thinking":{}` 但接受不含该键。
 - `${x}` 用在整串位置保留原类型（`${n}` 是数字就发数字）；嵌在字符串里就是插值。
 - **文件参数交的是「文件值」`{ bytes, mime, name }`，不是裸字节** —— 上传与克隆两类接口都要把 mime 注进去，写死过一次就会和实际字节不一致。同一个 `${file}` 在两个位置长成两种样子：
-  进 **JSON 体** = `data:<mime>;base64,…`（直接克隆那类要的形状），进 **multipart 表单** = 那个二进制分片（分片自带 `mime` 与文件名，由主进程拼 FormData）。
+  进 **JSON 体** = `data:<mime>;base64,…`（`cloneVia=base64` 那类要的形状），进 **multipart 表单** = 那个二进制分片（分片自带 `mime` 与文件名，由主进程拼 FormData）。
   要单独拿某一项就写点号：`${file.mime}`（如 `audio/x-wav`）、`${file.base64}`、`${file.name}`、`${file.dataUri}`。
 - 参数字段表（`ParamSpec`）：
 
@@ -159,9 +162,9 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 
 - **声明里没有「必填」也没有「加工方式」这两格**：一份声明出来的参数只有两个来源 —— 要么在实例里填，要么在调用时给，
   「必不必填」问得没意义（没给值就是那个键删掉，级联到空父键，见 §四）；取值成形只看 `valueType`，不叠加第二层加工选项。
-- **全项目只有一处要把文件转成 base64**：语音克隆且「建音色前不单独上传」（= 直接克隆）。那一步在调用点
-  （`providers.ts` 的 `cloneVoice`：参考音频 → 单声道 WAV → `data:audio/wav;base64,…` 交给 `${audioDataUri}`），
-  模板这边只声明「这是个文件、收什么格式、多大为止」。走「先上传再克隆」的那家传的是 multipart 二进制分片，不编码。
+- **文件转 base64 只会在一个地方发生**：`cloneVia=base64` 的克隆格求值时（`${voiceData}` 落进 JSON 体 = `data:<mime>;base64,…`，写 `${voiceData.base64}` = 不含前缀的那串）。
+  调用点（`providers.ts` 的 `cloneVoice`）只把参考音频转成单声道 WAV、认出一个 mime，交出一个**文件值**，自己不编码；
+  `cloneVia=form` 那一格发的是二进制分片，`cloneVia=upload` 传的文件同样不编码。
 
 - **内置 seed 只声明真正引用到的参数**，并且只到「该请求用得上」为止；`{text}` `{prompt}` 这类正文由调用点给值，要渲染成输入框就从占位符反推，不靠声明。
 - 候选值由模板写死，**不运行时从上游拉**（各家没有统一的 list 接口，顺序与文案不可控）。
@@ -185,7 +188,8 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 ```
 同步：sync.submit → 字节
 异步：async.submit 交出 taskId → 调度器/内存轮询按节奏打 async.query → SUCCEEDED → 字节
-克隆：(upload 交出 fileRef) → clone 交出 voiceId
+克隆：cloneVia=upload → upload 交出 fileRef，再 clone 交出 voiceId
+     cloneVia=base64 / form → 只有 clone 这一步，文件值直接进那一格
 ```
 
 两条硬规矩：
@@ -224,8 +228,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 
 | 页面 | 装什么 |
 |---|---|
-| **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、产物形式 / 克隆 / 上传，按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、只写动作名（提交 / 查询），哪一侧由这一排最右边那个「同步 | 异步」切换说明，卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；upload 那格是 multipart 表单）→ **要填的参数**（请求级 → 调用级两张表；upload 那格只有一张「要上传的文件」）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**三层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，入库的层每行装框、调用时给值的那层不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
+| **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**这一格的参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、产物形式 / 建音色（**克隆开关 + 参考音频三选一：单独上传 / base64 / 表单带入**），按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、只写动作名（提交 / 查询），哪一侧由这一排最右边那个「同步 | 异步」切换说明，卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；发 multipart 的那格换成表单，判据 `multipartSlotOf`）→ **参数**（这一格一张表：填了值的走实例，没填的调用时给）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**两层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，会留在库里的层每行装框、调用时给值的那种不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - **验收口只有一个：实例页的「试调用」**（它同时给求值后的请求形状与真发一条的结果 —— 真发要的是这条实例的 Key，所以这件事只能在实例页做）。模板页不预览、不发请求：那一页只有形状本身，拼得出拼不出由保存前自检点名。
@@ -240,14 +244,14 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 
 ### 9.1 能力开关
 
-`caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段，全由它推导**（`slotsOf` / `requiredOutputsOf`）。
-界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）。
+`caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，全由它推导**（`slotsOf` / `requiredOutputsOf` / `multipartSlotOf`）。
+界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）；「建音色」是**克隆开关 + 参考音频三选一**（`cloneVia`：`upload` 先传拿 `fileRef` / `base64` 文件进 JSON 体 / `form` 克隆那格自己发 multipart）。
 
-| 模板 | 调用方式 | 产物形式 | 克隆 | 上传 | 推导出的接口槽 |
+| 模板 | 调用方式 | 产物形式 | 建音色 | 参考音频怎么交 | 推导出的接口槽 |
 |---|---|---|---|---|---|
-| `deepseek-chat` | sync | none | 否 | 否 | `同步 · 提交` |
-| `qwen-image` | both | url | 否 | 否 | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
-| `qwen-tts` | sync | url | 是 | 否 | `克隆` + `同步 · 提交` |
+| `deepseek-chat` | sync | none | 否 | — | `同步 · 提交` |
+| `qwen-image` | both | url | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
+| `qwen-tts` | sync | url | 是 | `base64` | `克隆` + `同步 · 提交` |
 
 ### 9.2 每格必须交出的返回项（名字写死，只能填路径）
 
@@ -688,7 +692,7 @@ null
 
 #### `qwen-tts`
 
-- 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"url","clone":true}`
+- 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"url","clone":true,"cloneVia":"base64"}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 

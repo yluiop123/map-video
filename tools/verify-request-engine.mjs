@@ -4,13 +4,13 @@
  * 覆盖：路径两种写法与未命中、三层参数取值优先级、`${}` 求值（类型保留 / 可选参数没填即删键 /
  *       没声明的占位符点名）、headers 逐请求覆盖、outputs 隐式流转、hotFix 数据驱动转换、
  *       产物四种封装（binary / hex / base64 / url），url 一律当场下载、
- *       异步两步（提交 → 两枚举判定 → 取产物）、克隆的一体式与分离式、密钥打码、模板自检，
+ *       异步两步（提交 → 两枚举判定 → 取产物）、克隆的三种接法（单独上传 / base64 / 表单带入）、密钥打码、模板自检，
  *       以及全部内置模板逐份试构造。
  * 运行：node --experimental-strip-types tools/verify-request-engine.mjs
  */
 import {
   REQ_KEYS, applyOutputs, buildRequest, classify, openKeysOf, readPath,
-  redact, requestOf, runClone, runSync, secretsOf, submitAsync, queryOnce, validateTemplate, EngineError,
+  redact, requestOf, runClone, runSync, secretsOf, slotsOf, submitAsync, queryOnce, validateTemplate, EngineError,
   retriable,
 } from '../src/lib/request-engine.ts';
 import { SEED_TEMPLATES, seedTemplate } from '../src/lib/template-seed.ts';
@@ -220,15 +220,15 @@ console.log('\n[6] 音色克隆');
   const d = mk([{ on: 'customization', res: json({ output: { voice: 'qwen-voice-77' } }) }]);
   const wav = { bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]), mime: 'audio/x-wav', name: 'reference.wav' };
   const r = await runClone(qwen, inst('qwen-tts'), d.deps, { voiceData: wav, model: 'qwen3-tts-vc-2026-01-22', preferredName: 'mv' });
-  eq('6.1 形状三「直接克隆」：文件进 body 就是 data URI，一步拿音色 ID', [r.values.voiceId, d.sent.length], ['qwen-voice-77', 1]);
+  eq('6.1 接法二「base64」：文件进 body 就是 data URI，一步拿音色 ID', [r.values.voiceId, d.sent.length], ['qwen-voice-77', 1]);
   const body = d.sent[0].body;
   eq('6.2 复刻目标模型走请求级参数（合成必须同款）', body.input.target_model, 'qwen3-tts-vc-2026-01-22');
   eq('6.3 data URI 用的就是这个文件自己的 mime', body.input.audio.data, `data:audio/x-wav;base64,${btoa('RIFF')}`);
   eq('6.3b 外层 model 是写死的注册服务名', body.model, 'qwen-voice-enrollment');
 
   const up = {
-    ...qwen, caps: { ...qwen.caps, clone: true, uploadFirst: true },
-    // 形状二「先上传拿文件号」：这一格发的是 multipart 表单，文件保持成分片（不转 base64）
+    ...qwen, caps: { ...qwen.caps, clone: true, cloneVia: 'upload' },
+    // 接法一「单独上传」：上传那一格发 multipart，文件保持成分片（不转 base64）
     upload: {
       path: '${baseUrl}/files/upload', method: 'POST', headers: { Authorization: 'Bearer ${apiKey}' },
       requestParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file' }],
@@ -246,7 +246,7 @@ console.log('\n[6] 音色克隆');
   eq('6.7 ${它.mime} 单独注入：拿到的就是 audio/x-wav 这个串', d2.sent[0].form.mime_type, 'audio/x-wav');
   eq('6.8 上传那条没带模板级 Content-Type（逐槽各配一份）', d2.sent[0].headers, { Authorization: 'Bearer sk-abcdefghij1234' });
 
-  // 形状一「先上传拿 url」：同一格、同一个名字，只是路径指向响应里的地址字段
+  // 同一个接法，上传回来的可能是文件号也可能是地址 —— 只差固定项填的路径，下游一律写 ${fileRef}
   const upUrl = {
     ...up,
     upload: { ...up.upload, form: { file: '${voiceData}' }, outputs: { fileRef: 'file.url' } },
@@ -255,6 +255,28 @@ console.log('\n[6] 音色克隆');
   const d3 = mk([{ on: 'files/upload', res: json({ file: { url: 'https://cdn/ref.wav' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-8' }) }]);
   await runClone(upUrl, inst('qwen-tts'), d3.deps, { voiceData: wav, preferredName: 'mv' });
   eq('6.9 上传返回 url 的那类：${fileRef} 引用的就是那个地址', d3.sent[1].body.audio_url, 'https://cdn/ref.wav');
+
+  // 接法三「表单带入」：克隆那一格自己发 multipart，没有 Body（ElevenLabs 那类）
+  const frm = {
+    ...qwen, caps: { ...qwen.caps, clone: true, cloneVia: 'form' },
+    clone: {
+      path: '${baseUrl}/v1/voices/add', method: 'POST', headers: { 'xi-api-key': '${apiKey}' },
+      requestParams: [{ key: 'voiceData', label: '参考音频', valueType: 'file' }, { key: 'voiceName', label: '音色名' }],
+      form: { files: '${voiceData}', name: '${voiceName}', language_code: 'zh' },
+      body: { this_must_not_be_sent: '${voiceName}' },
+      outputs: { voiceId: 'voice_id' },
+    },
+  };
+  check('6.10 三选一推出来的槽：只有 form 才多上传那一格',
+    [slotsOf(frm).includes('upload'), slotsOf(up).includes('upload'), slotsOf(qwen).includes('upload')], [false, true, false]);
+  const d4 = mk([{ on: 'voices/add', res: json({ voice_id: 'el-7' }) }]);
+  const r4 = await runClone(frm, inst('qwen-tts'), d4.deps, { voiceData: wav, voiceName: 'mv' });
+  eq('6.11 表单带入：一次调用（没有上传那一格），音色 ID 从克隆响应取', [r4.values.voiceId, d4.sent.length], ['el-7', 1]);
+  eq('6.12 克隆那格交的是 multipart：文件仍是分片、别的参数是字段',
+    [d4.sent[0].form.files === wav, d4.sent[0].form.name, d4.sent[0].form.language_code], [true, 'mv', 'zh']);
+  eq('6.13 一格的两种形状不会同时发出：form 模式下 body 写了也不发', d4.sent[0].body, undefined);
+  eq('6.14 multipart 那格不声明 Content-Type（boundary 归传输层）', d4.sent[0].headers, { 'xi-api-key': 'sk-abcdefghij1234' });
+  eq('6.15 现场要给的参数从表单反推（不靠第二张表标）', openKeysOf(frm, inst('qwen-tts'), 'clone').sort(), ['voiceData', 'voiceName'].sort());
 }
 
 // ========== 7. 打码 ==========
@@ -293,13 +315,18 @@ console.log('\n[8] 保存前自检');
   check('8.10 开关里不需要 clone、却留着 clone 那一格 → 点名（并说清怎么消掉）',
     validateTemplate(stray).some((x) => x.includes('克隆') && x.includes('移除这一格')), validateTemplate(stray));
   check('8.11 文案类不该有产物 / 克隆开关', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'sync', artifact: 'url' } }).length > 0);
-  // 上传那一格发出去的就是一张 multipart 表单：表是空的等于什么都没传
+  // 发 multipart 的那格：表是空的等于什么都没交
   const emptyForm = {
-    ...seedTemplate('qwen-tts'), caps: { modes: 'sync', artifact: 'url', clone: true, uploadFirst: true },
+    ...seedTemplate('qwen-tts'), caps: { modes: 'sync', artifact: 'url', clone: true, cloneVia: 'upload' },
     upload: { path: '${baseUrl}/files/upload', outputs: { fileId: 'file.file_id' } },
   };
   check('8.12 上传那一格没写 multipart 字段 → 点名',
     validateTemplate(emptyForm).some((x) => x.includes('multipart')), validateTemplate(emptyForm));
+  const cloneNoForm = {
+    ...seedTemplate('qwen-tts'), caps: { modes: 'sync', artifact: 'url', clone: true, cloneVia: 'form' },
+  };
+  check('8.13 「表单带入」的克隆格没写字段 → 同样点名（判据是 multipartSlotOf，不是槽名）',
+    validateTemplate(cloneNoForm).some((x) => x.includes('multipart') && x.includes('克隆')), validateTemplate(cloneNoForm));
 }
 
 // ========== 9. 逐份 seed 试构造 ==========

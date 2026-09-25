@@ -131,7 +131,7 @@ const qwenImage: TemplateDef = {
 
 const qwenTts: TemplateDef = {
   id: 'qwen-tts', name: '千问 TTS', category: 'tts',
-  caps: { modes: 'sync', artifact: 'url', clone: true },
+  caps: { modes: 'sync', artifact: 'url', clone: true, cloneVia: 'base64' },
   instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
   sync: {
     submit: jsonReq('${baseUrl}/services/aigc/multimodal-generation/generation', {

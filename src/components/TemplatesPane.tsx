@@ -2,8 +2,8 @@
  * TemplatesPane.tsx — ⚙ 设置 · AI 左侧的「接口模板」页（三栏）
  *
  * 一份模板 = 数据库一行，里面同时装着：实例级参数、同步 / 异步两套接口、上传、克隆。
- * 请求头与参数都挂在各条接口自己身上（同一家不同端点要的头并不相同）；三层参数（实例级 / 请求级 /
- * 调用级）都在这页自由增删改 —— 引擎里没有任何按厂商名写的分支，界面配不出来的东西就不该存在。
+ * 请求头与参数都挂在各条接口自己身上（同一家不同端点要的头并不相同）；该出现哪几格接口、每格交回哪些
+ * 字段、哪格发表单哪格发 Body，全部由 `caps` 推导 —— 引擎里没有任何按厂商名写的分支，界面配不出来的东西就不该存在。
  *
  * 页面上不写解释性长句：小节名旁边一枚 ⓘ，点开才看说明。
  */
@@ -26,9 +26,9 @@ import { useConfirm } from './ui/ConfirmHost';
 import { useProviderStore } from '../stores/providerStore';
 import { seedTemplate } from '../lib/template-seed';
 import {
-  ARTIFACT_KEY, REQ_KEYS, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
+  ARTIFACT_KEY, REQ_KEYS, cloneViaOf, multipartSlotOf, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
   REQ_LABEL as SLOT_LABEL,
-  type ArtifactEncoding, type Caps, type Category, type ParamSpec, type ReqKey,
+  type ArtifactEncoding, type Caps, type Category, type CloneVia, type ParamSpec, type ReqKey,
   type RequestDef, type TemplateDef, type ValueType,
 } from '../lib/request-engine';
 
@@ -71,6 +71,13 @@ const ARTIFACT_OPTIONS = (t: (a: string, b: string) => string) => [
   { value: 'url' as const, label: 'url', hint: t('响应给一个链接，当场下载成字节（没有单独的下载接口）', 'a URL, downloaded on the spot — there is no download endpoint') },
 ];
 
+/** 参考音频怎么交到克隆接口手里 —— 三选一，选完该有哪些格、那一格发什么都跟着变 */
+const CLONE_VIA_OPTIONS = (t: (a: string, b: string) => string) => [
+  { value: 'upload' as const, label: t('单独上传', 'Upload first'), hint: t('先调上传那一格拿文件引用，克隆请求里写 ${fileRef}', 'a separate 上传 endpoint returns the file reference; the clone request uses ${fileRef}') },
+  { value: 'base64' as const, label: 'base64', hint: t('文件当场转成 data:<mime>;base64,… 作为一个 JSON 字段（克隆请求里写 ${voiceData}）', 'the file becomes a data: URI in the JSON body, referenced as ${voiceData}') },
+  { value: 'form' as const, label: t('表单带入', 'In the form'), hint: t('克隆这一格发 multipart：文件是个分片，别的参数写成同表的字段，没有 Body', 'the clone request itself is multipart: the file is one part, other params are fields, no body') },
+];
+
 const present = (t: TemplateDef, key: ReqKey) => !!requestOf(t, key);
 
 /** 改能力开关 → 该出现的槽自动补一份空白 */
@@ -78,7 +85,7 @@ function withCaps(tpl: TemplateDef, caps: Caps): TemplateDef {
   const next: TemplateDef = { ...tpl, caps };
   for (const key of slotsOf(next)) {
     if (present(next, key)) continue;
-    const blank = blankRequest(key);
+    const blank = blankRequest(key, next);
     if (key === 'sync.submit') next.sync = { ...next.sync, submit: blank };
     else if (key === 'async.submit') next.async = { ...next.async, submit: blank };
     else if (key === 'async.query') next.async = { ...next.async, query: blank };
@@ -89,16 +96,30 @@ function withCaps(tpl: TemplateDef, caps: Caps): TemplateDef {
 
 /** 新建一格时给的头：认证头是每条都要的，Content-Type 只有带 JSON 体的那条要 */
 const AUTH_HDR = { Authorization: 'Bearer ${apiKey}' };
-const blankRequest = (key: ReqKey): RequestDef => {
+
+/** 参考音频那个参数：三种接法用的都是它，只是进去的形状不同 */
+const VOICE_FILE: ParamSpec = { key: 'voiceData', label: '要传的音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 };
+
+/** 新建一格的草稿：形状照 `multipartSlotOf` 给，不猜具体厂家 */
+const blankRequest = (key: ReqKey, tpl: TemplateDef): RequestDef => {
   if (key === 'async.query') {
     return { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { ...AUTH_HDR }, body: {}, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] };
   }
-  // 上传那一格发的是 multipart 表单，不是 JSON 体：入参只有一个文件，随附字段写在表单里
-  if (key === 'upload') {
+  if (multipartSlotOf(tpl, key)) {
+    // 发的是 multipart 表单，不是 JSON 体：入参只有一个文件，随附字段写在表单里（Content-Type 由传输层生成）
     return {
-      path: '${baseUrl}/files', method: 'POST', headers: { ...AUTH_HDR },
-      requestParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
-      form: { file: '${voiceData}', purpose: 'voice_clone' }, outputs: {},
+      path: '${baseUrl}/', method: 'POST', headers: { ...AUTH_HDR },
+      requestParams: [{ ...VOICE_FILE }],
+      form: { file: '${voiceData}' }, outputs: {},
+    };
+  }
+  if (key === 'clone') {
+    // 到这一步文件已经是「引用」或「一串 data URI」，两者都写在 JSON 体里
+    const via = cloneViaOf(tpl);
+    return {
+      path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR },
+      requestParams: via === 'base64' ? [{ ...VOICE_FILE }] : [],
+      body: { audio: via === 'base64' ? '${voiceData}' : '${fileRef}' }, outputs: {},
     };
   }
   return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
@@ -267,15 +288,16 @@ export function TemplatesPane() {
                       <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
                         <label className="flex items-center gap-2">
                           <Switch id="tpl-clone" checked={!!tpl.caps.clone}
-                            onCheckedChange={(clone) => void setCaps({ ...tpl.caps, clone, uploadFirst: clone ? tpl.caps.uploadFirst : undefined })} />
+                            onCheckedChange={(clone) => void setCaps({ ...tpl.caps, clone, cloneVia: clone ? cloneViaOf(tpl) : undefined })} />
                           <Label htmlFor="tpl-clone" className="text-[11px] font-normal">{t('克隆', 'Clone')}</Label>
                         </label>
                         {tpl.caps.clone && (
-                          <label className="flex items-center gap-2">
-                            <Switch id="tpl-upload" checked={!!tpl.caps.uploadFirst}
-                              onCheckedChange={(uploadFirst) => void setCaps({ ...tpl.caps, uploadFirst })} />
-                            <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('上传', 'Upload')}</Label>
-                          </label>
+                          <div className="flex items-center gap-1.5">
+                            <OptionBlocks<CloneVia> value={cloneViaOf(tpl)}
+                              options={CLONE_VIA_OPTIONS(t).map((o) => ({ value: o.value, label: o.label }))}
+                              onChange={(cloneVia) => void setCaps({ ...tpl.caps, cloneVia })} />
+                            <InfoHint text={CLONE_VIA_OPTIONS(t).find((o) => o.value === cloneViaOf(tpl))?.hint} />
+                          </div>
                         )}
                       </div>
                     </div>
@@ -346,7 +368,8 @@ function RequestEditor({ tpl, reqKey, onChange }: {
   /** 固定项之外的 outputs 就是自定义变量（引擎不读它们） */
   const fixedNames = new Set(requiredOutputsOf(tpl, reqKey).map((o) => o.name));
   const custom = Object.entries(def.outputs ?? {}).filter(([k]) => !fixedNames.has(k));
-  const isUpload = reqKey === 'upload';
+  /** 这一格发的是表单还是 JSON 体 —— 与引擎、校验同一条判据（`multipartSlotOf`） */
+  const multipart = multipartSlotOf(tpl, reqKey);
 
   return (
     <Card className="gap-0 p-0">
@@ -364,13 +387,14 @@ function RequestEditor({ tpl, reqKey, onChange }: {
         {/* 顺序照发出去的样子排：先这条请求自己的头与体，再声明它引用了哪些参数 */}
         <Group title={t('发出去的内容', 'Payload')}>
           <JsonBox label="Headers" rows={3} value={def.headers ?? {}}
-            hint={isUpload
+            hint={multipart
               ? t('认证头写在这儿。multipart 的 Content-Type 由传输层生成，不用写。', 'auth headers; the multipart Content-Type comes from the transport')
               : t('这一条自己的头。${apiKey} 会换成实例里填的那把 Key。', "this endpoint's own headers; ${apiKey} comes from the instance")}
             onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
-          {isUpload ? (
+          {multipart ? (
             <JsonBox label={t('表单（multipart 字段）', 'Form')} value={def.form ?? {}}
-              hint={t('例 { "file": "${voiceData}", "purpose": "voice_clone" }', 'e.g. { "file": "${voiceData}", "purpose": "voice_clone" }')}
+              hint={t('例 { "file": "${voiceData}", "name": "${voiceName}" }：文件值的那个名字就是二进制分片，别的是普通字段。',
+                'e.g. { "file": "${voiceData}" }: a file value becomes the binary part, anything else is a plain field')}
               onChange={(form) => set({ form: form as Record<string, unknown> })} />
           ) : (
             <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />
@@ -379,7 +403,7 @@ function RequestEditor({ tpl, reqKey, onChange }: {
 
         {/* 一张参数表：填了值的走实例，没填的由调用点现场给 —— 都是同一个 ${key}，不再分两张表 */}
         <Group title={t('参数', 'Parameters')}>
-          <ParamTable variant="framed" title={isUpload ? t('要传的文件', 'File to upload') : t('这一格的参数', 'Endpoint params')}
+          <ParamTable variant="framed" title={reqKey === 'upload' ? t('要传的文件', 'File to upload') : t('这一格的参数', 'Endpoint params')}
             hint={t('引用写 ${名字}。填了值的存在实例里（同名参数在别的格可以取不同值），没填的由调用点现场给（正文文本、画面描述、文件）；文件进 multipart 表单就是那个二进制分片，进 JSON 体就是 data:<mime>;base64,…，单取格式写 ${名字.mime}。',
               'reference as ${name}. Filled ones persist on the instance; the rest come from the call site. A file becomes a binary part in a form, a data: URI in a JSON body; ${name.mime} for the type alone')}
             params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
