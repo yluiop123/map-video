@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { REQ_LABEL, requiredOutputsOf, slotsOf } from '../src/lib/request-engine.ts';
 import { SEED_TEMPLATES } from '../src/lib/template-seed.ts';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -64,7 +65,32 @@ const HEAD = '| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 
 
 function block() {
   const out = [];
-  out.push('### 9.1 三份模板各自声明了哪些参数');
+  out.push('### 9.1 能力开关：这一家怎么交活');
+  out.push('');
+  out.push('`caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段，全由它推导**（`slotsOf` / `requiredOutputsOf`）。');
+  out.push('');
+  out.push('| 模板 | 接法 | 产物形式 | 建音色 | 建前先上传 | 参考音频采样率 | 推导出的接口槽 |');
+  out.push('|---|---|---|---|---|---|---|');
+  for (const t of SEED_TEMPLATES) {
+    out.push(`| \`${t.id}\` | ${t.caps.modes} | ${t.caps.artifact} | ${t.caps.clone ? '是' : '否'} | ${t.caps.uploadFirst ? '是' : '否'} | ${t.refSampleRateHz ?? '—'} | ${slotsOf(t).map((k) => `\`${REQ_LABEL[k]}\``).join(' + ') || '（无）'} |`);
+  }
+  out.push('');
+  out.push('### 9.2 每格必须交出的返回项（名字写死，只能填路径）');
+  out.push('');
+  out.push('这些名字就是引擎读取的键 —— 写错不会报错，只会「产物取不到」或「一路查到超时」，所以不给自定义。');
+  out.push('自定义变量（只给下游 `${它}` 用、引擎不读）另在一格，不进这张表。');
+  out.push('');
+  out.push('| 模板 | 接口槽 | 固定项 | 名字（写死） | 必填 | 引擎拿它干什么 |');
+  out.push('|---|---|---|---|---|---|');
+  for (const t of SEED_TEMPLATES) {
+    for (const key of slotsOf(t)) {
+      for (const o of requiredOutputsOf(t, key)) {
+        out.push(`| \`${t.id}\` | ${REQ_LABEL[key]} | ${o.label} | \`${o.name}\` | ${o.required ? '是' : '建议'} | ${o.hint} |`);
+      }
+    }
+  }
+  out.push('');
+  out.push('### 9.3 三份模板各自声明了哪些参数');
   out.push('');
   out.push('「层」就是取值的三级：实例级整条实例共用、请求级按接口槽各存各的、调用级不落库（由业务界面或试调用现场给）。');
   for (const t of SEED_TEMPLATES) {
@@ -76,14 +102,14 @@ function block() {
   }
 
   out.push('');
-  out.push('### 9.2 逐列 JSON（照抄可用）');
+  out.push('### 9.4 逐列 JSON（照抄可用）');
   out.push('');
   out.push('下面每块就是 `provider_template` 那一行对应列里存的内容，键名与列名一一对应；`null` = 该列没配（界面上那一格也就不出现）。');
   for (const t of SEED_TEMPLATES) {
     out.push('');
     out.push(`#### \`${t.id}\``);
     out.push('');
-    out.push(`- 标量列：\`category=${t.category}\`，\`use_clone=${t.useClone ? 1 : 0}\`，\`upload=${t.hasUpload ? 1 : 0}\`，\`ref_sample_rate=${t.refSampleRateHz ?? 'NULL'}\``);
+    out.push(`- 标量列：\`category=${t.category}\`，\`caps_json=${JSON.stringify(t.caps)}\`，\`ref_sample_rate=${t.refSampleRateHz ?? 'NULL'}\``);
     out.push('');
     out.push('**`headers_json`**（模板级请求头，这一行所有请求共用）');
     out.push('');

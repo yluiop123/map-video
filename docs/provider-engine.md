@@ -22,8 +22,7 @@ CREATE TABLE IF NOT EXISTS provider_template (
   tpl_id      TEXT PRIMARY KEY,          -- deepseek-chat / qwen-image / qwen-tts / custom-1 …
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,             -- llm / tts / image（不加 CHECK，取值由 TS 联合类型管）
-  use_clone   INTEGER NOT NULL DEFAULT 0 CHECK (use_clone IN (0,1)),  -- 有没有克隆接口
-  upload      INTEGER NOT NULL DEFAULT 0 CHECK (upload IN (0,1)),     -- 克隆前要不要先上传拿 fileId
+  caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：接法 / 产物形式 / 建音色 / 建前先上传
   headers_json TEXT,     instance_params_json TEXT,     -- 模板级请求头 / 实例级参数声明
   sync_json    TEXT,     async_json    TEXT,            -- 同步 {submit} / 异步 {submit,query}
   download_json TEXT,    upload_json   TEXT,   clone_json TEXT,   -- 三条桥接 / 核心请求
@@ -35,20 +34,26 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 所有 JSON 列都带 `CHECK (… IS NULL OR json_valid(…))`；`category` 不写 CHECK —— 接一家新供应商不改表、不加 switch。
 
+**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url|viaDownload, clone, uploadFirst }`。
+早先是 `use_clone` / `upload` 两个布尔列 —— 它们与「`clone_json` / `upload_json` 空不空」是同一条事实的第二、第三份，
+`validateTemplate` 还得专门写两条报错去拦它们不一致，而判「能不能克隆」的 `supports()` 读的又是槽位。
+现在开关是输入、槽位与固定返回项都是它的推导结果（`slotsOf` / `requiredOutputsOf`），不一致没有发生的余地。
+
 内置模板由 seed（`src/lib/template-seed.ts`）在首次建库时铺成行，之后就是普通可编辑数据；「恢复默认」= 用 seed 覆盖那一行。
 
-## 三、请求形状：`ReqKey` 六格
+## 三、接口槽：六个形状，由能力开关推导该有哪几格
 
-一份模板的 JSON 列展开成六个**接口槽**（界面上每格一张卡片，空的不渲染）：
+`caps_json` 里那几个开关一答完，`slotsOf(tpl)` 就给出这一份模板**该有哪些接口槽** —— 界面上没有「＋ 加一条接口」这回事，
+也不给「删掉这条接口」（不想要就关对应的开关）。六个槽位：
 
-| ReqKey | 存哪列 | 干什么 | 出现条件 |
+| ReqKey | 存哪列 | 干什么 | 什么时候有 |
 |---|---|---|---|
-| `sync.submit` | `sync_json.submit` | 一把梭：发出去就拿到产物或结果字段 | 恒有（llm 必填） |
-| `async.submit` | `async_json.submit` | 只负责提交并交出中间变量（`taskId`） | 该家有异步接法 |
-| `async.query` | `async_json.query` | 怎么查、什么算成/败、产物在哪、怎么变字节 | 配了 `async.submit` 就**必须**配 |
-| `download` | `download_json` | 桥接：`fileId` → 最终下载地址 | 产物地址要再问一次才给（同步异步共用） |
-| `upload` | `upload_json` | 桥接：本地文件 → `fileId` | 分离式厂商（先传后建） |
-| `clone` | `clone_json` | 核心：参考音频 → `voiceId` | 该家支持建音色 |
+| `sync.submit` | `sync_json.submit` | 一把梭：发出去就拿到产物或结果字段 | `modes` 含 sync（llm 恒有） |
+| `async.submit` | `async_json.submit` | 只负责提交并交出任务号 | `modes` 含 async |
+| `async.query` | `async_json.query` | 怎么查、什么算成/败、产物在哪 | 同上 —— **与 submit 成对，缺一即报错** |
+| `download` | `download_json` | 桥接：中间量 → 最终下载地址 | `artifact = viaDownload` |
+| `upload` | `upload_json` | 桥接：本地文件 → `fileId` | `clone` 且 `uploadFirst` |
+| `clone` | `clone_json` | 核心：参考音频 → `voiceId` | `clone`（仅 tts） |
 
 每个接口槽的结构（`RequestDef`）：
 
@@ -59,14 +64,21 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   "requestParams": [ /* 这个请求专属的参数声明：model / size… */ ],
   "callParams":    [ /* 每次调用由界面或程序给的参数：text / prompt / 文件… */ ],
   "body": { "model": "${model}", "input": { "text": "${text}" } },
-  "form": { "file": "${file}" },                        // multipart（上传那步用）
-  "outputs": { "taskId": "output.task_id", "error": "message" },  // 从响应取字段，取出的**名字**进作用域
-  "outputFormat": "url",                                // binary｜hex｜base64｜url（缺省 = 响应体即产物）
+  "form": { "file": "${audioFile}", "purpose": "voice_clone" },   // 只有 upload 那一格用（multipart）
+  "outputs": { "taskId": "output.task_id", "error": "message" },  // 固定项 + 自定义变量，见下
   "successValues": ["SUCCEEDED"], "failureValues": ["FAILED","CANCELED","UNKNOWN"],  // 只有 query 用
   "timeoutMs": 60000 }
 ```
 
-- **产出槽位不再是固定的十来个键**：`outputs` 是 `{ 想要的名字: 相对路径 }`，取出来就叫这个名字，下游 `${taskId}` `${fileId}` 直接用。所以接一家「图片在 `data.result.imgUrl`」的服务不需要改代码。
+- **`outputs` 分两种，界面上也分两处**：
+  - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`artifact`（产物）、
+    `taskId`（任务号）、`status`（任务状态）、`fileId`、`voiceId`、`error` / `errorCode`。
+    产物**只有一个名字** `artifact`，早先代码里那串 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`
+    是同一条事实的五份真相，填对了五个之一才碰巧能用 —— 现在没有「碰巧」这回事，`validateTemplate` 会要求必填的固定项必须填路径。
+  - **自定义变量**（可选、界面默认折叠）—— 只用于在别的请求里写 `${它}`，引擎从不读它们。
+    与三层参数同名会被点名（同一个 `${x}` 有两个来源，谁赢取决于调用时给没给值）。
+- **产物以什么形式给是模板级的一件事**（`caps.artifact`：响应体即字节 / base64 / hex / 链接当场下 / 链接要再问一次），
+  不再有每槽一个 `outputFormat` —— 同步与异步共用一个答案。
 - **两个枚举而不是三个**：`successValues` / `failureValues`，都没命中 = 中间态继续查。省掉 `pendingValues` 是因为它没法穷举（`PENDING`/`RUNNING`/`QUEUING`/…），漏一个就把在途任务判成失败。
 - 路径写法用**方括号下标**（`output.choices[0].message.content[0].image`），与上游文档、jq 逐字一致；纯点号 `output.results.0.url` 同样收，库存原样。只支持 `[数字]`，不做 `$..` / `[*]` / 过滤表达式 —— 模板里一旦能写表达式，「看模板就知道实际发了什么」这个前提就没了。
 
@@ -142,7 +154,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 | ② 发送 | 桌面走主进程 `net:request`（无 CORS、Key 不出本机），网页走 `fetch` | 该槽的 `timeoutMs` |
 | ③ 取字段 | 按 `outputs` 从响应里取名字，取到的进作用域 | `outputs` |
 | ④ 判状态 | `classify(status, successValues, failureValues)`；中间态就再来一轮 | `async.query` 两个枚举 |
-| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从槽位解；`url` **当场下载**（可能先走 `download` 桥接拿地址） | `outputFormat` + `download` |
+| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从固定项 `artifact` 解；`url` **当场下载**（`viaDownload` 则先走 `download` 桥接拿地址） | `caps.artifact` + `artifact` 那格的路径 |
 
 ```
 同步：sync.submit →（配了 download 再问一次）→ 字节
@@ -187,11 +199,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → 按请求分区的**请求级参数** → **试调用**（选一条接口槽真发一次）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组）；中：六个接口槽的卡片（path/method/headers/body/form/三层参数表/outputs 行编辑器/两个枚举/`outputFormat`）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + **能力开关**：接法 / 产物形式 / 建音色 / 建前先上传 / 采样率）→ 开关推导出的接口槽卡片（path/method/该槽 headers/请求体或上传表单/请求级与调用级参数表/**固定项逐行填路径** + 折叠的「给下一个请求用的变量」/两个枚举/超时）；右：实例级参数表。每格给**预览请求（零网络，密钥打码）** |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - 「预览请求 → 试调用」是这套设计的验收口，两件事分在两页：**预览**在模板页（只跑求值 + 按声明打码，一个字节都不发），**试调用**在实例页（真发一条要的是这条实例的 Key）。改完模板先看形状，再决定要不要花一次真调用。
-- 缺配项**当场点名**（`validateTemplate`）：有 `async.submit` 没 `async.query`、查询没 `successValues`、勾了克隆没配 `clone`、实例参数同名重复、占位符没人给值 —— 不留到运行时。
+- 缺配项**当场点名**（`validateTemplate`）：开关要求的槽没配、槽没填地址、**必填的固定项没填路径**、自定义变量与参数同名、
+  开关不需要的槽还留着、有 `async.submit` 没 `async.query`、查询没 `successValues`、实例参数同名重复、占位符没人给值 —— 不留到运行时。
 - 新界面用 shadcn 原子（`src/components/ui/`），旧面板沿用 `ui/primitives.tsx`；两边都不写原生 `<select>`。
 - **AI 功能只有桌面端有**：网页端不配 Key、不显示字幕生成里的 AI 区（浏览器直连必然 CORS，且 Key 没地方安全存）。
 ## 九、内置模板的具体参数与逐列 JSON
@@ -199,7 +212,44 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 <!-- BEGIN generated:seed-templates -->
 _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 从 `src/lib/template-seed.ts` 生成，改 seed 后重跑；`--check` 只校验。）_
 
-### 9.1 三份模板各自声明了哪些参数
+### 9.1 能力开关：这一家怎么交活
+
+`caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段，全由它推导**（`slotsOf` / `requiredOutputsOf`）。
+
+| 模板 | 接法 | 产物形式 | 建音色 | 建前先上传 | 参考音频采样率 | 推导出的接口槽 |
+|---|---|---|---|---|---|---|
+| `deepseek-chat` | sync | none | 否 | 否 | — | `同步 · 提交` |
+| `qwen-image` | both | url | 否 | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
+| `qwen-tts` | sync | url | 是 | 否 | 24000 | `同步 · 提交` + `核心 · 克隆音色` |
+
+### 9.2 每格必须交出的返回项（名字写死，只能填路径）
+
+这些名字就是引擎读取的键 —— 写错不会报错，只会「产物取不到」或「一路查到超时」，所以不给自定义。
+自定义变量（只给下游 `${它}` 用、引擎不读）另在一格，不进这张表。
+
+| 模板 | 接口槽 | 固定项 | 名字（写死） | 必填 | 引擎拿它干什么 |
+|---|---|---|---|---|---|
+| `deepseek-chat` | 同步 · 提交 | 生成的文本 | `content` | 是 | 引擎只认这个名字 |
+| `deepseek-chat` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `deepseek-chat` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-image` | 同步 · 提交 | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-image` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-image` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-image` | 异步 · 提交 | 任务号 | `taskId` | 是 | 交给调度器存着，之后拿它去查 |
+| `qwen-image` | 异步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-image` | 异步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-image` | 异步 · 查询 | 任务状态 | `status` | 是 | 没取到它就一直算「还在跑」，查到次数上限才失败 |
+| `qwen-image` | 异步 · 查询 | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-image` | 异步 · 查询 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-image` | 异步 · 查询 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-tts` | 同步 · 提交 | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-tts` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-tts` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-tts` | 核心 · 克隆音色 | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
+| `qwen-tts` | 核心 · 克隆音色 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-tts` | 核心 · 克隆音色 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+
+### 9.3 三份模板各自声明了哪些参数
 
 「层」就是取值的三级：实例级整条实例共用、请求级按接口槽各存各的、调用级不落库（由业务界面或试调用现场给）。
 
@@ -251,13 +301,13 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 请求级 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |  |  |
 | 调用级 `clone` | `audioDataUri` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |  | base64DataUri |
 
-### 9.2 逐列 JSON（照抄可用）
+### 9.4 逐列 JSON（照抄可用）
 
 下面每块就是 `provider_template` 那一行对应列里存的内容，键名与列名一一对应；`null` = 该列没配（界面上那一格也就不出现）。
 
 #### `deepseek-chat`
 
-- 标量列：`category=llm`，`use_clone=0`，`upload=0`，`ref_sample_rate=NULL`
+- 标量列：`category=llm`，`caps_json={"modes":"sync","artifact":"none"}`，`ref_sample_rate=NULL`
 
 **`headers_json`**（模板级请求头，这一行所有请求共用）
 
@@ -412,7 +462,7 @@ null
 
 #### `qwen-image`
 
-- 标量列：`category=image`，`use_clone=0`，`upload=0`，`ref_sample_rate=NULL`
+- 标量列：`category=image`，`caps_json={"modes":"both","artifact":"url"}`，`ref_sample_rate=NULL`
 
 **`headers_json`**（模板级请求头，这一行所有请求共用）
 
@@ -517,11 +567,10 @@ null
       }
     },
     "outputs": {
-      "url": "output.choices[0].message.content[0].image",
+      "artifact": "output.choices[0].message.content[0].image",
       "errorCode": "code",
       "error": "message"
-    },
-    "outputFormat": "url"
+    }
   }
 }
 ```
@@ -599,7 +648,7 @@ null
     "method": "GET",
     "outputs": {
       "status": "output.task_status",
-      "url": "output.choices[0].message.content[0].image",
+      "artifact": "output.choices[0].message.content[0].image",
       "errorCode": "code",
       "error": "message"
     },
@@ -610,8 +659,7 @@ null
       "FAILED",
       "CANCELED",
       "UNKNOWN"
-    ],
-    "outputFormat": "url"
+    ]
   }
 }
 ```
@@ -636,7 +684,7 @@ null
 
 #### `qwen-tts`
 
-- 标量列：`category=tts`，`use_clone=1`，`upload=0`，`ref_sample_rate=24000`
+- 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"url","clone":true}`，`ref_sample_rate=24000`
 
 **`headers_json`**（模板级请求头，这一行所有请求共用）
 
@@ -726,11 +774,10 @@ null
       }
     },
     "outputs": {
-      "url": "output.audio.url",
+      "artifact": "output.audio.url",
       "errorCode": "code",
       "error": "message"
-    },
-    "outputFormat": "url"
+    }
   }
 }
 ```
