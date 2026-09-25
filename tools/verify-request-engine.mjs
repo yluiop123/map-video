@@ -100,7 +100,14 @@ console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
   const i = inst('qwen-image', { sync: false });
   const s = buildRequest(tpl, i, 'sync.submit', { prompt: '猫' }).req;
   const a = buildRequest(tpl, i, 'async.submit', { prompt: '猫' }).req;
-  check('3.1 异步头只加在异步那条', a.headers['X-DashScope-Async'] === 'enable' && !('X-DashScope-Async' in s.headers), a.headers);
+  // 请求头整份模板只有 headers_json 一份：槽上那格「附加请求头」已删（同一家怎么认证是固定的，
+  // 多一格只会多一处写错的地方）。异步开关头因此也在模板级，两条都带。
+  eq('3.1 请求头只有模板级一份（两条都带异步开关头）',
+    [s.headers['X-DashScope-Async'], a.headers['X-DashScope-Async']], ['enable', 'enable']);
+  // 旧数据里残留的槽级 headers 必须**不生效**（不做兼容：引擎压根不读它）
+  const staleSlot = { ...tpl, sync: { submit: { ...tpl.sync.submit, headers: { 'X-Slot-Only': 'yes' } } } };
+  check('3.1b 槽里残留的 headers 不再被读（旧 JSON 不复活那一格）',
+    !('X-Slot-Only' in buildRequest(staleSlot, i, 'sync.submit', { prompt: '猫' }).req.headers));
   eq('3.2 两条都用模板级 Authorization', [s.headers.Authorization, a.headers.Authorization], ['Bearer sk-abcdefghij1234', 'Bearer sk-abcdefghij1234']);
   eq('3.3 outputs 把 task_id 收成中间变量', applyOutputs({ output: { task_id: 'T9' } }, { taskId: 'output.task_id' }), { taskId: 'T9' });
   eq('3.4 查询请求直接 ${taskId}', buildRequest(tpl, i, 'async.query', {}, { taskId: 'T9' }).req.url, 'https://x.example/v1/tasks/T9');

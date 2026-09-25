@@ -7,7 +7,7 @@
  * 「怎么发请求」不在这页 —— 那是左侧单独的「接口模板」入口（TemplatesPane）。
  */
 import { useState } from 'react';
-import { OptionBlocks, useT } from './ui/primitives';
+import { OptionBlocks, ProblemList, useT } from './ui/primitives';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Separator } from './ui/separator';
@@ -168,9 +168,7 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
 
       {tpl && <TrialBox inst={inst} tpl={tpl} />}
 
-      {problems.length > 0
-        ? <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>
-        : null}
+      <ProblemList problems={problems} />
     </div>
   );
 }

@@ -354,6 +354,26 @@ export function NumberInput({ value, onCommit, className, step, min, max, title,
 }
 
 /** JSON 字段：编辑期本地文本，失焦/回车才解析并写回（非法只红字提示，不吞内容） */
+/** 保存前自检的缺配清单：一条一项，比一整段红字好读（配置两页共用） */
+export function ProblemList({ problems }: { problems: string[] }) {
+  const t = useT();
+  if (!problems.length) return null;
+  return (
+    <div className="rounded-md border border-red-500/30 bg-red-500/[0.07] px-2.5 py-2">
+      <div className="mb-1 text-[10px] font-medium text-red-300">
+        {t(`还差 ${problems.length} 项才配得完整`, `${problems.length} thing(s) still missing`)}
+      </div>
+      <ul className="space-y-0.5">
+        {problems.map((p) => (
+          <li key={p} className="flex gap-1.5 text-[10px] leading-snug text-red-300/90">
+            <span className="shrink-0">·</span><span className="min-w-0">{p}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function JsonField({ label, value, onCommit }: { label: string; value: unknown; onCommit: (v: unknown) => void }) {
   const [txt, setTxt] = useState(() => JSON.stringify(value ?? {}, null, 1));
   const [err, setErr] = useState('');

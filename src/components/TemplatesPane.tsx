@@ -8,12 +8,14 @@
  * 「预览请求」零网络（只跑求值 + 密钥打码），「试调用」真发一条。
  */
 import { useEffect, useId, useMemo, useState } from 'react';
-import { OptionBlocks, useT } from './ui/primitives';
+import { ChevronRight } from 'lucide-react';
+import { OptionBlocks, ProblemList, useT } from './ui/primitives';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Badge } from './ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
 import { Separator } from './ui/separator';
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { Textarea } from './ui/textarea';
@@ -176,6 +178,7 @@ export function TemplatesPane() {
             {/* 能力开关：这一家怎么交活。**下面的接口槽与每格必填的返回项全部由它推导**，
                 所以问完这几个问题，就不需要「自己加一条接口」了。
                 文案生成只取一段文本，产物形式与克隆那几问都不问。 */}
+            <Group title={t('这一家怎么交活', 'Capabilities')} hint={t('下面该有哪几格接口、每格必须交出什么，都由这几个答案推出来', 'the endpoints and their required fields below are derived from these')}>
             <div className="space-y-2 text-[11px]">
               {tpl.category !== 'llm' && (
                 <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
@@ -220,9 +223,23 @@ export function TemplatesPane() {
                 </div>
               )}
             </div>
+            </Group>
 
-            <JsonBox label={t('每次请求都固定带的标记', 'Shared headers')} value={tpl.headers ?? {}} onChange={(headers) => patch({ ...tpl, headers: headers as Record<string, unknown> })}
-              hint={t('如 Content-Type 与 Authorization；${apiKey} 会被换成实例里填的那把 Key', 'e.g. Content-Type / Authorization; ${apiKey} is filled from the instance')} />
+            {/* 请求头整份模板就这一份（槽上不再有「附加请求头」）。默认折叠：
+                多数模板就是 Content-Type + Authorization 两条，展开才编辑。 */}
+            <Collapsible>
+              <CollapsibleTrigger className="flex w-full items-center gap-2 text-[10px] font-medium text-muted-foreground hover:text-foreground">
+                <ChevronRight size={12} className="transition-transform data-[open]:rotate-90" />
+                {t('请求头', 'Headers')}
+                <Badge variant="outline" className="px-1 py-0 text-[9px] font-normal tabular-nums">{Object.keys(tpl.headers ?? {}).length}</Badge>
+                <span className="font-normal text-muted-foreground/60">
+                  {t('所有请求共用一份；${apiKey} 会换成实例里填的那把 Key', 'shared by every request; ${apiKey} comes from the instance')}
+                </span>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-1.5">
+                <JsonBox label="Headers" value={tpl.headers ?? {}} rows={5} onChange={(headers) => patch({ ...tpl, headers: headers as Record<string, unknown> })} />
+              </CollapsibleContent>
+            </Collapsible>
 
             <Separator />
 
@@ -243,7 +260,7 @@ export function TemplatesPane() {
               )}
             </Tabs>
 
-            {problems.length > 0 && <p className="text-[10px] text-red-400 whitespace-pre-line">{problems.join('\n')}</p>}
+            <ProblemList problems={problems} />
           </div>
         )}
 
@@ -309,31 +326,32 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
           <Input value={def.path} onChange={(e) => set({ path: e.target.value })} className="h-7 min-w-40 flex-1 text-xs font-mono" placeholder="${baseUrl}/…" />
         </div>
       </CardHeader>
-      <CardContent className="space-y-2 p-2 pt-0">
+      <CardContent className="space-y-1 p-2 pt-0">
 
-      <JsonBox label={t('这条请求额外要带的标记', 'Extra headers')} value={def.headers ?? {}} onChange={(headers) => set({ headers: headers as Record<string, unknown> })}
-        hint={t('会盖掉上面那份共用的；不需要就留空 {}。例：异步接口要写 { "X-DashScope-Async": "enable" }', 'overrides the shared ones; leave {} when none. e.g. { "X-DashScope-Async": "enable" } for async')} />
-      <ParamTable title={t('请求级参数（这个请求专属）', 'Request params')}
-        hint={t('取值存实例的「按请求」那一区，同名可不同值', 'values stored per request')}
-        params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
-      <ParamTable title={t('调用级参数（每次调用现场给）', 'Call params')}
-        hint={t('不落库；调用页与「试调用」按这些长输入框', 'given at call time')}
-        params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
+      <Group title={t('要填的参数', 'Parameters')} hint={t('请求级存进实例的「按请求」那一区；调用级不落库，每次现场给', 'request params persist per request on the instance; call params never do')}>
+        <ParamTable title={t('请求级参数（这个请求专属）', 'Request params')}
+          hint={t('同名参数在不同请求可取不同值', 'same name, different value per request')}
+          params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
+        <ParamTable title={t('调用级参数（每次调用现场给）', 'Call params')}
+          hint={t('调用页与「试调用」按这些长输入框', 'the call UI and 试调用 build inputs from these')}
+          params={def.callParams ?? []} onChange={(callParams) => set({ callParams })} />
+      </Group>
 
-      {reqKey === 'upload' ? (
-        <JsonBox label={t('上传表单（multipart 字段）', 'Upload form')} value={def.form ?? {}} onChange={(form) => set({ form: form as Record<string, unknown> })}
-          hint={t('一层键值：值是 ${某参数} 时，字符串当普通字段、文件当二进制分片。例 { "file": "${audioFile}", "purpose": "voice_clone" }',
-            'flat fields; a ${param} holding a file becomes the binary part. e.g. { "file": "${audioFile}", "purpose": "voice_clone" }')} />
-      ) : (
-        <JsonBox label={t('发出去的请求体（JSON）', 'Body')} value={def.body ?? {}} onChange={(body) => set({ body })}
-          hint={t('值里写 ${key} 从上面的参数表取值；没给值的键会整个删掉', 'use ${key}; unset keys are dropped')} />
-      )}
+      <Group title={reqKey === 'upload' ? t('上传时发出去的内容', 'Upload payload') : t('发出去的内容', 'Request body')}
+        hint={reqKey === 'upload'
+          ? t('一层键值：值是 ${某参数} 时，字符串当普通字段、文件当二进制分片', 'flat fields; a ${param} holding a file becomes the binary part')
+          : t('值里写 ${key} 从上面的参数表取值；没给值的键会整个删掉', 'use ${key}; unset keys are dropped')}>
+        {reqKey === 'upload' ? (
+          <JsonBox label={t('上传表单（multipart 字段）', 'Upload form')} value={def.form ?? {}} onChange={(form) => set({ form: form as Record<string, unknown> })}
+            hint={t('例 { "file": "${audioFile}", "purpose": "voice_clone" }', 'e.g. { "file": "${audioFile}", "purpose": "voice_clone" }')} />
+        ) : (
+          <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />
+        )}
+      </Group>
 
       {/* 引擎要读的返回项：名字写死（写错就没有消费者），只能填路径 */}
+      <Group title={t('从响应里取', 'Read from response')} hint={t('左列名字由引擎写死，只能填路径', 'names are fixed by the engine; fill the path only')}>
       <div className="space-y-1">
-        <Label className="block text-[10px] font-normal text-muted-foreground">
-          {t('从响应里取（引擎要读的）', 'Read from response')}
-        </Label>
         {requiredOutputsOf(tpl, reqKey).map((o) => {
           const filled = !!def.outputs?.[o.name]?.trim();
           return (
@@ -376,21 +394,23 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
           </div>
         )}
       </div>
+      </Group>
 
-      <div className="flex flex-wrap items-center gap-2 text-[10px]">
-        <span className="text-muted-foreground">{t('这一步超时 ms', 'timeout')}</span>
-        <Input type="number" value={def.timeoutMs ?? ''} className="h-7 w-24 text-[11px]"
-          onChange={(e) => set({ timeoutMs: e.target.value ? Number(e.target.value) : undefined })} />
-        <span className="text-muted-foreground/60">{t('留空 = 用实例参数里那个', 'blank = the instance-level timeout')}</span>
-      </div>
-
-      {reqKey === 'async.query' && (
-        <div className="space-y-1.5">
-          <ListField label={t('算成功的状态值', 'successValues')} value={def.successValues ?? []} onChange={(successValues) => set({ successValues })} />
-          <ListField label={t('算失败的状态值', 'failureValues')} value={def.failureValues ?? []} onChange={(failureValues) => set({ failureValues })} />
-          <p className="text-[10px] text-muted-foreground/70">{t('中间态不用配：两个列表都没命中就继续查。', 'Anything unlisted keeps polling.')}</p>
+      <Group title={t('这一步的判定与超时', 'Outcome & timeout')}>
+        <div className="flex flex-wrap items-center gap-2 text-[10px]">
+          <span className="text-muted-foreground">{t('超时 ms', 'timeout')}</span>
+          <Input type="number" value={def.timeoutMs ?? ''} className="h-7 w-24 text-[11px]"
+            onChange={(e) => set({ timeoutMs: e.target.value ? Number(e.target.value) : undefined })} />
+          <span className="text-muted-foreground/60">{t('留空 = 用实例参数里那个', 'blank = the instance-level timeout')}</span>
         </div>
-      )}
+        {reqKey === 'async.query' && (
+          <div className="space-y-1.5">
+            <ListField label={t('算成功的状态值', 'successValues')} value={def.successValues ?? []} onChange={(successValues) => set({ successValues })} />
+            <ListField label={t('算失败的状态值', 'failureValues')} value={def.failureValues ?? []} onChange={(failureValues) => set({ failureValues })} />
+            <p className="text-[10px] text-muted-foreground/70">{t('中间态不用配：两个列表都没命中就继续查。', 'Anything unlisted keeps polling.')}</p>
+          </div>
+        )}
+      </Group>
 
       <div className="flex flex-wrap items-center gap-1.5 pt-1">
         {callKeys.map((k) => (
@@ -507,7 +527,20 @@ function parseList(s: string): ParamSpec['options'] {
 
 // ========== 小块 ==========
 
-function JsonBox({ label, value, onChange, hint }: { label: string; value: unknown; onChange: (v: unknown) => void; hint?: string }) {
+/** 一小节：分隔线 + 小标题（+ 一句什么时候用得上）。中栏与卡片内部都用它，别让一堆框平铺着没层次 */
+function Group({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <Separator />
+      <div className="text-[10px] font-medium text-muted-foreground">
+        {title}{hint && <span className="font-normal text-muted-foreground/60"> · {hint}</span>}
+      </div>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
+
+function JsonBox({ label, value, onChange, hint, rows = 3 }: { label: string; value: unknown; onChange: (v: unknown) => void; hint?: string; rows?: number }) {
   const t = useT();
   const id = useId();
   const [text, setText] = useState(() => JSON.stringify(value ?? {}, null, 1));
@@ -521,7 +554,7 @@ function JsonBox({ label, value, onChange, hint }: { label: string; value: unkno
       <Label htmlFor={id} className="block text-[10px] font-normal text-muted-foreground">
         {label} · {hint ?? t('JSON', 'JSON')}{bad && <span className="text-red-400"> · {t('还不成形，暂不应用', 'not valid yet')}</span>}
       </Label>
-      <Textarea id={id} value={text} onChange={(e) => commit(e.target.value)} rows={3} className={`min-h-0 text-[10px] font-mono ${bad ? 'border-red-400/60' : ''}`} />
+      <Textarea id={id} value={text} onChange={(e) => commit(e.target.value)} rows={rows} className={`min-h-0 text-[10px] font-mono ${bad ? 'border-red-400/60' : ''}`} />
     </div>
   );
 }

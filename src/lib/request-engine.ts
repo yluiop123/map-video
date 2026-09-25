@@ -51,12 +51,11 @@ export interface ParamSpec {
   transform?: 'hotFixArray' | 'base64DataUri' | 'json';
 }
 
-/** 一条请求（核心或桥接）。headers 只在模板顶层配一份，请求上只写需要覆盖的那几个 */
+/** 一条请求（核心或桥接）。请求头整份模板只有顶层那一份，槽上不再带 */
 export interface RequestDef {
   /** 地址模板，`${x}` 随便写；查询参数直接拼在串上（各家 taskId 位置不同，写在这里就行） */
   path: string;
   method?: string;
-  headers?: Record<string, unknown>;
   /** 请求级参数：这个请求专属（model / size…），取值存实例的 values.requests[<本 key>] */
   requestParams?: ParamSpec[];
   /** 调用级参数：每次调用由界面 / 程序给（text / prompt / file / hotFix…） */
@@ -464,7 +463,9 @@ export function buildRequest(
   if (!def) throw new EngineError(`模板「${tpl.name}」没有 ${reqKey} 这条请求`);
   const s = scopeOf(tpl, inst, reqKey, callArgs, upstream);
   const headers: Record<string, string> = {};
-  for (const [k, v] of Object.entries({ ...(tpl.headers ?? {}), ...(def.headers ?? {}) })) {
+  // 请求头**只有模板级一份**（`headers_json`）：同一家怎么认证是固定的，逐槽再开一格
+  // 「附加请求头」只会多出一个没人懂的字段与一处会写错的地方。
+  for (const [k, v] of Object.entries(tpl.headers ?? {})) {
     const rv = walk(v, s);
     if (rv !== undefined && rv !== '') headers[k] = String(rv);
   }
@@ -741,7 +742,6 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
     const declared = new Set<string>(produced);
     for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? []), ...(def.callParams ?? [])]) declared.add(p.key);
     scan(key, def.path, declared);
-    scan(key, def.headers, declared);
     scan(key, def.body, declared);
     scan(key, def.form, declared);
   }

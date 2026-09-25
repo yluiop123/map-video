@@ -77,7 +77,9 @@ const qwenImage: TemplateDef = {
   id: 'qwen-image', name: '千问 文生图', category: 'image',
   caps: { modes: 'both', artifact: 'url' },
 
-  headers: { ...JSON_CT, ...AUTH },
+  // 异步开关头并入模板级（槽上不再有 headers）：同步那条端点也会收到这个头，
+  // 按 DashScope 文档它只作用于异步提交端点 —— **同步端点未实测**，若上游挑理就把这条模板改成只走异步。
+  headers: { ...JSON_CT, ...AUTH, 'X-DashScope-Async': 'enable' },
   instanceParams: [...net('https://maas.qianwenaiapi.com/api/v1'), ...pacing(5000, 360)],
   sync: {
     submit: req('${baseUrl}/services/aigc/multimodal-generation/generation', {
@@ -97,7 +99,6 @@ const qwenImage: TemplateDef = {
   },
   async: {
     submit: req('${baseUrl}/services/aigc/image-generation/generation', {
-      headers: { 'X-DashScope-Async': 'enable' },
       requestParams: [
         en('model', '模型', ['qwen-image-3.0-pro'], { defaultValue: 'qwen-image-3.0-pro' }),
         p('size', '出图尺寸', { defaultValue: '2048*2048' }),
