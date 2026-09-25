@@ -5,7 +5,6 @@
  * 请求头与参数都挂在各条接口自己身上（同一家不同端点要的头并不相同）；三层参数（实例级 / 请求级 /
  * 调用级）都在这页自由增删改 —— 引擎里没有任何按厂商名写的分支，界面配不出来的东西就不该存在。
  *
- * 「预览请求」零网络（只跑求值 + 密钥打码），「试调用」真发一条（在实例页）。
  * 页面上不写解释性长句：小节名旁边一枚 ⓘ，点开才看说明。
  */
 import { useEffect, useId, useMemo, useState } from 'react';
@@ -27,11 +26,10 @@ import { useConfirm } from './ui/ConfirmHost';
 import { useProviderStore } from '../stores/providerStore';
 import { seedTemplate } from '../lib/template-seed';
 import {
-  ARTIFACT_KEY, callKeysOf, paramLabelOf, REQ_KEYS, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
-  type ArtifactEncoding, type Caps, type Category, type InstanceDef, type ParamSpec, type ReqKey,
+  ARTIFACT_KEY, REQ_KEYS, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
+  type ArtifactEncoding, type Caps, type Category, type ParamSpec, type ReqKey,
   type RequestDef, type TemplateDef, type ValueType,
 } from '../lib/request-engine';
-import { previewRequest, SAMPLE_CALL_ARGS } from '../lib/providers';
 
 const CATEGORY_LABEL: Record<Category, { zh: string; en: string }> = {
   llm: { zh: '文案生成', en: 'Text' },
@@ -310,7 +308,7 @@ export function TemplatesPane() {
               </div>
               {curReq && present(tpl, curReq) && (
                 <div className="mt-2">
-                  <RequestEditor tpl={tpl} reqKey={curReq} inst={usedBy(tpl.id)[0] ?? null} onChange={patch} />
+                  <RequestEditor tpl={tpl} reqKey={curReq} onChange={patch} />
                 </div>
               )}
             </Tabs>
@@ -334,8 +332,8 @@ export function TemplatesPane() {
 
 // ========== 选中请求 ==========
 
-function RequestEditor({ tpl, reqKey, inst, onChange }: {
-  tpl: TemplateDef; reqKey: ReqKey; inst: InstanceDef | null; onChange: (t: TemplateDef) => void;
+function RequestEditor({ tpl, reqKey, onChange }: {
+  tpl: TemplateDef; reqKey: ReqKey; onChange: (t: TemplateDef) => void;
 }) {
   const t = useT();
   const def = requestOf(tpl, reqKey)!;
@@ -348,28 +346,11 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
     else next[reqKey as 'upload' | 'clone'] = merged;
     onChange(next);
   };
-  const [inputs, setInputs] = useState<Record<string, string>>({});
-  const [preview, setPreview] = useState('');
   const [showVars, setShowVars] = useState(false);
-  const callKeys = callKeysOf(tpl, reqKey);
   /** 固定项之外的 outputs 就是自定义变量（引擎不读它们） */
   const fixedNames = new Set(requiredOutputsOf(tpl, reqKey).map((o) => o.name));
   const custom = Object.entries(def.outputs ?? {}).filter(([k]) => !fixedNames.has(k));
   const isUpload = reqKey === 'upload';
-
-  const args = (): Record<string, unknown> => {
-    const out: Record<string, unknown> = {};
-    for (const k of callKeys) {
-      const v = inputs[k] ?? SAMPLE_CALL_ARGS[k];
-      if (v !== undefined) out[k] = v;
-    }
-    return out;
-  };
-  const doPreview = () => {
-    if (!inst) { setPreview(t('还没有实例用这份模板 —— 预览要用它填的取值才拼得出真实请求。', 'No instance uses this template yet.')); return; }
-    try { setPreview(JSON.stringify(previewRequest(inst, reqKey, args()), null, 1)); }
-    catch (e) { setPreview(e instanceof Error ? e.message : String(e)); }
-  };
 
   return (
     <Card className="gap-0 p-0">
@@ -480,20 +461,6 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
           </div>
         </Group>
 
-        <div className="flex flex-wrap items-center gap-1.5 pt-1">
-          {callKeys.map((k) => (
-            <label key={k} className="flex items-center gap-1 text-[10px]">
-              {/* 显示声明的显示名，裸 key 只作 title —— 界面上一排英文变量名没人看得懂 */}
-              <span className="text-muted-foreground" title={k}>{paramLabelOf(tpl, reqKey, k)}</span>
-              <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-28 text-[11px]" onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
-            </label>
-          ))}
-          <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={doPreview}>{t('预览请求', 'Preview')}</Button>
-          <InfoHint text={t('只算不发（密钥按声明打码）；真发一条去「实例设置」页的试调用。', 'no bytes sent; real calls live on the instance page')} />
-        </div>
-        {!!preview && (
-          <pre className="max-h-40 overflow-auto rounded-md border border-white/10 bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{preview}</pre>
-        )}
       </CardContent>
     </Card>
   );
