@@ -141,10 +141,6 @@ export function TemplatesPane() {
     <div className="flex h-full min-h-0 flex-col gap-2">
       <div className="shrink-0">
         <h3 className="text-sm font-semibold">{t('🧩 接口模板', '🧩 Endpoint templates')}</h3>
-        <p className="text-[11px] text-muted-foreground">
-          {t('一份模板 = 一个功能用到的全部接口（同步 / 异步 / 下载 / 上传 / 克隆）。三层参数都在这儿填，实例那边只填取值与密钥。',
-            'One template = every endpoint a capability needs. All three parameter layers live here; instances only hold values and keys.')}
-        </p>
       </div>
 
       <Tabs value={category} onValueChange={(k) => { setCategory(k as Category); setSelId(''); }} className="shrink-0">
@@ -188,28 +184,25 @@ export function TemplatesPane() {
 
             {/* 能力开关：这一家怎么交活。**下面的接口槽与每格必填的返回项全部由它推导**，
                 所以问完这几个问题，就不需要「自己加一条接口」了。
-                文案生成只取一段文本，产物形式与克隆那几问都不问。 */}
-            <Group title={t('这一家怎么交活', 'Capabilities')} hint={t('下面该有哪几格接口、每格必须交出什么，都由这几个答案推出来', 'the endpoints and their required fields below are derived from these')}>
+                文案生成只取一段文本 —— 三问都用不上，整节就不摆（摆个空标题在那儿更迷惑）。 */}
+            {tpl.category !== 'llm' && (
+            <Group title={t('这一家怎么交活', 'Capabilities')}>
             <div className="space-y-2 text-[11px]">
-              {tpl.category !== 'llm' && (
-                <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
-                  <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('接法', 'Modes')}</Label>
-                  <OptionBlocks<Caps['modes']> value={tpl.caps.modes} options={MODE_OPTIONS(t)}
-                    onChange={(modes) => patch(withCaps(tpl, { ...tpl.caps, modes }))} />
+              <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
+                <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('接法', 'Modes')}</Label>
+                <OptionBlocks<Caps['modes']> value={tpl.caps.modes} options={MODE_OPTIONS(t)}
+                  onChange={(modes) => patch(withCaps(tpl, { ...tpl.caps, modes }))} />
+              </div>
+              <div className="grid grid-cols-[86px_minmax(0,1fr)] items-start gap-x-3">
+                <Label className="pt-1 text-right text-[10px] font-normal text-muted-foreground">{t('产物形式', 'Artifact')}</Label>
+                <div>
+                  <OptionBlocks<ArtifactEncoding> value={tpl.caps.artifact} options={ARTIFACT_OPTIONS(t).map((o) => ({ value: o.value, label: o.label }))}
+                    onChange={(artifact) => patch(withCaps(tpl, { ...tpl.caps, artifact }))} />
+                  <p className="mt-1 text-[10px] text-muted-foreground/70">
+                    {ARTIFACT_OPTIONS(t).find((o) => o.value === tpl.caps.artifact)?.hint}
+                  </p>
                 </div>
-              )}
-              {tpl.category !== 'llm' && (
-                <div className="grid grid-cols-[86px_minmax(0,1fr)] items-start gap-x-3">
-                  <Label className="pt-1 text-right text-[10px] font-normal text-muted-foreground">{t('产物形式', 'Artifact')}</Label>
-                  <div>
-                    <OptionBlocks<ArtifactEncoding> value={tpl.caps.artifact} options={ARTIFACT_OPTIONS(t).map((o) => ({ value: o.value, label: o.label }))}
-                      onChange={(artifact) => patch(withCaps(tpl, { ...tpl.caps, artifact }))} />
-                    <p className="mt-1 text-[10px] text-muted-foreground/70">
-                      {ARTIFACT_OPTIONS(t).find((o) => o.value === tpl.caps.artifact)?.hint}
-                    </p>
-                  </div>
-                </div>
-              )}
+              </div>
               {tpl.category === 'tts' && (
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
                   <label className="flex items-center gap-2">
@@ -235,6 +228,7 @@ export function TemplatesPane() {
               )}
             </div>
             </Group>
+            )}
 
             {/* 请求头**逐条接口各一份**（在下面的接口卡片里配）：认证头家家不同，
                 异步开关头更只有提交那条要 —— 共用一份等于替同步端点也带上它。 */}
