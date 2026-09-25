@@ -153,12 +153,10 @@ const qwenTts: TemplateDef = {
     requestParams: [
       en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
       p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
-      // 交过来的是一个文件值（字节 + mime + 文件名）。`${voiceData}` 在 JSON 体里就是
-      // `data:<mime>;base64,…`（这一家要的形状），在 multipart 表单里则是那个二进制分片。
-      { key: 'voiceData', label: '参考音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 },
     ],
     body: {
       model: 'qwen-voice-enrollment',
+      // `${voiceData}` 是引擎注入的那个文件（不在上面声明）：这一家要的是 `data:<mime>;base64,…`
       input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${voiceData}' } },
     },
     outputs: { voiceId: 'output.voice', errorCode: 'code', error: 'message' },

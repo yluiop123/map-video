@@ -26,7 +26,7 @@ import { useConfirm } from './ui/ConfirmHost';
 import { useProviderStore } from '../stores/providerStore';
 import { seedTemplate } from '../lib/template-seed';
 import {
-  ARTIFACT_KEY, REQ_KEYS, cloneViaOf, multipartSlotOf, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
+  ARTIFACT_KEY, REQ_KEYS, VOICE_FILE_KEY, cloneViaOf, multipartSlotOf, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
   REQ_LABEL as SLOT_LABEL,
   type ArtifactEncoding, type Caps, type Category, type CloneVia, type ParamSpec, type ReqKey,
   type RequestDef, type TemplateDef, type ValueType,
@@ -50,7 +50,7 @@ const REQ_LABEL: Record<ReqKey, { zh: string; en: string }> = {
   'async.query': { zh: '查询', en: 'Query' },
 };
 
-const VALUE_TYPES: ValueType[] = ['string', 'text', 'number', 'boolean', 'enum', 'multiEnum', 'array', 'secret', 'file', 'json'];
+const VALUE_TYPES: ValueType[] = ['string', 'text', 'number', 'boolean', 'enum', 'multiEnum', 'array', 'secret', 'json'];
 
 /**
  * 同步 / 异步 两个复选框 ↔ `caps.modes` 三态。
@@ -73,9 +73,9 @@ const ARTIFACT_OPTIONS = (t: (a: string, b: string) => string) => [
 
 /** 参考音频怎么交到克隆接口手里 —— 三选一，选完该有哪些格、那一格发什么都跟着变 */
 const CLONE_VIA_OPTIONS = (t: (a: string, b: string) => string) => [
-  { value: 'upload' as const, label: t('单独上传', 'Upload first'), hint: t('先调上传那一格拿文件引用，克隆请求里写 ${fileRef}', 'a separate 上传 endpoint returns the file reference; the clone request uses ${fileRef}') },
-  { value: 'base64' as const, label: 'base64', hint: t('文件当场转成 data:<mime>;base64,… 作为一个 JSON 字段（克隆请求里写 ${voiceData}）', 'the file becomes a data: URI in the JSON body, referenced as ${voiceData}') },
-  { value: 'form' as const, label: t('表单带入', 'In the form'), hint: t('克隆这一格发 multipart：文件是个分片，别的参数写成同表的字段，没有 Body', 'the clone request itself is multipart: the file is one part, other params are fields, no body') },
+  { value: 'upload' as const, label: t('单独上传', 'Upload first'), hint: t('先调上传那一格；它交回的文件引用由引擎注入成下一步的 ${voiceData}，克隆那格写的还是同一个名字', 'the 上传 endpoint runs first; what it returns is injected as ${voiceData} for the clone request') },
+  { value: 'base64' as const, label: 'base64', hint: t('文件当场转成 data:<mime>;base64,… 作为一个 JSON 字段（克隆那格写 ${voiceData}）', 'the file becomes a data: URI in the JSON body, referenced as ${voiceData}') },
+  { value: 'form' as const, label: 'form', hint: t('克隆这一格自己发 multipart：${voiceData} 是个分片，别的参数写成同表的字段，没有 Body', 'the clone request itself is multipart: ${voiceData} is one part, other params are fields, no body') },
 ];
 
 const present = (t: TemplateDef, key: ReqKey) => !!requestOf(t, key);
@@ -97,29 +97,22 @@ function withCaps(tpl: TemplateDef, caps: Caps): TemplateDef {
 /** 新建一格时给的头：认证头是每条都要的，Content-Type 只有带 JSON 体的那条要 */
 const AUTH_HDR = { Authorization: 'Bearer ${apiKey}' };
 
-/** 参考音频那个参数：三种接法用的都是它，只是进去的形状不同 */
-const VOICE_FILE: ParamSpec = { key: 'voiceData', label: '要传的音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 };
-
 /** 新建一格的草稿：形状照 `multipartSlotOf` 给，不猜具体厂家 */
 const blankRequest = (key: ReqKey, tpl: TemplateDef): RequestDef => {
   if (key === 'async.query') {
     return { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { ...AUTH_HDR }, body: {}, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] };
   }
+  // 那个文件不在参数表里声明：引擎注入固定的 `${voiceData}`（表单里是分片，体里是 data URI，
+  // 而「先上传」那类传回来的引用也注入成同一个名字 —— 三种接法在模板里写的是同一句）
+  const FILE_REF = `\${${VOICE_FILE_KEY}}`;
   if (multipartSlotOf(tpl, key)) {
-    // 发的是 multipart 表单，不是 JSON 体：入参只有一个文件，随附字段写在表单里（Content-Type 由传输层生成）
-    return {
-      path: '${baseUrl}/', method: 'POST', headers: { ...AUTH_HDR },
-      requestParams: [{ ...VOICE_FILE }],
-      form: { file: '${voiceData}' }, outputs: {},
-    };
+    // 发的是 multipart 表单，不是 JSON 体（Content-Type 由传输层生成，不声明）
+    return { path: '${baseUrl}/', method: 'POST', headers: { ...AUTH_HDR }, form: { file: FILE_REF }, outputs: {} };
   }
   if (key === 'clone') {
-    // 到这一步文件已经是「引用」或「一串 data URI」，两者都写在 JSON 体里
-    const via = cloneViaOf(tpl);
     return {
       path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR },
-      requestParams: via === 'base64' ? [{ ...VOICE_FILE }] : [],
-      body: { audio: via === 'base64' ? '${voiceData}' : '${fileRef}' }, outputs: {},
+      body: { audio: FILE_REF }, outputs: {},
     };
   }
   return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
@@ -393,8 +386,8 @@ function RequestEditor({ tpl, reqKey, onChange }: {
             onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
           {multipart ? (
             <JsonBox label={t('表单（multipart 字段）', 'Form')} value={def.form ?? {}}
-              hint={t('例 { "file": "${voiceData}", "name": "${voiceName}" }：文件值的那个名字就是二进制分片，别的是普通字段。',
-                'e.g. { "file": "${voiceData}" }: a file value becomes the binary part, anything else is a plain field')}
+              hint={t(`例 { "file": "${"${"}${VOICE_FILE_KEY}}", "name": "${"${"}voiceName" }：${VOICE_FILE_KEY} 是引擎注入的那个文件（这里就是二进制分片），别的是普通字段。`,
+                `e.g. { "file": "\${${VOICE_FILE_KEY}}" }: that one is the injected file (a binary part here), anything else is a plain field`)}
               onChange={(form) => set({ form: form as Record<string, unknown> })} />
           ) : (
             <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />
@@ -403,9 +396,9 @@ function RequestEditor({ tpl, reqKey, onChange }: {
 
         {/* 一张参数表：填了值的走实例，没填的由调用点现场给 —— 都是同一个 ${key}，不再分两张表 */}
         <Group title={t('参数', 'Parameters')}>
-          <ParamTable variant="framed" title={reqKey === 'upload' ? t('要传的文件', 'File to upload') : t('这一格的参数', 'Endpoint params')}
-            hint={t('引用写 ${名字}。填了值的存在实例里（同名参数在别的格可以取不同值），没填的由调用点现场给（正文文本、画面描述、文件）；文件进 multipart 表单就是那个二进制分片，进 JSON 体就是 data:<mime>;base64,…，单取格式写 ${名字.mime}。',
-              'reference as ${name}. Filled ones persist on the instance; the rest come from the call site. A file becomes a binary part in a form, a data: URI in a JSON body; ${name.mime} for the type alone')}
+          <ParamTable variant="framed" title={t('这一格的参数', 'Endpoint params')}
+            hint={t('引用写 ${名字}。填了值的存在实例里（同名参数在别的格可以取不同值），没填的由调用点现场给（正文文本、画面描述）。',
+              'reference as ${name}. Filled ones persist on the instance; the rest come from the call site')}
             params={def.requestParams ?? []} onChange={(requestParams) => set({ requestParams })} />
         </Group>
 
@@ -513,12 +506,6 @@ function ParamTable({ title, hint, variant = 'framed', params, onChange }: {
             <Input type="number" value={p.max ?? ''} onChange={(e) => at(i, { max: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="max" />
             <Input type="number" step="0.1" value={p.step ?? ''} onChange={(e) => at(i, { step: num(e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder="step" />
           </div>
-        )}
-        {p.valueType === 'file' && (
-          <>
-            <Input value={p.accept ?? ''} onChange={(e) => at(i, { accept: e.target.value })} className="h-6 min-w-0 flex-1 basis-20 text-[10px] font-mono" placeholder=".mp3,.wav" />
-            <Input type="number" value={p.maxSize ?? ''} onChange={(e) => at(i, { maxSize: num(e.target.value) })} className="h-6 w-20 min-w-0 text-[10px]" placeholder={t('上限字节', 'maxSize')} />
-          </>
         )}
       </div>
     </div>

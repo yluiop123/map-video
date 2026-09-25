@@ -229,39 +229,42 @@ console.log('\n[6] 音色克隆');
   const up = {
     ...qwen, caps: { ...qwen.caps, clone: true, cloneVia: 'upload' },
     // 接法一「单独上传」：上传那一格发 multipart，文件保持成分片（不转 base64）
+    // 两边的文件都写同一个 `${voiceData}` —— 它不在参数表里声明，是引擎注入的那个名字
     upload: {
       path: '${baseUrl}/files/upload', method: 'POST', headers: { Authorization: 'Bearer ${apiKey}' },
-      requestParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file' }],
       form: { file: '${voiceData}', purpose: 'voice_clone', mime_type: '${voiceData.mime}' }, outputs: { fileRef: 'file.file_id' },
     },
-    clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileRef}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
+    clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${voiceData}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
   };
   const d2 = mk([{ on: 'files/upload', res: json({ file: { file_id: 'F7' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-7' }) }]);
   const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { voiceData: wav, preferredName: 'mv' });
-  eq('6.4 分离式：先上传拿文件引用再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
-  eq('6.5 中间变量 fileRef 自动流进克隆请求体', d2.sent[1].body.file_id, 'F7');
+  eq('6.4 单独上传：先传拿文件引用再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
+  eq('6.5 上传交回的引用注入成下一步的 ${voiceData}（克隆那格不用换一个名字）', d2.sent[1].body.file_id, 'F7');
   // 走「先上传」这条路时文件不转 base64：交出去的是二进制分片（带自己的 mime 与文件名）+ 普通字段
   eq('6.6 上传那条交的是 multipart：分片仍是文件值、别的字段是字符串',
     [d2.sent[0].form.file === wav, d2.sent[0].form.purpose, d2.sent[0].body], [true, 'voice_clone', undefined]);
   eq('6.7 ${它.mime} 单独注入：拿到的就是 audio/x-wav 这个串', d2.sent[0].form.mime_type, 'audio/x-wav');
   eq('6.8 上传那条没带模板级 Content-Type（逐槽各配一份）', d2.sent[0].headers, { Authorization: 'Bearer sk-abcdefghij1234' });
 
-  // 同一个接法，上传回来的可能是文件号也可能是地址 —— 只差固定项填的路径，下游一律写 ${fileRef}
+  // 同一个接法，上传回来的可能是文件号也可能是地址 —— 只差固定项填的路径，下一步写的还是 ${voiceData}
   const upUrl = {
     ...up,
     upload: { ...up.upload, form: { file: '${voiceData}' }, outputs: { fileRef: 'file.url' } },
-    clone: { path: '${baseUrl}/v1/voice_clone', body: { audio_url: '${fileRef}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
+    clone: { path: '${baseUrl}/v1/voice_clone', body: { audio_url: '${voiceData}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
   };
   const d3 = mk([{ on: 'files/upload', res: json({ file: { url: 'https://cdn/ref.wav' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-8' }) }]);
   await runClone(upUrl, inst('qwen-tts'), d3.deps, { voiceData: wav, preferredName: 'mv' });
-  eq('6.9 上传返回 url 的那类：${fileRef} 引用的就是那个地址', d3.sent[1].body.audio_url, 'https://cdn/ref.wav');
+  eq('6.9 上传返回 url 的那类：注入的就是那个地址', d3.sent[1].body.audio_url, 'https://cdn/ref.wav');
+  const noRef = { ...up, upload: { ...up.upload, outputs: {} } };
+  await throws('6.9b 上传那一格没交出引用 → 当场点名，不发半个克隆',
+    () => runClone(noRef, inst('qwen-tts'), mk([{ on: 'files/upload', res: json({}) }]).deps, { voiceData: wav }), '没交出文件引用');
 
   // 接法三「表单带入」：克隆那一格自己发 multipart，没有 Body（ElevenLabs 那类）
   const frm = {
     ...qwen, caps: { ...qwen.caps, clone: true, cloneVia: 'form' },
     clone: {
       path: '${baseUrl}/v1/voices/add', method: 'POST', headers: { 'xi-api-key': '${apiKey}' },
-      requestParams: [{ key: 'voiceData', label: '参考音频', valueType: 'file' }, { key: 'voiceName', label: '音色名' }],
+      requestParams: [{ key: 'voiceName', label: '音色名' }],
       form: { files: '${voiceData}', name: '${voiceName}', language_code: 'zh' },
       body: { this_must_not_be_sent: '${voiceName}' },
       outputs: { voiceId: 'voice_id' },
@@ -327,6 +330,15 @@ console.log('\n[8] 保存前自检');
   };
   check('8.13 「表单带入」的克隆格没写字段 → 同样点名（判据是 multipartSlotOf，不是槽名）',
     validateTemplate(cloneNoForm).some((x) => x.includes('multipart') && x.includes('克隆')), validateTemplate(cloneNoForm));
+  // 那个文件是引擎注入的固定名：再声明一份 = 同一个 ${voiceData} 两个来源
+  const declaredFile = {
+    ...seedTemplate('qwen-tts'),
+    clone: { ...seedTemplate('qwen-tts').clone, requestParams: [...(seedTemplate('qwen-tts').clone?.requestParams ?? []), { key: 'voiceData', label: '参考音频' }] },
+  };
+  check('8.14 把 voiceData 当参数声明 → 点名（它是引擎注入的那个文件）',
+    validateTemplate(declaredFile).some((x) => x.includes('voiceData') && x.includes('不用声明')), validateTemplate(declaredFile));
+  check('8.15 内置 seed 自己不再声明它（否则上面这条会打到自己）',
+    !validateTemplate(seedTemplate('qwen-tts')).some((x) => x.includes('voiceData')), validateTemplate(seedTemplate('qwen-tts')));
 }
 
 // ========== 9. 逐份 seed 试构造 ==========

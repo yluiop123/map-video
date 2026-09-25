@@ -19,7 +19,7 @@ import { Button } from './ui/button';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  REQ_KEYS, openKeysOf, paramLabelOf, requestOf, requestParamsOf, validateTemplate,
+  REQ_KEYS, VOICE_FILE_KEY, openKeysOf, paramLabelOf, requestOf, validateTemplate,
   type Category, type FileValue, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
 } from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
@@ -188,9 +188,9 @@ function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
   const cur = keys.includes(key) ? key : keys[0];
   if (!cur) return null;
   const callKeys = openKeysOf(tpl, inst, cur);
-  const declared = requestParamsOf(tpl, cur);
-  /** 文件参数交的是文件值（字节 + mime + 名字）：base64 那格换成 data URI，表单那格就是分片 */
-  const isFileParam = (k: string) => declared.find((p) => p.key === k)?.valueType === 'file';
+  /** `${voiceData}` 是引擎注入的那个文件（不是声明出来的参数）：这里长文件选择框，别的长文本框 */
+  const isFileParam = (k: string) => k === VOICE_FILE_KEY;
+  const argLabel = (k: string) => (k === VOICE_FILE_KEY ? t('参考音频', 'Reference audio') : paramLabelOf(tpl, cur, k));
   const args = (): Record<string, unknown> => {
     const o: Record<string, unknown> = {};
     for (const k of callKeys) {
@@ -233,7 +233,7 @@ function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
             // 换页签不重挂载会留着上一格选中的那个文件（见 §6.30）：定位按「哪一格的哪个参数」
             <label key={`${cur}:${k}`} className="flex items-center gap-1 text-[10px]">
               {/* 显示模板声明的名字，裸 key 只作 title */}
-              <span className="text-muted-foreground" title={k}>{paramLabelOf(tpl, cur, k)}</span>
+              <span className="text-muted-foreground" title={k}>{argLabel(k)}</span>
               {isFileParam(k) ? (
                 <span className="flex items-center gap-1">
                   <input type="file" className="w-40 text-[10px] text-muted-foreground"

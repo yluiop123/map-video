@@ -15,7 +15,7 @@ export type Category = 'llm' | 'tts' | 'image';
 /** 请求在模板里的位置；界面与 values.requests 都用这个名字 */
 export type ReqKey = 'sync.submit' | 'async.submit' | 'async.query' | 'upload' | 'clone';
 export type ValueType =
-  | 'string' | 'text' | 'number' | 'boolean' | 'enum' | 'multiEnum' | 'array' | 'secret' | 'file' | 'json';
+  | 'string' | 'text' | 'number' | 'boolean' | 'enum' | 'multiEnum' | 'array' | 'secret' | 'json';
 /** 产物封装方式：binary 响应体即产物 / hex / base64 / url 是带时效的链接 */
 export type OutputFormat = 'binary' | 'hex' | 'base64' | 'url';
 
@@ -40,8 +40,6 @@ export interface ParamSpec {
   maxCount?: number;
   /** array 的元素类型 */
   itemType?: 'string' | 'number';
-  accept?: string;
-  maxSize?: number;
 }
 
 /** 一条请求（核心或桥接）。请求头逐条各配一份：同一个账号的认证头家家一样，但异步开关头只有提交那条要 */
@@ -233,6 +231,14 @@ export const CATEGORY_LABEL: Record<Category, string> = { llm: '文案生成', t
  */
 export const ARTIFACT_KEY = 'fileRef';
 
+/**
+ * 交进来的那一个文件，全项目只有这一个名字 —— 与固定返回项 `fileRef` 对偶：
+ * 一个是「这一步现场交进来的文件」，一个是「那一步交回去的文件 / 地址」。
+ * **它不是模板声明的参数**：三种接法用的都是同一个文件，所以不让人重复声明，界面上也没有
+ * 「要传的文件」那张表 —— 表单里写 `${voiceData}` 就是那个二进制分片，JSON 体里写它就是 data URI。
+ */
+export const VOICE_FILE_KEY = 'voiceData';
+
 // ========== 能力开关 → 槽位与承重输出（唯一推导处） ==========
 
 /**
@@ -290,8 +296,8 @@ export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
         ...artifact, ...err,
       ];
     case 'upload':
-      // 上传交回来的可能是地址、也可能是文件号 —— 与产物同名，下一步一律写 ${fileRef}
-      return [{ name: ARTIFACT_KEY, label: '文件地址 / 文件号', hint: '下一步建音色要用它：克隆请求里写 ${fileRef}', required: true }, ...err];
+      // 上传交回来的引用不靠模板写名字：引擎把它注入成下一步的 ${voiceData}
+      return [{ name: ARTIFACT_KEY, label: '文件地址 / 文件号', hint: `下一步建音色要用它：引擎把它注入成 \${${VOICE_FILE_KEY}}，克隆那一格写这个名就行`, required: true }, ...err];
     case 'clone':
       return [{ name: 'voiceId', label: '音色 ID', hint: '存进音色账本，绑这条实例与目标模型', required: true }, ...err];
   }
@@ -765,20 +771,28 @@ export async function queryOnce(
   return { outcome, status: String(got.values.status ?? ''), values, bytes, mime, step };
 }
 
-/** 建音色：先传文件拿引用那类两步走，另两种（base64 / 表单）一步 —— 差在哪由 slotsOf 说 */
+/**
+ * 建音色：三种接法在模板里写的都是同一个 `${voiceData}` ——
+ * `upload` 那类先跑上传那一格（文件交给它），再把上传交回的引用**注入成下一步的 `${voiceData}`**，
+ * 所以克隆那一格不用知道自己吃的是文件、地址还是文件号；另两种接法只跑第二步。
+ */
 export async function runClone(
   tpl: TemplateDef, inst: InstanceDef, deps: Deps, callArgs: Record<string, unknown>,
 ): Promise<RunResult> {
   const steps: Step[] = [];
   const up: Record<string, unknown> = {};
+  let nextArgs = callArgs;
   if (slotsOf(tpl).includes('upload') && requestOf(tpl, 'upload')) {
     const up1 = await http(tpl, inst, 'upload', deps, callArgs, up);
     Object.assign(up, up1.values);
     steps.push({ key: 'upload', url: redact(up1.req, secretsOf(tpl, inst)).url, status: up1.res.status, values: up1.values });
     const e1 = errorOf(up1.values, up1.res);
     if (e1) throw new EngineError(e1, up1.res.status);
+    const ref = up1.values[ARTIFACT_KEY];
+    if (ref === undefined) throw new EngineError('上传那一格没交出文件引用 —— 检查它的固定项「文件地址 / 文件号」填的路径');
+    nextArgs = { ...callArgs, [VOICE_FILE_KEY]: ref };
   }
-  const cl = await http(tpl, inst, 'clone', deps, callArgs, up);
+  const cl = await http(tpl, inst, 'clone', deps, nextArgs, up);
   Object.assign(up, cl.values);
   steps.push({ key: 'clone', url: redact(cl.req, secretsOf(tpl, inst)).url, status: cl.res.status, values: cl.values });
   const err = errorOf(cl.values, cl.res);
@@ -806,7 +820,7 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
   for (const key of REQ_KEYS) {
     const def = requestOf(tpl, key);
     if (!def) continue;
-    const declared = new Set<string>(produced);
+    const declared = new Set<string>([VOICE_FILE_KEY, ...produced]);
     for (const p of [...(tpl.instanceParams ?? []), ...(def.requestParams ?? [])]) declared.add(p.key);
     scan(key, def.path, declared);
     scan(key, def.headers, declared);
@@ -833,6 +847,15 @@ export function validateTemplate(tpl: TemplateDef): string[] {
     problems.push('文案生成不该有产物或克隆开关（它只取一段文本）');
   }
   if (tpl.category !== 'llm' && tpl.caps.artifact === 'none') problems.push('这个用途必须交回产物，产物形式别选「没有产物」');
+  // 那个文件是引擎注入的固定名（与 fileRef 对偶）：声明它 = 同一个 ${它} 有两个来源
+  const injected = (where: string) => problems.push(`${where}：\`${VOICE_FILE_KEY}\` 是引擎注入的那个文件，不用声明 —— 表单或体里直接写 \${${VOICE_FILE_KEY}}`);
+  if ((tpl.instanceParams ?? []).some((p) => p.key === VOICE_FILE_KEY)) injected('实例级参数');
+  for (const key of slots) {
+    const def = requestOf(tpl, key);
+    if (!def) continue;
+    if ((def.requestParams ?? []).some((p) => p.key === VOICE_FILE_KEY)) injected(REQ_LABEL[key]);
+    if (Object.keys(def.outputs ?? {}).includes(VOICE_FILE_KEY)) injected(`${REQ_LABEL[key]} 的自定义变量`);
+  }
   // 开关要求的槽：必须在、必须有地址、固定项必须填路径
   for (const key of slots) {
     const def = requestOf(tpl, key);

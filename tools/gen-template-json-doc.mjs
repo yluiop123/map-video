@@ -40,7 +40,6 @@ function rangeOf(p) {
     return [p.min !== undefined ? `≥${p.min}` : '', p.max !== undefined ? `≤${p.max}` : '', p.step !== undefined ? `步长 ${p.step}` : '']
       .filter(Boolean).join(' ') || '—';
   }
-  if (p.valueType === 'file') return [p.accept && `接受 ${p.accept}`, p.maxSize && `上限 ${p.maxSize}`].filter(Boolean).join('，') || '—';
   if (p.valueType === 'array' || p.valueType === 'list') return p.itemType ? `元素 ${p.itemType}` : '—';
   return '—';
 }
@@ -67,7 +66,7 @@ function block() {
   out.push('### 9.1 能力开关');
   out.push('');
   out.push('`caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，全由它推导**（`slotsOf` / `requiredOutputsOf` / `multipartSlotOf`）。');
-  out.push('界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）；「建音色」是**克隆开关 + 参考音频三选一**（`cloneVia`：`upload` 先传拿 `fileRef` / `base64` 文件进 JSON 体 / `form` 克隆那格自己发 multipart）。');
+  out.push('界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）；「建音色」是**克隆开关 + 参考音频三选一**（`cloneVia`：`upload` 先传、交回的引用注入成下一步的 `${voiceData}` / `base64` 文件进 JSON 体 / `form` 克隆那格自己发 multipart —— 三种接法在模板里写的都是 `${voiceData}`，它不在参数表里声明）。');
   out.push('');
   out.push('| 模板 | 调用方式 | 产物形式 | 建音色 | 参考音频怎么交 | 推导出的接口槽 |');
   out.push('|---|---|---|---|---|---|');
