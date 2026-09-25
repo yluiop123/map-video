@@ -31,9 +31,9 @@ npm run dist:win       # 打 Windows 包 → release/
 - 无测试框架。回归验证靠：`npx tsc -b` + `npm run build` + `tools/*.mjs` 自动化（需本机 Chrome 开 `--remote-debugging-port=9222`，临时 profile：`C:\Users\23659\AppData\Local\Temp\opencode\mv-studio-profile`，配合 `playwright-core`）。
 - `tools/` 只留**跑得动、还会再跑**的东西，读文件头注释即可用，四类：
   ① 文档生成链：`db-field-notes.mjs`（701 字段中文说明词表，`gen-db-field-dict` 的**必需输入**，漏一条直接报错）→ `gen-db-field-dict.mjs`（注入 `docs/db-tables.md`，`--check` 只校验）→ `comment-ddl.mjs`（把说明写成 DDL 行尾注释）；
-  ② 离线回归（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `audit-fk-indexes`；
-  ③ 浏览器自动化（Chrome 9222，或桌面端 `MV_CDP=9223`）：`smoke-desktop` / `smoke-backend` / `test-fx` / `test-overlays` / `test-timeline` / `test-import`，公共助手 `pw-page.mjs`（标签页复用，避免每次开新标签）；
-  ④ 会花配额 / 改数据的：`try-real-calls.mjs`（真发上游）、`bench-preview.mjs`（预览性能基线，采样结果存 `tools/.bench/`，不入库）。
+  ② 离线回归（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `audit-fk-indexes` / `verify-path-interpolation`（逐帧路径插值与 `turf.along` 逐字同值）；
+  ③ 浏览器自动化（Chrome 9222，或桌面端 `MV_CDP=9223`）：`smoke-desktop` / `smoke-backend` / `test-fx` / `test-overlays` / `test-timeline` / `test-import` / `verify-render-gate`（逐帧门禁：该跳的还在显示、该动的还在动，自建临时项目 `__gate-check` 并在跑完删除），公共助手 `pw-page.mjs`（标签页复用，避免每次开新标签）；
+  ④ 会花配额 / 改数据的：`try-real-calls.mjs`（真发上游）、`bench-preview.mjs`（预览性能基线，采样结果存 `tools/.bench/`，不入库）、`bench-attribution.mjs`（把自耗时归因到我们的渲染函数，见 §6.28）、`stress-project.mjs`（建 / 开 / 删 `__perf-stress`：几百元素的测量场景，用户自己的项目太轻量不出差别）。
   **一次性验证脚本用完就删**，别留在目录里当考古（2026-09-24 清掉 13 个：验「疆域蚕食」「飞行拖尾」那两版实现的探帧脚本、`verify-dot`、`verify-dark-ui`、`bench-fk-indexes.cjs`、头注释写着「用完即删」的 `smoke-fx-tabs`）。
 
 ## 4. 目录结构（src/）
@@ -151,6 +151,15 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 25. **`map.getStyle()` 是整份 style 的深序列化，不是「读个列表」**（2026-09-25 实测）：压测项目（340 元素 / 835 个 style 图层）单次 ~1ms，而 `hideElementLayers` / `showElementLayers` / `restackByLayerOrder` 原来每个元素各读一次 —— 一半元素不可见时就是每帧 170 次，帧时从 150ms 被顶到 300ms（6fps）。逐帧路径里要么整帧读一次共用（`styleLayerIds(map)`），要么先比签名再干活（`restackByLayerOrder`），别在 per-element 循环里读全表。同理 `getStyle()` 之后拿 `style.layers.length` 当「够不够大」的探针也是白花一次序列化。
 
 26. **往地图推 GeoJSON 只有一个出口：`putGeoJSON`**（2026-09-25）。它的不变量是「签名 == 这个 source 现在装的内容」，所以**任何**绕过它直接 `src.setData(...)` 的写手都会把不变量打断 —— 表现是「拖到一半取消，图形不回位」（渲染器以为内容没变，把恢复性写入跳掉了）。`EditableMap` 里 7 处地图直改已全部改走同一个函数；新增写手时必须一起走。压测项目实测：加了门禁，逐帧 worker 写入（`receive` / `sendAsync`）从热点榜上掉下去，fps 10.3 → 12.8、中位帧时 150.3ms → 83.5ms。
+
+27. **逐帧几何只算一次：三条契约一起成立才成立**（2026-09-25，压测项目 340 元素实测中位帧时 133.5ms → 50.1ms、fps 8 → 15）：
+    - **缓存一律按「数据身份」，不按 id**：`cumLenByPath`（WeakMap，键 = 折线数组本身）、`effectiveByElement` / `staticLineDataByElement`（WeakMap，键 = 元素对象）。这条依赖项目数据不可变这个前提 —— 每次编辑都换对象/数组引用，所以「同一个引用」就等价于「输入一个都没变」。**任何人原地改元素字段（`el.coordinates.push(...)`）都会让缓存读到旧几何**，一律经 store 换对象。
+    - **`isFrameStatic` 是「整帧跳过渲染器」的唯一判据，默认不跳**：只有确认渲染器对该元素既不读 `frame` 也不读相机才返回 true（现在是 flag / geo_image / 不带透明度关键帧且非 gif、非模型自转的 point）。**新增任何逐帧或逐相机的渲染分支，必须同时让它判 false**，否则画面会停在最后一次真跑的那一帧且不报错（gif 靠 `updateImage` 换像素、模型靠 imageId 里的角度 —— 两者都曾被误判为可跳过）。作废门禁的是 `renderElements` 的 `renderEpoch` 形参（编辑端传 `styleTick`：底图 `setStyle` 与异步位图首次就绪都走它），导出端 `MapScene` 恒 0 —— 它的 `mapRef.current` 只在 `map.on('load')` 里赋值，所以不存在「样式没就绪时 addImage 静默失败、再也没机会重试」。
+    - **`putGeoJSON` 先比对象引用再比签名**：缓存生效后逐帧交回的是同一份 GeoJSON，引用相等即可直接返回，省掉 `JSON.stringify` 那趟整树序列化。
+    回归：`node --experimental-strip-types tools/verify-path-interpolation.mjs`（缓存版路径插值与 `turf.along` **逐字同值**，不是「误差够小」）、`node tools/verify-render-gate.mjs`（六条地图状态断言，含「被跳过的静态点仍在显示」与「gif/模型/透明度/沿线图标必须继续动」）。
+
+28. **测性能别拿 fps 当有效性护栏**（2026-09-25）：`tools/bench-preview.mjs` 原来判 `fps >= 30` 才算有效，于是**越重的场景越被判成脏数据**（340 元素实测就只剩 6~8 fps，而它恰恰是要测的那个场景）。节流看的是**特征**不是快慢：中位帧时 ≈1001ms 且 `idleShare` 七八十 = rAF 被钉在 1Hz（窗口最小化 / 没带 `MV_BENCH=1`）；`idleShare` 为 0 = 主线程真忙，那是目标数字。另两条口径：同一轮改动**同条件连跑两遍**（这台机器噪声有 ±50ms 量级），以及 `tools/bench-attribution.mjs` —— `bench-preview` 的自耗时 top 全是 turf/maplibre 的压缩名，看不出谁在调它们，归因到我们的函数才找得准（这次就是这么发现 `getLineMidpoint` 每帧把整条贝塞尔线重走两遍、占 6 秒里 781ms）。
+
 
 ## 7. UI 约定（Mapimator Studio 深色对齐，2026-08 全面改版）
 
