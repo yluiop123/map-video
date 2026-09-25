@@ -216,8 +216,12 @@ export const REQ_KEYS: ReqKey[] = ['upload', 'clone', 'sync.submit', 'async.subm
 
 export const CATEGORY_LABEL: Record<Category, string> = { llm: '文案生成', tts: '语音', image: '图片' };
 
-/** 产物在响应里的那个字段，全项目只有这一个名字 —— 引擎按它找产物，不再认 url/image/audio 那排别名 */
-export const ARTIFACT_KEY = 'artifact';
+/**
+ * 产物 / 上传回来的引用，全项目只有这一个名字 —— 引擎按它找产物。
+ * 以前产物叫 `artifact`、上传的叫 `fileRef`，两个名字说的是同一件事（这一步拿到的那个文件 / 地址），
+ * 而下一步 `${它}` 也只有一种写法，所以合成一个。
+ */
+export const ARTIFACT_KEY = 'fileRef';
 
 // ========== 能力开关 → 槽位与承重输出（唯一推导处） ==========
 
@@ -260,8 +264,8 @@ export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
         ...artifact, ...err,
       ];
     case 'upload':
-      // 上传交回来的可能是地址、也可能是文件号 —— 引擎不读它，只是下一步 `${fileRef}` 要引用，所以名字统一
-      return [{ name: 'fileRef', label: '文件地址 / 文件号', hint: '下一步建音色要用它：克隆请求里写 ${fileRef}', required: true }, ...err];
+      // 上传交回来的可能是地址、也可能是文件号 —— 与产物同名，下一步一律写 ${fileRef}
+      return [{ name: ARTIFACT_KEY, label: '文件地址 / 文件号', hint: '下一步建音色要用它：克隆请求里写 ${fileRef}', required: true }, ...err];
     case 'clone':
       return [{ name: 'voiceId', label: '音色 ID', hint: '存进音色账本，绑这条实例与目标模型', required: true }, ...err];
   }
@@ -404,7 +408,7 @@ const EMBED = /\$\{([A-Za-z_][A-Za-z0-9_.]*)\}/g;
 
 /**
  * 取一个占位符的值：整名命中最直接；`它.什么` 只认文件值的那几个派生字段
- * （`${audioFile}` 是 data URI，`${audioFile.mime}` 是 audio/x-wav —— 上传与克隆两类接口都要把 mime 注进去）。
+ * （`${voiceData}` 是 data URI，`${voiceData.mime}` 是 audio/x-wav —— 上传与克隆两类接口都要把 mime 注进去）。
  */
 function lookup(s: Scope, name: string): { found: boolean; value?: unknown } {
   if (name in s.values) return { found: true, value: s.values[name] };
@@ -462,7 +466,7 @@ function walk(node: unknown, s: Scope): unknown {
 
 /**
  * JSON 体里的文件值一律换成 data URI —— 只有 multipart 那一格保留成文件（它要的是分片本身）。
- * 于是 `${audioFile}` 在 body 里是 `data:audio/x-wav;base64,…`，在 form 里是那个二进制分片。
+ * 于是 `${voiceData}` 在 body 里是 `data:audio/x-wav;base64,…`，在 form 里是那个二进制分片。
  */
 function inlineFiles(node: unknown): unknown {
   if (isFileValue(node)) return fileDataUri(node);

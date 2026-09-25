@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 随文件一起发的字段（`purpose` 那类）写在表单里。所以模板页在这一格不放请求级参数表、也不给 Body，
 排布是「要上传的文件 → multipart 表单 → 从响应里取（固定项就一个「文件地址 / 文件号」，交回 url 还是文件号由模板填的路径决定）」。表单是空的会被 `validateTemplate` 点名。
 
-**建音色一共三种形状，全靠数据表达，代码里没有分支**：① 上传返回 **url** → 克隆引用 `${fileRef}`；② 上传返回 **fileId** → 克隆引用 `${fileRef}`（①② 只差固定项那一格填的路径）；③ **直接克隆** → 克隆请求体里写 `${audioFile}`，引擎把它换成 `data:<mime>;base64,…`。
+**建音色一共三种形状，全靠数据表达，代码里没有分支**：① 上传返回 **url** → 克隆引用 `${fileRef}`；② 上传返回 **fileId** → 克隆引用 `${fileRef}`（①② 只差固定项那一格填的路径）；③ **直接克隆** → 克隆请求体里写 `${voiceData}`，引擎把它换成 `data:<mime>;base64,…`。
 
 每个接口槽的结构（`RequestDef`）：
 
@@ -75,7 +75,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   "requestParams": [ /* 这个请求专属的参数声明：model / size… */ ],
   "callParams":    [ /* 每次调用由界面或程序给的参数：text / prompt / 文件… */ ],
   "body": { "model": "${model}", "input": { "text": "${text}" } },
-  "form": { "file": "${audioFile}", "purpose": "voice_clone" },   // 只有 upload 那一格用（multipart）
+  "form": { "file": "${voiceData}", "purpose": "voice_clone" },   // 只有 upload 那一格用（multipart）
   "outputs": { "taskId": "output.task_id", "error": "message" },  // 固定项 + 自定义变量，见下
   "successValues": ["SUCCEEDED"], "failureValues": ["FAILED","CANCELED","UNKNOWN"] }  // 只有 query 用
 ```
@@ -88,9 +88,10 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   共用一份等于替别的端点也塞上它。
 
 - **`outputs` 分两种，界面上也分两处**：
-  - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`artifact`（产物）、
-    `taskId`（任务号）、`status`（任务状态）、`fileRef`（文件地址 / 文件号）、`voiceId`、`error` / `errorCode`。
-    产物**只有一个名字** `artifact`，早先代码里那串 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`
+  - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`fileRef`（产物，
+    或上传回来的文件地址 / 文件号）、`taskId`（任务号）、`status`（任务状态）、`voiceId`、`error` / `errorCode`。
+    产物与上传引用**共用一个名字** `fileRef`（`ARTIFACT_KEY`）：两者说的是同一件事 —— 这一步拿到的那个文件 / 地址，
+    下一步 `${fileRef}` 也只有一种写法。早先代码里那串 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`
     是同一条事实的五份真相，填对了五个之一才碰巧能用 —— 现在没有「碰巧」这回事，`validateTemplate` 会要求必填的固定项必须填路径。
   - **自定义变量**（可选、界面默认折叠）—— 只用于在别的请求里写 `${它}`，引擎从不读它们。
     与三层参数同名会被点名（同一个 `${x}` 有两个来源，谁赢取决于调用时给没给值）。
@@ -178,7 +179,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 | ② 发送 | 桌面走主进程 `net:request`（无 CORS、Key 不出本机），网页走 `fetch` | 实例参数 `timeoutMs` |
 | ③ 取字段 | 按 `outputs` 从响应里取名字，取到的进作用域 | `outputs` |
 | ④ 判状态 | `classify(status, successValues, failureValues)`；中间态就再来一轮 | `async.query` 两个枚举 |
-| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从固定项 `artifact` 解；`url` **当场下载**（时效链接绝不留到以后） | `caps.artifact` + `artifact` 那格的路径 |
+| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从固定项 `fileRef` 解；`url` **当场下载**（时效链接绝不留到以后） | `caps.artifact` + `fileRef` 那格的路径 |
 
 ```
 同步：sync.submit → 字节
@@ -257,20 +258,20 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `deepseek-chat` | 同步 · 提交 | 生成的文本 | `content` | 是 | 引擎只认这个名字 |
 | `deepseek-chat` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `deepseek-chat` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-image` | 同步 · 提交 | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-image` | 同步 · 提交 | 产物 | `fileRef` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-image` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-image` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `qwen-image` | 异步 · 提交 | 任务号 | `taskId` | 是 | 交给调度器存着，之后拿它去查 |
 | `qwen-image` | 异步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-image` | 异步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `qwen-image` | 异步 · 查询 | 任务状态 | `status` | 是 | 没取到它就一直算「还在跑」，查到次数上限才失败 |
-| `qwen-image` | 异步 · 查询 | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-image` | 异步 · 查询 | 产物 | `fileRef` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-image` | 异步 · 查询 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-image` | 异步 · 查询 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `qwen-tts` | 克隆 | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
 | `qwen-tts` | 克隆 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 克隆 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-tts` | 同步 · 提交 | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-tts` | 同步 · 提交 | 产物 | `fileRef` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-tts` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 
@@ -324,7 +325,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 调用级 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |
 | 请求级 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
 | 请求级 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
-| 调用级 `clone` | `audioFile` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |
+| 调用级 `clone` | `voiceData` | 参考音频 | file | — | 接受 .mp3,.wav,.m4a，上限 10485760 |
 
 ### 9.4 逐列 JSON（照抄可用）
 
@@ -577,7 +578,7 @@ null
       }
     },
     "outputs": {
-      "artifact": "output.choices[0].message.content[0].image",
+      "fileRef": "output.choices[0].message.content[0].image",
       "errorCode": "code",
       "error": "message"
     }
@@ -662,7 +663,7 @@ null
     },
     "outputs": {
       "status": "output.task_status",
-      "artifact": "output.choices[0].message.content[0].image",
+      "fileRef": "output.choices[0].message.content[0].image",
       "errorCode": "code",
       "error": "message"
     },
@@ -778,7 +779,7 @@ null
       }
     },
     "outputs": {
-      "artifact": "output.audio.url",
+      "fileRef": "output.audio.url",
       "errorCode": "code",
       "error": "message"
     }
@@ -827,7 +828,7 @@ null
   ],
   "callParams": [
     {
-      "key": "audioFile",
+      "key": "voiceData",
       "label": "参考音频",
       "valueType": "file",
       "accept": ".mp3,.wav,.m4a",
@@ -841,7 +842,7 @@ null
       "target_model": "${model}",
       "preferred_name": "${preferredName}",
       "audio": {
-        "data": "${audioFile}"
+        "data": "${voiceData}"
       }
     }
   },

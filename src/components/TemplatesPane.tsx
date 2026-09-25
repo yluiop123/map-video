@@ -97,8 +97,8 @@ const blankRequest = (key: ReqKey): RequestDef => {
   if (key === 'upload') {
     return {
       path: '${baseUrl}/files', method: 'POST', headers: { ...AUTH_HDR }, requestParams: [],
-      callParams: [{ key: 'audioFile', label: '要上传的音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
-      form: { file: '${audioFile}', purpose: 'voice_clone' }, outputs: {},
+      callParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
+      form: { file: '${voiceData}', purpose: 'voice_clone' }, outputs: {},
     };
   }
   return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [], callParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
@@ -370,7 +370,7 @@ function RequestEditor({ tpl, reqKey, onChange }: {
             onChange={(headers) => set({ headers: headers as Record<string, unknown> })} />
           {isUpload ? (
             <JsonBox label={t('表单（multipart 字段）', 'Form')} value={def.form ?? {}}
-              hint={t('例 { "file": "${audioFile}", "purpose": "voice_clone" }', 'e.g. { "file": "${audioFile}", "purpose": "voice_clone" }')}
+              hint={t('例 { "file": "${voiceData}", "purpose": "voice_clone" }', 'e.g. { "file": "${voiceData}", "purpose": "voice_clone" }')}
               onChange={(form) => set({ form: form as Record<string, unknown> })} />
           ) : (
             <JsonBox label="Body" value={def.body ?? {}} onChange={(body) => set({ body })} />

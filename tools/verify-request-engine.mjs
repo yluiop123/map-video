@@ -142,7 +142,7 @@ console.log('\n[4] 产物还原');
   const t2 = { ...bin, caps: { ...bin.caps, artifact: 'binary' }, sync: { submit: { ...bin.sync.submit, outputs: undefined } } };
   eq('4.4 binary = 响应体即产物（不需要固定项）', Array.from((await runSync(t2, inst('qwen-tts'), d2.deps, 'sync.submit', { text: 'a', voice: 'v' })).bytes ?? []), [9, 9, 9]);
 
-  const hexT = { ...bin, caps: { ...bin.caps, artifact: 'hex' }, sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { artifact: 'data.audio' } } } };
+  const hexT = { ...bin, caps: { ...bin.caps, artifact: 'hex' }, sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { fileRef: 'data.audio' } } } };
   const d3 = mk([{ on: '/x', res: json({ data: { audio: 'deadbeef' } }) }]);
   eq('4.5 hex 解码（产物只认 artifact 这一个名字）', Array.from((await runSync(hexT, inst('qwen-tts'), d3.deps, 'sync.submit', {})).bytes ?? []), [0xde, 0xad, 0xbe, 0xef]);
   const b64T = { ...hexT, caps: { ...hexT.caps, artifact: 'base64' } };
@@ -179,7 +179,7 @@ console.log('\n[5] 异步：提交 → 轮询 → 取产物');
   // 2026-09-23 真机抓到的完整响应（task 276a888f…，排队 9 分钟）原样留一份：
   // 谁把产物路径改回文档写法，这条就会红
   const REAL = { request_id: 'x', output: { task_id: '276a888f', task_status: 'SUCCEEDED', submit_time: '2026-09-23 20:34:42.491', end_time: '2026-09-23 20:43:57.991', choices: [{ message: { content: [{ type: 'image', image: 'https://cdn.real/i.png' }] }, finish_reason: 'stop' }], rewrite_status: 'success' }, usage: { output_image_count: 1 } };
-  eq('5.7b 真机响应的产物路径取得到', applyOutputs(REAL, tpl.async.query.outputs).artifact, 'https://cdn.real/i.png');
+  eq('5.7b 真机响应的产物路径取得到', applyOutputs(REAL, tpl.async.query.outputs).fileRef, 'https://cdn.real/i.png');
   eq('5.8 状态值大小写不敏感（各家写法不一）', classify('Succeeded', ['succeeded'], ['failed']), 'success');
   await throws('5.9 5xx / 429 带状态码抛回（调度层才知道能不能重试）', async () => {
     const d = mk([{ on: '/tasks/', res: () => ({ status: 429, text: 'too many' }) }]);
@@ -199,7 +199,7 @@ console.log('\n[6] 音色克隆');
   const qwen = seedTemplate('qwen-tts');
   const d = mk([{ on: 'customization', res: json({ output: { voice: 'qwen-voice-77' } }) }]);
   const wav = { bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]), mime: 'audio/x-wav', name: 'reference.wav' };
-  const r = await runClone(qwen, inst('qwen-tts'), d.deps, { audioFile: wav, model: 'qwen3-tts-vc-2026-01-22', preferredName: 'mv' });
+  const r = await runClone(qwen, inst('qwen-tts'), d.deps, { voiceData: wav, model: 'qwen3-tts-vc-2026-01-22', preferredName: 'mv' });
   eq('6.1 形状三「直接克隆」：文件进 body 就是 data URI，一步拿音色 ID', [r.values.voiceId, d.sent.length], ['qwen-voice-77', 1]);
   const body = d.sent[0].body;
   eq('6.2 复刻目标模型走请求级参数（合成必须同款）', body.input.target_model, 'qwen3-tts-vc-2026-01-22');
@@ -211,13 +211,13 @@ console.log('\n[6] 音色克隆');
     // 形状二「先上传拿文件号」：这一格发的是 multipart 表单，文件保持成分片（不转 base64）
     upload: {
       path: '${baseUrl}/files/upload', method: 'POST', headers: { Authorization: 'Bearer ${apiKey}' },
-      callParams: [{ key: 'audioFile', label: '要上传的音频', valueType: 'file' }],
-      form: { file: '${audioFile}', purpose: 'voice_clone', mime_type: '${audioFile.mime}' }, outputs: { fileRef: 'file.file_id' },
+      callParams: [{ key: 'voiceData', label: '要上传的音频', valueType: 'file' }],
+      form: { file: '${voiceData}', purpose: 'voice_clone', mime_type: '${voiceData.mime}' }, outputs: { fileRef: 'file.file_id' },
     },
     clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileRef}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
   };
   const d2 = mk([{ on: 'files/upload', res: json({ file: { file_id: 'F7' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-7' }) }]);
-  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { audioFile: wav, preferredName: 'mv' });
+  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { voiceData: wav, preferredName: 'mv' });
   eq('6.4 分离式：先上传拿文件引用再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
   eq('6.5 中间变量 fileRef 自动流进克隆请求体', d2.sent[1].body.file_id, 'F7');
   // 走「先上传」这条路时文件不转 base64：交出去的是二进制分片（带自己的 mime 与文件名）+ 普通字段
@@ -229,11 +229,11 @@ console.log('\n[6] 音色克隆');
   // 形状一「先上传拿 url」：同一格、同一个名字，只是路径指向响应里的地址字段
   const upUrl = {
     ...up,
-    upload: { ...up.upload, form: { file: '${audioFile}' }, outputs: { fileRef: 'file.url' } },
+    upload: { ...up.upload, form: { file: '${voiceData}' }, outputs: { fileRef: 'file.url' } },
     clone: { path: '${baseUrl}/v1/voice_clone', body: { audio_url: '${fileRef}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
   };
   const d3 = mk([{ on: 'files/upload', res: json({ file: { url: 'https://cdn/ref.wav' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-8' }) }]);
-  await runClone(upUrl, inst('qwen-tts'), d3.deps, { audioFile: wav, preferredName: 'mv' });
+  await runClone(upUrl, inst('qwen-tts'), d3.deps, { voiceData: wav, preferredName: 'mv' });
   eq('6.9 上传返回 url 的那类：${fileRef} 引用的就是那个地址', d3.sent[1].body.audio_url, 'https://cdn/ref.wav');
 }
 
@@ -263,7 +263,7 @@ console.log('\n[8] 保存前自检');
   check('8.6 谁都能自己加异步（分类不限制接口形状）', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: base.async }).length === 0,
     validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: base.async }));
   // 固定项：名字写死、路径必填 —— 漏了要在保存前就点名，而不是等运行时（status 漏填会一路查到超时）
-  const noStatus = { ...base, async: { submit: base.async.submit, query: { ...base.async.query, outputs: { artifact: 'x' } } } };
+  const noStatus = { ...base, async: { submit: base.async.submit, query: { ...base.async.query, outputs: { fileRef: 'x' } } } };
   check('8.7 固定项「任务状态」没填路径 → 点名', validateTemplate(noStatus).some((x) => x.includes('任务状态')), validateTemplate(noStatus));
   const noArtifact = { ...base, sync: { submit: { ...base.sync.submit, outputs: { error: 'e' } } } };
   check('8.8 固定项「产物」没填路径 → 点名', validateTemplate(noArtifact).some((x) => x.includes('产物')), validateTemplate(noArtifact));

@@ -48,10 +48,10 @@ const TPL = {
     { key: 'apiKey', label: 'API Key', valueType: 'secret' },
     { key: 'timeoutMs', label: '超时', valueType: 'number', defaultValue: 30000 },
   ],
-  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' }, requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }], callParams: [{ key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { artifact: 'output.url' } } },
+  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' }, requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }], callParams: [{ key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { fileRef: 'output.url' } } },
   async: {
     submit: { path: '${baseUrl}/submit', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}', 'X-DashScope-Async': 'enable' }, body: { prompt: '${prompt}' }, outputs: { taskId: 'output.task_id' } },
-    query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { status: 'output.task_status', artifact: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },
+    query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { status: 'output.task_status', fileRef: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },
   },
 };
 
@@ -67,7 +67,7 @@ console.log('\n[1] 模板表（一行一份完整模板）');
   eq('1.4 整份逐字往返（三层参数 / outputs / 两枚举 / 上传桥接 / 逐槽请求头）',
     { name: got.name, category: got.category, note: got.note, instanceParams: got.instanceParams, sync: got.sync, async: got.async },
     { name: TPL.name, category: TPL.category, note: TPL.note, instanceParams: TPL.instanceParams, sync: TPL.sync, async: TPL.async });
-  check('1.5 方括号下标原样存回（output.results[0].url）', got.async.query.outputs.artifact === 'output.results[0].url', got.async.query.outputs);
+  check('1.5 方括号下标原样存回（output.results[0].url）', got.async.query.outputs.fileRef === 'output.results[0].url', got.async.query.outputs);
   eq('1.6 能力开关逐字往返', got.caps, { modes: 'both', artifact: 'url' });
   check('1.6b use_clone / upload 两列不再存在（能力开关并进 caps_json）',
     !db.prepare('PRAGMA table_info(provider_template)').all().map((r) => r.name).some((c) => c === 'use_clone' || c === 'upload'));
@@ -300,7 +300,7 @@ console.log('\n[5] 旧形状让位 → 密钥搬进 values.instance');
   db.exec('PRAGMA foreign_keys = ON');
   const kept = listProvidersV2(db)[0];
   eq('5.17 实例行不动（它本来就是新形状，Key 原样在 values 里）', kept?.values?.instance, { apiKey: 'sk-不得丢-v4' });
-  upsertTemplateV2(db, { id: 'qwen-tts', name: '千问 TTS', category: 'tts', caps: { modes: 'sync', artifact: 'url', clone: true }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { artifact: 'output.audio.url' } } }, clone: { path: '${baseUrl}/customize', body: {}, outputs: { voiceId: 'output.voice' } } });
+  upsertTemplateV2(db, { id: 'qwen-tts', name: '千问 TTS', category: 'tts', caps: { modes: 'sync', artifact: 'url', clone: true }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { fileRef: 'output.audio.url' } } }, clone: { path: '${baseUrl}/customize', body: {}, outputs: { voiceId: 'output.voice' } } });
   eq('5.19 新模板读回带 caps', listTemplatesV2(db).find((t) => t.id === 'qwen-tts')?.caps, { modes: 'sync', artifact: 'url', clone: true });
   // 归档表由启动时的搬迁那一步清掉（应用真实顺序：铺 seed → migrate → 清归档）
   migrateProvidersFromStale(db);

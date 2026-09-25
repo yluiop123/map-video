@@ -72,7 +72,7 @@ const deepseekChat: TemplateDef = {
 // ========== 图片：千问 文生图（同步 + 异步 + 任务查询） ==========
 
 const imageCall: ParamSpec[] = [text('prompt', '画面描述')];
-const imageOutputs = { artifact: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' };
+const imageOutputs = { fileRef: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' };
 
 const qwenImage: TemplateDef = {
   id: 'qwen-image', name: '千问 文生图', category: 'image',
@@ -118,7 +118,7 @@ const qwenImage: TemplateDef = {
       headers: { ...AUTH },
       // 实测（2026-09-23）：异步产物与同步同一路径 output.choices[0].message.content[0].image，
       // 文档写的 output.results[].url 是这个模型不再用的旧形状；任务要排几分钟，queryMaxAttempts 得给够
-      outputs: { status: 'output.task_status', artifact: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' },
+      outputs: { status: 'output.task_status', fileRef: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' },
       successValues: ['SUCCEEDED'],
       failureValues: ['FAILED', 'CANCELED', 'UNKNOWN'],
     }),
@@ -143,7 +143,7 @@ const qwenTts: TemplateDef = {
         input: { text: '${text}', voice: '${voice}' },
         parameters: { language_type: '${languageType}' },
       },
-      outputs: { artifact: 'output.audio.url', errorCode: 'code', error: 'message' },
+      outputs: { fileRef: 'output.audio.url', errorCode: 'code', error: 'message' },
     }),
   },
   clone: jsonReq('${baseUrl}/services/audio/tts/customization', {
@@ -151,13 +151,13 @@ const qwenTts: TemplateDef = {
       en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
       p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
     ],
-    // 交过来的是一个文件值（字节 + mime + 文件名）。`${audioFile}` 在 JSON 体里就是
+    // 交过来的是一个文件值（字节 + mime + 文件名）。`${voiceData}` 在 JSON 体里就是
     // `data:<mime>;base64,…`（这一家要的形状），在 multipart 表单里则是那个二进制分片。
-    // 要单独拿 mime 就写 `${audioFile.mime}`（如 audio/x-wav）。
-    callParams: [{ key: 'audioFile', label: '参考音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
+    // 要单独拿 mime 就写 `${voiceData.mime}`（如 audio/x-wav）。
+    callParams: [{ key: 'voiceData', label: '参考音频', valueType: 'file', accept: '.mp3,.wav,.m4a', maxSize: 10485760 }],
     body: {
       model: 'qwen-voice-enrollment',
-      input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${audioFile}' } },
+      input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${voiceData}' } },
     },
     outputs: { voiceId: 'output.voice', errorCode: 'code', error: 'message' },
   }),
