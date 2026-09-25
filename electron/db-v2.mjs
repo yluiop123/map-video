@@ -147,7 +147,7 @@ function ensureAllColumns(db, ddl) {
  * 认**正标志**（列还在）：跑完列就没了，下次启动不再进这里 —— 这是全库唯一一处一次性搬迁，理由是「不并就丢数据」。
  * GET 那条顺手去掉 Content-Type：那条端点没有请求体，原先是被共用那一对带上的。
  */
-const HDR_COLS = [['sync_json', ['submit']], ['async_json', ['submit', 'query']], ['download_json', ['']], ['upload_json', ['']], ['clone_json', ['']]];
+const HDR_COLS = [['sync_json', ['submit']], ['async_json', ['submit', 'query']], ['upload_json', ['']], ['clone_json', ['']]];
 function foldTemplateHeadersIntoSlots(db) {
   if (!db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'headers_json')) return;
   let folded = 0;
@@ -196,6 +196,8 @@ const RETIRED_COLUMNS = [
   // 请求头改回逐条接口各配一份（写在 sync_json / async_json 那几列里面）：
   // 模板级那一份会替同步端点也带上异步开关头，而且多一处要对照的地方。
   ['provider_template', 'headers_json'],
+  // 「下载桥接」整条下线：产物统一按 响应体 / base64 / hex / 下载链接 四种取，链接一律当场下载。
+  ['provider_template', 'download_json'],
 ];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
@@ -1067,7 +1069,7 @@ export function migrateProvidersFromStale(db) {
 
 const TPL_COLS = `tpl_id AS id, name, category, caps_json AS capsJson,
   instance_params_json AS instanceParamsJson,
-  sync_json AS syncJson, async_json AS asyncJson, download_json AS downloadJson,
+  sync_json AS syncJson, async_json AS asyncJson,
   upload_json AS uploadJson, clone_json AS cloneJson, ref_sample_rate AS refSampleRateHz, ord`;
 
 /** 列出全部模板（一行一份，JSON 列还原成对象） */
@@ -1079,7 +1081,6 @@ export function listTemplatesV2(db) {
       instanceParams: parseCol(r.instanceParamsJson, []) ?? [],
       sync: blank(parseCol(r.syncJson, null)) ? undefined : parseCol(r.syncJson, {}),
       async: blank(parseCol(r.asyncJson, null)) ? undefined : parseCol(r.asyncJson, {}),
-      download: blank(parseCol(r.downloadJson, null)) ? undefined : parseCol(r.downloadJson, {}),
       upload: blank(parseCol(r.uploadJson, null)) ? undefined : parseCol(r.uploadJson, {}),
       clone: blank(parseCol(r.cloneJson, null)) ? undefined : parseCol(r.cloneJson, {}),
       refSampleRateHz: r.refSampleRateHz ?? undefined,
@@ -1092,22 +1093,22 @@ export function upsertTemplateV2(db, t) {
   const now = Date.now();
   db.prepare(`
     INSERT INTO provider_template (tpl_id, name, category, caps_json,
-      instance_params_json, sync_json, async_json, download_json, upload_json, clone_json,
+      instance_params_json, sync_json, async_json, upload_json, clone_json,
       ref_sample_rate, ord, created_at, updated_at)
     VALUES (@id,@name,@category,@caps,@instanceParams,@sync,@async,
-      @download,@upload,@clone,@refSampleRateHz,
+      @upload,@clone,@refSampleRateHz,
       COALESCE((SELECT ord FROM provider_template WHERE tpl_id = @id),
                (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider_template WHERE category = @category)),
       @now,@now)
     ON CONFLICT(tpl_id) DO UPDATE SET name=@name, category=@category, caps_json=@caps,
       instance_params_json=@instanceParams, sync_json=@sync,
-      async_json=@async, download_json=@download, upload_json=@upload, clone_json=@clone,
+      async_json=@async, upload_json=@upload, clone_json=@clone,
       ref_sample_rate=@refSampleRateHz, updated_at=@now
   `).run({
     id: String(t.id), name: t.name ?? '', category: t.category,
     caps: jsonCol(t.caps),
     instanceParams: jsonCol(t.instanceParams ?? []),
-    sync: jsonCol(t.sync), async: jsonCol(t.async), download: jsonCol(t.download),
+    sync: jsonCol(t.sync), async: jsonCol(t.async),
     upload: jsonCol(t.upload), clone: jsonCol(t.clone),
     refSampleRateHz: t.refSampleRateHz ?? null, now,
   });

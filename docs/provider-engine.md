@@ -1,6 +1,6 @@
 # 供应商配置设计：接口模板 · 实例 · 音色 · 任务 · 取回管线
 
-> 一句话：**模板 = 一份完整接法（一行存下同步 / 异步 / 桥接 / 克隆的全部形状，纯数据）；实例 = 选哪份模板 + 一组取值（密钥也只是取值）；音色与异步任务是两份账本；调用正文与产物 URL 不落库。**
+> 一句话：**模板 = 一份完整接法（一行存下同步 / 异步 / 上传 / 克隆的全部形状，纯数据）；实例 = 选哪份模板 + 一组取值（密钥也只是取值）；音色与异步任务是两份账本；调用正文与产物 URL 不落库。**
 
 ## 一、四层职责
 
@@ -11,7 +11,7 @@
 | **音色** | `voice` | 参考音频 → 厂商 voiceId 的账本（幂等、绑模型、可重建） | 字幕生成里的音色区 |
 | **任务** | `task` | 在途异步任务（跨重启续跑、逐条进度与产物） | 无界面写入，调度器读写 |
 
-没有「模板组」这一层：一份模板就是一行，同步异步桥接克隆都是它 JSON 列里的键，所以不存在跨行一致性要防，也不需要组表与唯一索引。
+没有「模板组」这一层：一份模板就是一行，同步异步上传克隆都是它 JSON 列里的键，所以不存在跨行一致性要防，也不需要组表与唯一索引。
 
 **一份模板可以配多条实例**（两套账号 = 两条实例），调用处显式选一条用 —— 没有 `active` 标记，也不存在「哪条生效」这种第二处真相。
 
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS provider_template (
   caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：调用方式 / 产物形式 / 建音色 / 建前先上传
   instance_params_json TEXT,                -- 实例级参数声明
   sync_json    TEXT,     async_json    TEXT,            -- 同步 {submit} / 异步 {submit,query}
-  download_json TEXT,    upload_json   TEXT,   clone_json TEXT,   -- 三条桥接 / 核心请求
+  upload_json  TEXT,    clone_json TEXT,                      -- 上传桥接 / 核心请求
   ref_sample_rate INTEGER,                              -- 克隆参考音频采样率 Hz（各家不同）
   ord INTEGER NOT NULL DEFAULT 0,  created_at INTEGER,  updated_at INTEGER
 );
@@ -34,26 +34,29 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 所有 JSON 列都带 `CHECK (… IS NULL OR json_valid(…))`；`category` 不写 CHECK —— 接一家新供应商不改表、不加 switch。
 
-**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url|viaDownload, clone, uploadFirst }`。
+**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, uploadFirst }`。
 早先是 `use_clone` / `upload` 两个布尔列 —— 它们与「`clone_json` / `upload_json` 空不空」是同一条事实的第二、第三份，
 `validateTemplate` 还得专门写两条报错去拦它们不一致，而判「能不能克隆」的 `supports()` 读的又是槽位。
 现在开关是输入、槽位与固定返回项都是它的推导结果（`slotsOf` / `requiredOutputsOf`），不一致没有发生的余地。
 
 内置模板由 seed（`src/lib/template-seed.ts`）在首次建库时铺成行，之后就是普通可编辑数据；「恢复默认」= 用 seed 覆盖那一行。
 
-## 三、接口槽：六个形状，由能力开关推导该有哪几格
+## 三、接口槽：五个形状，由能力开关推导该有哪几格
 
 `caps_json` 里那几个开关一答完，`slotsOf(tpl)` 就给出这一份模板**该有哪些接口槽** —— 界面上没有「＋ 加一条接口」这回事，
-也不给「删掉这条接口」（不想要就关对应的开关）。六个槽位：
+也不给「删掉这条接口」（不想要就关对应的开关）。五个槽位：
 
 | ReqKey | 存哪列 | 干什么 | 什么时候有 |
 |---|---|---|---|
 | `sync.submit` | `sync_json.submit` | 一把梭：发出去就拿到产物或结果字段 | `modes` 含 sync（llm 恒有） |
 | `async.submit` | `async_json.submit` | 只负责提交并交出任务号 | `modes` 含 async |
 | `async.query` | `async_json.query` | 怎么查、什么算成/败、产物在哪 | 同上 —— **与 submit 成对，缺一即报错** |
-| `download` | `download_json` | 桥接：中间量 → 最终下载地址 | `artifact = viaDownload` |
 | `upload` | `upload_json` | 桥接：本地文件 → `fileId` | `clone` 且 `uploadFirst` |
 | `clone` | `clone_json` | 核心：参考音频 → `voiceId` | `clone`（仅 tts） |
+
+**产物只有四种到手方式**（`caps.artifact` = `binary` 响应体即产物 / `base64` / `hex` / `url` 带时效的链接），
+`url` 一律**当场下载**成字节 —— 原先那第五种「链接要先问一次才有」（`viaDownload` + `download` 桥接格）已整条下线：
+它把「取地址」拆成两问，多一格要配、多一处会写错，而三家上游里没有一家真的需要（`url` 那两家都是直接给地址）。
 
 **`upload` 那一格的入参和别的接口不一样**：别的接口发的是一个 JSON 体、入参是 model / size / text 这些字段，
 它发的是一张 multipart 表单 —— 要传的只有一个**文件**（调用时给，界面按 `valueType:'file'` 长控件），
@@ -169,10 +172,10 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 | ② 发送 | 桌面走主进程 `net:request`（无 CORS、Key 不出本机），网页走 `fetch` | 实例参数 `timeoutMs` |
 | ③ 取字段 | 按 `outputs` 从响应里取名字，取到的进作用域 | `outputs` |
 | ④ 判状态 | `classify(status, successValues, failureValues)`；中间态就再来一轮 | `async.query` 两个枚举 |
-| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从固定项 `artifact` 解；`url` **当场下载**（`viaDownload` 则先走 `download` 桥接拿地址） | `caps.artifact` + `artifact` 那格的路径 |
+| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从固定项 `artifact` 解；`url` **当场下载**（时效链接绝不留到以后） | `caps.artifact` + `artifact` 那格的路径 |
 
 ```
-同步：sync.submit →（配了 download 再问一次）→ 字节
+同步：sync.submit → 字节
 异步：async.submit 交出 taskId → 调度器/内存轮询按节奏打 async.query → SUCCEEDED → 字节
 克隆：(upload 拿 fileId) → clone 交出 voiceId
 ```
@@ -453,12 +456,6 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 null
 ```
 
-**`download_json`**（download）
-
-```json
-null
-```
-
 **`upload_json`**（upload）
 
 ```json
@@ -675,12 +672,6 @@ null
 }
 ```
 
-**`download_json`**（download）
-
-```json
-null
-```
-
 **`upload_json`**（upload）
 
 ```json
@@ -790,12 +781,6 @@ null
 ```
 
 **`async_json`**（async.submit）
-
-```json
-null
-```
-
-**`download_json`**（download）
 
 ```json
 null

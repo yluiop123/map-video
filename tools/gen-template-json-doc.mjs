@@ -24,7 +24,6 @@ const END = '<!-- END generated:seed-templates -->';
 const SLOT_COL = [
   ['sync.submit', 'sync_json', (t) => t.sync],
   ['async.submit', 'async_json', (t) => t.async],
-  ['download', 'download_json', (t) => t.download],
   ['upload', 'upload_json', (t) => t.upload],
   ['clone', 'clone_json', (t) => t.clone],
 ];
@@ -54,7 +53,7 @@ function paramRows(t) {
   push('实例级', t.instanceParams);
   for (const [slot] of SLOT_COL) {
     const def = slot === 'sync.submit' ? t.sync?.submit : slot === 'async.submit' ? t.async?.submit
-      : slot === 'download' ? t.download : slot === 'upload' ? t.upload : t.clone;
+      : slot === 'upload' ? t.upload : t.clone;
     if (!def) continue;
     push(`请求级 \`${slot}\``, def.requestParams);
     push(`调用级 \`${slot}\``, def.callParams);

@@ -1,7 +1,7 @@
 /**
  * TemplatesPane.tsx — ⚙ 设置 · AI 左侧的「接口模板」页（三栏）
  *
- * 一份模板 = 数据库一行，里面同时装着：实例级参数、同步 / 异步两套接口、下载 / 上传桥接、克隆音色。
+ * 一份模板 = 数据库一行，里面同时装着：实例级参数、同步 / 异步两套接口、上传桥接、克隆音色。
  * 请求头与参数都挂在各条接口自己身上（同一家不同端点要的头并不相同）；三层参数（实例级 / 请求级 /
  * 调用级）都在这页自由增删改 —— 引擎里没有任何按厂商名写的分支，界面配不出来的东西就不该存在。
  *
@@ -41,7 +41,6 @@ const REQ_LABEL: Record<ReqKey, { zh: string; en: string }> = {
   'sync.submit': { zh: '同步 · 提交', en: 'Sync · submit' },
   'async.submit': { zh: '异步 · 提交', en: 'Async · submit' },
   'async.query': { zh: '异步 · 查询', en: 'Async · query' },
-  download: { zh: '桥接 · 下载', en: 'Bridge · download' },
   upload: { zh: '桥接 · 上传', en: 'Bridge · upload' },
   clone: { zh: '核心 · 克隆音色', en: 'Core · voice clone' },
 };
@@ -65,7 +64,6 @@ const ARTIFACT_OPTIONS = (t: (a: string, b: string) => string) => [
   { value: 'base64' as const, label: 'base64', hint: t('字节以 base64 写在某个字段里', 'bytes as base64 in a field') },
   { value: 'hex' as const, label: 'hex', hint: t('字节以十六进制写在某个字段里', 'bytes as hex in a field') },
   { value: 'url' as const, label: t('下载链接', 'URL'), hint: t('响应给一个带时效的链接，当场下载下来', 'a time-limited URL, downloaded on the spot') },
-  { value: 'viaDownload' as const, label: t('链接要再问一次', 'URL via bridge'), hint: t('响应先给一个文件号 / 中间量，再问一次才拿到地址', 'ask a second time for the real URL') },
 ];
 
 const present = (t: TemplateDef, key: ReqKey) => !!requestOf(t, key);
@@ -296,7 +294,7 @@ function RequestEditor({ tpl, reqKey, inst, onChange }: {
     if (reqKey === 'sync.submit') next.sync = { submit: merged };
     else if (reqKey === 'async.submit') next.async = { submit: merged, query: next.async?.query };
     else if (reqKey === 'async.query') next.async = { submit: next.async?.submit, query: merged };
-    else next[reqKey as 'download' | 'upload' | 'clone'] = merged;
+    else next[reqKey as 'upload' | 'clone'] = merged;
     onChange(next);
   };
   const [inputs, setInputs] = useState<Record<string, string>>({});

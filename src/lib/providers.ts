@@ -26,7 +26,7 @@ export function templateOf(inst: InstanceDef | null | undefined): TemplateDef | 
 export const categoryOf = (inst: InstanceDef | null | undefined): Category | undefined => templateOf(inst)?.category;
 
 /** 这条实例要不要显示「克隆音色」那一区：判据是模板的**能力开关**（与引擎、保存前校验同一处） */
-export function supports(inst: InstanceDef | null | undefined, key: 'clone' | 'upload' | 'download' | 'async'): boolean {
+export function supports(inst: InstanceDef | null | undefined, key: 'clone' | 'upload' | 'async'): boolean {
   const t = templateOf(inst);
   return t ? supportsOf(t, key) : false;
 }

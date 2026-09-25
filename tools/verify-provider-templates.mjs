@@ -39,7 +39,7 @@ const fresh = () => {
   return db;
 };
 
-/** 一份字段给满的模板（三层参数 / outputs / 两枚举 / 桥接都上，用来验逐字往返） */
+/** 一份字段给满的模板（三层参数 / outputs / 两枚举 / 上传桥接都上，用来验逐字往返） */
 const TPL = {
   id: 'verify-image', name: '回归用图片', category: 'image',
   caps: { modes: 'both', artifact: 'url' },
@@ -53,7 +53,6 @@ const TPL = {
     submit: { path: '${baseUrl}/submit', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}', 'X-DashScope-Async': 'enable' }, body: { prompt: '${prompt}' }, outputs: { taskId: 'output.task_id' } },
     query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { status: 'output.task_status', artifact: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },
   },
-  download: { path: '${baseUrl}/files/retrieve?file_id=${artifact}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { artifact: 'file.download_url' } },
 };
 
 // ---------- 1. 模板读写 ----------
@@ -65,9 +64,9 @@ console.log('\n[1] 模板表（一行一份完整模板）');
   check('1.3 空库 list 返回空', listTemplatesV2(db).length === 0);
   upsertTemplateV2(db, TPL);
   const got = listTemplatesV2(db).find((t) => t.id === 'verify-image');
-  eq('1.4 整份逐字往返（三层参数 / outputs / 两枚举 / 桥接 / 逐槽请求头）',
-    { name: got.name, category: got.category, note: got.note, instanceParams: got.instanceParams, sync: got.sync, async: got.async, download: got.download },
-    { name: TPL.name, category: TPL.category, note: TPL.note, instanceParams: TPL.instanceParams, sync: TPL.sync, async: TPL.async, download: TPL.download });
+  eq('1.4 整份逐字往返（三层参数 / outputs / 两枚举 / 上传桥接 / 逐槽请求头）',
+    { name: got.name, category: got.category, note: got.note, instanceParams: got.instanceParams, sync: got.sync, async: got.async },
+    { name: TPL.name, category: TPL.category, note: TPL.note, instanceParams: TPL.instanceParams, sync: TPL.sync, async: TPL.async });
   check('1.5 方括号下标原样存回（output.results[0].url）', got.async.query.outputs.artifact === 'output.results[0].url', got.async.query.outputs);
   eq('1.6 能力开关逐字往返', got.caps, { modes: 'both', artifact: 'url' });
   check('1.6b use_clone / upload 两列不再存在（能力开关并进 caps_json）',
@@ -76,9 +75,11 @@ console.log('\n[1] 模板表（一行一份完整模板）');
     !db.prepare('PRAGMA table_info(voice)').all().map((r) => r.name).some((c) => c.endsWith('_expires_at')));
   check('1.6d 模板级 headers_json 列已下线（请求头写在每条接口的 JSON 里）',
     !db.prepare('PRAGMA table_info(provider_template)').all().map((r) => r.name).includes('headers_json'));
-  upsertTemplateV2(db, { ...TPL, async: undefined, download: undefined });
+  check('1.6e 下载桥接那一列已下线（产物只有 响应体 / base64 / hex / 链接 四种，链接当场下载）',
+    !db.prepare('PRAGMA table_info(provider_template)').all().map((r) => r.name).includes('download_json'));
+  upsertTemplateV2(db, { ...TPL, async: undefined });
   const after = listTemplatesV2(db).find((t) => t.id === 'verify-image');
-  check('1.7 整份覆写：删掉的接口不残留', !after.async && !after.download, Object.keys(after));
+  check('1.7 整份覆写：删掉的接口不残留', !after.async, Object.keys(after));
   check('1.8 同 id 再存是覆盖不是加行', listTemplatesV2(db).filter((t) => t.id === 'verify-image').length === 1);
   removeTemplateV2(db, 'verify-image');
   check('1.9 删掉后表空', listTemplatesV2(db).length === 0);
@@ -370,6 +371,8 @@ console.log('\n[7] 作废列清理');
   check('7.5 换代与删列同一次启动都成（顺序错了就会因视图报错而失败）',
     !after.some((c) => c.endsWith('_expires_at')), after.join(','));
   check('7.6 视图还在、查得动', !!db.prepare('SELECT COUNT(*) AS n FROM v_check_async_pairing').get());
+  check('7.6b 换代那一路也顺手没有把 download_json 建回来（下载桥接已下线）',
+    !db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name).includes('download_json'));
   db.close();
 }
 
@@ -383,13 +386,15 @@ console.log('\n[7] 作废列清理');
   delete legacy.async.query.headers;   // async.submit 留着它自己的（含异步开关头），不该被覆盖
   upsertTemplateV2(db, legacy);
   db.exec('ALTER TABLE provider_template ADD COLUMN headers_json TEXT');
+  db.exec('ALTER TABLE provider_template ADD COLUMN download_json TEXT');   // 他机器上这列也在（下载桥接那一代留的）
   db.prepare('UPDATE provider_template SET headers_json = ?').run(JSON.stringify(shared));
   check('7.7 造出「头在模板级、槽里没有」的现场',
     db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'headers_json')
     && !listTemplatesV2(db)[0].sync.submit.headers);
   ensureV2Schema(db);
   const cols = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
-  check('7.8 下次启动删掉 headers_json（不让位、不重建）', !cols.includes('headers_json'), cols.join(','));
+  check('7.8 下次启动删掉 headers_json 与 download_json（不让位、不重建）',
+    !cols.includes('headers_json') && !cols.includes('download_json'), cols.join(','));
   const got = listTemplatesV2(db).find((t) => t.id === 'verify-image');
   eq('7.9 删列前把那对头并进没有自己 headers 的槽', got.sync.submit.headers, shared);
   check('7.10 已经有自己 headers 的槽原样不动（异步开关头不被覆盖、也不被删）',

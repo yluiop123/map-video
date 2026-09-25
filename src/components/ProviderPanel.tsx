@@ -37,7 +37,6 @@ const REQ_TITLE: Record<ReqKey, { zh: string; en: string }> = {
   'sync.submit': { zh: '同步 · 提交', en: 'Sync · submit' },
   'async.submit': { zh: '异步 · 提交', en: 'Async · submit' },
   'async.query': { zh: '异步 · 查询', en: 'Async · query' },
-  download: { zh: '桥接 · 下载', en: 'Bridge · download' },
   upload: { zh: '桥接 · 上传', en: 'Bridge · upload' },
   clone: { zh: '核心 · 克隆音色', en: 'Core · clone' },
 };

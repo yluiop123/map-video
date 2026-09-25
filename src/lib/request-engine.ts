@@ -1,7 +1,7 @@
 /**
  * request-engine.ts — 接口模板的求值与执行（「模板即数据」的那一半）
  *
- * 形状照 `docs/provider-engine.md`：一份模板 = 一行（同步 / 异步 / 桥接 / 克隆都在里面），
+ * 形状照 `docs/provider-engine.md`：一份模板 = 一行（同步 / 异步 / 上传 / 克隆都在里面），
  * 参数分三层（实例级 / 请求级 / 调用级），占位符统一 `${x}`，中间变量靠 `outputs` 隐式流转。
  * **这里没有按厂商名写的分支**：三家的差异（认证头、taskId 在 path 还是 body、hex 还是 url、
  * 发音修正的数组形状）全部是模板里的数据。
@@ -13,7 +13,7 @@ import { JSONPath } from 'jsonpath-plus';
 
 export type Category = 'llm' | 'tts' | 'image';
 /** 请求在模板里的位置；界面与 values.requests 都用这个名字 */
-export type ReqKey = 'sync.submit' | 'async.submit' | 'async.query' | 'download' | 'upload' | 'clone';
+export type ReqKey = 'sync.submit' | 'async.submit' | 'async.query' | 'upload' | 'clone';
 export type ValueType =
   | 'string' | 'text' | 'number' | 'boolean' | 'enum' | 'multiEnum' | 'array' | 'secret' | 'file' | 'json';
 /** 产物封装方式：binary 响应体即产物 / hex / base64 / url 是带时效的链接 */
@@ -67,16 +67,18 @@ export interface RequestDef {
 
 /**
  * 产物在响应里以什么形式给 —— 整份模板问一次，同步与异步共用。
- * `none` 是 llm 那种「没有产物，取文本」；`viaDownload` 表示地址还要再问一次（走 download 桥接）。
+ * `none` 是 llm 那种「没有产物，取文本」；`url` 是带时效的链接，**当场下载**（不留到以后）。
  */
-export type ArtifactEncoding = 'none' | 'binary' | 'base64' | 'hex' | 'url' | 'viaDownload';
+export type ArtifactEncoding = 'none' | 'binary' | 'base64' | 'hex' | 'url';
+/** 真要还原成字节时的四种封装（`none` 没有产物可言） */
+export type ArtifactFormat = Exclude<ArtifactEncoding, 'none'>;
 
 /**
  * 能力开关：模板头上那几个问题的答案。**这是唯一输入** —— 该有哪些接口槽、
  * 每槽必须交出哪些字段，全部由它推导，不再让人自己挑。
  */
 export interface Caps {
-  /** 接法：只要同步 / 只要异步 / 两套都有（llm 恒 sync） */
+  /** 调用方式：只同步 / 只异步 / 两套都有（llm 恒 sync）；界面上是两个复选框 */
   modes: 'sync' | 'async' | 'both';
   /** 产物怎么到手（llm 用 none） */
   artifact: ArtifactEncoding;
@@ -97,8 +99,6 @@ export interface TemplateDef {
   instanceParams?: ParamSpec[];
   sync?: { submit?: RequestDef };
   async?: { submit?: RequestDef; query?: RequestDef };
-  /** 桥接：fileId → 最终下载地址（产物要再问一次才有） */
-  download?: RequestDef;
   /** 桥接：本地文件 → fileId */
   upload?: RequestDef;
   /** 核心：参考音频 → 音色 ID */
@@ -190,7 +190,7 @@ export function secretKeysOf(tpl: TemplateDef, reqKey: ReqKey): string[] {
     .map((p) => p.key);
 }
 
-export const REQ_KEYS: ReqKey[] = ['sync.submit', 'async.submit', 'async.query', 'download', 'upload', 'clone'];
+export const REQ_KEYS: ReqKey[] = ['sync.submit', 'async.submit', 'async.query', 'upload', 'clone'];
 
 export const CATEGORY_LABEL: Record<Category, string> = { llm: '文案生成', tts: '语音', image: '图片' };
 
@@ -205,7 +205,6 @@ export function slotsOf(tpl: TemplateDef): ReqKey[] {
   const out: ReqKey[] = [];
   if (c.modes !== 'async') out.push('sync.submit');
   if (c.modes !== 'sync') out.push('async.submit', 'async.query');
-  if (c.artifact === 'viaDownload') out.push('download');
   if (tpl.category === 'tts' && c.clone) {
     if (c.uploadFirst) out.push('upload');
     out.push('clone');
@@ -225,7 +224,7 @@ export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
   // 产物要不要从响应里取字段：响应体本身就是产物（binary）时没有这一项，没产物（llm）也没有
   const artifact: OutputSpec[] =
     c.artifact === 'none' || c.artifact === 'binary' ? [] :
-      [{ name: ARTIFACT_KEY, label: '产物', hint: c.artifact === 'viaDownload' ? '这一步交出的地址，之后交给下载那一步' : c.artifact === 'url' ? '图片或音频的下载地址（带时效，当场下载）' : '图片或音频的字节所在字段', required: true }];
+      [{ name: ARTIFACT_KEY, label: '产物', hint: c.artifact === 'url' ? '图片或音频的下载地址（带时效，当场下载）' : '图片或音频的字节所在字段', required: true }];
   switch (key) {
     case 'sync.submit':
       return tpl.category === 'llm'
@@ -238,8 +237,6 @@ export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
         { name: 'status', label: '任务状态', hint: '没取到它就一直算「还在跑」，查到次数上限才失败', required: true },
         ...artifact, ...err,
       ];
-    case 'download':
-      return [{ name: ARTIFACT_KEY, label: '最终下载地址', hint: '当场下载，绝不把链接留给以后', required: true }, ...err];
     case 'upload':
       return [{ name: 'fileId', label: '文件号', hint: '下一步建音色要用它', required: true }, ...err];
     case 'clone':
@@ -248,14 +245,14 @@ export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
 }
 
 /** 这一格该不该出现（界面与校验共用；不再让 supports 读槽位、引擎读开关） */
-export function supportsOf(tpl: TemplateDef, key: 'clone' | 'upload' | 'download' | 'async'): boolean {
+export function supportsOf(tpl: TemplateDef, key: 'clone' | 'upload' | 'async'): boolean {
   const slots = tpl ? slotsOf(tpl) : [];
   return key === 'async' ? slots.includes('async.submit') : slots.includes(key);
 }
 
-/** 产物按什么形式解码（`viaDownload` 走完桥接就是 `url`） */
-export function artifactFormatOf(tpl: TemplateDef): Exclude<ArtifactEncoding, 'viaDownload'> {
-  return tpl.caps.artifact === 'viaDownload' ? 'url' : tpl.caps.artifact;
+/** 产物按什么形式还原（`none` = 没有产物，调用处自己判） */
+export function artifactFormatOf(tpl: TemplateDef): ArtifactEncoding {
+  return tpl.caps.artifact;
 }
 
 // ========== 请求定位 ==========
@@ -265,7 +262,6 @@ export function requestOf(tpl: TemplateDef, key: ReqKey): RequestDef | undefined
     case 'sync.submit': return tpl.sync?.submit;
     case 'async.submit': return tpl.async?.submit;
     case 'async.query': return tpl.async?.query;
-    case 'download': return tpl.download;
     case 'upload': return tpl.upload;
     case 'clone': return tpl.clone;
   }
@@ -546,10 +542,9 @@ function b64ToBytes(s: string): Uint8Array {
  */
 export async function toBytes(
   res: HttpResult,
-  format: Exclude<ArtifactEncoding, 'none' | 'viaDownload'>,
+  format: ArtifactFormat,
   values: Record<string, unknown>,
   deps: Deps,
-  downloadHeaders?: Record<string, string>,
 ): Promise<{ bytes: Uint8Array; mime?: string; viaUrl?: string }> {
   if (!format || format === 'binary') {
     if (res.bytes) return { bytes: res.bytes, mime: res.contentType };
@@ -563,7 +558,7 @@ export async function toBytes(
   }
   if (format === 'hex') return { bytes: hexToBytes(raw) };
   if (format === 'base64') return { bytes: b64ToBytes(raw) };
-  const got = await deps.fetchBytes(raw, downloadHeaders);
+  const got = await deps.fetchBytes(raw);
   return { bytes: got.bytes, mime: got.mime, viaUrl: raw };
 }
 
@@ -589,7 +584,7 @@ async function http(tpl: TemplateDef, inst: InstanceDef, key: ReqKey, deps: Deps
   return { req, res, values };
 }
 
-/** 同步：提交 →（配了 download 桥接就再拿一次 URL）→ 还原产物 */
+/** 同步：提交 → 按 `caps.artifact` 还原产物（`url` 就是当场下载，不再多一问） */
 export async function runSync(
   tpl: TemplateDef, inst: InstanceDef, deps: Deps,
   key: ReqKey, callArgs: Record<string, unknown> = {}, upstream0: Record<string, unknown> = {},
@@ -604,21 +599,10 @@ export async function runSync(
 
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
-  if (tpl.caps.artifact === 'viaDownload') {
-    // 产物地址要再问一次：先走 download 桥接，拿到地址当场下载
-    const dl = await http(tpl, inst, 'download', deps, callArgs, up);
-    Object.assign(up, dl.values);
-    steps.push({ key: 'download', url: redact(dl.req, secretsOf(tpl, inst)).url, status: dl.res.status, values: dl.values });
-    const dlErr = errorOf(dl.values, dl.res);
-    if (dlErr) throw new EngineError(dlErr, dl.res.status);
-    const got = await toBytes(dl.res, 'url', dl.values, deps);
+  const enc = artifactFormatOf(tpl);
+  if (enc !== 'none') {
+    const got = await toBytes(first.res, enc, first.values, deps);
     bytes = got.bytes; mime = got.mime;
-  } else {
-    const enc = artifactFormatOf(tpl);
-    if (enc !== 'none') {
-      const got = await toBytes(first.res, enc, first.values, deps);
-      bytes = got.bytes; mime = got.mime;
-    }
   }
   return { values: up, bytes, mime, steps };
 }
@@ -643,7 +627,7 @@ export async function submitAsync(
   };
 }
 
-/** 异步第二步：查一次，命中成功就把产物取回来（可能再走 download 桥接） */
+/** 异步第二步：查一次，命中成功就把产物取回来 */
 export async function queryOnce(
   tpl: TemplateDef, inst: InstanceDef, deps: Deps, upstream: Record<string, unknown>,
 ): Promise<{ outcome: Outcome; status?: string; values: Record<string, unknown>; bytes?: Uint8Array; mime?: string; step: Step }> {
@@ -658,18 +642,10 @@ export async function queryOnce(
 
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
-  if (tpl.caps.artifact === 'viaDownload') {
-    // 查询只交出中间量（固定项「产物」），地址要靠 download 桥接再问一次
-    const dl = await http(tpl, inst, 'download', deps, {}, values);
-    Object.assign(values, dl.values);
-    const got2 = await toBytes(dl.res, 'url', dl.values, deps);
+  const enc = artifactFormatOf(tpl);
+  if (enc !== 'none') {
+    const got2 = await toBytes(got.res, enc, values, deps);
     bytes = got2.bytes; mime = got2.mime;
-  } else {
-    const enc = artifactFormatOf(tpl);
-    if (enc !== 'none') {
-      const got2 = await toBytes(got.res, enc, values, deps);
-      bytes = got2.bytes; mime = got2.mime;
-    }
   }
   return { outcome, status: String(got.values.status ?? ''), values, bytes, mime, step };
 }
@@ -729,7 +705,6 @@ export const REQ_LABEL: Record<ReqKey, string> = {
   'sync.submit': '同步 · 提交',
   'async.submit': '异步 · 提交',
   'async.query': '异步 · 查询',
-  download: '桥接 · 下载',
   upload: '桥接 · 上传',
   clone: '核心 · 克隆音色',
 };

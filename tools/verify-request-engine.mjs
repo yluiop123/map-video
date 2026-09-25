@@ -3,7 +3,7 @@
  *
  * 覆盖：路径两种写法与未命中、三层参数取值优先级、`${}` 求值（类型保留 / 可选参数没填即删键 /
  *       没声明的占位符点名）、headers 逐请求覆盖、outputs 隐式流转、hotFix 数据驱动转换、
- *       产物四种封装（binary / hex / base64 / url）与 download 桥接当场下载、
+ *       产物四种封装（binary / hex / base64 / url），url 一律当场下载、
  *       异步两步（提交 → 两枚举判定 → 取产物）、克隆的一体式与分离式、密钥打码、模板自检，
  *       以及全部内置模板逐份试构造。
  * 运行：node --experimental-strip-types tools/verify-request-engine.mjs
@@ -127,7 +127,7 @@ console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
   eq('3.8 字符串数字按声明转成数字（只看 valueType，没有加工那格）', buildRequest(t3, inst('x'), 'sync.submit', { n: '3' }).req.body.n, 3);
 }
 
-// ========== 4. 产物四种封装与桥接 ==========
+// ========== 4. 产物四种封装（binary / hex / base64 / url） ==========
 console.log('\n[4] 产物还原');
 {
   const tts = seedTemplate('qwen-tts');
@@ -149,21 +149,9 @@ console.log('\n[4] 产物还原');
   const d4 = mk([{ on: '/x', res: json({ data: { audio: 'AAEC' } }) }]);
   eq('4.6 base64 解码', Array.from((await runSync(b64T, inst('qwen-tts'), d4.deps, 'sync.submit', {})).bytes ?? []), [0, 1, 2]);
 
-  const bridge = {
-    ...bin,
-    caps: { ...bin.caps, artifact: 'viaDownload' },
-    sync: { submit: { path: '${baseUrl}/submit', body: {}, outputs: { artifact: 'data.file_id' } } },
-    download: { path: '${baseUrl}/files/retrieve?file_id=${artifact}', method: 'GET', outputs: { artifact: 'file.download_url' } },
-  };
-  const d5 = mk([
-    { on: '/submit', res: json({ data: { file_id: 'F1' } }) },
-    { on: 'retrieve', res: json({ file: { download_url: 'https://cdn/f1' } }) },
-  ]);
-  const via = await runSync(bridge, inst('qwen-tts'), d5.deps, 'sync.submit', {});
-  eq('4.7 产物要再问一次：先取中间量再拿地址下载', [via.bytes?.length, d5.sent.map((x) => (x.url.includes('retrieve') ? 'download' : 'submit'))], [4, ['submit', 'download']]);
   const noProd = await runSync(seedTemplate('deepseek-chat'), inst('deepseek-chat'), mk([{ on: '/chat/completions', res: json({ choices: [{ message: { content: '好' } }] }) }]).deps,
     'sync.submit', { systemPrompt: 'a', userPrompt: 'b' });
-  check('4.8 文案类没有产物（caps.artifact=none）→ bytes 留空不抛错', noProd.bytes === undefined && noProd.values.content === '好', noProd.bytes);
+  check('4.7 文案类没有产物（caps.artifact=none）→ bytes 留空不抛错', noProd.bytes === undefined && noProd.values.content === '好', noProd.bytes);
 }
 
 // ========== 5. 异步两步 ==========
