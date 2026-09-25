@@ -153,21 +153,25 @@ export function TemplatesPane() {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[11px]">
-              <label className="flex items-center gap-2">
-                <Switch id="tpl-clone" checked={!!tpl.useClone} onCheckedChange={(v) => patch({ ...tpl, useClone: v })} />
-                <Label htmlFor="tpl-clone" className="text-[11px] font-normal">{t('有克隆音色接口', 'voice clone')}</Label>
-              </label>
-              <label className="flex items-center gap-2">
-                <Switch id="tpl-upload" checked={!!tpl.hasUpload} disabled={!tpl.useClone} onCheckedChange={(v) => patch({ ...tpl, hasUpload: v })} />
-                <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('克隆前先上传拿 fileId', 'upload first')}</Label>
-              </label>
-              <label className="flex items-center gap-2">
-                <span className="text-muted-foreground text-[10px]">{t('参考音频采样率', 'ref rate')}</span>
-                <Input type="number" value={tpl.refSampleRateHz ?? ''} className="h-6 w-24 text-[10px]"
-                  onChange={(e) => patch({ ...tpl, refSampleRateHz: e.target.value ? Number(e.target.value) : undefined })} />
-              </label>
-            </div>
+            {/* 克隆音色是语音这一类独有的事：文案 / 图片既不建克隆槽（见 addable），
+                就不该长出这三个开关 —— 摆了也只会让人去猜它是干什么的。 */}
+            {tpl.category === 'tts' && (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[11px]">
+                <label className="flex items-center gap-2">
+                  <Switch id="tpl-clone" checked={!!tpl.useClone} onCheckedChange={(v) => patch({ ...tpl, useClone: v })} />
+                  <Label htmlFor="tpl-clone" className="text-[11px] font-normal">{t('有克隆音色接口', 'voice clone')}</Label>
+                </label>
+                <label className="flex items-center gap-2">
+                  <Switch id="tpl-upload" checked={!!tpl.hasUpload} disabled={!tpl.useClone} onCheckedChange={(v) => patch({ ...tpl, hasUpload: v })} />
+                  <Label htmlFor="tpl-upload" className="text-[11px] font-normal">{t('克隆前先上传拿 fileId', 'upload first')}</Label>
+                </label>
+                <label className="flex items-center gap-2">
+                  <span className="text-muted-foreground text-[10px]">{t('参考音频采样率', 'ref rate')}</span>
+                  <Input type="number" value={tpl.refSampleRateHz ?? ''} className="h-6 w-24 text-[10px]"
+                    onChange={(e) => patch({ ...tpl, refSampleRateHz: e.target.value ? Number(e.target.value) : undefined })} />
+                </label>
+              </div>
+            )}
 
             <JsonBox label="Headers" value={tpl.headers ?? {}} onChange={(headers) => patch({ ...tpl, headers: headers as Record<string, unknown> })}
               hint={t('所有请求共用一份，值里可写 ${apiKey}', 'shared by every request; ${apiKey} allowed')} />
