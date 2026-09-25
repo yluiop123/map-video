@@ -135,9 +135,11 @@ const result = {
   mutationsPerSec: +(probe.mutations / SECS).toFixed(1),
   idleShare, topSelf: top,
 };
-// 两道护栏：rAF 不到 60Hz = 被后台节流；播放头没推进 = 根本没在播（不在编辑器页 / 被打断）。
+// 两道护栏：帧时≈1000ms = 被后台节流（rAF 钉在 1Hz）；播放头没推进 = 根本没在播（不在编辑器页 / 被打断）。
 // 这两种数字存进基线都会害了后面的对比，所以直接判无效、不落盘。
-result.valid = result.fps >= 30 && result.endFrame >= 10;
+// 注意**不能拿 fps 当护栏**：几百元素的重场景本来就只有个位数 fps（实测 340 元素 6.3fps、
+// 中位 183.6ms、profiler 里 (idle) 为 0），那是要测的目标而不是脏数据；被节流时中位帧时是 1001ms。
+result.valid = result.medianMs < 900 && result.endFrame >= 10;
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const file = path.join(OUT_DIR, `${LABEL}.json`);
@@ -149,8 +151,8 @@ for (const k of K) console.log(`  ${k.padEnd(16)} ${result[k]}`);
 console.log(`  函数自耗时 top（采样 ${total} 个，按 ${SECS}s 折算）:`);
 for (const t of top.slice(0, 12)) console.log(`    ${String(t.ms).padStart(5)}ms  ${t.fn}`);
 if (!result.valid) {
-  if (result.fps < 30) {
-    console.log(`\n!! rAF 只有 ${result.fps} fps —— 页面被后台节流了。用 MV_BENCH=1 重启桌面端（关掉 Chromium 后台节流），或把窗口切到前台。`);
+  if (result.medianMs >= 900) {
+    console.log(`\n!! 中位帧时 ${result.medianMs}ms（${result.fps} fps）—— rAF 被钉在 1Hz，页面被后台节流了。用 MV_CDP=9223 MV_BENCH=1 重启桌面端，或把窗口切到前台。`);
   }
   if (result.endFrame < 10) {
     console.log(`\n!! 6 秒里播放头只走到第 ${result.endFrame} 帧 —— 根本没在播（不在编辑器页？播放被打断？）。这份数字无效。`);
