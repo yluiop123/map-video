@@ -2,7 +2,7 @@ import { IS_DESKTOP } from './backend';
 import { useProviderStore } from '../stores/providerStore';
 import {
   EngineError, buildRequest, redact, runSync, runClone, submitAsync, queryOnce,
-  requestOf, submitKeyOf, secretsOf,
+  requestOf, submitKeyOf, secretsOf, supportsOf,
   type Category, type Deps, type InstanceDef, type ReqKey, type ResolvedRequest, type TemplateDef,
 } from './request-engine';
 
@@ -25,11 +25,10 @@ export function templateOf(inst: InstanceDef | null | undefined): TemplateDef | 
 
 export const categoryOf = (inst: InstanceDef | null | undefined): Category | undefined => templateOf(inst)?.category;
 
-/** 这份模板有没有某条请求（VoicePicker 用它决定「克隆音色」区显示与否） */
+/** 这条实例要不要显示「克隆音色」那一区：判据是模板的**能力开关**（与引擎、保存前校验同一处） */
 export function supports(inst: InstanceDef | null | undefined, key: 'clone' | 'upload' | 'download' | 'async'): boolean {
   const t = templateOf(inst);
-  if (!t) return false;
-  return key === 'async' ? !!t.async?.submit : !!t[key];
+  return t ? supportsOf(t, key) : false;
 }
 
 /** 参数的声明位置：实例级 + 两条提交接口的请求级 —— 与引擎取值同一批来源，界面不另立一套 */
@@ -181,7 +180,7 @@ export async function submitStep(inst: InstanceDef, callArgs: Record<string, unk
   const tpl = tplOf(inst);
   if (submitKeyOfInstance(inst) === 'sync.submit') {
     const r = await runSync(tpl, inst, deps, 'sync.submit', callArgs);
-    if (!r.bytes?.length) throw new EngineError('这一步没拿到产物，检查模板的产物路径与 outputFormat');
+    if (!r.bytes?.length) throw new EngineError('这一步没拿到产物，检查模板里固定项「产物」的路径');
     return { done: true, bytes: r.bytes, mime: r.mime };
   }
   const r = await submitAsync(tpl, inst, deps, callArgs);
@@ -233,7 +232,7 @@ export interface TtsResult {
 /** 合成一段配音；voiceId 传了就用它（内置 / 克隆音色都是厂商的 voice id），不传用实例的默认音色 */
 export async function callTTS(inst: InstanceDef, text: string, voiceId?: string, extra: Record<string, unknown> = {}): Promise<TtsResult> {
   const r = await run(inst, { text, reqId: `mv-${Date.now()}`, ...(voiceId ? { voice: voiceId } : {}), ...extra });
-  if (!r.bytes?.length) throw new EngineError('没拿到音频：检查模板的产物路径与 outputFormat');
+  if (!r.bytes?.length) throw new EngineError('没拿到音频：检查模板里固定项「产物」的路径');
   const dataUrl = await blobToDataUrl(new Blob([r.bytes], { type: r.mime || 'audio/mpeg' }));
   return { dataUrl, durationSec: await decodeAudioDuration(dataUrl, text) };
 }
@@ -263,8 +262,8 @@ export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targe
     audioDataUri: `data:audio/wav;base64,${bytesToBase64(wav)}`,
     prefix: preferred, preferredName: preferred,
   });
-  const vid = r.values.voiceId ?? r.values.voice;
-  if (typeof vid !== 'string' || !vid) throw new EngineError('克隆响应里没取到音色 ID，检查 clone.outputs.voiceId 路径');
+  const vid = r.values.voiceId;
+  if (typeof vid !== 'string' || !vid) throw new EngineError('克隆响应里没取到音色 ID，检查 clone 里固定项「音色 ID」的路径');
   return vid;
 }
 

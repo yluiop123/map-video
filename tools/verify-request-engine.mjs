@@ -132,29 +132,31 @@ console.log('\n[4] 产物还原');
 
   const bin = seedTemplate('qwen-tts');
   const d2 = mk([{ on: '*', res: bytesOf(new Uint8Array([9, 9, 9])) }]);
-  const t2 = { ...bin, sync: { submit: { ...bin.sync.submit, outputFormat: 'binary', outputs: undefined } } };
-  eq('4.4 binary = 响应体即产物', Array.from((await runSync(t2, inst('qwen-tts'), d2.deps, 'sync.submit', { text: 'a', voice: 'v' })).bytes ?? []), [9, 9, 9]);
+  const t2 = { ...bin, caps: { ...bin.caps, artifact: 'binary' }, sync: { submit: { ...bin.sync.submit, outputs: undefined } } };
+  eq('4.4 binary = 响应体即产物（不需要固定项）', Array.from((await runSync(t2, inst('qwen-tts'), d2.deps, 'sync.submit', { text: 'a', voice: 'v' })).bytes ?? []), [9, 9, 9]);
 
-  const hexT = { ...bin, sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { audio: 'data.audio' }, outputFormat: 'hex' } } };
+  const hexT = { ...bin, caps: { ...bin.caps, artifact: 'hex' }, sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { artifact: 'data.audio' } } } };
   const d3 = mk([{ on: '/x', res: json({ data: { audio: 'deadbeef' } }) }]);
-  eq('4.5 hex 解码', Array.from((await runSync(hexT, inst('qwen-tts'), d3.deps, 'sync.submit', {})).bytes ?? []), [0xde, 0xad, 0xbe, 0xef]);
-  const b64T = { ...hexT, sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { audio: 'data.audio' }, outputFormat: 'base64' } } };
+  eq('4.5 hex 解码（产物只认 artifact 这一个名字）', Array.from((await runSync(hexT, inst('qwen-tts'), d3.deps, 'sync.submit', {})).bytes ?? []), [0xde, 0xad, 0xbe, 0xef]);
+  const b64T = { ...hexT, caps: { ...hexT.caps, artifact: 'base64' } };
   const d4 = mk([{ on: '/x', res: json({ data: { audio: 'AAEC' } }) }]);
   eq('4.6 base64 解码', Array.from((await runSync(b64T, inst('qwen-tts'), d4.deps, 'sync.submit', {})).bytes ?? []), [0, 1, 2]);
 
   const bridge = {
     ...bin,
-    sync: { submit: { path: '${baseUrl}/submit', body: {}, outputs: { fileId: 'data.file_id' } } },
-    download: { path: '${baseUrl}/files/retrieve?file_id=${fileId}', method: 'GET', outputs: { url: 'file.download_url' } },
+    caps: { ...bin.caps, artifact: 'viaDownload' },
+    sync: { submit: { path: '${baseUrl}/submit', body: {}, outputs: { artifact: 'data.file_id' } } },
+    download: { path: '${baseUrl}/files/retrieve?file_id=${artifact}', method: 'GET', outputs: { artifact: 'file.download_url' } },
   };
   const d5 = mk([
     { on: '/submit', res: json({ data: { file_id: 'F1' } }) },
     { on: 'retrieve', res: json({ file: { download_url: 'https://cdn/f1' } }) },
   ]);
   const via = await runSync(bridge, inst('qwen-tts'), d5.deps, 'sync.submit', {});
-  eq('4.7 配了 download 桥接：先取 fileId 再拿地址下载', [via.bytes?.length, d5.sent.map((x) => (x.url.includes('retrieve') ? 'download' : 'submit'))], [4, ['submit', 'download']]);
-  const noProd = await runSync({ ...bridge, download: undefined, sync: { submit: { path: '${baseUrl}/submit', body: {} } } }, inst('qwen-tts'), mk([{ on: '/submit', res: json({ ok: 1 }) }]).deps, 'sync.submit', {});
-  check('4.8 只取字段不要产物（文案类就是这样）→ bytes 留空不抛错', noProd.bytes === undefined, noProd.bytes);
+  eq('4.7 产物要再问一次：先取中间量再拿地址下载', [via.bytes?.length, d5.sent.map((x) => (x.url.includes('retrieve') ? 'download' : 'submit'))], [4, ['submit', 'download']]);
+  const noProd = await runSync(seedTemplate('deepseek-chat'), inst('deepseek-chat'), mk([{ on: '/chat/completions', res: json({ choices: [{ message: { content: '好' } }] }) }]).deps,
+    'sync.submit', { systemPrompt: 'a', userPrompt: 'b' });
+  check('4.8 文案类没有产物（caps.artifact=none）→ bytes 留空不抛错', noProd.bytes === undefined && noProd.values.content === '好', noProd.bytes);
 }
 
 // ========== 5. 异步两步 ==========
@@ -182,13 +184,18 @@ console.log('\n[5] 异步：提交 → 轮询 → 取产物');
   // 2026-09-23 真机抓到的完整响应（task 276a888f…，排队 9 分钟）原样留一份：
   // 谁把产物路径改回文档写法，这条就会红
   const REAL = { request_id: 'x', output: { task_id: '276a888f', task_status: 'SUCCEEDED', submit_time: '2026-09-23 20:34:42.491', end_time: '2026-09-23 20:43:57.991', choices: [{ message: { content: [{ type: 'image', image: 'https://cdn.real/i.png' }] }, finish_reason: 'stop' }], rewrite_status: 'success' }, usage: { output_image_count: 1 } };
-  eq('5.7b 真机响应的产物路径取得到', applyOutputs(REAL, tpl.async.query.outputs).url, 'https://cdn.real/i.png');
+  eq('5.7b 真机响应的产物路径取得到', applyOutputs(REAL, tpl.async.query.outputs).artifact, 'https://cdn.real/i.png');
   eq('5.8 状态值大小写不敏感（各家写法不一）', classify('Succeeded', ['succeeded'], ['failed']), 'success');
   await throws('5.9 5xx / 429 带状态码抛回（调度层才知道能不能重试）', async () => {
     const d = mk([{ on: '/tasks/', res: () => ({ status: 429, text: 'too many' }) }]);
     try { await queryOnce(tpl, i, d.deps, { taskId: 'T1' }); }
     catch (e) { if (e.status !== 429) throw new EngineError(`状态码没带回来：${e.status}`); throw e; }
   }, (e) => e.status === 429);
+  // 任务号取不到 = 后面没法查，必须当场点名（旧实现会「拿第一个值」歪打正着，把错误路径藏起来）
+  await throws('5.10 提交没交出任务号 → 点名，不再拿第一个值兜底', async () => {
+    const d = mk([{ on: 'image-generation', res: json({ output: { request_id: 'R1' } }) }]);
+    return submitAsync(tpl, i, d.deps, { prompt: '猫' });
+  }, (e) => /任务号/.test(String(e?.message)));
 }
 
 // ========== 6. 克隆 ==========
@@ -202,7 +209,11 @@ console.log('\n[6] 音色克隆');
   eq('6.2 复刻目标模型走请求级参数（合成必须同款）', body.input.target_model, 'qwen3-tts-vc-2026-01-22');
   eq('6.3 外层 model 是写死的注册服务名', body.model, 'qwen-voice-enrollment');
 
-  const up = { ...qwen, hasUpload: true, upload: { path: '${baseUrl}/files/upload', body: {}, outputs: { fileId: 'file.file_id' } }, clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileId}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } } };
+  const up = {
+    ...qwen, caps: { ...qwen.caps, clone: true, uploadFirst: true },
+    upload: { path: '${baseUrl}/files/upload', body: {}, outputs: { fileId: 'file.file_id' } },
+    clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${fileId}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
+  };
   const d2 = mk([{ on: 'files/upload', res: json({ file: { file_id: 'F7' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-7' }) }]);
   const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { preferredName: 'mv' });
   eq('6.4 分离式：先上传拿 fileId 再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
@@ -228,12 +239,22 @@ console.log('\n[8] 保存前自检');
   check('8.1 内置模板全部自检干净', SEED_TEMPLATES.every((t) => validateTemplate(t).length === 0),
     SEED_TEMPLATES.map((t) => [t.id, validateTemplate(t)]).filter(([, x]) => x.length));
   const base = seedTemplate('qwen-image');
-  check('8.2 有异步提交没查询 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit } }).some((x) => x.includes('查询')));
-  check('8.3 查询没配成功值 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit, query: { ...base.async.query, successValues: [] } } }).some((x) => x.includes('successValues')));
+  check('8.2 开关要求异步、却没配查询 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit } }).some((x) => x.includes('查询')));
+  check('8.3 查询没配成功值 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit, query: { ...base.async.query, successValues: [] } } }).some((x) => x.includes('状态值')));
   check('8.4 实例参数同名重复 → 点名', validateTemplate({ ...base, instanceParams: [...base.instanceParams, { key: 'baseUrl', label: '重' }] }).some((x) => x.includes('重复')));
-  check('8.5 勾了克隆却没配 clone 请求 → 点名', validateTemplate({ ...base, category: 'tts', useClone: true }).some((x) => x.includes('clone')));
-  check('8.6 谁都能自己加异步（分类不限制接口形状）', validateTemplate({ ...seedTemplate('deepseek-chat'), async: base.async }).length === 0,
-    validateTemplate({ ...seedTemplate('deepseek-chat'), async: base.async }));
+  check('8.5 开了克隆却没配 clone 那一格 → 点名', validateTemplate({ ...base, category: 'tts', caps: { ...base.caps, clone: true } }).some((x) => x.includes('克隆音色')));
+  check('8.6 谁都能自己加异步（分类不限制接口形状）', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: base.async }).length === 0,
+    validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: base.async }));
+  // 固定项：名字写死、路径必填 —— 漏了要在保存前就点名，而不是等运行时（status 漏填会一路查到超时）
+  const noStatus = { ...base, async: { submit: base.async.submit, query: { ...base.async.query, outputs: { artifact: 'x' } } } };
+  check('8.7 固定项「任务状态」没填路径 → 点名', validateTemplate(noStatus).some((x) => x.includes('任务状态')), validateTemplate(noStatus));
+  const noArtifact = { ...base, sync: { submit: { ...base.sync.submit, outputs: { error: 'e' } } } };
+  check('8.8 固定项「产物」没填路径 → 点名', validateTemplate(noArtifact).some((x) => x.includes('产物')), validateTemplate(noArtifact));
+  const shadow = { ...base, sync: { submit: { ...base.sync.submit, outputs: { ...base.sync.submit.outputs, size: 'x.y' } } } };
+  check('8.9 自定义变量与参数同名 → 点名（同一个 ${size} 会有两个来源）', validateTemplate(shadow).some((x) => x.includes('size')), validateTemplate(shadow));
+  const stray = { ...base, clone: { path: '${baseUrl}/x', body: {} } };
+  check('8.10 开关里不需要 clone、却留着 clone 那一格 → 点名', validateTemplate(stray).some((x) => x.includes('克隆音色')), validateTemplate(stray));
+  check('8.11 文案类不该有产物 / 克隆开关', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'sync', artifact: 'url' } }).length > 0);
 }
 
 // ========== 9. 逐份 seed 试构造 ==========

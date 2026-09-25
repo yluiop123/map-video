@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 701 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，701 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 698 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，698 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -844,15 +844,14 @@
 
 **职责**：接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）
 
-16 列 · 主键 `tpl_id`
+15 列 · 主键 `tpl_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `tpl_id` | TEXT | `PK` | 模板 id（一行 = 一份完整模板）：deepseek-chat / qwen-image / qwen-tts / custom-1 … |
 | `name` | TEXT | `NOT NULL` | 模板名（用户自填的单个字符串，不做中英两份） · 默认 `''` |
 | `category` | TEXT | `NOT NULL` | 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK） |
-| `use_clone` | INTEGER | `NOT NULL` | 有没有克隆音色接口（只有 tts 用得上） · 默认 `0` · `CHECK (use_clone IN (0,1))` |
-| `upload` | INTEGER | `NOT NULL` | 克隆前要不要先上传拿 fileId（use_clone=1 才有意义；0 = 直接塞 base64） · 默认 `0` · `CHECK (upload IN (0,1))` |
+| `caps_json` | TEXT | `NOT NULL` | 能力开关 JSON { modes: sync\|async\|both, artifact: none\|binary\|base64\|hex\|url\|viaDownload, clone, uploadFirst }：该有哪些接口槽、每槽必须交出哪些字段，全由它推（原先 use_clone / upload 两列与「clone_json 空不空」是三份真相） · `CHECK (json_valid(caps_json))` |
 | `headers_json` | TEXT | — | 模板级请求头 JSON（这一行的所有请求共用一份） · `CHECK (headers_json IS NULL OR json_valid(headers_json))` |
 | `instance_params_json` | TEXT | — | 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json） · `CHECK (instance_params_json IS NULL OR json_valid(instance_params_json))` |
 | `sync_json` | TEXT | — | 同步接法 { submit }（一条请求直接拿产物） · `CHECK (sync_json IS NULL OR json_valid(sync_json))` |
@@ -885,7 +884,7 @@
 
 **职责**：克隆音色账本：同实例 + 同参考音频 + 同目标模型只建一次（幂等键）　**前端**：字幕生成弹窗内的「克隆音色」区（VoicePicker.tsx）+ 音色管理
 
-15 列 · 主键 `voice_row_id`
+13 列 · 主键 `voice_row_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -896,9 +895,7 @@
 | `source_asset_id` | TEXT | `NOT NULL` `FK → asset RESTRICT` | 参考音频原件（失效时靠它重建；删素材会被拦） |
 | `label` | TEXT | `NOT NULL` | 界面显示名（如「男声·内置」「客服音色」） · 默认 `''` |
 | `file_id` | TEXT | — | 上传桥接返回的 fileId（一体式厂商留空） |
-| `file_id_expires_at` | INTEGER | — | fileId 过期时间（epoch ms；空 = 不知过期） |
 | `voice_id` | TEXT | — | 克隆返回的厂商音色 ID |
-| `voice_id_expires_at` | INTEGER | — | voiceId 过期时间（epoch ms；空 = 不知过期） |
 | `status` | TEXT | `NOT NULL` | 状态机：cloning / ready / failed / expired（抢占靠它，只建一次） · 默认 `'cloning'` |
 | `error` | TEXT | — | 失败原因（原样带上游 code/message） |
 | `attempts` | INTEGER | `NOT NULL` | 尝试次数（重建上限判据） · 默认 `0` |

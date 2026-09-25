@@ -62,15 +62,35 @@ export interface RequestDef {
   /** 调用级参数：每次调用由界面 / 程序给（text / prompt / file / hotFix…） */
   callParams?: ParamSpec[];
   body?: unknown;
-  /** multipart 表单（上传参考音频用；file 值由引擎换成文件部分） */
+  /** multipart 表单（只有「先上传文件」那一格用得上；file 值由引擎换成文件部分） */
   form?: Record<string, unknown>;
-  /** 从响应里取字段：{ taskId: 'output.task_id' } —— 取出来的名字进作用域，下游 ${taskId} 直接用 */
+  /** 从响应里取字段：固定项名字写死（见 requiredOutputsOf），其余键是留给下游 `${x}` 的变量 */
   outputs?: Record<string, string>;
-  outputFormat?: OutputFormat;
   /** 只有 query 用；中间态不配（没命中两个列表就继续查） */
   successValues?: string[];
   failureValues?: string[];
   timeoutMs?: number;
+}
+
+/**
+ * 产物在响应里以什么形式给 —— 整份模板问一次，同步与异步共用。
+ * `none` 是 llm 那种「没有产物，取文本」；`viaDownload` 表示地址还要再问一次（走 download 桥接）。
+ */
+export type ArtifactEncoding = 'none' | 'binary' | 'base64' | 'hex' | 'url' | 'viaDownload';
+
+/**
+ * 能力开关：模板头上那几个问题的答案。**这是唯一输入** —— 该有哪些接口槽、
+ * 每槽必须交出哪些字段，全部由它推导，不再让人自己挑。
+ */
+export interface Caps {
+  /** 接法：只要同步 / 只要异步 / 两套都有（llm 恒 sync） */
+  modes: 'sync' | 'async' | 'both';
+  /** 产物怎么到手（llm 用 none） */
+  artifact: ArtifactEncoding;
+  /** 要不要建音色（仅 tts） */
+  clone?: boolean;
+  /** 建音色前要不要先上传文件拿 fileId（false = 音频 base64 直接塞 body） */
+  uploadFirst?: boolean;
 }
 
 /** 一份完整模板 */
@@ -78,16 +98,14 @@ export interface TemplateDef {
   id: string;
   name: string;
   category: Category;
-  /** 有没有克隆音色接口（仅 tts 用得上） */
-  useClone?: boolean;
-  /** 克隆前要不要先上传拿 fileId（false = 直接把音频 base64 塞进 body） */
-  hasUpload?: boolean;
+  /** 能力开关：槽位与承重输出的唯一来源 */
+  caps: Caps;
   headers?: Record<string, unknown>;
-  /** 实例级参数声明：所有请求共用（超时 / 批次并发 / 查询节奏 / 音色失效信号…） */
+  /** 实例级参数声明：所有请求共用（超时 / 批次并发 / 查询节奏…） */
   instanceParams?: ParamSpec[];
   sync?: { submit?: RequestDef };
   async?: { submit?: RequestDef; query?: RequestDef };
-  /** 桥接：fileId → 最终下载地址（同步异步共用） */
+  /** 桥接：fileId → 最终下载地址（产物要再问一次才有） */
   download?: RequestDef;
   /** 桥接：本地文件 → fileId */
   upload?: RequestDef;
@@ -184,6 +202,70 @@ export const REQ_KEYS: ReqKey[] = ['sync.submit', 'async.submit', 'async.query',
 
 export const CATEGORY_LABEL: Record<Category, string> = { llm: '文案生成', tts: '语音', image: '图片' };
 
+/** 产物在响应里的那个字段，全项目只有这一个名字 —— 引擎按它找产物，不再认 url/image/audio 那排别名 */
+export const ARTIFACT_KEY = 'artifact';
+
+// ========== 能力开关 → 槽位与承重输出（唯一推导处） ==========
+
+/** 这一份模板该有哪些接口槽 —— 由 caps 推出来，不是让人一条条加 */
+export function slotsOf(tpl: TemplateDef): ReqKey[] {
+  const c = tpl.caps;
+  const out: ReqKey[] = [];
+  if (c.modes !== 'async') out.push('sync.submit');
+  if (c.modes !== 'sync') out.push('async.submit', 'async.query');
+  if (c.artifact === 'viaDownload') out.push('download');
+  if (tpl.category === 'tts' && c.clone) {
+    if (c.uploadFirst) out.push('upload');
+    out.push('clone');
+  }
+  return REQ_KEYS.filter((k) => out.includes(k));
+}
+
+/** 某个槽必须交出的字段：名字写死、界面只能填路径。`required:false` = 建议项（不填错误信息会退化） */
+export interface OutputSpec { name: string; label: string; hint: string; required: boolean }
+
+export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
+  const c = tpl.caps;
+  const err: OutputSpec[] = [
+    { name: 'error', label: '错误信息', hint: '上游报的原文，界面直接显示它', required: false },
+    { name: 'errorCode', label: '错误码', hint: '和错误信息拼在一起，方便对文档查', required: false },
+  ];
+  // 产物要不要从响应里取字段：响应体本身就是产物（binary）时没有这一项，没产物（llm）也没有
+  const artifact: OutputSpec[] =
+    c.artifact === 'none' || c.artifact === 'binary' ? [] :
+      [{ name: ARTIFACT_KEY, label: '产物', hint: c.artifact === 'viaDownload' ? '这一步交出的地址，之后交给下载那一步' : c.artifact === 'url' ? '图片或音频的下载地址（带时效，当场下载）' : '图片或音频的字节所在字段', required: true }];
+  switch (key) {
+    case 'sync.submit':
+      return tpl.category === 'llm'
+        ? [{ name: 'content', label: '生成的文本', hint: '引擎只认这个名字', required: true }, ...err]
+        : [...artifact, ...err];
+    case 'async.submit':
+      return [{ name: 'taskId', label: '任务号', hint: '交给调度器存着，之后拿它去查', required: true }, ...err];
+    case 'async.query':
+      return [
+        { name: 'status', label: '任务状态', hint: '没取到它就一直算「还在跑」，查到次数上限才失败', required: true },
+        ...artifact, ...err,
+      ];
+    case 'download':
+      return [{ name: ARTIFACT_KEY, label: '最终下载地址', hint: '当场下载，绝不把链接留给以后', required: true }, ...err];
+    case 'upload':
+      return [{ name: 'fileId', label: '文件号', hint: '下一步建音色要用它', required: true }, ...err];
+    case 'clone':
+      return [{ name: 'voiceId', label: '音色 ID', hint: '存进音色账本，绑这条实例与目标模型', required: true }, ...err];
+  }
+}
+
+/** 这一格该不该出现（界面与校验共用；不再让 supports 读槽位、引擎读开关） */
+export function supportsOf(tpl: TemplateDef, key: 'clone' | 'upload' | 'download' | 'async'): boolean {
+  const slots = tpl ? slotsOf(tpl) : [];
+  return key === 'async' ? slots.includes('async.submit') : slots.includes(key);
+}
+
+/** 产物按什么形式解码（`viaDownload` 走完桥接就是 `url`） */
+export function artifactFormatOf(tpl: TemplateDef): Exclude<ArtifactEncoding, 'viaDownload'> {
+  return tpl.caps.artifact === 'viaDownload' ? 'url' : tpl.caps.artifact;
+}
+
 // ========== 请求定位 ==========
 
 export function requestOf(tpl: TemplateDef, key: ReqKey): RequestDef | undefined {
@@ -210,6 +292,14 @@ export function callKeysOf(tpl: TemplateDef, key: ReqKey): string[] {
 /** 这个请求的请求级参数（实例设置页按请求分区渲染） */
 export function requestParamsOf(tpl: TemplateDef, key: ReqKey): ParamSpec[] {
   return requestOf(tpl, key)?.requestParams ?? [];
+}
+
+/** 参数的显示名：模板声明了 label 就用它，否则退回 key —— 界面上不该露一排裸英文变量名 */
+export function paramLabelOf(tpl: TemplateDef, reqKey: ReqKey, paramKey: string): string {
+  const def = requestOf(tpl, reqKey);
+  const spec = [...(def?.callParams ?? []), ...(def?.requestParams ?? []), ...(tpl.instanceParams ?? [])]
+    .find((p) => p.key === paramKey);
+  return spec?.label || paramKey;
 }
 
 /** 整份模板的实例级参数（密钥那三个走 provider 的具名列，不在这里重复） */
@@ -475,12 +565,13 @@ function b64ToBytes(s: string): Uint8Array {
 }
 
 /**
- * 把响应变成字节：`binary` 直接就是响应体；hex / base64 从某个字段取；url 当场下载（时效链接绝不留到以后）。
- * 产物在哪个字段由模板的 `outputs` 决定（audio / image / url 这些名字随各家）。
+ * 把响应变成字节：`binary` 直接就是响应体；hex / base64 从 `artifact` 那一格取；
+ * `url` 当场下载（时效链接绝不留到以后）。产物在哪个字段由模板的固定项 `artifact` 决定 ——
+ * **只有这一个名字**，以前那串 `audio ?? image ?? url ?? resultUrl ?? fileUrl` 是同一条事实的五份真相。
  */
 export async function toBytes(
   res: HttpResult,
-  format: OutputFormat | undefined,
+  format: Exclude<ArtifactEncoding, 'none' | 'viaDownload'>,
   values: Record<string, unknown>,
   deps: Deps,
   downloadHeaders?: Record<string, string>,
@@ -489,11 +580,11 @@ export async function toBytes(
     if (res.bytes) return { bytes: res.bytes, mime: res.contentType };
     throw new EngineError('上游没回字节流，但这一步按「响应体即产物」配置');
   }
-  const raw = values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl;
+  const raw = values[ARTIFACT_KEY];
   if (typeof raw !== 'string' || !raw) {
-    // 把实际取到的槽位点名 —— 99% 是模板的产物路径写错了，不列出来就只能瞎猜
+    // 把实际取到的槽位点名 —— 九成是模板的产物路径写错了，不列出来就只能瞎猜
     const got = Object.entries(values).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 40) : JSON.stringify(v)}`);
-    throw new EngineError(`产物取不到（outputFormat=${format}，但 outputs 里没音频 / 图片 / 链接；这一步取到的是：${got.join('、') || '什么都没有'}）`);
+    throw new EngineError(`产物取不到（产物形式=${format}，但固定项「产物」没取到值；这一步取到的是：${got.join('、') || '什么都没有'}）`);
   }
   if (format === 'hex') return { bytes: hexToBytes(raw) };
   if (format === 'base64') return { bytes: b64ToBytes(raw) };
@@ -538,14 +629,8 @@ export async function runSync(
 
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
-  const def = requestOf(tpl, key)!;
-  if (def.outputFormat === 'url' && !tpl.download) {
-    const got = await toBytes(first.res, 'url', first.values, deps);
-    bytes = got.bytes; mime = got.mime;
-  } else if (def.outputFormat && def.outputFormat !== 'url') {
-    const got = await toBytes(first.res, def.outputFormat, first.values, deps);
-    bytes = got.bytes; mime = got.mime;
-  } else if (tpl.download) {
+  if (tpl.caps.artifact === 'viaDownload') {
+    // 产物地址要再问一次：先走 download 桥接，拿到地址当场下载
     const dl = await http(tpl, inst, 'download', deps, callArgs, up);
     Object.assign(up, dl.values);
     steps.push({ key: 'download', url: redact(dl.req, secretsOf(tpl, inst)).url, status: dl.res.status, values: dl.values });
@@ -553,8 +638,12 @@ export async function runSync(
     if (dlErr) throw new EngineError(dlErr, dl.res.status);
     const got = await toBytes(dl.res, 'url', dl.values, deps);
     bytes = got.bytes; mime = got.mime;
-  } else if (first.res.bytes) {
-    bytes = first.res.bytes; mime = first.res.contentType;
+  } else {
+    const enc = artifactFormatOf(tpl);
+    if (enc !== 'none') {
+      const got = await toBytes(first.res, enc, first.values, deps);
+      bytes = got.bytes; mime = got.mime;
+    }
   }
   return { values: up, bytes, mime, steps };
 }
@@ -566,9 +655,15 @@ export async function submitAsync(
   const got = await http(tpl, inst, 'async.submit', deps, callArgs, upstream0);
   const err = errorOf(got.values, got.res);
   if (err) throw new EngineError(err, got.res.status);
+  const taskId = String(got.values.taskId ?? '');
+  // 没有「取第一个值当任务号」这种兜底了：任务号取不到就是模板没填固定项，问下去也没法查
+  if (!taskId) {
+    const got2 = Object.keys(got.values).join('、') || '什么都没有';
+    throw new EngineError(`异步提交没交出任务号（固定项「任务号」的路径没填或取不到；这一步取到的是：${got2}）`);
+  }
   return {
     values: got.values,
-    taskId: String(got.values.taskId ?? Object.values(got.values)[0] ?? ''),
+    taskId,
     steps: [{ key: 'async.submit', url: redact(got.req, secretsOf(tpl, inst)).url, status: got.res.status, values: got.values }],
   };
 }
@@ -588,14 +683,18 @@ export async function queryOnce(
 
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
-  if (tpl.download && values.fileId !== undefined) {
+  if (tpl.caps.artifact === 'viaDownload') {
+    // 查询只交出中间量（固定项「产物」），地址要靠 download 桥接再问一次
     const dl = await http(tpl, inst, 'download', deps, {}, values);
     Object.assign(values, dl.values);
     const got2 = await toBytes(dl.res, 'url', dl.values, deps);
     bytes = got2.bytes; mime = got2.mime;
   } else {
-    const got2 = await toBytes(got.res, q.outputFormat ?? 'url', values, deps);
-    bytes = got2.bytes; mime = got2.mime;
+    const enc = artifactFormatOf(tpl);
+    if (enc !== 'none') {
+      const got2 = await toBytes(got.res, enc, values, deps);
+      bytes = got2.bytes; mime = got2.mime;
+    }
   }
   return { outcome, status: String(got.values.status ?? ''), values, bytes, mime, step };
 }
@@ -606,7 +705,7 @@ export async function runClone(
 ): Promise<RunResult> {
   const steps: Step[] = [];
   const up: Record<string, unknown> = {};
-  if (tpl.hasUpload && requestOf(tpl, 'upload')) {
+  if (tpl.caps.clone && tpl.caps.uploadFirst && requestOf(tpl, 'upload')) {
     const up1 = await http(tpl, inst, 'upload', deps, callArgs, up);
     Object.assign(up, up1.values);
     steps.push({ key: 'upload', url: redact(up1.req, secretsOf(tpl, inst)).url, status: up1.res.status, values: up1.values });
@@ -650,22 +749,59 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
 }
 
 /** 整份模板的问题清单；空数组 = 可用 */
+/** 槽位的中文名：校验消息、界面标题、文档都用这一份（原先在两个组件里各写了一份） */
+export const REQ_LABEL: Record<ReqKey, string> = {
+  'sync.submit': '同步 · 提交',
+  'async.submit': '异步 · 提交',
+  'async.query': '异步 · 查询',
+  download: '桥接 · 下载',
+  upload: '桥接 · 上传',
+  clone: '核心 · 克隆音色',
+};
+
 export function validateTemplate(tpl: TemplateDef): string[] {
   const problems: string[] = [];
-  const need = tpl.category === 'llm' ? '文案生成必须有 sync.submit' : null;
-  if (need && !tpl.sync?.submit) problems.push(need);
-  if (tpl.category !== 'llm' && !tpl.sync?.submit && !tpl.async?.submit) problems.push('至少要配一条提交接口（同步或异步）');
-  if (tpl.async?.submit && !tpl.async.query) problems.push('配了异步提交就必须配异步查询（async.query）');
-  if (tpl.async?.query && !(tpl.async.query.successValues ?? []).length) problems.push('查询接口必须配 successValues（不知道查成什么样算完成）');
-  if (tpl.useClone && !tpl.clone) problems.push('勾了「支持克隆音色」但没配 clone 请求');
-  if (tpl.hasUpload && !tpl.upload) problems.push('勾了「克隆前先上传」但没配 upload 请求');
-  for (const key of REQ_KEYS) {
+  const slots = slotsOf(tpl);
+  if (tpl.category === 'llm' && (tpl.caps.artifact !== 'none' || tpl.caps.clone)) {
+    problems.push('文案生成不该有产物或克隆开关（它只取一段文本）');
+  }
+  if (tpl.category !== 'llm' && tpl.caps.artifact === 'none') problems.push('这个用途必须交回产物，产物形式别选「没有产物」');
+  // 开关要求的槽：必须在、必须有地址、固定项必须填路径
+  for (const key of slots) {
     const def = requestOf(tpl, key);
-    if (def && key !== 'async.query' && !def.path?.trim()) problems.push(`${key} 没填 path`);
+    if (!def) { problems.push(`${REQ_LABEL[key]}：能力开关要求这一格，但还没配`); continue; }
+    if (!def.path?.trim()) problems.push(`${REQ_LABEL[key]}：没填地址`);
+    for (const o of requiredOutputsOf(tpl, key)) {
+      if (o.required && !def.outputs?.[o.name]?.trim()) {
+        problems.push(`${REQ_LABEL[key]}：固定项「${o.label}」没填路径 —— ${o.hint}`);
+      }
+    }
+  }
+  // 开关没要求的槽不该存在（否则就是开关与内容对不上，运行时按开关走、那一格永远用不到）
+  for (const key of REQ_KEYS) {
+    if (!slots.includes(key) && requestOf(tpl, key)) problems.push(`${REQ_LABEL[key]}：能力开关里不需要这一格，要么改开关要么删掉它`);
+  }
+  if (slots.includes('async.query') && !(requestOf(tpl, 'async.query')?.successValues ?? []).length) {
+    problems.push('异步查询：没配「算成功的状态值」，不知道查成什么样算完成');
   }
   const dup = new Map<string, number>();
   for (const p of tpl.instanceParams ?? []) dup.set(p.key, (dup.get(p.key) ?? 0) + 1);
   for (const [k, n] of dup) if (n > 1) problems.push(`实例级参数「${k}」重复声明了`);
+  // 自定义变量与三层参数同名 = 同一个 ${x} 有两个来源，谁赢取决于调用时给没给值 —— 必须点名
+  const declared = new Set<string>();
+  for (const p of tpl.instanceParams ?? []) declared.add(p.key);
+  for (const key of slots) {
+    const def = requestOf(tpl, key);
+    if (!def) continue;
+    for (const p of [...(def.requestParams ?? []), ...(def.callParams ?? [])]) declared.add(`${key}:${p.key}`);
+    const fixed = new Set(requiredOutputsOf(tpl, key).map((o) => o.name));
+    for (const name of Object.keys(def.outputs ?? {})) {
+      if (fixed.has(name)) continue;
+      if (declared.has(name) || declared.has(`${key}:${name}`) || (tpl.instanceParams ?? []).some((p) => p.key === name)) {
+        problems.push(`${REQ_LABEL[key]}：自定义变量「${name}」与参数声明同名，同一个 \${${name}} 会有两个来源`);
+      }
+    }
+  }
   const seen = new Set<string>();
   for (const { key, name } of referencedVars(tpl)) {
     const id = `${key}:\${${name}}`;

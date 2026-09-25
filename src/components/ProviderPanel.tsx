@@ -19,7 +19,7 @@ import { Button } from './ui/button';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  REQ_KEYS, callKeysOf, requestOf, validateTemplate,
+  REQ_KEYS, callKeysOf, paramLabelOf, requestOf, validateTemplate,
   type Category, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
 } from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
@@ -224,7 +224,8 @@ function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
         <div className="flex flex-wrap items-center gap-1.5">
           {callKeys.map((k) => (
             <label key={k} className="flex items-center gap-1 text-[10px]">
-              <span className="text-muted-foreground">{k}</span>
+              {/* 显示模板声明的名字，裸 key 只作 title */}
+              <span className="text-muted-foreground" title={k}>{paramLabelOf(tpl, cur, k)}</span>
               <Input value={inputs[k] ?? SAMPLE_CALL_ARGS[k] ?? ''} className="h-6 w-40 text-[11px]"
                 onChange={(e) => setInputs((s) => ({ ...s, [k]: e.target.value }))} />
             </label>

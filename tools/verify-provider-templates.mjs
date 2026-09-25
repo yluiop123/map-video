@@ -3,8 +3,8 @@
  *
  * 覆盖：全新库建表（不再有 provider_template_group）、模板整份逐字往返、实例多条共存与
  *       values 两段读写、真外键（删被引用的模板要拦住 / 删实例不牵连模板）、voice 幂等键、
- *       task 随项目删除被应用层清掉、异步配对的自检视图，以及三代旧形状（provider_endpoint 副本 /
- *       组表 + 每 role 一行 / 每能力一条实例）启动让位后把密钥搬进 values.instance，
+ *       task 随项目删除被应用层清掉、异步配对的自检视图，以及四代旧形状（provider_endpoint 副本 /
+ *       组表 + 每 role 一行 / 每能力一条实例 / 带 use_clone+upload 列的模板表）启动让位后把密钥搬进 values.instance，
  *       和 [8] 的 task 表换代（旧的真外键 → 弱引用，行不丢）。
  * 运行：node --experimental-sqlite tools/verify-provider-templates.mjs
  */
@@ -42,19 +42,19 @@ const fresh = () => {
 /** 一份字段给满的模板（三层参数 / outputs / 两枚举 / 桥接都上，用来验逐字往返） */
 const TPL = {
   id: 'verify-image', name: '回归用图片', category: 'image',
-  useClone: false, hasUpload: false,
+  caps: { modes: 'both', artifact: 'url' },
   headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' },
   instanceParams: [
     { key: 'baseUrl', label: '服务地址', valueType: 'string', defaultValue: 'https://x/v1' },
     { key: 'apiKey', label: 'API Key', valueType: 'secret' },
     { key: 'timeoutMs', label: '超时', valueType: 'number', defaultValue: 30000 },
   ],
-  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }], callParams: [{ key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { url: 'output.url' }, outputFormat: 'url' } },
+  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }], callParams: [{ key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { artifact: 'output.url' } } },
   async: {
     submit: { path: '${baseUrl}/submit', method: 'POST', headers: { 'X-DashScope-Async': 'enable' }, body: { prompt: '${prompt}' }, outputs: { taskId: 'output.task_id' } },
-    query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', outputs: { status: 'output.task_status', url: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'], outputFormat: 'url' },
+    query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', outputs: { status: 'output.task_status', artifact: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },
   },
-  download: { path: '${baseUrl}/files/retrieve?file_id=${fileId}', method: 'GET', outputs: { url: 'file.download_url' } },
+  download: { path: '${baseUrl}/files/retrieve?file_id=${artifact}', method: 'GET', outputs: { artifact: 'file.download_url' } },
 };
 
 // ---------- 1. 模板读写 ----------
@@ -69,8 +69,12 @@ console.log('\n[1] 模板表（一行一份完整模板）');
   eq('1.4 整份逐字往返（三层参数 / outputs / 两枚举 / 桥接 / 异步头）',
     { name: got.name, category: got.category, note: got.note, headers: got.headers, instanceParams: got.instanceParams, sync: got.sync, async: got.async, download: got.download },
     { name: TPL.name, category: TPL.category, note: TPL.note, headers: TPL.headers, instanceParams: TPL.instanceParams, sync: TPL.sync, async: TPL.async, download: TPL.download });
-  check('1.5 方括号下标原样存回（output.results[0].url）', got.async.query.outputs.url === 'output.results[0].url', got.async.query.outputs);
-  eq('1.6 useClone=false 读回是 false', { useClone: got.useClone, hasUpload: got.hasUpload }, { useClone: false, hasUpload: false });
+  check('1.5 方括号下标原样存回（output.results[0].url）', got.async.query.outputs.artifact === 'output.results[0].url', got.async.query.outputs);
+  eq('1.6 能力开关逐字往返', got.caps, { modes: 'both', artifact: 'url' });
+  check('1.6b use_clone / upload 两列不再存在（能力开关并进 caps_json）',
+    !db.prepare('PRAGMA table_info(provider_template)').all().map((r) => r.name).some((c) => c === 'use_clone' || c === 'upload'));
+  check('1.6c voice 的两个过期列已下线（全库没有生产者）',
+    !db.prepare('PRAGMA table_info(voice)').all().map((r) => r.name).some((c) => c.endsWith('_expires_at')));
   upsertTemplateV2(db, { ...TPL, async: undefined, download: undefined });
   const after = listTemplatesV2(db).find((t) => t.id === 'verify-image');
   check('1.7 整份覆写：删掉的接口不残留', !after.async && !after.download, Object.keys(after));
@@ -114,7 +118,7 @@ console.log('\n[2] 实例：一个模板可以配几套账号');
 console.log('\n[3] voice 幂等键 / task 随项目级联');
 {
   const db = fresh();
-  upsertTemplateV2(db, { ...TPL, category: 'tts', useClone: true });
+  upsertTemplateV2(db, { ...TPL, category: 'tts', caps: { modes: 'sync', artifact: 'url', clone: true } });
   upsertProviderV2(db, { id: 'prov_t', tplId: 'verify-image', name: '配音生产', sync: true, values: { instance: { baseUrl: 'https://a/v1' }, requests: {} } });
   db.prepare(`INSERT INTO asset (asset_id, kind, name, mime, storage, rel_path, created_at)
     VALUES ('as_ref','audio','ref.wav','audio/wav','file','a/ref.wav',1)`).run();
@@ -231,7 +235,7 @@ console.log('\n[5] 旧形状让位 → 密钥搬进 values.instance');
   check('5.4 模板表也换了一行一份的形状', !db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name).includes('role'));
   check('5.5 让位后新表是空的（等 hydrate 铺完模板才搬）', listProvidersV2(db).length === 0);
   db.exec('PRAGMA foreign_keys = ON');
-  upsertTemplateV2(db, { id: 'openai-chat', name: '对话', category: 'llm', instanceParams: [], sync: { submit: { path: '${baseUrl}/chat/completions', body: {} } } });
+  upsertTemplateV2(db, { id: 'openai-chat', name: '对话', category: 'llm', caps: { modes: 'sync', artifact: 'none' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/chat/completions', body: {} } } });
   eq('5.6 v1 行搬回：密钥 / baseUrl / 模型并进 values.instance，overrides 汇总进去', migrateProvidersFromStale(db), 1);
   const v1Row = listProvidersV2(db).find((x) => x.id === 'llm-1');
   eq('5.7 values.instance 内容对得上', v1Row.values.instance, { temperature: 7, baseUrl: 'https://api.deepseek.com', apiKey: 'sk-不得丢-v1', model: 'deepseek-flash' });
@@ -263,13 +267,42 @@ console.log('\n[5] 旧形状让位 → 密钥搬进 values.instance');
     && !!db.prepare("SELECT 1 FROM provider_template__stale LIMIT 1").get());
   ensureV2Schema(db);
   db.exec('PRAGMA foreign_keys = ON');
-  upsertTemplateV2(db, { id: 'qwen-image', name: '千问图片', category: 'image', instanceParams: [], async: { submit: { path: '${baseUrl}/x', body: {} }, query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', outputs: { status: 's' }, successValues: ['SUCCEEDED'] } } });
+  upsertTemplateV2(db, { id: 'qwen-image', name: '千问图片', category: 'image', caps: { modes: 'async', artifact: 'url' }, instanceParams: [], async: { submit: { path: '${baseUrl}/x', body: {} }, query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', outputs: { status: 's' }, successValues: ['SUCCEEDED'] } } });
   eq('5.12 第二代行搬回', migrateProvidersFromStale(db), 1);
   const row = listProvidersV2(db)[0];
   eq('5.13 具名列并进 values.instance（params_json 一并带过来）', row.values.instance, { size: '2048*2048', baseUrl: 'https://g/v1', apiKey: 'sk-不得丢-v2', model: 'qwen-image-3.0-pro' });
   check('5.14 实例名沿用旧 label / 缺省时用模板名', row.name === '' || row.name === '千问图片', row.name);
   check('5.15 改名没把子表外键写成死表（让位期间临时关了 foreign_keys）',
     !db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='provider'").get().sql.includes('__stale'));
+  db.close();
+}
+
+{
+  // 上一代：一行一份模板，但能力开关是 use_clone / upload 两个布尔列（与「clone_json 空不空」是三份真相）
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE provider_template (tpl_id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL, use_clone INTEGER NOT NULL DEFAULT 0, upload INTEGER NOT NULL DEFAULT 0,
+      headers_json TEXT, instance_params_json TEXT, sync_json TEXT, async_json TEXT,
+      download_json TEXT, upload_json TEXT, clone_json TEXT, ref_sample_rate INTEGER,
+      ord INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER);
+    CREATE TABLE provider (provider_id TEXT PRIMARY KEY, tpl_id TEXT NOT NULL REFERENCES provider_template(tpl_id),
+      name TEXT NOT NULL DEFAULT '', sync INTEGER NOT NULL DEFAULT 1, values_json TEXT,
+      created_at INTEGER, updated_at INTEGER);`);
+  db.prepare(`INSERT INTO provider_template (tpl_id, name, category, use_clone, clone_json) VALUES ('qwen-tts','千问 TTS','tts',1,'{"path":"/x"}')`).run();
+  db.prepare(`INSERT INTO provider (provider_id, tpl_id, name, sync, values_json)
+    VALUES ('prov_t','qwen-tts','配音',1,'{"instance":{"apiKey":"sk-不得丢-v4"}}')`).run();
+  // 返回值只表示「实例表让位了没有」——这一代只有模板表换代，实例行形状没变，所以是 false
+  retireProviderIfStale(db);
+  check('5.16 带 use_clone / upload 列的那一代被认出来并让位', !!db.prepare('SELECT 1 FROM provider_template__stale LIMIT 1').get());
+  ensureV2Schema(db);
+  db.exec('PRAGMA foreign_keys = ON');
+  const kept = listProvidersV2(db)[0];
+  eq('5.17 实例行不动（它本来就是新形状，Key 原样在 values 里）', kept?.values?.instance, { apiKey: 'sk-不得丢-v4' });
+  upsertTemplateV2(db, { id: 'qwen-tts', name: '千问 TTS', category: 'tts', caps: { modes: 'sync', artifact: 'url', clone: true }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { artifact: 'output.audio.url' } } }, clone: { path: '${baseUrl}/customize', body: {}, outputs: { voiceId: 'output.voice' } } });
+  eq('5.19 新模板读回带 caps', listTemplatesV2(db).find((t) => t.id === 'qwen-tts')?.caps, { modes: 'sync', artifact: 'url', clone: true });
+  // 归档表由启动时的搬迁那一步清掉（应用真实顺序：铺 seed → migrate → 清归档）
+  migrateProvidersFromStale(db);
+  check('5.20 归档表搬完清掉，不留尾巴', !db.prepare("SELECT name FROM sqlite_master WHERE name GLOB '*__stale*'").get());
   db.close();
 }
 
@@ -289,7 +322,7 @@ console.log('\n[6] 二次让位（__stale 已被上一代占名）');
     retireProviderIfStale(db) === true);
   ensureV2Schema(db);
   db.exec('PRAGMA foreign_keys = ON');
-  upsertTemplateV2(db, { id: 'deepseek-chat', name: 'DeepSeek', category: 'llm', instanceParams: [], sync: { submit: { path: '${baseUrl}/chat/completions', body: {} } } });
+  upsertTemplateV2(db, { id: 'deepseek-chat', name: 'DeepSeek', category: 'llm', caps: { modes: 'sync', artifact: 'none' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/chat/completions', body: {} } } });
   const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'provider__stale*'").all().map((r) => r.name).sort();
   eq('6.2 两份归档并存（新的让到 __stale2，谁也没被覆盖）', names, ['provider__stale', 'provider__stale2']);
   eq('6.3 搬回的是当前这一代（找不到模板的那份留着）', migrateProvidersFromStale(db), 1);
@@ -305,12 +338,37 @@ console.log('\n[7] 作废列清理');
 {
   const db = fresh();
   db.exec('ALTER TABLE provider_template ADD COLUMN note TEXT');
-  upsertTemplateV2(db, { id: 'keep-me', name: '留着这行', category: 'llm', instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {} } } });
+  upsertTemplateV2(db, { id: 'keep-me', name: '留着这行', category: 'llm', caps: { modes: 'sync', artifact: 'none' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {} } } });
   check('7.1 启动前确实带着 note 列', db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'note'));
   ensureV2Schema(db);
   const cols = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);
   check('7.2 启动后 note 列已删（不是留着没人读）', !cols.includes('note'), cols.join(','));
   check('7.3 删列不丢行', listTemplatesV2(db).map((x) => x.id).join() === 'keep-me');
+  db.close();
+}
+
+{
+  // 真机踩过的组合：模板表要换代（改名让位）+ voice 带着死列。
+  // 删列若排在建新表之前，SQLite 重校验依赖 provider_template 的视图时会报
+  // "error in view v_check_async_pairing: no such table: main.provider_template"。
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE provider_template (tpl_id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL, use_clone INTEGER NOT NULL DEFAULT 0, upload INTEGER NOT NULL DEFAULT 0,
+      headers_json TEXT, instance_params_json TEXT, sync_json TEXT, async_json TEXT, download_json TEXT,
+      upload_json TEXT, clone_json TEXT, ref_sample_rate INTEGER, ord INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER, updated_at INTEGER);
+    CREATE TABLE provider (provider_id TEXT PRIMARY KEY, tpl_id TEXT NOT NULL REFERENCES provider_template(tpl_id),
+      name TEXT NOT NULL DEFAULT '', sync INTEGER NOT NULL DEFAULT 1, values_json TEXT, created_at INTEGER, updated_at INTEGER);`);
+  ensureV2Schema(db);
+  db.exec('ALTER TABLE voice ADD COLUMN file_id_expires_at INTEGER');
+  db.exec('ALTER TABLE voice ADD COLUMN voice_id_expires_at INTEGER');
+  const before = db.prepare('PRAGMA table_info(voice)').all().map((c) => c.name);
+  check('7.4 造出「带过期列」的现场', before.includes('file_id_expires_at'));
+  ensureV2Schema(db);
+  const after = db.prepare('PRAGMA table_info(voice)').all().map((c) => c.name);
+  check('7.5 换代与删列同一次启动都成（顺序错了就会因视图报错而失败）',
+    !after.some((c) => c.endsWith('_expires_at')), after.join(','));
+  check('7.6 视图还在、查得动', !!db.prepare('SELECT COUNT(*) AS n FROM v_check_async_pairing').get());
   db.close();
 }
 

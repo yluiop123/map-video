@@ -39,6 +39,7 @@ const pacing = (intervalMs: number, attempts: number): ParamSpec[] => [
 
 const deepseekChat: TemplateDef = {
   id: 'deepseek-chat', name: 'DeepSeek 对话', category: 'llm',
+  caps: { modes: 'sync', artifact: 'none' },
 
   headers: { ...JSON_CT, ...AUTH },
   instanceParams: net('https://api.deepseek.com'),
@@ -70,10 +71,11 @@ const deepseekChat: TemplateDef = {
 // ========== 图片：千问 文生图（同步 + 异步 + 任务查询） ==========
 
 const imageCall: ParamSpec[] = [text('prompt', '画面描述')];
-const imageOutputs = { url: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' };
+const imageOutputs = { artifact: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' };
 
 const qwenImage: TemplateDef = {
   id: 'qwen-image', name: '千问 文生图', category: 'image',
+  caps: { modes: 'both', artifact: 'url' },
 
   headers: { ...JSON_CT, ...AUTH },
   instanceParams: [...net('https://maas.qianwenaiapi.com/api/v1'), ...pacing(5000, 360)],
@@ -91,7 +93,6 @@ const qwenImage: TemplateDef = {
         parameters: { size: '${size}', watermark: '${watermark}' },
       },
       outputs: imageOutputs,
-      outputFormat: 'url',
     }),
   },
   async: {
@@ -114,10 +115,9 @@ const qwenImage: TemplateDef = {
       method: 'GET',
       // 实测（2026-09-23）：异步产物与同步同一路径 output.choices[0].message.content[0].image，
       // 文档写的 output.results[].url 是这个模型不再用的旧形状；任务要排几分钟，queryMaxAttempts 得给够
-      outputs: { status: 'output.task_status', url: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' },
+      outputs: { status: 'output.task_status', artifact: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' },
       successValues: ['SUCCEEDED'],
       failureValues: ['FAILED', 'CANCELED', 'UNKNOWN'],
-      outputFormat: 'url',
     }),
   },
 };
@@ -126,8 +126,7 @@ const qwenImage: TemplateDef = {
 
 const qwenTts: TemplateDef = {
   id: 'qwen-tts', name: '千问 TTS', category: 'tts',
-
-  useClone: true,
+  caps: { modes: 'sync', artifact: 'url', clone: true },
   headers: { ...JSON_CT, ...AUTH },
   instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
   sync: {
@@ -142,8 +141,7 @@ const qwenTts: TemplateDef = {
         input: { text: '${text}', voice: '${voice}' },
         parameters: { language_type: '${languageType}' },
       },
-      outputs: { url: 'output.audio.url', errorCode: 'code', error: 'message' },
-      outputFormat: 'url',
+      outputs: { artifact: 'output.audio.url', errorCode: 'code', error: 'message' },
     }),
   },
   clone: req('${baseUrl}/services/audio/tts/customization', {
@@ -171,6 +169,7 @@ export const templatesFor = (category: Category): TemplateDef[] => SEED_TEMPLATE
 export function blankTemplate(category: Category): TemplateDef {
   return {
     id: '', name: '', category,
+    caps: category === 'llm' ? { modes: 'sync', artifact: 'none' } : { modes: 'sync', artifact: 'url' },
     headers: { ...JSON_CT, ...AUTH },
     instanceParams: net(''),
     sync: {
@@ -185,12 +184,6 @@ export function blankTemplate(category: Category): TemplateDef {
 /** seed 深拷贝（界面编辑绝不能改到常量本身） */
 export function seedCopy(): TemplateDef[] {
   return structuredClone(SEED_TEMPLATES);
-}
-
-/** 这份模板有没有某条请求（界面据此决定那一区显不显示） */
-export function supports(t: TemplateDef | undefined, key: 'clone' | 'upload' | 'download' | 'async'): boolean {
-  if (!t) return false;
-  return key === 'async' ? !!t.async?.submit : !!t[key];
 }
 
 /** 需要第二把 Key 吗（判断依据仍是模板声明，不写死厂商名） */

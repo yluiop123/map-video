@@ -60,7 +60,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }
   },
 
-  usable: (v) => v.status === 'ready' && !!v.voiceId && (!v.voiceIdExpiresAt || v.voiceIdExpiresAt > Date.now()),
+  usable: (v) => v.status === 'ready' && !!v.voiceId,
 
   findFor: (providerId, sourceHash, targetModel) =>
     get().rows.find((x) => x.providerId === providerId && x.sourceHash === sourceHash && x.targetModel === targetModel),

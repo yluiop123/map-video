@@ -869,9 +869,7 @@ export interface VoiceRow {
   sourceAssetId?: string;
   label: string;
   fileId?: string;
-  fileIdExpiresAt?: number;
   voiceId?: string;
-  voiceIdExpiresAt?: number;
   status: 'cloning' | 'ready' | 'failed' | 'expired';
   error?: string;
   attempts: number;

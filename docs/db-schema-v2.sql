@@ -1080,8 +1080,7 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板：一行 = 一�
   tpl_id      TEXT PRIMARY KEY,  -- 模板 id（一行 = 一份完整模板）：deepseek-chat / qwen-image / qwen-tts / custom-1 …
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,  -- 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK）
-  use_clone   INTEGER NOT NULL DEFAULT 0 CHECK (use_clone IN (0,1)),  -- 有没有克隆音色接口（只有 tts 用得上）
-  upload      INTEGER NOT NULL DEFAULT 0 CHECK (upload IN (0,1)),  -- 克隆前要不要先上传拿 fileId（use_clone=1 才有意义；0 = 直接塞 base64）
+  caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关 JSON { modes: sync|async|both, artifact: none|binary|base64|hex|url|viaDownload, clone, uploadFirst }：该有哪些接口槽、每槽必须交出哪些字段，全由它推（原先 use_clone / upload 两列与「clone_json 空不空」是三份真相）
   headers_json TEXT CHECK (headers_json IS NULL OR json_valid(headers_json)),  -- 模板级请求头 JSON（这一行的所有请求共用一份）
   instance_params_json TEXT CHECK (instance_params_json IS NULL OR json_valid(instance_params_json)),  -- 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json）
   sync_json   TEXT CHECK (sync_json IS NULL OR json_valid(sync_json)),  -- 同步接法 { submit }（一条请求直接拿产物）
@@ -1117,9 +1116,7 @@ CREATE TABLE IF NOT EXISTS voice (  -- 克隆音色账本：同一份参考音�
   source_asset_id TEXT NOT NULL REFERENCES asset(asset_id) ON DELETE RESTRICT,  -- 参考音频原件（失效时靠它重建；删素材会被拦）
   label        TEXT NOT NULL DEFAULT '',  -- 界面显示名（如「男声·内置」「客服音色」）
   file_id      TEXT,  -- 上传桥接返回的 fileId（一体式厂商留空）
-  file_id_expires_at INTEGER,  -- fileId 过期时间（epoch ms；空 = 不知过期）
   voice_id     TEXT,  -- 克隆返回的厂商音色 ID
-  voice_id_expires_at INTEGER,  -- voiceId 过期时间（epoch ms；空 = 不知过期）
   status       TEXT NOT NULL DEFAULT 'cloning',  -- 状态机：cloning / ready / failed / expired（抢占靠它，只建一次）
   error        TEXT,  -- 失败原因（原样带上游 code/message）
   attempts     INTEGER NOT NULL DEFAULT 0,  -- 尝试次数（重建上限判据）

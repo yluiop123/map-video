@@ -66,10 +66,12 @@ export function ensureV2Schema(db) {
     // 先给旧表补缺失列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）；
     // 必须早于 db.exec(ddl)：视图引用了新列（layer_id），旧表缺列会让整段 DDL 失败。
     ensureAllColumns(db, ddl);
-    dropRetiredColumns(db);
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
     db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref; DROP VIEW IF EXISTS v_check_async_pairing;');
     db.exec(ddl);
+    // 删作废列**必须在建表之后**：ALTER TABLE DROP COLUMN 会重校验依赖该表的视图，
+    // 而让位那一刻 provider_template 已被改名成 __stale、还没重建回来，视图于是指着一张不存在的表 → 删列直接失败（实测踩过）。
+    dropRetiredColumns(db);
     restoreTaskRows(db, taskCols);
     // 旧实例行的搬迁要等模板铺好之后（provider.tpl_id 是真外键）→ 由渲染端 hydrate 触发
     repairAssetRefs(db);
@@ -148,6 +150,10 @@ const RETIRED_COLUMNS = [
   ['music_track', 'url'],
   // 人物卡版式与内容块从来都整体存在 payload_json 里，这列被写死 null、读取侧也不看它（死列）
   ['overlay', 'person_layout_json'],
+  // 音色过期时间：全库没有任何生产者写过它，读取侧那句判空于是恒真（等于「永不过期」）。
+  // 真要支持过期，就把它作为固定项放进 upload / clone 的返回项里，而不是留一列空占着。
+  ['voice', 'file_id_expires_at'],
+  ['voice', 'voice_id_expires_at'],
 ];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
@@ -931,7 +937,8 @@ export function retireProviderIfStale(db) {
   };
   if (has('provider_template')) {
     const tc = columnsOf(db, 'provider_template');
-    if (['tpl_group', 'role', 'vars_json', 'label', 'inst_params_json'].some((c) => tc.includes(c)))
+    // use_clone / upload 是上一代的正标志（能力开关已并进 caps_json，两列布尔不再存在）
+    if (['tpl_group', 'role', 'vars_json', 'label', 'inst_params_json', 'use_clone', 'upload'].some((c) => tc.includes(c)))
       retire('provider_template', 'provider_template_group');
   }
   if (!has('provider')) return false;
@@ -1016,7 +1023,7 @@ export function migrateProvidersFromStale(db) {
 
 // ========== 接口模板（一行 = 一份完整模板；共享数据，实例只引用） ==========
 
-const TPL_COLS = `tpl_id AS id, name, category, use_clone AS useClone, upload AS hasUpload,
+const TPL_COLS = `tpl_id AS id, name, category, caps_json AS capsJson,
   headers_json AS headersJson, instance_params_json AS instanceParamsJson,
   sync_json AS syncJson, async_json AS asyncJson, download_json AS downloadJson,
   upload_json AS uploadJson, clone_json AS cloneJson, ref_sample_rate AS refSampleRateHz, ord`;
@@ -1026,7 +1033,7 @@ export function listTemplatesV2(db) {
   return db.prepare(`SELECT ${TPL_COLS} FROM provider_template ORDER BY category, ord, name`).all()
     .map((r) => ({
       id: r.id, name: r.name ?? '', category: r.category,
-      useClone: !!r.useClone, hasUpload: !!r.hasUpload,
+      caps: parseCol(r.capsJson, {}),
       headers: parseCol(r.headersJson, {}) ?? {},
       instanceParams: parseCol(r.instanceParamsJson, []) ?? [],
       sync: blank(parseCol(r.syncJson, null)) ? undefined : parseCol(r.syncJson, {}),
@@ -1043,21 +1050,21 @@ export function listTemplatesV2(db) {
 export function upsertTemplateV2(db, t) {
   const now = Date.now();
   db.prepare(`
-    INSERT INTO provider_template (tpl_id, name, category, use_clone, upload,
+    INSERT INTO provider_template (tpl_id, name, category, caps_json,
       headers_json, instance_params_json, sync_json, async_json, download_json, upload_json, clone_json,
       ref_sample_rate, ord, created_at, updated_at)
-    VALUES (@id,@name,@category,@useClone,@hasUpload,@headers,@instanceParams,@sync,@async,
+    VALUES (@id,@name,@category,@caps,@headers,@instanceParams,@sync,@async,
       @download,@upload,@clone,@refSampleRateHz,
       COALESCE((SELECT ord FROM provider_template WHERE tpl_id = @id),
                (SELECT COALESCE(MAX(ord), 0) + 1 FROM provider_template WHERE category = @category)),
       @now,@now)
-    ON CONFLICT(tpl_id) DO UPDATE SET name=@name, category=@category, use_clone=@useClone,
-      upload=@hasUpload, headers_json=@headers, instance_params_json=@instanceParams, sync_json=@sync,
+    ON CONFLICT(tpl_id) DO UPDATE SET name=@name, category=@category, caps_json=@caps,
+      headers_json=@headers, instance_params_json=@instanceParams, sync_json=@sync,
       async_json=@async, download_json=@download, upload_json=@upload, clone_json=@clone,
       ref_sample_rate=@refSampleRateHz, updated_at=@now
   `).run({
     id: String(t.id), name: t.name ?? '', category: t.category,
-    useClone: t.useClone ? 1 : 0, hasUpload: t.hasUpload ? 1 : 0,
+    caps: jsonCol(t.caps),
     headers: jsonCol(t.headers), instanceParams: jsonCol(t.instanceParams ?? []),
     sync: jsonCol(t.sync), async: jsonCol(t.async), download: jsonCol(t.download),
     upload: jsonCol(t.upload), clone: jsonCol(t.clone),
@@ -1111,15 +1118,14 @@ export function removeProviderV2(db, providerId) {
 
 const VOICE_COLS = `voice_row_id AS rowId, provider_id AS providerId, source_hash AS sourceHash,
   target_model AS targetModel, source_asset_id AS sourceAssetId, label,
-  file_id AS fileId, file_id_expires_at AS fileIdExpiresAt,
-  voice_id AS voiceId, voice_id_expires_at AS voiceIdExpiresAt,
+  file_id AS fileId, voice_id AS voiceId,
   status, error, attempts, created_at AS createdAt, updated_at AS updatedAt`;
 
 const voiceRow = (r) => ({
   rowId: r.rowId, providerId: r.providerId, sourceHash: r.sourceHash, targetModel: r.targetModel,
   sourceAssetId: r.sourceAssetId ?? undefined, label: r.label ?? '',
-  fileId: r.fileId ?? undefined, fileIdExpiresAt: r.fileIdExpiresAt ?? undefined,
-  voiceId: r.voiceId ?? undefined, voiceIdExpiresAt: r.voiceIdExpiresAt ?? undefined,
+  fileId: r.fileId ?? undefined,
+  voiceId: r.voiceId ?? undefined,
   status: r.status, error: r.error ?? undefined, attempts: r.attempts ?? 0,
   createdAt: r.createdAt ?? undefined, updatedAt: r.updatedAt ?? undefined,
 });
@@ -1141,19 +1147,18 @@ export function saveVoiceV2(db, v) {
   const rowId = String(v.rowId || `vc_${Math.random().toString(36).slice(2, 10)}`);
   db.prepare(`
     INSERT INTO voice (voice_row_id, provider_id, source_hash, target_model, source_asset_id, label,
-      file_id, file_id_expires_at, voice_id, voice_id_expires_at, status, error, attempts, created_at, updated_at)
+      file_id, voice_id, status, error, attempts, created_at, updated_at)
     VALUES (@rowId,@providerId,@sourceHash,@targetModel,@sourceAssetId,@label,
-      @fileId,@fileIdExpiresAt,@voiceId,@voiceIdExpiresAt,@status,@error,@attempts,@now,@now)
+      @fileId,@voiceId,@status,@error,@attempts,@now,@now)
     ON CONFLICT(provider_id, source_hash, target_model) DO UPDATE SET
-      label=@label, source_asset_id=@sourceAssetId, file_id=@fileId, file_id_expires_at=@fileIdExpiresAt,
+      label=@label, source_asset_id=@sourceAssetId, file_id=@fileId,
       voice_id=COALESCE(excluded.voice_id, voice.voice_id),
-      voice_id_expires_at=COALESCE(excluded.voice_id_expires_at, voice.voice_id_expires_at),
       status=excluded.status, error=excluded.error, attempts=excluded.attempts, updated_at=@now
   `).run({
     rowId, providerId: String(v.providerId), sourceHash: String(v.sourceHash),
     targetModel: String(v.targetModel ?? ''), sourceAssetId: v.sourceAssetId ?? null,
-    label: v.label ?? '', fileId: v.fileId ?? null, fileIdExpiresAt: v.fileIdExpiresAt ?? null,
-    voiceId: v.voiceId ?? null, voiceIdExpiresAt: v.voiceIdExpiresAt ?? null,
+    label: v.label ?? '', fileId: v.fileId ?? null,
+    voiceId: v.voiceId ?? null,
     status: v.status || 'cloning', error: v.error ?? null, attempts: v.attempts ?? 0, now,
   });
   return { rowId };
