@@ -146,7 +146,7 @@ export function previewRequest(inst: InstanceDef, key: ReqKey, callArgs: Record<
   return redact(buildRequest(tplOf(inst), inst, key, callArgs).req, secretsOf(tplOf(inst), inst));
 }
 
-/** 「试调用」：真发一条，把 steps / 取到的字段 / 字节数原样交回界面 */
+/** 「试调用」：真发一条，把每一步的响应原文 / 取到的字段 / 产物字节原样交回界面（预览与播放都在界面做，这里不碰 DOM） */
 export async function trialCall(inst: InstanceDef, key: ReqKey, callArgs: Record<string, unknown> = {}) {
   const tpl = tplOf(inst);
   if (key === 'clone' || key === 'upload') {
@@ -165,6 +165,9 @@ export async function trialCall(inst: InstanceDef, key: ReqKey, callArgs: Record
   const r = await runSync(tpl, inst, deps, key, callArgs);
   return { values: r.values, bytes: r.bytes, mime: r.mime, steps: r.steps };
 }
+
+/** 试调用的回显形状（界面按它渲染响应原文与产物预览；失败时那份挂在 `EngineError.step` 上，同一形状） */
+export type TrialResult = Awaited<ReturnType<typeof trialCall>>;
 
 // ========== 调度器用的两步（一次推进一步，状态由调用方落 task 表） ==========
 

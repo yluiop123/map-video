@@ -297,6 +297,11 @@ console.log('\n[6] 音色克隆');
   const r6 = await runSync(mm, inst('minimax-voice'), d6.deps, 'sync.submit', { text: '喂', voice: 'mvsample' });
   eq('6.18 status_code=0 不算错（产物按 hex 还原成字节）', Array.from(r6.bytes ?? []), [0x89, 0x50, 0x4e, 0x47]);
   eq('6.19 真报错了照原样抛回', errorOf({ errorCode: 1008, error: 'insufficient balance' }, { status: 200 }), '1008 · insufficient balance');
+  await throws('6.20 失败那一步把响应原文挂在错误上带回来（「试调用」要看的就是它）',
+    () => runSync(mm, inst('minimax-voice'),
+      mk([{ on: 't2a_v2', res: json({ data: null, base_resp: { status_code: 1008, status_msg: 'insufficient balance' } }) }]).deps,
+      'sync.submit', { text: '喂', voice: 'v' }),
+    (e) => /1008/.test(String(e?.message)) && String(e?.step?.raw).includes('insufficient balance'));
 }
 
 // ========== 7. 打码 ==========

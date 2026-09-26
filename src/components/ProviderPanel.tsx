@@ -6,7 +6,7 @@
  * 以及按请求分区的请求级参数（同步与异步的 model 可以不一样）。
  * 「怎么发请求」不在这页 —— 那是左侧单独的「接口模板」入口（TemplatesPane）。
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { OptionBlocks, ProblemList, useT } from './ui/primitives';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -20,10 +20,10 @@ import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import {
   VOICE_FILE_KEY, openKeysOf, paramLabelOf, requestOf, selectableModesOf, submitKeyOf, usedSlotsOf, validateTemplate,
-  type Category, type FileValue, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
+  type Category, type FileValue, type InstanceDef, type ParamSpec, type ReqKey, type Step, type TemplateDef,
 } from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
-import { previewRequest, trialCall, SAMPLE_CALL_ARGS } from '../lib/providers';
+import { previewRequest, trialCall, SAMPLE_CALL_ARGS, type TrialResult } from '../lib/providers';
 import { IS_DESKTOP } from '../lib/backend';
 import { useConfirm } from './ui/ConfirmHost';
 
@@ -197,16 +197,24 @@ function InstanceForm({ inst, missingTpl }: { inst: InstanceDef; missingTpl: boo
  * 试调用：真发一条，用**这条实例**的取值与 Key（模板页不发请求）。
  * 哪一格由上面那排页签决定 —— 参数与试调用读同一个激活格，所以这里不再自带第二排页签。
  * 要现场给哪些参数 = 这一格引用了、而实例里没填的那些名字（从占位符反推，不靠第二张声明表）。
- * 产物只回显字节数与取到的字段，不落库 —— 落库是各业务动作自己的事。
+ * **回显分三种**：普通 JSON 直接给响应原文；产物是音频 / 图片的就当场播 / 显示（试一次要的就是「到底回来什么」）；
+ * 失败也照这两条走 —— 引擎把出错那一步的响应原文挂在错误上带回来。产物只回显，不落库。
  */
 function TrialBox({ inst, tpl, slot }: { inst: InstanceDef; tpl: TemplateDef; slot: ReqKey }) {
   const t = useT();
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<Record<string, FileValue>>({});
   const [busy, setBusy] = useState(false);
-  const [out, setOut] = useState('');
+  /** 预览请求与错误这类「一段文本」；真发的结果走 `got`（要渲染产物预览） */
+  const [text, setText] = useState('');
+  const [got, setGot] = useState<TrialResult | null>(null);
   const cur = slot;
   const callKeys = openKeysOf(tpl, inst, cur);
+  /** 产物字节 → 一个本轮预览用的地址（组件卸载 / 换结果时收回，别攒在内存里） */
+  const url = useMemo(() => (got?.bytes?.length
+    ? URL.createObjectURL(new Blob([got.bytes], { type: got.mime ?? 'application/octet-stream' }))
+    : ''), [got]);
+  useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
   /** `${voiceData}` 是引擎注入的那个文件（不是声明出来的参数）：这里长文件选择框，别的长文本框 */
   const isFileParam = (k: string) => k === VOICE_FILE_KEY;
   const argLabel = (k: string) => (k === VOICE_FILE_KEY ? t('参考音频', 'Reference audio') : paramLabelOf(tpl, cur, k));
@@ -224,17 +232,19 @@ function TrialBox({ inst, tpl, slot }: { inst: InstanceDef; tpl: TemplateDef; sl
     setFiles((s) => ({ ...s, [k]: { bytes, mime: f.type || 'application/octet-stream', name: f.name } }));
   };
   const preview = () => {
-    try { setOut(JSON.stringify(previewRequest(inst, cur, args()), null, 1)); }
-    catch (e) { setOut(e instanceof Error ? e.message : String(e)); }
+    try { setGot(null); setText(JSON.stringify(previewRequest(inst, cur, args()), null, 1)); }
+    catch (e) { setGot(null); setText(e instanceof Error ? e.message : String(e)); }
   };
   const run = async () => {
-    setBusy(true); setOut('');
+    setBusy(true); setText(''); setGot(null);
     try {
-      const r = await trialCall(inst, cur, args());
-      const size = r.bytes?.length ? ` → ${(r.bytes.length / 1024).toFixed(0)}KB` : '';
-      setOut(`${r.steps.map((x) => `${x.key} HTTP ${x.status}`).join(' → ')}${size}\n${JSON.stringify(r.values, null, 1)}`);
-    } catch (e) { setOut(e instanceof Error ? e.message : String(e)); }
-    finally { setBusy(false); }
+      setGot(await trialCall(inst, cur, args()));
+    } catch (e) {
+      // 出错那一步的响应原文挂在错误上（`EngineError.step`）—— 只有一行人话不够看，要的就是「上游到底回了什么」
+      const step = (e as { step?: Step }).step;
+      setText(e instanceof Error ? e.message : String(e));
+      if (step) setGot({ steps: [step], values: {}, bytes: undefined, mime: undefined });
+    } finally { setBusy(false); }
   };
 
   return (
@@ -274,7 +284,33 @@ function TrialBox({ inst, tpl, slot }: { inst: InstanceDef; tpl: TemplateDef; sl
           {busy ? '⏳' : '▶'} {t('试调用', 'Run')}
         </Button>
       </div>
-      {out && <pre className="max-h-44 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{out}</pre>}
+      {text && <pre className="max-h-44 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{text}</pre>}
+      {got && (
+        <div className="space-y-1.5">
+          {got.steps.map((s, n) => (
+            <div key={`${s.key}:${n}`} className="space-y-0.5">
+              <div className="text-[10px] text-muted-foreground">{t(REQ_TITLE[s.key].zh, REQ_TITLE[s.key].en)} · HTTP {s.status}</div>
+              {/* 响应原文：普通 JSON 就是美化过的那一份，二进制只报字节数（产物在下一节） */}
+              <pre className="max-h-44 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{s.raw}</pre>
+            </div>
+          ))}
+          {Object.keys(got.values).length > 0 && (
+            <pre className="max-h-32 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">
+              {t('取到的字段', 'fields')}：{JSON.stringify(got.values)}
+            </pre>
+          )}
+          {/* 产物：音频给播放器、图片直接显示，别的只报字节数 —— 试一次要的就是「到底回来什么」 */}
+          {!!got.bytes?.length && (
+            <div className="space-y-1">
+              <div className="text-[10px] text-muted-foreground">
+                {t('产物', 'Artifact')} · {(got.bytes.length / 1024).toFixed(0)}KB · {got.mime || t('类型未知', 'unknown type')}
+              </div>
+              {got.mime?.startsWith('audio/') && <audio controls src={url} className="h-8 w-full" />}
+              {got.mime?.startsWith('image/') && <img src={url} alt={t('产物预览', 'artifact')} className="max-h-56 rounded border border-white/10" />}
+            </div>
+          )}
+        </div>
+      )}
     </Group>
   );
 }

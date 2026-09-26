@@ -192,9 +192,15 @@ export interface Deps {
 export class EngineError extends Error {
   /** 带上游状态码，调度层才知道这条能不能重试（429 / 5xx 才重试） */
   status?: number;
-  constructor(message: string, status?: number) {
+  /**
+   * 抛错那一步的请求与响应原文 —— 只有「试调用」这一处消费者（失败时人要看的就是上游回了什么，
+   * 光有 `1008 · insufficient balance` 一行不够）。业务链路不读它。
+   */
+  step?: Step;
+  constructor(message: string, status?: number, step?: Step) {
     super(message);
     this.status = status;
+    this.step = step;
   }
 }
 
@@ -746,7 +752,28 @@ export async function toBytes(
 
 // ========== 执行（同步一把梭 / 异步分两步给调度器） ==========
 
-export interface Step { key: ReqKey; url: string; status: number; values: Record<string, unknown> }
+export interface Step {
+  key: ReqKey;
+  url: string;
+  status: number;
+  values: Record<string, unknown>;
+  /** 响应原文（截断）：JSON 美化后给，二进制只说字节数 —— 「试调用」那一栏用它 */
+  raw: string;
+}
+
+/** 上游回的东西可能很大（一张图 1.5MB），界面那一栏只吃截断后的 */
+const cut = (s: string, at = 6000) => (s.length > at ? `${s.slice(0, at)}\n…（截断，共 ${s.length} 字）` : s);
+
+function rawOf(res: HttpResult): string {
+  if (res.json !== undefined) return cut(JSON.stringify(res.json, null, 1));
+  if (res.bytes?.length) return `（响应体就是 ${res.bytes.length} 字节 · ${res.contentType || '未知类型'} —— 见下方产物预览）`;
+  return cut(res.text ?? '');
+}
+
+/** 一步的账：地址（打过码）+ 状态 + 取到的字段 + 响应原文。五处构造点共用这一个 */
+function stepOf(tpl: TemplateDef, inst: InstanceDef, key: ReqKey, req: ResolvedRequest, res: HttpResult, values: Record<string, unknown>): Step {
+  return { key, url: redact(req, secretsOf(tpl, inst)).url, status: res.status, values, raw: rawOf(res) };
+}
 
 export interface RunResult {
   values: Record<string, unknown>;
@@ -775,9 +802,10 @@ export async function runSync(
   const up = { ...upstream0 };
   const first = await http(tpl, inst, key, deps, callArgs, up);
   Object.assign(up, first.values);
-  steps.push({ key, url: redact(first.req, secretsOf(tpl, inst)).url, status: first.res.status, values: first.values });
+  const step = stepOf(tpl, inst, key, first.req, first.res, first.values);
+  steps.push(step);
   const err = errorOf(first.values, first.res);
-  if (err) throw new EngineError(err, first.res.status);
+  if (err) throw new EngineError(err, first.res.status, step);
 
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
@@ -794,18 +822,19 @@ export async function submitAsync(
   tpl: TemplateDef, inst: InstanceDef, deps: Deps, callArgs: Record<string, unknown> = {}, upstream0: Record<string, unknown> = {},
 ): Promise<RunResult> {
   const got = await http(tpl, inst, 'async.submit', deps, callArgs, upstream0);
+  const step = stepOf(tpl, inst, 'async.submit', got.req, got.res, got.values);
   const err = errorOf(got.values, got.res);
-  if (err) throw new EngineError(err, got.res.status);
+  if (err) throw new EngineError(err, got.res.status, step);
   const taskId = String(got.values.taskId ?? '');
   // 没有「取第一个值当任务号」这种兜底了：任务号取不到就是模板没填固定项，问下去也没法查
   if (!taskId) {
     const got2 = Object.keys(got.values).join('、') || '什么都没有';
-    throw new EngineError(`异步提交没交出任务号（固定项「任务号」的路径没填或取不到；这一步取到的是：${got2}）`);
+    throw new EngineError(`异步提交没交出任务号（固定项「任务号」的路径没填或取不到；这一步取到的是：${got2}）`, got.res.status, step);
   }
   return {
     values: got.values,
     taskId,
-    steps: [{ key: 'async.submit', url: redact(got.req, secretsOf(tpl, inst)).url, status: got.res.status, values: got.values }],
+    steps: [step],
   };
 }
 
@@ -816,10 +845,10 @@ export async function queryOnce(
   const q = requestOf(tpl, 'async.query')!;
   const got = await http(tpl, inst, 'async.query', deps, {}, upstream);
   const values = { ...upstream, ...got.values };
-  const step: Step = { key: 'async.query', url: redact(got.req, secretsOf(tpl, inst)).url, status: got.res.status, values: got.values };
-  if (got.res.status >= 500 || got.res.status === 429) throw new EngineError(`查询接口 HTTP ${got.res.status}`, got.res.status);
+  const step = stepOf(tpl, inst, 'async.query', got.req, got.res, got.values);
+  if (got.res.status >= 500 || got.res.status === 429) throw new EngineError(`查询接口 HTTP ${got.res.status}`, got.res.status, step);
   const outcome = classify(got.values.status, q.successValues, q.failureValues);
-  if (outcome === 'failed') throw new EngineError(errorOf(got.values, got.res) ?? '上游报失败', got.res.status);
+  if (outcome === 'failed') throw new EngineError(errorOf(got.values, got.res) ?? '上游报失败', got.res.status, step);
   if (outcome !== 'success') return { outcome, status: String(got.values.status ?? ''), values, step };
 
   let bytes: Uint8Array | undefined;
@@ -846,18 +875,20 @@ export async function runClone(
   if (slotsOf(tpl).includes('upload') && requestOf(tpl, 'upload')) {
     const up1 = await http(tpl, inst, 'upload', deps, callArgs, up);
     Object.assign(up, up1.values);
-    steps.push({ key: 'upload', url: redact(up1.req, secretsOf(tpl, inst)).url, status: up1.res.status, values: up1.values });
+    const s1 = stepOf(tpl, inst, 'upload', up1.req, up1.res, up1.values);
+    steps.push(s1);
     const e1 = errorOf(up1.values, up1.res);
-    if (e1) throw new EngineError(e1, up1.res.status);
+    if (e1) throw new EngineError(e1, up1.res.status, s1);
     const ref = up1.values[ARTIFACT_KEY];
     if (ref === undefined) throw new EngineError('上传那一格没交出文件引用 —— 检查它的固定项「文件地址 / 文件号」填的路径');
     nextArgs = { ...callArgs, [VOICE_FILE_KEY]: ref };
   }
   const cl = await http(tpl, inst, 'clone', deps, nextArgs, up);
   Object.assign(up, cl.values);
-  steps.push({ key: 'clone', url: redact(cl.req, secretsOf(tpl, inst)).url, status: cl.res.status, values: cl.values });
+  const s2 = stepOf(tpl, inst, 'clone', cl.req, cl.res, cl.values);
+  steps.push(s2);
   const err = errorOf(cl.values, cl.res);
-  if (err) throw new EngineError(err, cl.res.status);
+  if (err) throw new EngineError(err, cl.res.status, s2);
   // 上游不回 id 的那种接法：本轮叫的那个名字就是结果（判据与固定项同一处 —— 都看这一格有没有写 `${voiceId}`）
   if (up[VOICE_ID_KEY] === undefined && nextArgs[VOICE_ID_KEY] !== undefined) up[VOICE_ID_KEY] = nextArgs[VOICE_ID_KEY];
   if (typeof up[VOICE_ID_KEY] !== 'string' || !up[VOICE_ID_KEY]) {
