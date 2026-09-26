@@ -1,7 +1,7 @@
 /**
  * try-real-calls.mjs — 用真实上游验证 seed 模板与引擎（**会花配额，只在明确要求时跑**）
  *
- *   node --experimental-strip-types tools/try-real-calls.mjs [llm|image|image-async|tts|clone|all]
+ *   node --experimental-strip-types tools/try-real-calls.mjs [llm|image|image-async|tts|clone|elevenlabs|all]
  *
  * Key 从项目根目录 key.txt 读（`deepseek:` / `qwen:` 两段），**不打印、不入库**；产物写 tools/.tmp-real/。
  * 走的是渲染端同一份代码：template-seed 的模板 + request-engine 的求值与取回管线，
@@ -18,11 +18,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, '.tmp-real');
 const which = process.argv[2] ?? 'all';
 
-/** key.txt：`名字 :` 单独一行是标签（冒号必须有，否则一整串 Key 也会被当成标签），紧跟其后的非空行是 Key */
+/** key.txt：`名字 :` 单独一行是标签（冒号必须有，否则一整串 Key 也会被当成标签），紧跟其后的非空行是 Key。全角冒号也认 */
 function readKeys(file) {
   const out = {};
   if (!fs.existsSync(file)) return out;
-  const isLabel = (s) => /^([A-Za-z0-9_.-]+)\s*:\s*$/.exec(s);
+  const isLabel = (s) => /^([A-Za-z0-9_.-]+)\s*[:：]\s*$/.exec(s);
   const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).map((l) => l.trim());
   for (let i = 0; i < lines.length; i += 1) {
     const label = isLabel(lines[i]);
@@ -43,13 +43,13 @@ function instOf(tplId, keyName, requests = {}, sync = true) {
   return { id: `try-${tplId}`, tplId, name: '', sync, values: { instance: { baseUrl, apiKey, timeoutMs: 120000 }, requests } };
 }
 
-/** multipart 表单：文件值要包成 Blob */
+/** multipart 表单：文件值包成 Blob（字节 + 自己的 mime + 文件名），别的是普通字段 —— 与主进程那一份同形 */
 function formOf(form) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(form)) {
     if (v == null) continue;
     if (typeof v === 'string') fd.append(k, v);
-    else fd.append(k, new Blob([v]), k);
+    else fd.append(k, new Blob([v.bytes], { type: v.mime }), v.name || k);
   }
   return fd;
 }
@@ -165,6 +165,29 @@ if (which === 'all' || which === 'tts') {
   });
 }
 
+if (which === 'elevenlabs') {
+  // 这一家的三个特殊处全靠数据表达：建音色自己发 multipart（不单独上传）、音色名在地址里、产物就是响应体字节
+  // 两步分开跑：Key 没勾 voices_write 时只有复刻那条红，合成（响应体即音频）照样能验
+  const tpl = seedTemplate('elevenlabs-voice');
+  const inst = instOf('elevenlabs-voice', 'elevenlabs', { clone: { preferredName: `mv probe ${Date.now().toString().slice(-6)}` } });
+  let vid = '';
+  await step('声音复刻（克隆那格自己发 multipart：name + files）', async () => {
+    const sample = path.join(HERE, '..', 'public', 'voices', 'male.mp3');
+    const bytes = new Uint8Array(fs.readFileSync(sample));
+    const r = await runClone(tpl, inst, deps, { voiceData: { bytes, mime: 'audio/mpeg', name: 'male.mp3' } });
+    vid = String(r.values.voiceId ?? '');
+    if (!vid) throw new Error(`没取到 voiceId：${JSON.stringify(r.values)}`);
+    return vid;
+  });
+  await step('语音合成（音色 id 在地址里，产物 = 响应体裸字节）', async () => {
+    const synth = await runSync(tpl, inst, deps, 'sync.submit', {
+      text: '这是一次真实调用探测，用来确认响应体即产物这条路径。', voice: vid || 'CwhRBWXzGAHq8TQ4Fs17', model: 'eleven_multilingual_v2',
+    });
+    if (!synth.bytes?.length) throw new Error(`合成没拿到字节：${JSON.stringify(synth.values)}`);
+    return `${vid ? '用刚复刻的音色' : '用现成音色'} · 合成 ${save('tts-elevenlabs.mp3', synth.bytes)}`;
+  });
+}
+
 if (which === 'clone') {
   await step('声音复刻（参考音频 → voiceId）', async () => {
     const tpl = seedTemplate('qwen-tts');
@@ -177,8 +200,8 @@ if (which === 'clone') {
     // 端到端：拿这个音色再合成一句 —— 「复刻用的 target_model 必须与合成同款」只有真发两轮才验得出来
     const vid = r.values.voiceId;
     const synth = await runSync(tpl, inst, deps, 'sync.submit', {
-      text: '这是刚复刻出来的音色，用来确认配对与取回链路。', voice: vid,
-    }, { model: 'qwen3-tts-vc-2026-01-22' });
+      text: '这是刚复刻出来的音色，用来确认配对与取回链路。', voice: vid, model: 'qwen3-tts-vc-2026-01-22',
+    });
     if (!synth.bytes?.length) throw new Error(`用克隆音色合成没拿到字节：${JSON.stringify(synth.values)}`);
     return `${vid} · 合成 ${save('tts-cloned.wav', synth.bytes)}`;
   });

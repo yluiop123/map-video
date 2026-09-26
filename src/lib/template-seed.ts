@@ -172,7 +172,9 @@ const qwenTts: TemplateDef = {
  * 认证头叫 `xi-api-key`（不是 Bearer）；产物不用从字段里取（`caps.artifact='binary'`）；
  * 音色 id 走 **URL 路径**；建音色前不单独上传 —— 文件与 name 一起进同一张 multipart 表单（`cloneVia='form'`）。
  * 官网：https://elevenlabs.io/docs/api-reference/voices/add · /text-to-speech/convert
- * **未实测**（没有这家的 Key）：路径与字段名照官网逐字抄，产物与错误结构等真发过再改。
+ * 实测（2026-09-26）：合成 ✅（拿现成音色，响应体就是 audio/mpeg 字节）；错误体形状 ✅
+ * （`{detail:{type,code,message,status}}`，人话在 `detail.message`）；建音色那步被 Key 权限挡住
+ * （这把只给了部分权限，回 `missing the permission voices_write`），multipart 那半仍照官网抄。
  */
 const elevenLabsVoice: TemplateDef = {
   id: 'elevenlabs-voice', name: 'ElevenLabs 语音', category: 'tts',
@@ -187,7 +189,9 @@ const elevenLabsVoice: TemplateDef = {
         text('text', '合成文本'), p('voice', '音色 ID'),
       ],
       body: { text: '${text}', model_id: '${model}' },
-      outputs: { errorCode: 'detail.status', error: 'detail.message' },
+      // 实测（2026-09-26）：错误体是 { detail: { type, code, message, status, request_id } } —— 人话在 detail.message；
+      // 填成 detail 或 detail.error 会取到对象 / 空串，界面就只剩一条「HTTP 401」看不出为什么
+      outputs: { errorCode: 'detail.code', error: 'detail.message' },
     }),
   },
   clone: req('${baseUrl}/voices/add', {
@@ -196,7 +200,7 @@ const elevenLabsVoice: TemplateDef = {
     requestParams: [p('preferredName', '音色名', { defaultValue: 'mapvideo' })],
     // 官网字段名是复数 `files`（可交多份样本），`${voiceData}` 就是那个二进制分片
     form: { name: '${preferredName}', files: '${voiceData}' },
-    outputs: { voiceId: 'voice_id', errorCode: 'detail.status', error: 'detail.message' },
+    outputs: { voiceId: 'voice_id', errorCode: 'detail.code', error: 'detail.message' },
   }),
 };
 
