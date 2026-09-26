@@ -273,15 +273,17 @@ export function multipartSlotOf(tpl: TemplateDef, key: ReqKey): boolean {
 /** 某个槽必须交出的字段：名字写死、界面只能填路径。`required:false` = 建议项（不填错误信息会退化） */
 export interface OutputSpec { name: string; label: string; hint: string; required: boolean }
 
+/** 产物要不要从响应的某个字段里取（`bin` = 响应体本身，`none` = 没有产物：这两档都没有那一格） */
+const artifactFromField = (c: Caps) => c.artifact !== 'none' && c.artifact !== 'binary';
+
 export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
   const c = tpl.caps;
   const err: OutputSpec[] = [
     { name: 'error', label: '错误信息', hint: '上游报的原文，界面直接显示它', required: false },
     { name: 'errorCode', label: '错误码', hint: '和错误信息拼在一起，方便对文档查', required: false },
   ];
-  // 产物要不要从响应里取字段：响应体本身就是产物（binary）时没有这一项，没产物（llm）也没有
   const artifact: OutputSpec[] =
-    c.artifact === 'none' || c.artifact === 'binary' ? [] :
+    !artifactFromField(c) ? [] :
       [{ name: ARTIFACT_KEY, label: '产物', hint: c.artifact === 'url' ? '图片或音频的下载地址（带时效，当场下载）' : '图片或音频的字节所在字段', required: true }];
   switch (key) {
     case 'sync.submit':
@@ -882,6 +884,11 @@ export function validateTemplate(tpl: TemplateDef): string[] {
       if (o.required && !def.outputs?.[o.name]?.trim()) {
         problems.push(`${REQ_LABEL[key]}：固定项「${o.label}」没填路径 —— ${o.hint}`);
       }
+    }
+    // 反方向也要点名：产物形式选成「响应体就是产物 / 没有产物」时，那一格里填的产物路径没有消费者
+    // （真发会拿 JSON 响应当音频用 —— 填了就说明想要的其实是 base64 / hex / url 那一档）
+    if (!artifactFromField(tpl.caps) && def.outputs?.[ARTIFACT_KEY]?.trim()) {
+      problems.push(`${REQ_LABEL[key]}：产物形式是「${tpl.caps.artifact === 'none' ? '没有产物' : 'bin（响应体即产物）'}」，这一格不用从字段取产物 —— 「产物」那格填了路径说明档位选错了（要取链接该选 url）`);
     }
   }
   // 开关没要求的槽不该存在（否则就是开关与内容对不上，运行时按开关走、那一格永远用不到）

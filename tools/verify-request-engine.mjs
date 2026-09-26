@@ -305,8 +305,10 @@ console.log('\n[8] 保存前自检');
   check('8.3 查询没配成功值 → 点名', validateTemplate({ ...base, async: { submit: base.async.submit, query: { ...base.async.query, successValues: [] } } }).some((x) => x.includes('状态值')));
   check('8.4 实例参数同名重复 → 点名', validateTemplate({ ...base, instanceParams: [...base.instanceParams, { key: 'baseUrl', label: '重' }] }).some((x) => x.includes('重复')));
   check('8.5 开了克隆却没配 clone 那一格 → 点名', validateTemplate({ ...base, category: 'tts', caps: { ...base.caps, clone: true } }).some((x) => x.includes('能力开关要求这一格')));
-  check('8.6 谁都能自己加异步（分类不限制接口形状）', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: base.async }).length === 0,
-    validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: base.async }));
+  // 借来的那两格要把图片那档的产物路径摘掉：文案类没有产物，留着它就是 8.16 那条要点的错
+  const llmAsync = { submit: base.async.submit, query: { ...base.async.query, outputs: { status: 'output.task_status' } } };
+  check('8.6 谁都能自己加异步（分类不限制接口形状）', validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: llmAsync }).length === 0,
+    validateTemplate({ ...seedTemplate('deepseek-chat'), caps: { modes: 'both', artifact: 'none' }, async: llmAsync }));
   // 固定项：名字写死、路径必填 —— 漏了要在保存前就点名，而不是等运行时（status 漏填会一路查到超时）
   const noStatus = { ...base, async: { submit: base.async.submit, query: { ...base.async.query, outputs: { fileRef: 'x' } } } };
   check('8.7 固定项「任务状态」没填路径 → 点名', validateTemplate(noStatus).some((x) => x.includes('任务状态')), validateTemplate(noStatus));
@@ -339,6 +341,16 @@ console.log('\n[8] 保存前自检');
     validateTemplate(declaredFile).some((x) => x.includes('voiceData') && x.includes('不用声明')), validateTemplate(declaredFile));
   check('8.15 内置 seed 自己不再声明它（否则上面这条会打到自己）',
     !validateTemplate(seedTemplate('qwen-tts')).some((x) => x.includes('voiceData')), validateTemplate(seedTemplate('qwen-tts')));
+  // 产物形式与「产物」那一格必须配套：bin / none 下填了路径 = 没有消费者，真发会拿 JSON 响应当音频
+  const binWithField = {
+    ...seedTemplate('qwen-tts'), caps: { modes: 'sync', artifact: 'binary' },
+    sync: { submit: { ...seedTemplate('qwen-tts').sync.submit, outputs: { ...seedTemplate('qwen-tts').sync.submit.outputs, fileRef: 'output.audio.url' } } },
+  };
+  check('8.16 产物形式选成 bin 却还填着「产物」路径 → 点名（这一档没人读它，说明档位错了）',
+    validateTemplate(binWithField).some((x) => x.includes('产物形式') && x.includes('档位选错')), validateTemplate(binWithField));
+  const noneWithField = { ...seedTemplate('deepseek-chat'), caps: { modes: 'sync', artifact: 'none' }, sync: { submit: { ...seedTemplate('deepseek-chat').sync.submit, outputs: { ...seedTemplate('deepseek-chat').sync.submit.outputs, fileRef: 'a.b' } } } };
+  check('8.17 文案类（没有产物）也一样：填了产物路径就点名',
+    validateTemplate(noneWithField).some((x) => x.includes('没有产物')), validateTemplate(noneWithField));
 }
 
 // ========== 9. 逐份 seed 试构造 ==========
