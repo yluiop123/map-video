@@ -236,7 +236,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 
 | 页面 | 装什么 |
 |---|---|
-| **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → **请求方式**（`selectableModesOf`：**模板只有一种接法时整行不显示** —— 没得选还摆一排单选就是假控件；但实例存的那一档在模板里没有接口时仍然长出来，否则那条红报错在界面上消不掉）→ **一排接口页签**（只列这条实例真会走到的那几格：`usedSlotsOf`，模板两套都配了也只列自己那一侧；名字只写动作名 上传 / 克隆 / 提交 / 查询）→ 左栏是**激活那一格的参数**（按 `requestParams`）与**试调用**，右栏是**实例参数**（固定显示、切页签不动它，`sticky`）。现场要给的按 `openKeysOf` 长控件，`${voiceData}` 那一个是「上传文件」按钮 + 已选文件名与大小 —— 三种接法都在这儿发得出去；试调用挂在页签上，所以**换页签会重挂载它**（草稿按参数名存，两格同名参数不是一回事，见 §6.30）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
+| **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → **请求方式**（`selectableModesOf`：**模板只有一种接法时整行不显示** —— 没得选还摆一排单选就是假控件；但实例存的那一档在模板里没有接口时仍然长出来，否则那条红报错在界面上消不掉）→ **一排接口页签**（只列这条实例真会走到的那几格：`usedSlotsOf`，模板两套都配了也只列自己那一侧；名字只写动作名 上传 / 克隆 / 提交 / 查询）→ 左栏是**激活那一格的参数**（按 `requestParams`）与**试调用**（回显每一步的响应原文 → 取到的字段 → 产物预览：音频给播放器、图片直接显示；失败时那一步的响应原文照带回来，挂在 `EngineError.step` 上），右栏是**实例参数**（固定显示、切页签不动它，`sticky`）。现场要给的按 `openKeysOf` 长控件，`${voiceData}` 那一个是「上传文件」按钮 + 已选文件名与大小 —— 三种接法都在这儿发得出去；试调用挂在页签上，所以**换页签会重挂载它**（草稿按参数名存，两格同名参数不是一回事，见 §6.30）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
 | **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、建音色（**克隆开关 + 参考音频三选一：单独上传 / base64 / form**），按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、**一个页签就是这一个接口的全部配置**、只写动作名（提交 / 查询）—— 两套都勾了时「同步 \| 异步」切换在这一排**最左边**，切换说清在看哪一侧，所以两份名字不重复；卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；发 multipart 的那格换成表单，判据 `multipartSlotOf`）→ **参数**（这一格一张表：填了值的走实例，没填的调用时给）→ **从响应里取**（**「产物形式」与固定项「产物」是并排的两行、逐格一份**；其余固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**两层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，会留在库里的层每行装框、调用时给值的那种不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
@@ -320,7 +320,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 实例级 | `apiKey` | API Key | secret | — | — |
 | 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
 | 这一格 `sync.submit` | `model` | 模型 | enum | `"deepseek-flash"` | deepseek-flash · deepseek-v4-pro |
-| 这一格 `sync.submit` | `reasoningEffort` | 思考强度 | enum | — | high · medium · low |
+| 这一格 `sync.submit` | `reasoningEffort` | 思考强度 | enum | — | none · low · high · max |
 | 这一格 `sync.submit` | `thinking` | 深度思考 | enum | — | enabled · disabled |
 | 这一格 `sync.submit` | `temperature` | 温度 | number | — | ≥0 ≤2 步长 0.1 |
 | 这一格 `sync.submit` | `maxTokens` | 最大输出 token | number | — | — |
@@ -456,9 +456,10 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
         "label": "思考强度",
         "valueType": "enum",
         "options": [
+          "none",
+          "low",
           "high",
-          "medium",
-          "low"
+          "max"
         ]
       },
       {
@@ -1282,10 +1283,10 @@ null
 
 | `tpl_id` | category | 接口槽 | 真实上游实测 |
 |---|---|---|---|
-| `deepseek-chat` | llm | `sync.submit` | ✅ 2026-09-23 |
-| `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条路径均通过 |
-| `qwen-tts` | tts | `sync.submit` + `clone` | ✅ 两条都通：复刻完立刻用那个音色合成一句 |
-| `elevenlabs-voice` | tts | `sync.submit` + `clone` | 合成 ✅（应用内「试调用」200 · 40KB 裸字节）· 错误形状 ✅；克隆的 multipart 发对了（`name` + `files` 分片），卡在**套餐不含即时复刻**（`paid_plan_required`） |
+| `deepseek-chat` | llm | `sync.submit` | ✅ 2026-09-26 重跑取到文本（1.9s） |
+| `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条都过：同步 50.8s · 1650KB；异步 46.9s（第 9 次查询命中）· 1465KB |
+| `qwen-tts` | tts | `sync.submit` + `clone` | ✅ 合成 176KB；**复刻 → 立刻用那个音色合成** 270KB（5.1s） |
+| `elevenlabs-voice` | tts | `sync.submit` + `clone` | 合成 ✅ 88KB 裸字节 · 错误形状 ✅；克隆的 multipart 发对了（`name` + `files` 分片），卡在**套餐不含即时复刻**（`paid_plan_required` → 报成跳过） |
 | `minimax-voice` | tts | `upload` + `clone` + `sync.submit` | 上传 ✅ **真发通**（HTTP 200 · `file.file_id` = 整数 445802206159195 · `base_resp:{status_code:0,status_msg:'success'}`）· 复刻与合成 ⬜ 卡在账号余额（`1008`），没跑到成功响应 |
 | `minimax-image` | image | `sync.submit` | ⬜ **未实测**（同样卡 `1008`；这家没有异步任务端点，链接 24 小时过期所以是 `url` 档）|
 
@@ -1315,6 +1316,9 @@ null
 `paid_plan_required · Your subscription does not include instant voice cloning` —— **这是账号套餐，不是形状错**；
 所以 `files` 这个分片名目前只有「上游受理了它」这一层证据，没有成功响应可对照。
 它家的默认音色表（21 条，含官方 labels 里 `gender: neutral` 那一档）逐字取自 `/v1/voices` 的真响应，存在 `lib/voices.ts` 的 `ELEVENLABS_VOICES`。
+
+**「试调用」的回显在应用里逐类看过（2026-09-26）**：文案生成 → 响应原文那一栏就是美化过的 JSON；语音（千问配音 · 提交）→ 播控条长出来了（`<audio controls>` 吃一个 blob 地址）；图片（千问出图 · 提交）→ 图直接显示，`naturalWidth` 报回 **2048×1152**，也就是真解码出来了、不是个坏链接。
+DeepSeek 那条实例这次在应用里回的是 `HTTP 404` —— 不是引擎：他那行 `deepseek-chat` 模板被改名成 `openai`，且「提交」的地址栏里贴着一串千问异步生图的任务号（`260a1ade-…`），地址就成了那样；CLI 走 seed 是同一条链路，正常出文本。
 
 ## 十一、实现落点
 

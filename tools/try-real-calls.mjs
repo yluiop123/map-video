@@ -7,6 +7,7 @@
  * 走的是渲染端同一份代码：template-seed 的模板 + request-engine 的求值与取回管线，
  * 传输用 node 的 fetch（等价于桌面端主进程的 net:request）。
  * `clone` 要单独点名才跑 —— 它会在账号下留下音色资源。
+ * 上游报「余额不足 / 套餐不含 / Key 没这项权限」的那几条报成 **SKIP（跳过）**，不计失败 —— 跑不通与形状写得对不对无关。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -82,14 +83,27 @@ const save = (name, bytes) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failed = 0;
+let skipped = 0;
+/**
+ * 「不是形状错」的那一类：账号没钱、套餐不含这个能力、Key 没勾这项权限。
+ * 这些跑不通与模板写得对不对无关，报成**跳过**而不是失败（否则每次跑都一排红的，看不出真问题）。
+ */
+const NOT_OUR_FAULT = [/1008/, /insufficient balance/i, /余额/, /paid_plan_required/, /missing permission/i,
+  /insufficient[- ]?permission/i, /no permission/i, /exceeded quota|insufficient_quota|arrearage/i];
 const step = async (name, fn) => {
   const started = Date.now();
   try {
     const msg = await fn();
     console.log(`  ok   ${name} (${((Date.now() - started) / 1000).toFixed(1)}s) ${msg ?? ''}`);
   } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    if (NOT_OUR_FAULT.some((re) => re.test(m))) {
+      skipped += 1;
+      console.log(` SKIP  ${name}: 上游报「${m}」—— 账号费用 / 权限，与模板形状无关，跳过`);
+      return;
+    }
     failed += 1;
-    console.log(` FAIL  ${name}: ${e instanceof Error ? e.message : String(e)}`);
+    console.log(` FAIL  ${name}: ${m}`);
   }
 };
 
@@ -238,5 +252,6 @@ if (which === 'clone') {
   });
 }
 
-console.log(failed ? `\n===== ${failed} 项失败 =====` : '\n===== 全部通过 =====');
+console.log(failed ? `\n===== ${failed} 项失败${skipped ? ` · ${skipped} 项跳过（账号费用 / 权限）` : ''} =====`
+  : `\n===== 全部通过${skipped ? ` · ${skipped} 项跳过（账号费用 / 权限）` : ''} =====`);
 process.exit(failed ? 1 : 0);
