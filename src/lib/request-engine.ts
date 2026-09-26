@@ -416,6 +416,18 @@ export function openKeysOf(tpl: TemplateDef, inst: InstanceDef, key: ReqKey): st
   return referencedIn(def, multipartSlotOf(tpl, key)).filter((n) => !(n in s.values));
 }
 
+/**
+ * 「试调用」那一栏要现场给的名字：`openKeysOf` 再去掉**这一格已经声明出来的参数** ——
+ * 声明出来的那些在上面的「这一格 · 参数」表里填，同一个名字不该在下一栏再摆一个框
+ * （原来两处都有，试调用那个还悄悄预填一句示例文案，看着像两个入口管同一件事）。
+ * 剩下的就是没有别处可填的：`${voiceData}` 那个文件、上游产出的中间变量（如 `${taskId}`）、
+ * 以及自建模板里引用了却没声明的名字。
+ */
+export function trialKeysOf(tpl: TemplateDef, inst: InstanceDef, key: ReqKey): string[] {
+  const declared = new Set(requestOf(tpl, key)?.requestParams?.map((p) => p.key) ?? []);
+  return openKeysOf(tpl, inst, key).filter((n) => !declared.has(n));
+}
+
 /** 这一格声明的参数（实例设置页按格分区渲染） */
 export function requestParamsOf(tpl: TemplateDef, key: ReqKey): ParamSpec[] {
   return requestOf(tpl, key)?.requestParams ?? [];

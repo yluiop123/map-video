@@ -10,7 +10,7 @@
  * 运行：node --experimental-strip-types tools/verify-request-engine.mjs
  */
 import {
-  REQ_KEYS, applyOutputs, buildRequest, classify, errorOf, openKeysOf, readPath,
+  REQ_KEYS, applyOutputs, buildRequest, classify, errorOf, openKeysOf, readPath, trialKeysOf,
   redact, requestOf, runClone, runSync, secretsOf, slotsOf, submitAsync, queryOnce, validateTemplate, EngineError,
   retriable,
 } from '../src/lib/request-engine.ts';
@@ -112,6 +112,11 @@ console.log('\n[2] 三层参数与求值');
   eq('2.14 引用了又没来源的才算「现场给」（不看声明在哪张表）', openKeysOf(tOpen, i, 'sync.submit'), ['mark', 'prompt']);
   const filled = { ...i, values: { ...i.values, requests: { 'sync.submit': { prompt: '一只猫' } } } };
   eq('2.15 在实例里填上之后就不再要现场给', openKeysOf(tOpen, filled, 'sync.submit'), ['mark']);
+  // 试调用那一栏只收「别处没有格子可填」的名字：声明出来的在上面那张参数表里填，不重复一栏
+  eq('2.16 声明出来的（mark / prompt 都算）不在试调用里重复一格', trialKeysOf(tOpen, i, 'sync.submit'), []);
+  eq('2.17 seed 的出图格：画面描述走参数表，试调用不再摆一个框', trialKeysOf(seedTemplate('qwen-image'), i, 'sync.submit'), []);
+  eq('2.18 剩下的才是它该收的：那个文件（引擎注入、没有别处可填）',
+    trialKeysOf(seedTemplate('minimax-voice'), inst('minimax-voice'), 'clone'), ['voiceData']);
 }
 
 // ========== 3. headers 覆盖 / outputs / 发音修正 ==========

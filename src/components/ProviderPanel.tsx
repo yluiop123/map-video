@@ -19,7 +19,7 @@ import { Button } from './ui/button';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  VOICE_FILE_KEY, openKeysOf, paramLabelOf, requestOf, selectableModesOf, submitKeyOf, usedSlotsOf, validateTemplate,
+  VOICE_FILE_KEY, paramLabelOf, requestOf, selectableModesOf, submitKeyOf, trialKeysOf, usedSlotsOf, validateTemplate,
   type Category, type FileValue, type InstanceDef, type ParamSpec, type ReqKey, type Step, type TemplateDef,
 } from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
@@ -209,7 +209,7 @@ function TrialBox({ inst, tpl, slot }: { inst: InstanceDef; tpl: TemplateDef; sl
   const [text, setText] = useState('');
   const [got, setGot] = useState<TrialResult | null>(null);
   const cur = slot;
-  const callKeys = openKeysOf(tpl, inst, cur);
+  const callKeys = trialKeysOf(tpl, inst, cur);
   /** 产物字节 → 一个本轮预览用的地址（组件卸载 / 换结果时收回，别攒在内存里） */
   const url = useMemo(() => (got?.bytes?.length
     ? URL.createObjectURL(new Blob([got.bytes], { type: got.mime ?? 'application/octet-stream' }))
