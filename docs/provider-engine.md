@@ -995,7 +995,9 @@ null
 按用户要求内置这四份（MiniMax 那份卡在「克隆不回音色 id」，见第十节末）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
 
 **两份语音上游的实测状态（2026-09-26）**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）。
-ElevenLabs 的合成也在应用里的「试调用」跑通了 —— 音色 id 在地址里、响应体就是裸字节（200 · 40KB），`caps.artifact='binary'` 这一档第一次真跑到；
+
+**ElevenLabs 的整条配音链路也走了一遍（桌面端 UI 里真发）**：⚙ 选这条实例 → 字幕生成 → 音色区出「男声 13 / 女声 7 / 中性 1」→ 点 `Roger` → 加一行 → 生成本句配音 → 行上徽标 `5.7s`，`narration.entries[0].audioId` 指向 `asset` 表里一条 `audio/mpeg`。
+**ElevenLabs 的合成也在应用里的「试调用」跑通了** —— 音色 id 在地址里、响应体就是裸字节（200 · 40KB），`caps.artifact='binary'` 这一档第一次真跑到；
 错误体形状同时实测到 `{detail:{type,code,message,status}}`，所以固定项的 `error` 从猜的 `detail.status` 改成 `detail.message`
 （填错不报错，只是界面只剩一条「HTTP 401」，看不出为什么）。
 建音色那一步：multipart 请求本身发对了（`name` + `files` 两个字段都被受理），上游回的是
