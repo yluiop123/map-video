@@ -1,7 +1,7 @@
 /**
  * try-real-calls.mjs — 用真实上游验证 seed 模板与引擎（**会花配额，只在明确要求时跑**）
  *
- *   node --experimental-strip-types tools/try-real-calls.mjs [llm|image|image-async|tts|clone|elevenlabs|all]
+ *   node --experimental-strip-types tools/try-real-calls.mjs [llm|image|image-async|tts|clone|elevenlabs|minimax|all]
  *
  * Key 从项目根目录 key.txt 读（`deepseek:` / `qwen:` 两段），**不打印、不入库**；产物写 tools/.tmp-real/。
  * 走的是渲染端同一份代码：template-seed 的模板 + request-engine 的求值与取回管线，
@@ -185,6 +185,37 @@ if (which === 'elevenlabs') {
     });
     if (!synth.bytes?.length) throw new Error(`合成没拿到字节：${JSON.stringify(synth.values)}`);
     return `${vid ? '用刚复刻的音色' : '用现成音色'} · 合成 ${save('tts-elevenlabs.mp3', synth.bytes)}`;
+  });
+}
+
+if (which === 'all' || which === 'minimax') {
+  // 这一家占满两种「没人见过」的形状：错误在 base_resp 里且 0 为成功（HTTP 照样 200）、复刻的成功响应不回音色 id
+  await step('文生图（只有同步 · data.image_urls[0] 是 24 小时链接 → 当场下载）', async () => {
+    const tpl = seedTemplate('minimax-image');
+    const inst = instOf('minimax-image', 'minmax');
+    const r = await runSync(tpl, inst, deps, 'sync.submit', { prompt: '一只戴宇航员头盔的橘猫，纯色背景，产品照' });
+    if (!r.bytes?.length) throw new Error(`没拿到字节：${JSON.stringify(r.values)}`);
+    return `${r.mime ?? ''} ${save('image-minimax.png', r.bytes)}`;
+  });
+  await step('语音合成（产物在 data.audio 且是 hex）', async () => {
+    const tpl = seedTemplate('minimax-voice');
+    const inst = instOf('minimax-voice', 'minmax');
+    const r = await runSync(tpl, inst, deps, 'sync.submit', { text: '这是一次真实调用回归，用来确认 hex 这一档。', voice: 'male-qn-qingse' });
+    if (!r.bytes?.length) throw new Error(`没拿到音频：${JSON.stringify(r.values)}`);
+    return save('tts-minimax.bin', r.bytes);
+  });
+  await step('声音复刻（先单独上传拿**整数**文件号 → 克隆；音色 ID 取本轮发出的那个名字）', async () => {
+    const tpl = seedTemplate('minimax-voice');
+    const inst = instOf('minimax-voice', 'minmax', { clone: { voiceId: `mv${Date.now().toString().slice(-6)}` } });
+    const sample = path.join(HERE, '..', 'public', 'voices', 'male.mp3');
+    const bytes = new Uint8Array(fs.readFileSync(sample));
+    const r = await runClone(tpl, inst, deps, { voiceData: { bytes, mime: 'audio/mpeg', name: 'male.mp3' } });
+    const vid = String(r.values.voiceId ?? '');
+    if (!vid) throw new Error(`没取到 voiceId：${JSON.stringify(r.values)}`);
+    // 端到端：拿这个音色合成一句（它家音色 id 就是自己起的那个名字，所以这一步同时验「名字能用」）
+    const synth = await runSync(tpl, inst, deps, 'sync.submit', { text: '这是刚复刻出来的音色，用来确认配对与取回链路。', voice: vid });
+    if (!synth.bytes?.length) throw new Error(`用克隆音色合成没拿到字节：${JSON.stringify(synth.values)}`);
+    return `${vid} · 合成 ${save('tts-minimax-cloned.bin', synth.bytes)}`;
   });
 }
 

@@ -1286,8 +1286,8 @@ null
 | `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条路径均通过 |
 | `qwen-tts` | tts | `sync.submit` + `clone` | ✅ 两条都通：复刻完立刻用那个音色合成一句 |
 | `elevenlabs-voice` | tts | `sync.submit` + `clone` | 合成 ✅（应用内「试调用」200 · 40KB 裸字节）· 错误形状 ✅；克隆的 multipart 发对了（`name` + `files` 分片），卡在**套餐不含即时复刻**（`paid_plan_required`） |
-| `minimax-voice` | tts | `upload` + `clone` + `sync.submit` | ⬜ **未实测**（形状逐字抄官网；离线回归按真响应形状跑过：`file.file_id` 整数注入、hex 还原、`status_code:0` 不算错）· 真发卡在账号余额（`1008`） |
-| `minimax-image` | image | `sync.submit` | ⬜ **未实测**（同上；这家没有异步任务端点，链接 24 小时过期所以是 `url` 档）|
+| `minimax-voice` | tts | `upload` + `clone` + `sync.submit` | 上传 ✅ **真发通**（HTTP 200 · `file.file_id` = 整数 445802206159195 · `base_resp:{status_code:0,status_msg:'success'}`）· 复刻与合成 ⬜ 卡在账号余额（`1008`），没跑到成功响应 |
+| `minimax-image` | image | `sync.submit` | ⬜ **未实测**（同样卡 `1008`；这家没有异步任务端点，链接 24 小时过期所以是 `url` 档）|
 
 **MiniMax 这两份为什么配得出来，靠的是两条新规则**（都不按厂商名分支）：
 ① 它的 `/v1/voice_clone` 成功响应里**没有音色 id**（官网说名字就是请求里自己传的 `voice_id`）—— 固定项「音色 ID」现在看这一格自己有没有写 `${voiceId}`：写了就允许路径留空，`runClone` 拿本轮发出去的那个名字当结果；
@@ -1303,7 +1303,7 @@ null
 ④ 同一份响应改成 base64 档、路径不动：把那条 `https://…` 链接当 base64 解，抛 `Invalid character`。
 ② 与 ④ 的区别只在档位，取的是同一个字段 —— 这一格既决定**去哪个字段取**之后的**怎么变成字节**，也证明它是逐格一份而不是整份模板一份。
 
-按用户要求内置这六份（两份 MiniMax 只按官网文档写了形状，没真发过 —— 见第十节那张表的 ⬜ 行）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
+按用户要求内置这六份（两份 MiniMax 里，**只有「上传」那一格真发通过**，其余卡在账号余额 `1008` —— 见第十节那张表）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
 
 **两份语音上游的实测状态（2026-09-26）**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）。
 

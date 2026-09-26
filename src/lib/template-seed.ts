@@ -229,7 +229,9 @@ const elevenLabsVoice: TemplateDef = {
  * 报错也在 `base_resp`（HTTP 照样回 200，所以错误项必须填，不然界面只剩「成功」两个字）。
  * 官网：https://platform.minimax.io/docs/api-reference/voice-cloning-uploadcloneaudio ·
  *      /voice-cloning-clone · /speech-t2a-http
- * 未实测：他的账号当时余额不足（`1008`），这三格只按文档写过形状，没真发过。
+ * 实测（2026-09-26）：**上传那一格真发通了** —— HTTP 200 + `file.file_id`（**整数** 445802206159195）
+ * + `base_resp:{status_code:0,status_msg:'success'}`；这一条同时证明 `errorOf` 认 `0`/`success` 为成功是必需的
+ * （按老逻辑这一次成功会被读成一条 `0 · success` 的失败）。**复刻与合成仍卡在账号余额**（`1008`），没跑到成功响应。
  * 国内站的地址是 `https://api.minimaxi.com/v1`（Key 不通用）—— 那是实例级的值，改地址不用改模板。
  */
 const minimaxVoice: TemplateDef = {
@@ -271,7 +273,7 @@ const minimaxVoice: TemplateDef = {
  * 官网明写**链接 24 小时过期**，所以这一格是 `url` 档：引擎当场下载后落 `asset`，绝不留地址。
  * `n` 没声明：一次调用只取一张产物，摆个能选 3 的格子等于骗人。
  * 官网：https://platform.minimax.io/docs/api-reference/image-generation-t2i
- * 未实测：同上，只按文档写形状。
+ * 未实测：真发被账号余额挡住（`1008`），所以这一格只按文档写过形状、没对照过成功响应。
  */
 const minimaxImage: TemplateDef = {
   id: 'minimax-image', name: 'MiniMax 文生图', category: 'image',
