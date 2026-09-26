@@ -4,12 +4,13 @@
  * 覆盖：路径两种写法与未命中、三层参数取值优先级、`${}` 求值（类型保留 / 可选参数没填即删键 /
  *       没声明的占位符点名）、headers 逐请求覆盖、outputs 隐式流转、hotFix 数据驱动转换、
  *       产物四种封装（binary / hex / base64 / url），url 一律当场下载、
- *       异步两步（提交 → 两枚举判定 → 取产物）、克隆的三种接法（单独上传 / base64 / 表单带入）、密钥打码、模板自检，
+ *       异步两步（提交 → 两枚举判定 → 取产物）、克隆的三种接法（单独上传 / base64 / 表单带入，含「上游不回音色 id」那一类）、
+ *       成功码（0 / success）不算错、密钥打码、模板自检，
  *       以及全部内置模板逐份试构造。
  * 运行：node --experimental-strip-types tools/verify-request-engine.mjs
  */
 import {
-  REQ_KEYS, applyOutputs, buildRequest, classify, openKeysOf, readPath,
+  REQ_KEYS, applyOutputs, buildRequest, classify, errorOf, openKeysOf, readPath,
   redact, requestOf, runClone, runSync, secretsOf, slotsOf, submitAsync, queryOnce, validateTemplate, EngineError,
   retriable,
 } from '../src/lib/request-engine.ts';
@@ -280,6 +281,22 @@ console.log('\n[6] 音色克隆');
   eq('6.13 一格的两种形状不会同时发出：form 模式下 body 写了也不发', d4.sent[0].body, undefined);
   eq('6.14 multipart 那格不声明 Content-Type（boundary 归传输层）', d4.sent[0].headers, { 'xi-api-key': 'sk-abcdefghij1234' });
   eq('6.15 现场要给的参数从表单反推（不靠第二张表标）', openKeysOf(frm, inst('qwen-tts'), 'clone').sort(), ['voiceData', 'voiceName'].sort());
+
+  // MiniMax 那份真 seed：先上传拿**整数**文件号 → 复刻（它的成功响应不回音色 id，名字是本轮自己起的）
+  const mm = seedTemplate('minimax-voice');
+  const OK = { base_resp: { status_code: 0, status_msg: 'success' } };
+  const d5 = mk([
+    { on: 'files/upload', res: json({ file: { file_id: 1234567890, purpose: 'voice_clone' }, ...OK }) },
+    { on: 'voice_clone', res: json({ input_sensitive: false, demo_audio: '', ...OK }) },
+  ]);
+  const r5 = await runClone(mm, inst('minimax-voice'), d5.deps, { voiceData: wav, voiceId: 'mvsample' });
+  eq('6.16 上游不回音色 id 的那类：引擎拿本轮发出去的名字当结果', [r5.values.voiceId, d5.sent.length], ['mvsample', 2]);
+  eq('6.17 上传交回的文件号是整数，注入下一格时没被转成字符串', d5.sent[1].body, { file_id: 1234567890, voice_id: 'mvsample' });
+  // 它家成功 = HTTP 200 + status_code:0 + status_msg:'success'，三个值全是真值 —— 老逻辑会把每一次成功读成失败
+  const d6 = mk([{ on: 't2a_v2', res: json({ data: { audio: '89504e47', status: 2 }, ...OK }) }]);
+  const r6 = await runSync(mm, inst('minimax-voice'), d6.deps, 'sync.submit', { text: '喂', voice: 'mvsample' });
+  eq('6.18 status_code=0 不算错（产物按 hex 还原成字节）', Array.from(r6.bytes ?? []), [0x89, 0x50, 0x4e, 0x47]);
+  eq('6.19 真报错了照原样抛回', errorOf({ errorCode: 1008, error: 'insufficient balance' }, { status: 200 }), '1008 · insufficient balance');
 }
 
 // ========== 7. 打码 ==========
@@ -354,6 +371,15 @@ console.log('\n[8] 保存前自检');
     validateTemplate(lostForm).some((x) => x.includes('这一格该交回产物')), validateTemplate(lostForm));
   check('8.17 文案类（没有产物）也一样：填了产物路径就点名',
     validateTemplate(noneWithField).some((x) => x.includes('没有产物')), validateTemplate(noneWithField));
+  // 固定项「音色 ID」该不该填，看这一格自己有没有写 `${voiceId}`（上游不回 id 的那种就是靠它）
+  const mmv = seedTemplate('minimax-voice');
+  check('8.18 克隆格自己写 ${voiceId} 的：路径留空不点名', validateTemplate(mmv).every((x) => !x.includes('音色 ID')), validateTemplate(mmv));
+  const noId = { ...mmv, clone: { ...mmv.clone, requestParams: [], body: { file_id: '${voiceData}' } } };
+  check('8.19 既不填路径、又没写 ${voiceId} → 点名（克隆完拿不到 id）',
+    validateTemplate(noId).some((x) => x.includes('音色 ID')), validateTemplate(noId));
+  // 上传那一格的 `artifact` 是文件号（消费者是 runClone），不是产物 —— 别拿终点格那条规则误伤它
+  check('8.20 上传那格填着文件号路径，不被「产物形式」那条点名',
+    validateTemplate(mmv).every((x) => !x.includes('上传')), validateTemplate(mmv));
 }
 
 // ========== 9. 逐份 seed 试构造 ==========

@@ -263,10 +263,13 @@ export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targe
   // 进 multipart 表单 = 二进制分片；「单独上传」那类则是上传那一格收下它，交回的引用再注入成克隆那格的 ${voiceData}。
   const r = await runClone(tpl, one, deps, {
     voiceData: { bytes: wav, mime: sniffAudioMime(wav), name: 'reference.wav' },
-    prefix: preferred, preferredName: preferred,
+    // 三个名字都是「本轮给这个音色起的名」：`preferredName` / `prefix` 给上游那些「你自己报名字、
+    // 响应再回一个正式 id」的接法，`voiceId` 给 MiniMax 那类**响应不回 id** 的（克隆格写 `${voiceId}`，
+    // 引擎就把这个名字当结果 —— 判据同 `requiredOutputsOf`）
+    prefix: preferred, preferredName: preferred, voiceId: preferred,
   });
   const vid = r.values.voiceId;
-  if (typeof vid !== 'string' || !vid) throw new EngineError('克隆响应里没取到音色 ID，检查 clone 里固定项「音色 ID」的路径');
+  if (typeof vid !== 'string' || !vid) throw new EngineError('克隆那一步没交出音色 ID，检查克隆格里固定项「音色 ID」的路径（上游不回 id 的就写 ${voiceId}）');
   return vid;
 }
 

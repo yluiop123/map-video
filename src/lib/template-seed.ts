@@ -1,7 +1,7 @@
 /**
  * template-seed.ts — 内置接口模板 seed（首次建库铺成 provider_template 的行）
  *
- * 按用户要求内置这四份（= 六种上游形状）：
+ * 按用户要求内置这六份（= 六种上游形状）：
  *   deepseek-chat     文案生成                —— https://api-docs.deepseek.com/zh-cn/
  *   qwen-image        图片生成（同步 + 异步 + 任务查询）
  *                     —— platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image{,-30-async,-task-query}
@@ -9,6 +9,10 @@
  *                     —— platform.qianwenai.com/docs/developer-guides/speech/voice-cloning
  *   elevenlabs-voice  语音：合成（响应体即音频）+ 声音复刻（自己发 multipart 表单）
  *                     —— elevenlabs.io/docs/api-reference/voices/add · /text-to-speech/convert
+ *   minimax-voice     语音：合成（hex）+ 复刻（先单独上传拿 file_id · 上游不回音色 id）
+ *                     —— platform.minimax.io/docs/api-reference/voice-cloning-{uploadcloneaudio,clone} · /speech-t2a-http
+ *   minimax-image     图片：只有同步，链接 24 小时过期
+ *                     —— platform.minimax.io/docs/api-reference/image-generation-t2i
  *
  * 这里是**数据**：铺进库后模板就是普通可编辑行，「恢复默认」用本文件覆盖回去；
  * 要接别家 = 界面上「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）。
@@ -211,7 +215,84 @@ const elevenLabsVoice: TemplateDef = {
   }),
 };
 
-export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts, elevenLabsVoice];
+// ========== 语音：MiniMax（先传文件拿 file_id → 复刻 → 合成 · 产物是 hex） ==========
+
+/**
+ * 这一家把「单独上传」那条接法占齐了，三格各管一段：
+ * ① 上传 = multipart 表单（字段 `file` + `purpose=voice_clone`），交回 `file.file_id`（**整数**），
+ *    引擎把它注入成下一格的 `${voiceData}`；② 复刻吃 `file_id` + 一个**自己起的** `voice_id`；
+ * ③ 合成的音频在 `data.audio`，默认编码是 **hex**（`output_format` 还能要 url，要的话这一格的
+ *    「产物形式」得跟着改，所以 seed 不声明那条参数 —— 两处得配套，少一处就会静默拿一串十六进制当字节）。
+ * 关键差异：**复刻的成功响应里没有音色 id**（只有 `base_resp`），名字就是请求里传的那个 `voice_id`。
+ * 所以克隆那一格写 `${voiceId}`，固定项「音色 ID」的路径留空 —— 引擎拿本轮发出去的名字当结果
+ * （判据在 `requiredOutputsOf` 与 `runClone`，同一处）。
+ * 报错也在 `base_resp`（HTTP 照样回 200，所以错误项必须填，不然界面只剩「成功」两个字）。
+ * 官网：https://platform.minimax.io/docs/api-reference/voice-cloning-uploadcloneaudio ·
+ *      /voice-cloning-clone · /speech-t2a-http
+ * 未实测：他的账号当时余额不足（`1008`），这三格只按文档写过形状，没真发过。
+ * 国内站的地址是 `https://api.minimaxi.com/v1`（Key 不通用）—— 那是实例级的值，改地址不用改模板。
+ */
+const minimaxVoice: TemplateDef = {
+  id: 'minimax-voice', name: 'MiniMax 语音', category: 'tts',
+  caps: { modes: 'sync', clone: true, cloneVia: 'upload' },
+  instanceParams: net('https://api.minimax.io/v1'),
+  sync: {
+    submit: jsonReq('${baseUrl}/t2a_v2', {
+      requestParams: [
+        en('model', '模型', ['speech-2.8-hd', 'speech-2.8-turbo', 'speech-2.6-hd', 'speech-2.6-turbo', 'speech-02-hd', 'speech-02-turbo'], { defaultValue: 'speech-2.8-hd' }),
+        text('text', '合成文本'),
+        // 预置音色或自己复刻出来的都行；这份模板没接官方音色表，所以配音那侧长的是「手填音色 ID」
+        p('voice', '音色 ID', { defaultValue: 'male-qn-qingse' }),
+      ],
+      body: { model: '${model}', text: '${text}', voice_setting: { voice_id: '${voice}' } },
+      artifactForm: 'hex',
+      outputs: { artifact: 'data.audio', errorCode: 'base_resp.status_code', error: 'base_resp.status_msg' },
+    }),
+  },
+  upload: req('${baseUrl}/files/upload', {
+    // 发的是表单：Content-Type 由传输层生成（要带 boundary），所以只声明认证头
+    headers: { ...AUTH },
+    form: { purpose: 'voice_clone', file: '${voiceData}' },
+    outputs: { artifact: 'file.file_id', errorCode: 'base_resp.status_code', error: 'base_resp.status_msg' },
+  }),
+  clone: jsonReq('${baseUrl}/voice_clone', {
+    requestParams: [p('voiceId', '音色名（自己起 · 上游不回它）', { defaultValue: 'mapvideo' })],
+    body: { file_id: '${voiceData}', voice_id: '${voiceId}' },
+    // 没有 voiceId 这一项：响应不回，引擎用上面那个 `${voiceId}` 当结果（留空才是对的，见固定项那行的说明）
+    outputs: { errorCode: 'base_resp.status_code', error: 'base_resp.status_msg' },
+  }),
+};
+
+// ========== 图片：MiniMax 文生图（只有同步 · 链接 24 小时过期） ==========
+
+/**
+ * `POST /v1/image_generation` 当场回图，**没有异步任务端点**（所以能力开关只勾同步）。
+ * 产物在 `data.image_urls[0]`（`response_format=base64` 才换 `data.image_base64` 那一串 —— 同样得跟着改产物形式）。
+ * 官网明写**链接 24 小时过期**，所以这一格是 `url` 档：引擎当场下载后落 `asset`，绝不留地址。
+ * `n` 没声明：一次调用只取一张产物，摆个能选 3 的格子等于骗人。
+ * 官网：https://platform.minimax.io/docs/api-reference/image-generation-t2i
+ * 未实测：同上，只按文档写形状。
+ */
+const minimaxImage: TemplateDef = {
+  id: 'minimax-image', name: 'MiniMax 文生图', category: 'image',
+  caps: { modes: 'sync' },
+  instanceParams: net('https://api.minimax.io/v1'),
+  sync: {
+    submit: jsonReq('${baseUrl}/image_generation', {
+      requestParams: [
+        en('model', '模型', ['image-01'], { defaultValue: 'image-01' }),
+        en('aspectRatio', '画幅', ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '21:9'], { defaultValue: '1:1' }),
+        bool('promptOptimizer', '提示词润色'),
+        ...imagePrompt,
+      ],
+      body: { model: '${model}', prompt: '${prompt}', aspect_ratio: '${aspectRatio}', prompt_optimizer: '${promptOptimizer}' },
+      artifactForm: 'url',
+      outputs: { artifact: 'data.image_urls[0]', errorCode: 'base_resp.status_code', error: 'base_resp.status_msg' },
+    }),
+  },
+};
+
+export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts, elevenLabsVoice, minimaxVoice, minimaxImage];
 
 export const seedTemplate = (id: string): TemplateDef | undefined => SEED_TEMPLATES.find((t) => t.id === id);
 

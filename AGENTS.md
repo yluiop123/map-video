@@ -72,7 +72,7 @@ lib/
   geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
   asset-refs.ts      # ★ 项目里所有素材引用位的唯一清单（导出配置 JSON 带字节、导入改 id 都走它；新增引用位只改这里）
   request-engine.ts    # ★ 接口模板求值：三层取值 + `${x}` 求值与删键级联 / readPath / applyOutputs / runSync·submitAsync·queryOnce·runClone / validateTemplate / retriable(只有 429·5xx 才算「重试有用」)；不碰网络不碰 DOM
-  template-seed.ts     # 内置接口模板 seed（4 份 = 六个上游形状，一行一份完整模板）；首次建库铺成表行，之后是普通可编辑数据；接新供应商改这里或界面上自己填
+  template-seed.ts     # 内置接口模板 seed（6 份，一行一份完整模板：deepseek 文案 / 千问图 / 千问语音 / ElevenLabs 语音 / MiniMax 语音 / MiniMax 图）；首次建库铺成表行，之后是普通可编辑数据；接新供应商改这里或界面上自己填
   providers.ts         # 供应商调用薄壳：callLLM/callTTS/callImage/cloneVoice + declaredOptions/declaredDefault（界面按声明长控件）→ 全走引擎；**没有协议分支**
   audition.ts          # 全应用**一路**声音（试听配音 / 音色）：playAudition / stopAudition，播新的必先停旧的
   backend.ts           # IS_DESKTOP 与 window.mapvideo.* 的类型门面（projects/assets/voices/tasks/providers…）
@@ -165,6 +165,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 29. **配置界面的每一个格子都必须有消费者；引擎读哪个键只能有一张表**（2026-09-25，⚙ AI 设置页被指出「字段不知道含义」后收口）：
     - **判据是「这一格在这一次有没有用」**，不是「这个字段存在」。所以 `Form`（multipart）出现在 `multipartSlotOf(tpl, slot)` 为真的那一格（上传那格恒真；克隆那格在 `cloneVia:'form'` 时真），**判据不是槽名** —— 早先硬写「只有 upload 有表单」，于是「克隆那格自己发 multipart」这种接法配不出来。发哪部分内容只此一处判据：界面摆 Body 还是表单、`validateTemplate` 查哪一格为空、新建草稿给什么形状、`buildRequest` 真发什么，全读它；**一格的两种形状不会同时发出**（换接法后留在另一格里的旧内容就地失效，不报错也不发半个）。表单为空会被 `validateTemplate` 点名，`产物封装` 整格消失（改成每一格的 `artifactForm`，与固定项「产物」并排），**请求头逐条接口各配一份**（中间版本把整份模板合成过一份 `headers_json`，结果是异步开关头被同步端点也收走一份 —— 同一家不同端点要的头本来就不一样，那一列已删），产物形式不在模板头问（逐格才有意义），llm 也不显示建音色开关（**三问都用不上时整节不显示，不留一个空标题**），参数名一律显示模板声明的 `label`、裸 key 只作 `title`。**界面不写「这套机制怎么运作」的解说句**（2026-09-25 点名删掉「下面该有哪几格接口…都由这几个答案推出来」与页首那段介绍）—— 机制写在 `docs/provider-engine.md`，界面上只留标签与选项。**新增一个通用格子之前，先证明它在每个 category × 每个槽位上都有消费者** —— 证明不了就别加（没有消费者的格子，2026-09-25 一并删掉：槽级 `timeoutMs`、模板级 `headers_json`、`needsSecret2` 那对没有任何调用点的函数）。
     - **`outputs` 分两类，界面上也分两处**：固定项（`requiredOutputsOf(tpl, slot)` 给的名字，写死、只能填路径，`validateTemplate` 要求必填项不能空）与自定义变量（折叠区，只给下游 `${它}` 用，引擎从不读）。反面教材就是产物那五个名字：代码里写的是 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`，界面却让人自己想起名字 —— 填错不报错，只是「产物取不到」，而 `status` 填错更糟：一路算中间态，查到次数上限才失败（几十分钟后才报）。**同一条事实（引擎读哪个键）只允许 `requiredOutputsOf` 这一处**，加新固定项时改它，界面、校验、文档（§九 是生成的）自动跟上。
+    - **两条「取到值 ≠ 那件事」的判据**（2026-09-26 接 MiniMax 时才暴露，此前所有上游都不撞这两条）：① `error` / `errorCode` 里 **`0` / `ok` / `success` 按「没有错误」算** —— MiniMax 一类的成功响应是 HTTP 200 + `base_resp:{status_code:0,status_msg:'success'}`，按「取到值就算错」会把每一次成功读成失败（`errorOf` 一处认，模板照常填路径）；② 固定项「音色 ID」**可以不填路径**，判据是这一格自己有没有写 `${voiceId}` —— 上游不回 id 的那种（MiniMax 的 `voice_clone` 成功响应里只有 `base_resp`，名字就是请求里传的 `voice_id`），`runClone` 拿本轮发出去的名字当结果；既不填又不写的仍点名。
     - **开关与它管的东西不能存两份**：`use_clone` / `upload` 两列与「`clone_json` 空不空」是三份真相，于是既要手工同步、又要写校验拦不一致，而 `supports()` 读的仍是槽位 —— 现在开关（`caps_json`）是唯一输入，槽位与固定项都是推导，不一致没有发生的余地。
     - 回归：`node --experimental-strip-types tools/verify-request-engine.mjs`（含「必填固定项没填路径被点名」「自定义变量与参数同名被点名」「开关不需要的槽还留着被点名」「提交没交出任务号就点名」）。
 

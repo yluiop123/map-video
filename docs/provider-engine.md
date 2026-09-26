@@ -96,11 +96,17 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
     产物与上传引用**共用一个名字** `artifact`（`ARTIFACT_KEY`）：两者说的是同一件事 —— 这一步拿到的那个文件 / 地址，
     下一步 `${artifact}` 也只有一种写法。早先代码里那串 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`
     是同一条事实的五份真相，填对了五个之一才碰巧能用 —— 现在没有「碰巧」这回事，`validateTemplate` 会要求必填的固定项必须填路径。
+    **`error` / `errorCode` 取到值不等于报错**：`0` / `ok` / `success` 这三种写法按「没有错误」算（MiniMax 一类的成功响应就是
+    `base_resp:{status_code:0,status_msg:'success'}`，HTTP 照样回 200 —— 按「取到值就算错」会把每一次成功读成失败）。
+    **`voiceId` 可以不填路径**：判据是这一格自己有没有写 `${voiceId}` —— 上游不回音色 id 的那种（MiniMax 的 `voice_clone`
+    成功响应里只有 `base_resp`，名字就是请求里传的 `voice_id`），路径留空、引擎拿本轮发出去的那个名字当结果；
+    既不填路径又不写 `${voiceId}` 的仍然点名（那样克隆完真的拿不到 id）。
   - **自定义变量**（可选、界面默认折叠）—— 只用于在别的请求里写 `${它}`，引擎从不读它们。
     与三层参数同名会被点名（同一个 `${x}` 有两个来源，谁赢取决于调用时给没给值）。
 - **产物形式是逐格的一件事**（`RequestDef.artifactForm`：这一格没产物 / 响应体即字节 / base64 / hex / 链接当场下），
   与固定项「产物」并排配在界面「从响应里取」那一节。它以前住在 `caps` 里（整份模板一份），于是「同步回链接、异步回 base64」配不出来，还和固定项撞过一次名；改成逐格后一个词只管一件事。
-  不再有每槽一个 `outputFormat` —— 同步与异步共用一个答案。
+  **上游那个「你要 hex 还是 url」的字段（MiniMax 叫 `output_format`）seed 里没有声明** —— 它必须与这一格的产物形式配套，
+  摆一个能单独改的格子等于造一个静默错（改了字段没改档位，就把一串十六进制当音频用）。
 - **两个枚举而不是三个**：`successValues` / `failureValues`，都没命中 = 中间态继续查。省掉 `pendingValues` 是因为它没法穷举（`PENDING`/`RUNNING`/`QUEUING`/…），漏一个就把在途任务判成失败。
 - 路径写法用**方括号下标**（`output.choices[0].message.content[0].image`），与上游文档、jq 逐字一致；纯点号 `output.results.0.url` 同样收，库存原样。只支持 `[数字]`，不做 `$..` / `[*]` / 过滤表达式 —— 模板里一旦能写表达式，「看模板就知道实际发了什么」这个前提就没了。
 
@@ -255,6 +261,8 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `qwen-image` | both | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
 | `qwen-tts` | sync | 是 | `base64` | `克隆` + `同步 · 提交` |
 | `elevenlabs-voice` | sync | 是 | `form` | `克隆` + `同步 · 提交` |
+| `minimax-voice` | sync | 是 | `upload` | `上传` + `克隆` + `同步 · 提交` |
+| `minimax-image` | sync | 否 | — | `同步 · 提交` |
 
 ### 9.2 每格必须交出的返回项（名字写死，只能填路径）——「产物形式」也是逐格一行，与「产物」成对
 
@@ -287,8 +295,20 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `elevenlabs-voice` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `elevenlabs-voice` | 同步 · 提交 | `binary` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `elevenlabs-voice` | 同步 · 提交 | `binary` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `minimax-voice` | 上传 | `none` | 文件地址 / 文件号 | `artifact` | 是 | 下一步建音色要用它：引擎把它注入成 ${voiceData}，克隆那一格写这个名就行 |
+| `minimax-voice` | 上传 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `minimax-voice` | 上传 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `minimax-voice` | 克隆 | `none` | 音色 ID | `voiceId` | 建议 | 这一格自己写了 ${voiceId} —— 名字是你起的、上游不回它，路径留空，引擎拿本轮发出去的那个名字当结果 |
+| `minimax-voice` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `minimax-voice` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `minimax-voice` | 同步 · 提交 | `hex` | 产物 | `artifact` | 是 | 图片或音频的字节所在字段 |
+| `minimax-voice` | 同步 · 提交 | `hex` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `minimax-voice` | 同步 · 提交 | `hex` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `minimax-image` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `minimax-image` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `minimax-image` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 
-### 9.3 4 份模板各自声明了哪些参数
+### 9.3 6 份模板各自声明了哪些参数
 
 「层」只有两处声明：实例级整条实例共用、每一格各一张表。同一格里填了值的走实例，没填的由调用点现场给（业务界面或试调用）—— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。
 
@@ -350,6 +370,30 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
 | 这一格 `sync.submit` | `voice` | 音色 ID | string | `"CwhRBWXzGAHq8TQ4Fs17"` | — |
 | 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
+
+#### `minimax-voice` · MiniMax 语音（tts）
+
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
+|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://api.minimax.io/v1"` | — |
+| 实例级 | `apiKey` | API Key | secret | — | — |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
+| 这一格 `sync.submit` | `model` | 模型 | enum | `"speech-2.8-hd"` | speech-2.8-hd · speech-2.8-turbo · speech-2.6-hd · speech-2.6-turbo · speech-02-hd · speech-02-turbo |
+| 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
+| 这一格 `sync.submit` | `voice` | 音色 ID | string | `"male-qn-qingse"` | — |
+| 这一格 `clone` | `voiceId` | 音色名（自己起 · 上游不回它） | string | `"mapvideo"` | — |
+
+#### `minimax-image` · MiniMax 文生图（image）
+
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
+|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://api.minimax.io/v1"` | — |
+| 实例级 | `apiKey` | API Key | secret | — | — |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
+| 这一格 `sync.submit` | `model` | 模型 | enum | `"image-01"` | image-01 |
+| 这一格 `sync.submit` | `aspectRatio` | 画幅 | enum | `"1:1"` | 1:1 · 16:9 · 9:16 · 4:3 · 3:4 · 3:2 · 2:3 · 21:9 |
+| 这一格 `sync.submit` | `promptOptimizer` | 提示词润色 | boolean | `false` | — |
+| 这一格 `sync.submit` | `prompt` | 画面描述 | text | — | — |
 
 ### 9.4 逐列 JSON（照抄可用）
 
@@ -979,6 +1023,260 @@ null
   }
 }
 ```
+
+#### `minimax-voice`
+
+- 标量列：`category=tts`，`caps_json={"modes":"sync","clone":true,"cloneVia":"upload"}`
+
+- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
+
+**`instance_params_json`**（实例级参数**声明**）
+
+```json
+[
+  {
+    "key": "baseUrl",
+    "label": "服务地址",
+    "valueType": "string",
+    "defaultValue": "https://api.minimax.io/v1"
+  },
+  {
+    "key": "apiKey",
+    "label": "API Key",
+    "valueType": "secret"
+  },
+  {
+    "key": "timeoutMs",
+    "label": "单次超时 ms",
+    "valueType": "number",
+    "defaultValue": 60000
+  }
+]
+```
+
+**`sync_json`**（sync.submit）
+
+```json
+{
+  "submit": {
+    "path": "${baseUrl}/t2a_v2",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer ${apiKey}"
+    },
+    "requestParams": [
+      {
+        "key": "model",
+        "label": "模型",
+        "valueType": "enum",
+        "options": [
+          "speech-2.8-hd",
+          "speech-2.8-turbo",
+          "speech-2.6-hd",
+          "speech-2.6-turbo",
+          "speech-02-hd",
+          "speech-02-turbo"
+        ],
+        "defaultValue": "speech-2.8-hd"
+      },
+      {
+        "key": "text",
+        "label": "合成文本",
+        "valueType": "text"
+      },
+      {
+        "key": "voice",
+        "label": "音色 ID",
+        "valueType": "string",
+        "defaultValue": "male-qn-qingse"
+      }
+    ],
+    "body": {
+      "model": "${model}",
+      "text": "${text}",
+      "voice_setting": {
+        "voice_id": "${voice}"
+      }
+    },
+    "artifactForm": "hex",
+    "outputs": {
+      "artifact": "data.audio",
+      "errorCode": "base_resp.status_code",
+      "error": "base_resp.status_msg"
+    }
+  }
+}
+```
+
+**`async_json`**（async.submit）
+
+```json
+null
+```
+
+**`upload_json`**（upload）
+
+```json
+{
+  "path": "${baseUrl}/files/upload",
+  "method": "POST",
+  "headers": {
+    "Authorization": "Bearer ${apiKey}"
+  },
+  "form": {
+    "purpose": "voice_clone",
+    "file": "${voiceData}"
+  },
+  "outputs": {
+    "artifact": "file.file_id",
+    "errorCode": "base_resp.status_code",
+    "error": "base_resp.status_msg"
+  }
+}
+```
+
+**`clone_json`**（clone）
+
+```json
+{
+  "path": "${baseUrl}/voice_clone",
+  "method": "POST",
+  "headers": {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer ${apiKey}"
+  },
+  "requestParams": [
+    {
+      "key": "voiceId",
+      "label": "音色名（自己起 · 上游不回它）",
+      "valueType": "string",
+      "defaultValue": "mapvideo"
+    }
+  ],
+  "body": {
+    "file_id": "${voiceData}",
+    "voice_id": "${voiceId}"
+  },
+  "outputs": {
+    "errorCode": "base_resp.status_code",
+    "error": "base_resp.status_msg"
+  }
+}
+```
+
+#### `minimax-image`
+
+- 标量列：`category=image`，`caps_json={"modes":"sync"}`
+
+- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
+
+**`instance_params_json`**（实例级参数**声明**）
+
+```json
+[
+  {
+    "key": "baseUrl",
+    "label": "服务地址",
+    "valueType": "string",
+    "defaultValue": "https://api.minimax.io/v1"
+  },
+  {
+    "key": "apiKey",
+    "label": "API Key",
+    "valueType": "secret"
+  },
+  {
+    "key": "timeoutMs",
+    "label": "单次超时 ms",
+    "valueType": "number",
+    "defaultValue": 60000
+  }
+]
+```
+
+**`sync_json`**（sync.submit）
+
+```json
+{
+  "submit": {
+    "path": "${baseUrl}/image_generation",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer ${apiKey}"
+    },
+    "requestParams": [
+      {
+        "key": "model",
+        "label": "模型",
+        "valueType": "enum",
+        "options": [
+          "image-01"
+        ],
+        "defaultValue": "image-01"
+      },
+      {
+        "key": "aspectRatio",
+        "label": "画幅",
+        "valueType": "enum",
+        "options": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "3:2",
+          "2:3",
+          "21:9"
+        ],
+        "defaultValue": "1:1"
+      },
+      {
+        "key": "promptOptimizer",
+        "label": "提示词润色",
+        "valueType": "boolean",
+        "defaultValue": false
+      },
+      {
+        "key": "prompt",
+        "label": "画面描述",
+        "valueType": "text"
+      }
+    ],
+    "body": {
+      "model": "${model}",
+      "prompt": "${prompt}",
+      "aspect_ratio": "${aspectRatio}",
+      "prompt_optimizer": "${promptOptimizer}"
+    },
+    "artifactForm": "url",
+    "outputs": {
+      "artifact": "data.image_urls[0]",
+      "errorCode": "base_resp.status_code",
+      "error": "base_resp.status_msg"
+    }
+  }
+}
+```
+
+**`async_json`**（async.submit）
+
+```json
+null
+```
+
+**`upload_json`**（upload）
+
+```json
+null
+```
+
+**`clone_json`**（clone）
+
+```json
+null
+```
 <!-- END generated:seed-templates -->
 ## 十、内置模板清单（seed）
 
@@ -988,12 +1286,12 @@ null
 | `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条路径均通过 |
 | `qwen-tts` | tts | `sync.submit` + `clone` | ✅ 两条都通：复刻完立刻用那个音色合成一句 |
 | `elevenlabs-voice` | tts | `sync.submit` + `clone` | 合成 ✅（应用内「试调用」200 · 40KB 裸字节）· 错误形状 ✅；克隆的 multipart 发对了（`name` + `files` 分片），卡在**套餐不含即时复刻**（`paid_plan_required`） |
+| `minimax-voice` | tts | `upload` + `clone` + `sync.submit` | ⬜ **未实测**（形状逐字抄官网；离线回归按真响应形状跑过：`file.file_id` 整数注入、hex 还原、`status_code:0` 不算错）· 真发卡在账号余额（`1008`） |
+| `minimax-image` | image | `sync.submit` | ⬜ **未实测**（同上；这家没有异步任务端点，链接 24 小时过期所以是 `url` 档）|
 
-**还配不出来的一家**：MiniMax 的 `/v1/voice_clone` 成功响应里**没有音色 id** —— 官网说音色名就是请求里自己传的那个 `voice_id`。
-而 `outputs` 的固定项现在只能填**响应里的路径**（`applyOutputs` 只查响应），所以「克隆那格交出音色 ID」这一条在它家没有可填的值。
-实测到的其余部分都对得上：`/v1/files/upload` 通（`file.file_id` 是**整数**，multipart 字段名 `file` + `purpose=voice_clone`，错误在 `base_resp.status_code/status_msg`，0 为成功），
-合成 `POST /v1/t2a_v2` 的产物在 `data.audio` 且**是 hex 编码**（`artifactForm='hex'` 那一档就是为它留的）。
-要么给 `outputs` 一个「取本轮发出去的值」的写法，要么把 voiceId 做成可留空 —— 两种都动到固定项的语义，等他定。
+**MiniMax 这两份为什么配得出来，靠的是两条新规则**（都不按厂商名分支）：
+① 它的 `/v1/voice_clone` 成功响应里**没有音色 id**（官网说名字就是请求里自己传的 `voice_id`）—— 固定项「音色 ID」现在看这一格自己有没有写 `${voiceId}`：写了就允许路径留空，`runClone` 拿本轮发出去的那个名字当结果；
+② 它家成功 = HTTP 200 + `base_resp:{status_code:0,status_msg:'success'}`，三个值全是真值 —— `errorOf` 现在认 `0` / `ok` / `success` 为「没有错误」，否则**每一次成功都会被读成失败**（这条是接它家时才发现的，此前所有上游的错误项都是「取不到值 = 没事」那种形状）。
 
 **实测（2026-09-23）**：异步查询回的产物路径与同步**同一条**（`output.choices[0].message.content[0].image`），文档写的 `output.results[].url` 是这个模型不再用的旧形状；一次 1024×1024 出图排队 52 秒～9 分钟不等，所以查询节奏是实例级参数、默认给到 30 分钟预算。
 
@@ -1005,7 +1303,7 @@ null
 ④ 同一份响应改成 base64 档、路径不动：把那条 `https://…` 链接当 base64 解，抛 `Invalid character`。
 ② 与 ④ 的区别只在档位，取的是同一个字段 —— 这一格既决定**去哪个字段取**之后的**怎么变成字节**，也证明它是逐格一份而不是整份模板一份。
 
-按用户要求内置这四份（MiniMax 那份卡在「克隆不回音色 id」，见第十节末）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
+按用户要求内置这六份（两份 MiniMax 只按官网文档写了形状，没真发过 —— 见第十节那张表的 ⬜ 行）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
 
 **两份语音上游的实测状态（2026-09-26）**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）。
 

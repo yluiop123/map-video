@@ -245,6 +245,13 @@ export const ARTIFACT_KEY = 'artifact';
  */
 export const VOICE_FILE_KEY = 'voiceData';
 
+/**
+ * 建那一步交回去的音色 ID，也只有这一个名字（`requiredOutputsOf` 的固定项、`runClone` 的返回值都读它）。
+ * **有的上游不回它**：MiniMax 的 `/v1/voice_clone` 成功响应里只有 `base_resp`，音色名就是请求里自己传的 `voice_id` ——
+ * 那种接法在克隆那一格的体里写 `${voiceId}`，路径留空，引擎就把本轮发出去的那个名字当结果（见 `runClone`）。
+ */
+export const VOICE_ID_KEY = 'voiceId';
+
 // ========== 能力开关 → 槽位与承重输出（唯一推导处） ==========
 
 /**
@@ -312,8 +319,18 @@ export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
     case 'upload':
       // 上传交回来的引用不靠模板写名字：引擎把它注入成下一步的 ${voiceData}
       return [{ name: ARTIFACT_KEY, label: '文件地址 / 文件号', hint: `下一步建音色要用它：引擎把它注入成 \${${VOICE_FILE_KEY}}，克隆那一格写这个名就行`, required: true }, ...err];
-    case 'clone':
-      return [{ name: 'voiceId', label: '音色 ID', hint: '存进音色账本，绑这条实例与目标模型', required: true }, ...err];
+    case 'clone': {
+      // 上游回音色 id 的，填它的路径；名字是自己起的（MiniMax 那类，响应不回 id），
+      // 那一格里就已经写着 `${voiceId}` —— 这时路径留空才是对的，所以不必填。
+      const def = requestOf(tpl, key);
+      const selfNamed = def ? referencedIn(def, multipartSlotOf(tpl, key)).includes(VOICE_ID_KEY) : false;
+      return [{
+        name: VOICE_ID_KEY, label: '音色 ID', required: !selfNamed,
+        hint: selfNamed
+          ? '这一格自己写了 ${voiceId} —— 名字是你起的、上游不回它，路径留空，引擎拿本轮发出去的那个名字当结果'
+          : '存进音色账本，绑这条实例与目标模型',
+      }, ...err];
+    }
   }
 }
 
@@ -667,11 +684,21 @@ export function classify(raw: unknown, successValues?: string[], failureValues?:
  * 上游错误原样带回来，界面不做二次翻译（否则查不到根因）。
  * 状态码本身不算错：产物可能压根不在 JSON 里（binary），由调用方按情况判。
  */
+/**
+ * 「这一项其实是在报成功」的那几种写法。MiniMax 一类的是 **HTTP 200 + `base_resp:{status_code:0,status_msg:'success'}`**，
+ * 于是按老逻辑「取到值就算错」会把每一次成功读成失败（`0` 与 `'success'` 都是真值）。
+ * 只在这一处认这几个词；模板里错误项照旧填路径，不用为哪家写分支。
+ */
+const NO_ERROR = new Set(['0', 'ok', 'success']);
+const reportsError = (v: string) => !!v && !NO_ERROR.has(v.toLowerCase());
+
 export function errorOf(values: Record<string, unknown>, res: HttpResult): string | null {
   const text = String(values.error ?? '').trim();
   const code = String(values.errorCode ?? '').trim();
-  if (!text && !code) return res.status >= 400 ? `HTTP ${res.status}${res.text ? ` · ${res.text.slice(0, 200)}` : ''}` : null;
-  return [code, text].filter(Boolean).join(' · ');
+  if (!reportsError(text) && !reportsError(code)) {
+    return res.status >= 400 ? `HTTP ${res.status}${res.text ? ` · ${res.text.slice(0, 200)}` : ''}` : null;
+  }
+  return [code, text].filter(reportsError).join(' · ');
 }
 
 // ========== 产物还原 ==========
@@ -831,6 +858,11 @@ export async function runClone(
   steps.push({ key: 'clone', url: redact(cl.req, secretsOf(tpl, inst)).url, status: cl.res.status, values: cl.values });
   const err = errorOf(cl.values, cl.res);
   if (err) throw new EngineError(err, cl.res.status);
+  // 上游不回 id 的那种接法：本轮叫的那个名字就是结果（判据与固定项同一处 —— 都看这一格有没有写 `${voiceId}`）
+  if (up[VOICE_ID_KEY] === undefined && nextArgs[VOICE_ID_KEY] !== undefined) up[VOICE_ID_KEY] = nextArgs[VOICE_ID_KEY];
+  if (typeof up[VOICE_ID_KEY] !== 'string' || !up[VOICE_ID_KEY]) {
+    throw new EngineError('这一步没交出音色 ID：响应里没取到，本轮也没发出一个名字 —— 上游不回 id 的，就在克隆那一格的体里写 ${voiceId}');
+  }
   return { values: up, steps };
 }
 
@@ -910,9 +942,11 @@ export function validateTemplate(tpl: TemplateDef): string[] {
         problems.push(`${REQ_LABEL[key]}：固定项「${o.label}」没填路径 —— ${o.hint}`);
       }
     }
-    // 反方向也要点名：产物形式选成「响应体就是产物 / 没有产物」时，那一格里填的产物路径没有消费者
-    // （真发会拿 JSON 响应当音频用 —— 填了就说明想要的其实是 base64 / hex / url 那一档）
-    if (!artifactFromField(artifactFormOf(tpl, key)) && def.outputs?.[ARTIFACT_KEY]?.trim()) {
+    // 反方向也要点名：终点那两格的产物形式选成「响应体就是产物 / 没有产物」时，那一格里填的产物路径没有消费者
+    // （真发会拿 JSON 响应当音频用 —— 填了就说明想要的其实是 base64 / hex / url 那一档）。
+    // **上传那一格不在其列**：它的 `artifact` 不是产物，是交回的文件号 / 地址，消费者是 `runClone`（注入成下一格的 ${voiceData}）
+    const isEnd = key === 'sync.submit' || key === 'async.query';
+    if (isEnd && !artifactFromField(artifactFormOf(tpl, key)) && def.outputs?.[ARTIFACT_KEY]?.trim()) {
       problems.push(`${REQ_LABEL[key]}：这一格的「产物形式」是「${artifactFormOf(tpl, key) === 'none' ? '没有产物' : 'bin（响应体即产物）'}」，不用从字段取产物 —— 「产物」那格填了路径说明档位选错了（要取链接该选 url）`);
     }
   }
