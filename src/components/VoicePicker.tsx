@@ -44,7 +44,7 @@ export function VoicePicker({ inst, voice, voiceModel, extra, onPick }: {
   const usableVoice = useVoiceStore((s) => s.usable);
   const [busy, setBusy] = useState<'clone' | 'audition' | null>(null);
   const [busyLabel, setBusyLabel] = useState('');
-  const [openGender, setOpenGender] = useState<Record<VoiceGender, boolean>>({ male: false, female: false });
+  const [openGender, setOpenGender] = useState<Record<VoiceGender, boolean>>({ male: false, female: false, neutral: false });
   const [msg, setMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   /** 试听中（全应用只有一路声音，见 lib/audition） */
@@ -162,6 +162,8 @@ export function VoicePicker({ inst, voice, voiceModel, extra, onPick }: {
   const groups: { key: VoiceGender; label: string }[] = [
     { key: 'male', label: t('男声', 'Male') },
     { key: 'female', label: t('女声', 'Female') },
+    // 上游官方表就有中性这一档（ElevenLabs 的 River）；别家没这一档时这组自己不留空标题（下面 !vs.length 就返回）
+    { key: 'neutral', label: t('中性', 'Neutral') },
   ];
 
   return (

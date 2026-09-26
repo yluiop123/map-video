@@ -7,10 +7,10 @@
  * voiceId 绑「实例 + 目标模型」，还要记住参考音频原件，localStorage 担不住。
  */
 
-export type VoiceGender = 'male' | 'female';
+export type VoiceGender = 'male' | 'female' | 'neutral';
 
 export interface SystemVoice {
-  /** 请求体 input.voice 的确切取值 */
+  /** 请求体里那个音色字段的确切取值（ElevenLabs 侧是 voice_id，走 URL 路径） */
   id: string;
   /** 表里的中文名 */
   name: string;
@@ -104,6 +104,35 @@ export const QWEN_TTS_VOICES: SystemVoice[] = [
 
 /**
 /**
+ * ElevenLabs 的默认音色表（category=premade）。逐字取自 `/v1/voices` 的真响应（2026-09-26 读了这台账号下的 21 条）：
+ * id 是上游的 voice_id（**在 URL 路径里，不在 body**），name 与 gender 抄它自带的 labels —— 官方就有 neutral 这一档
+ * （River），不是我们从名字猜的。要接新的默认音色就再跑一次那个列表接口，别手打。
+ */
+export const ELEVENLABS_VOICES: SystemVoice[] = [
+  { id: 'CwhRBWXzGAHq8TQ4Fs17', name: 'Roger', gender: 'male', note: '随性、浑厚 · 日常对话' },
+  { id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', gender: 'male', note: '澳洲青年 · 有精神' },
+  { id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', note: '暖 · 抓人的讲述感' },
+  { id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', note: '沙哑 · 带刺' },
+  { id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam', gender: 'male', note: '短视频向 · 有活力' },
+  { id: 'bIHbv24MWmeRgasZH58o', name: 'Will', gender: 'male', note: '松弛 · 乐观' },
+  { id: 'cjVigY5qzO86Huf0OWal', name: 'Eric', gender: 'male', note: '男中音 · 稳' },
+  { id: 'iP95p4xoKVk53GoZ742B', name: 'Chris', gender: 'male', note: '朴实 · 百搭' },
+  { id: 'nPczCjzI2devNBz1zQrb', name: 'Brian', gender: 'male', note: '低沉 · 安抚' },
+  { id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', note: '播音腔 · 新闻' },
+  { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', gender: 'male', note: '明亮男高音 · 有压' },
+  { id: 'pqHfZKP75CvOlQylNhV4', name: 'Bill', gender: 'male', note: '成熟 · 讲故事' },
+  { id: 'SOYHLrjzK2X1ezoPC6cr', name: 'Harry', gender: 'male', note: '战士腔 · 有冲劲' },
+  { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', note: '自信 · 专业 · 让人放心' },
+  { id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', gender: 'female', note: '明媚 · 一点古怪' },
+  { id: 'Xb7hH8MSUJpSbSDYk0k2', name: 'Alice', gender: 'female', note: '英音 · 教学向' },
+  { id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', note: '职业 · 中低音' },
+  { id: 'cgSgspJ2msm6clMCkdW9', name: 'Jessica', gender: 'female', note: '美式 · 俏皮' },
+  { id: 'hpp4J3VqNfWAUOO0d1Us', name: 'Bella', gender: 'female', note: '明亮 · 叙述感' },
+  { id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', gender: 'female', note: '英音 · 新闻与旁白' },
+  { id: 'SAz9YHcvj6GT2YYXdXww', name: 'River', gender: 'neutral', note: '松弛中性 · 旁白与对话都行' },
+];
+
+/**
  * 这个模板自带的系统音色表。名字一律逐字抄官方表 —— 认的是**模板 id**
  * （自定义模板没有官方表可抄，返回空，界面退化成手填音色 ID）。
  */
@@ -114,6 +143,8 @@ export function systemVoicesFor(tplId?: string, model?: string): SystemVoice[] {
       return (model || '').trim() === 'qwen-tts' ? QWEN_TTS_VOICES.filter((v) => v.legacy) : QWEN_TTS_VOICES;
     case 'cosyvoice':
       return COSYVOICE_VOICES;
+    case 'elevenlabs-voice':
+      return ELEVENLABS_VOICES;
     default:
       // 手工建的模板没有官方表可抄（名字必须逐字对上游，猜不得）→ 界面退化成手填音色 ID
       return [];

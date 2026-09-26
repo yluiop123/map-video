@@ -347,7 +347,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
 | 这一格 `sync.submit` | `model` | 模型 | enum | `"eleven_multilingual_v2"` | eleven_multilingual_v2 · eleven_flash_v2_5 |
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
-| 这一格 `sync.submit` | `voice` | 音色 ID | string | — | — |
+| 这一格 `sync.submit` | `voice` | 音色 ID | string | `"CwhRBWXzGAHq8TQ4Fs17"` | — |
 | 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
 
 ### 9.4 逐列 JSON（照抄可用）
@@ -918,7 +918,8 @@ null
       {
         "key": "voice",
         "label": "音色 ID",
-        "valueType": "string"
+        "valueType": "string",
+        "defaultValue": "CwhRBWXzGAHq8TQ4Fs17"
       }
     ],
     "body": {
@@ -981,7 +982,7 @@ null
 | `deepseek-chat` | llm | `sync.submit` | ✅ 2026-09-23 |
 | `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条路径均通过 |
 | `qwen-tts` | tts | `sync.submit` + `clone` | ✅ 两条都通：复刻完立刻用那个音色合成一句 |
-| `elevenlabs-voice` | tts | `sync.submit` + `clone` | 合成 ✅（响应体即音频）· 错误形状 ✅；复刻被 Key 权限挡住（缺 `voices_write`） |
+| `elevenlabs-voice` | tts | `sync.submit` + `clone` | 合成 ✅（应用内「试调用」200 · 40KB 裸字节）· 错误形状 ✅；克隆的 multipart 发对了（`name` + `files` 分片），卡在**套餐不含即时复刻**（`paid_plan_required`） |
 
 **还配不出来的一家**：MiniMax 的 `/v1/voice_clone` 成功响应里**没有音色 id** —— 官网说音色名就是请求里自己传的那个 `voice_id`。
 而 `outputs` 的固定项现在只能填**响应里的路径**（`applyOutputs` 只查响应），所以「克隆那格交出音色 ID」这一条在它家没有可填的值。
@@ -994,10 +995,13 @@ null
 按用户要求内置这四份（MiniMax 那份卡在「克隆不回音色 id」，见第十节末）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
 
 **两份语音上游的实测状态（2026-09-26）**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）。
-ElevenLabs 的合成也真发通了 —— 音色 id 在地址里、响应体就是 `audio/mpeg` 字节（`caps.artifact='binary'` 这一档第一次跑到）；
+ElevenLabs 的合成也在应用里的「试调用」跑通了 —— 音色 id 在地址里、响应体就是裸字节（200 · 40KB），`caps.artifact='binary'` 这一档第一次真跑到；
 错误体形状同时实测到 `{detail:{type,code,message,status}}`，所以固定项的 `error` 从猜的 `detail.status` 改成 `detail.message`
-（填错不报错，只是界面只剩一条「HTTP 401」，看不出为什么）。建音色那步被 Key 权限挡住（`missing the permission voices_write`），
-因此它的 multipart 分片名 `files` 目前仍只有官网依据。
+（填错不报错，只是界面只剩一条「HTTP 401」，看不出为什么）。
+建音色那一步：multipart 请求本身发对了（`name` + `files` 两个字段都被受理），上游回的是
+`paid_plan_required · Your subscription does not include instant voice cloning` —— **这是账号套餐，不是形状错**；
+所以 `files` 这个分片名目前只有「上游受理了它」这一层证据，没有成功响应可对照。
+它家的默认音色表（21 条，含官方 labels 里 `gender: neutral` 那一档）逐字取自 `/v1/voices` 的真响应，存在 `lib/voices.ts` 的 `ELEVENLABS_VOICES`。
 
 ## 十一、实现落点
 

@@ -172,9 +172,10 @@ const qwenTts: TemplateDef = {
  * 认证头叫 `xi-api-key`（不是 Bearer）；产物不用从字段里取（`caps.artifact='binary'`）；
  * 音色 id 走 **URL 路径**；建音色前不单独上传 —— 文件与 name 一起进同一张 multipart 表单（`cloneVia='form'`）。
  * 官网：https://elevenlabs.io/docs/api-reference/voices/add · /text-to-speech/convert
- * 实测（2026-09-26）：合成 ✅（拿现成音色，响应体就是 audio/mpeg 字节）；错误体形状 ✅
- * （`{detail:{type,code,message,status}}`，人话在 `detail.message`）；建音色那步被 Key 权限挡住
- * （这把只给了部分权限，回 `missing the permission voices_write`），multipart 那半仍照官网抄。
+ * 实测（2026-09-26，都在应用里的「试调用」跑的）：合成 ✅（200 · 40KB 裸字节）；错误体形状 ✅
+ * （`{detail:{type,code,message,status}}`，人话在 `detail.message`）；建音色的 multipart 请求发对了
+ * （`name` + `files` 都被受理），但上游回 `paid_plan_required`——**那是账号套餐不含即时复刻，不是形状错**。
+ * 它家默认音色表逐字取自 `/v1/voices`（见 `lib/voices.ts` 的 `ELEVENLABS_VOICES`，官方 labels 里就有 `gender: neutral`）。
  */
 const elevenLabsVoice: TemplateDef = {
   id: 'elevenlabs-voice', name: 'ElevenLabs 语音', category: 'tts',
@@ -186,7 +187,9 @@ const elevenLabsVoice: TemplateDef = {
       headers: { ...JSON_CT, 'xi-api-key': '${apiKey}' },
       requestParams: [
         en('model', '模型', ['eleven_multilingual_v2', 'eleven_flash_v2_5'], { defaultValue: 'eleven_multilingual_v2' }),
-        text('text', '合成文本'), p('voice', '音色 ID'),
+        text('text', '合成文本'),
+        // 默认音色给一个官方默认表里的（Roger），实例可以改；配音那侧的可选清单在 lib/voices.ts 的 ELEVENLABS_VOICES
+        p('voice', '音色 ID', { defaultValue: 'CwhRBWXzGAHq8TQ4Fs17' }),
       ],
       body: { text: '${text}', model_id: '${model}' },
       // 实测（2026-09-26）：错误体是 { detail: { type, code, message, status, request_id } } —— 人话在 detail.message；
