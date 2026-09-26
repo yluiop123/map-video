@@ -143,8 +143,8 @@ const qwenTts: TemplateDef = {
       ],
       body: {
         model: '${model}',
-        input: { text: '${text}', voice: '${voice}' },
-        parameters: { language_type: '${languageType}' },
+        // 官方形状：language_type 在 input 里（不是 parameters —— 那是 CosyVoice 那一套的位置）
+        input: { text: '${text}', voice: '${voice}', language_type: '${languageType}' },
       },
       outputs: { fileRef: 'output.audio.url', errorCode: 'code', error: 'message' },
     }),

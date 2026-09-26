@@ -769,9 +769,7 @@ null
       "model": "${model}",
       "input": {
         "text": "${text}",
-        "voice": "${voice}"
-      },
-      "parameters": {
+        "voice": "${voice}",
         "language_type": "${languageType}"
       }
     },

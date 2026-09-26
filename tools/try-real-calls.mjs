@@ -170,10 +170,17 @@ if (which === 'clone') {
     const tpl = seedTemplate('qwen-tts');
     const inst = instOf('qwen-tts', 'qwen', { clone: { preferredName: 'mvregtest' } });
     const sample = path.join(HERE, '..', 'public', 'voices', 'male.mp3');
-    const b64 = fs.readFileSync(sample).toString('base64');
-    const r = await runClone(tpl, inst, deps, { audioDataUri: `data:audio/mp3;base64,${b64}` });
+    // 交出去的是**文件值**（字节 + mime + 名字）：`${voiceData}` 在 JSON 体里由引擎换成 data URI
+    const bytes = new Uint8Array(fs.readFileSync(sample));
+    const r = await runClone(tpl, inst, deps, { voiceData: { bytes, mime: 'audio/mpeg', name: 'male.mp3' } });
     if (typeof r.values.voiceId !== 'string' || !r.values.voiceId) throw new Error(`没取到 voiceId：${JSON.stringify(r.values)}`);
-    return `${r.values.voiceId}（合成时 model 必须是复刻那一步的目标模型）`;
+    // 端到端：拿这个音色再合成一句 —— 「复刻用的 target_model 必须与合成同款」只有真发两轮才验得出来
+    const vid = r.values.voiceId;
+    const synth = await runSync(tpl, inst, deps, 'sync.submit', {
+      text: '这是刚复刻出来的音色，用来确认配对与取回链路。', voice: vid,
+    }, { model: 'qwen3-tts-vc-2026-01-22' });
+    if (!synth.bytes?.length) throw new Error(`用克隆音色合成没拿到字节：${JSON.stringify(synth.values)}`);
+    return `${vid} · 合成 ${save('tts-cloned.wav', synth.bytes)}`;
   });
 }
 
