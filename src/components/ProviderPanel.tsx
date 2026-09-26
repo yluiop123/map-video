@@ -153,7 +153,7 @@ function InstanceForm({ inst, missingTpl }: { inst: InstanceDef; missingTpl: boo
       )}
 
       {/* 左：激活哪格看哪格（参数 + 试调用都用同一排页签）；右：实例参数固定在这，切页签不动它 */}
-      <div className="grid gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_220px]">
+      <div className="grid gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_240px]">
         <div className="min-w-0 space-y-2">
           {slot && (
             <Tabs value={slot} onValueChange={(v) => setPickedSlot(v as ReqKey)}>
@@ -180,7 +180,7 @@ function InstanceForm({ inst, missingTpl }: { inst: InstanceDef; missingTpl: boo
           <div className="self-start md:sticky md:top-0">
             <Group title={t('实例参数', 'Instance params')} hint={t('这份模板声明的，全部请求共用', 'declared by the template, shared')}>
               {tpl.instanceParams.map((p) => (
-                <ParamControl key={p.key} p={p} value={inst.values.instance?.[p.key]}
+                <ParamControl key={p.key} block p={p} value={inst.values.instance?.[p.key]}
                   onChange={(v) => setValues({}, { instance: { [p.key]: v } })} />
               ))}
             </Group>
@@ -293,7 +293,7 @@ function Group({ title, hint, children }: { title: string; hint?: string; childr
 }
 
 /** 单个参数控件：valueType 定存储类型，options 定控件形态（有候选值用选项块，不写原生 select） */
-function ParamControl({ p, value, onChange }: { p: ParamSpec; value: unknown; onChange: (v: unknown) => void }) {
+function ParamControl({ p, value, onChange, block }: { p: ParamSpec; value: unknown; onChange: (v: unknown) => void; block?: boolean }) {
   const t = useT();
   const label = p.label || p.key;
   const opts = (p.options ?? []).map((o) => (typeof o === 'object' && o !== null ? o : { value: o as string | number | boolean }));
@@ -304,7 +304,19 @@ function ParamControl({ p, value, onChange }: { p: ParamSpec; value: unknown; on
     : p.valueType === 'number' && (p.min !== undefined || p.max !== undefined)
       ? `${p.min ?? '-'} … ${p.max ?? '-'}`
       : '';
-  const wrap = (children: React.ReactNode) => (
+  /**
+   * `block` = 标签在控件上方（右栏那种窄列）：一行两列在这里会把输入框挤成一百来像素，
+   * 地址与 Key 恰恰是最长的那两个。
+   */
+  const wrap = (children: React.ReactNode) => block ? (
+    <div className="space-y-1">
+      <Label className="block text-[10px] font-normal text-muted-foreground" title={p.key}>{label}</Label>
+      <div className="min-w-0">
+        {children}
+        {hint && <div className="mt-0.5 text-[9px] text-muted-foreground/60">{hint}</div>}
+      </div>
+    </div>
+  ) : (
     <div className="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-x-3 gap-y-0.5">
       <Label className="text-right text-[10px] font-normal text-muted-foreground" title={p.key}>{label}</Label>
       <div className="min-w-0">
@@ -319,14 +331,11 @@ function ParamControl({ p, value, onChange }: { p: ParamSpec; value: unknown; on
       onChange={(e) => onChange(e.target.value)} title={t('只存本机，不回显', 'stored locally, never shown')} />);
   }
   if (p.valueType === 'boolean') {
-    return (
-      <div className="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-x-3">
-        <Label className="text-right text-[10px] font-normal text-muted-foreground" title={p.key}>{label}</Label>
-        <label className="flex items-center gap-2">
-          <Switch checked={empty ? p.defaultValue !== false : value === true} onCheckedChange={onChange} />
-          <span className="text-[10px] text-muted-foreground">{value === false || (empty && p.defaultValue === false) ? t('关', 'off') : t('开', 'on')}</span>
-        </label>
-      </div>
+    return wrap(
+      <label className="flex items-center gap-2">
+        <Switch checked={empty ? p.defaultValue !== false : value === true} onCheckedChange={onChange} />
+        <span className="text-[10px] text-muted-foreground">{value === false || (empty && p.defaultValue === false) ? t('关', 'off') : t('开', 'on')}</span>
+      </label>,
     );
   }
   if (opts.length) {
