@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS provider_template (
   tpl_id      TEXT PRIMARY KEY,          -- deepseek-chat / qwen-image / qwen-tts / custom-1 …
   name        TEXT NOT NULL DEFAULT '',  -- 模板名（用户自填的单个字符串，不做中英两份）
   category    TEXT NOT NULL,             -- llm / tts / image（不加 CHECK，取值由 TS 联合类型管）
-  caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：调用方式 / 产物形式 / 克隆 / 上传
+  caps_json   TEXT NOT NULL CHECK (json_valid(caps_json)),  -- 能力开关：调用方式 / 建音色 / 参考音频怎么交
   instance_params_json TEXT,                -- 实例级参数声明
   sync_json    TEXT,     async_json    TEXT,            -- 同步 {submit} / 异步 {submit,query}
   upload_json  TEXT,    clone_json TEXT,                      -- 上传 / 核心请求
@@ -50,10 +50,10 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 | `sync.submit` | `sync_json.submit` | 一把梭：发出去就拿到产物或结果字段 | `modes` 含 sync（llm 恒有） |
 | `async.submit` | `async_json.submit` | 只负责提交并交出任务号 | `modes` 含 async |
 | `async.query` | `async_json.query` | 怎么查、什么算成/败、产物在哪 | 同上 —— **与 submit 成对，缺一即报错** |
-| `upload` | `upload_json` | 桥接：本地文件 → 文件引用（`fileRef`：url 或文件号） | `clone` 且 `cloneVia=upload` |
+| `upload` | `upload_json` | 桥接：本地文件 → 文件引用（固定项 `artifact`：url 或文件号） | `clone` 且 `cloneVia=upload` |
 | `clone` | `clone_json` | 核心：参考音频 → `voiceId` | `clone`（仅 tts） |
 
-**产物只有四种到手方式**（`caps.artifact` = `bin` 响应体即产物 / `base64` / `hex` / `url` 链接），
+**每一格自己说产物怎么到手**（`artifactForm` = `bin` 响应体即产物 / `base64` / `hex` / `url` 链接，或 `none` = 这一格没产物），
 `url` 一律**当场下载**成字节 —— 没有「先问一次才拿到地址」那种中间档：它把一件事拆成两问，多一格要配、多一处会写错，
 而这几家上游里没有一家真的需要。
 
@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 | `base64` | 无 | JSON 体 | 体里写 `${voiceData}`，引擎换成 `data:<mime>;base64,…`；要裸 base64 写 `${voiceData.base64}` | 千问 voice cloning 的 `input.audio.data`（收 Data URL） |
 | `form` | 无 | **multipart 表单，没有 Body** | `${voiceData}` 就是那个二进制分片（自带 mime 与文件名），`name` / `language` 这些参数写成同表的字段 | ElevenLabs IVC `/v1/voices/add` 的 `files` + `name` |
 
-**`${voiceData}` 是引擎注入的那个文件，不是声明出来的参数**（与固定返回项 `fileRef` 对偶：一个是「这一步交进来的文件」，一个是「那一步交回去的文件 / 地址」）。所以：三种接法在模板里写的是同一句 `${voiceData}`；参数表里没有它（声明了会被 `validateTemplate` 点名 —— 同一个名字两个来源）；`valueType` 也不再收 `file` 这一档，`accept` / `maxSize` 两格随之作废。界面只在「试调用」那儿给它一个文件选择框。
+**`${voiceData}` 是引擎注入的那个文件，不是声明出来的参数**（与固定返回项 `artifact` 对偶：一个是「这一步交进来的文件」，一个是「那一步交回去的文件 / 地址」）。所以：三种接法在模板里写的是同一句 `${voiceData}`；参数表里没有它（声明了会被 `validateTemplate` 点名 —— 同一个名字两个来源）；`valueType` 也不再收 `file` 这一档，`accept` / `maxSize` 两格随之作废。界面只在「试调用」那儿给它一个文件选择框。
 
 于是「发哪部分内容」只有一个判据：`multipartSlotOf(tpl, slot)`（上传那格恒为表单；克隆那格看 `cloneVia`，**这一项没填过按 `base64` 算** —— 兜底写在 `cloneViaOf` 一处）。界面摆 Body 还是表单、`validateTemplate` 查哪一格为空、新建草稿给什么形状、`buildRequest` 真发什么，全读它 —— **一格的两种形状不会同时发出去**，换了接法之后留在另一格里的旧内容就地失效（不报错，也不发半个请求）。
 
@@ -91,14 +91,15 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   共用一份等于替别的端点也塞上它。
 
 - **`outputs` 分两种，界面上也分两处**：
-  - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`fileRef`（产物，
+  - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`artifact`（产物，
     或上传回来的文件地址 / 文件号）、`taskId`（任务号）、`status`（任务状态）、`voiceId`、`error` / `errorCode`。
-    产物与上传引用**共用一个名字** `fileRef`（`ARTIFACT_KEY`）：两者说的是同一件事 —— 这一步拿到的那个文件 / 地址，
-    下一步 `${fileRef}` 也只有一种写法。早先代码里那串 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`
+    产物与上传引用**共用一个名字** `artifact`（`ARTIFACT_KEY`）：两者说的是同一件事 —— 这一步拿到的那个文件 / 地址，
+    下一步 `${artifact}` 也只有一种写法。早先代码里那串 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`
     是同一条事实的五份真相，填对了五个之一才碰巧能用 —— 现在没有「碰巧」这回事，`validateTemplate` 会要求必填的固定项必须填路径。
   - **自定义变量**（可选、界面默认折叠）—— 只用于在别的请求里写 `${它}`，引擎从不读它们。
     与三层参数同名会被点名（同一个 `${x}` 有两个来源，谁赢取决于调用时给没给值）。
-- **产物以什么形式给是模板级的一件事**（`caps.artifact`：响应体即字节 / base64 / hex / 链接当场下 / 链接要再问一次），
+- **产物形式是逐格的一件事**（`RequestDef.artifactForm`：这一格没产物 / 响应体即字节 / base64 / hex / 链接当场下），
+  与固定项「产物」并排配在界面「从响应里取」那一节。它以前住在 `caps` 里（整份模板一份），于是「同步回链接、异步回 base64」配不出来，还和固定项撞过一次名；改成逐格后一个词只管一件事。
   不再有每槽一个 `outputFormat` —— 同步与异步共用一个答案。
 - **两个枚举而不是三个**：`successValues` / `failureValues`，都没命中 = 中间态继续查。省掉 `pendingValues` 是因为它没法穷举（`PENDING`/`RUNNING`/`QUEUING`/…），漏一个就把在途任务判成失败。
 - 路径写法用**方括号下标**（`output.choices[0].message.content[0].image`），与上游文档、jq 逐字一致；纯点号 `output.results.0.url` 同样收，库存原样。只支持 `[数字]`，不做 `$..` / `[*]` / 过滤表达式 —— 模板里一旦能写表达式，「看模板就知道实际发了什么」这个前提就没了。
@@ -184,12 +185,12 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 | ② 发送 | 桌面走主进程 `net:request`（无 CORS、Key 不出本机），网页走 `fetch` | 实例参数 `timeoutMs` |
 | ③ 取字段 | 按 `outputs` 从响应里取名字，取到的进作用域 | `outputs` |
 | ④ 判状态 | `classify(status, successValues, failureValues)`；中间态就再来一轮 | `async.query` 两个枚举 |
-| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从固定项 `fileRef` 解；`url` **当场下载**（时效链接绝不留到以后） | `caps.artifact` + `fileRef` 那格的路径 |
+| ⑤ 变字节 | `binary` 响应体即产物；`hex`/`base64` 从固定项 `artifact` 解；`url` **当场下载**（时效链接绝不留到以后） | 这一格的 `artifactForm` + 「产物」那格的路径 |
 
 ```
 同步：sync.submit → 字节
 异步：async.submit 交出 taskId → 调度器/内存轮询按节奏打 async.query → SUCCEEDED → 字节
-克隆：cloneVia=upload → upload 交出 fileRef，引擎把它注入成下一步的 ${voiceData}，再 clone 交出 voiceId
+克隆：cloneVia=upload → upload 交出 artifact（文件引用），引擎把它注入成下一步的 ${voiceData}，再 clone 交出 voiceId
      cloneVia=base64 / form → 只有 clone 这一步，${voiceData} 就是那份文件
 ```
 
@@ -230,7 +231,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → 同步/异步 → **实例级参数** → **按格的参数分区（只列这条实例真会走到的那几格：`usedSlotsOf`，模板两套都配了也只列自己那一侧）** → **试调用**（页签同样只列那几格，名字只写动作名 上传 / 克隆 / 提交 / 查询，不带「同步 · / 异步 ·」前缀；现场要给的按 `openKeysOf` 长控件，`${voiceData}` 那一个是「上传文件」按钮 + 已选文件名与大小 —— 三种接法都在这儿发得出去）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、产物形式 / 建音色（**克隆开关 + 参考音频三选一：单独上传 / base64 / form**），按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、**一个页签就是这一个接口的全部配置**、只写动作名（提交 / 查询）—— 两套都勾了时「同步 \| 异步」切换在这一排**最左边**，切换说清在看哪一侧，所以两份名字不重复；卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；发 multipart 的那格换成表单，判据 `multipartSlotOf`）→ **参数**（这一格一张表：填了值的走实例，没填的调用时给）→ **从响应里取**（固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**两层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，会留在库里的层每行装框、调用时给值的那种不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、建音色（**克隆开关 + 参考音频三选一：单独上传 / base64 / form**），按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、**一个页签就是这一个接口的全部配置**、只写动作名（提交 / 查询）—— 两套都勾了时「同步 \| 异步」切换在这一排**最左边**，切换说清在看哪一侧，所以两份名字不重复；卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；发 multipart 的那格换成表单，判据 `multipartSlotOf`）→ **参数**（这一格一张表：填了值的走实例，没填的调用时给）→ **从响应里取**（**「产物形式」与固定项「产物」是并排的两行、逐格一份**；其余固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**两层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，会留在库里的层每行装框、调用时给值的那种不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - **验收口只有一个：实例页的「试调用」**（它同时给求值后的请求形状与真发一条的结果 —— 真发要的是这条实例的 Key，所以这件事只能在实例页做）。模板页不预览、不发请求：那一页只有形状本身，拼得出拼不出由保存前自检点名。
@@ -248,44 +249,44 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 `caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，全由它推导**（`slotsOf` / `requiredOutputsOf` / `multipartSlotOf`）。
 界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）；「建音色」是**克隆开关 + 参考音频三选一**（`cloneVia`：`upload` 先传、交回的引用注入成下一步的 `${voiceData}` / `base64` 文件进 JSON 体 / `form` 克隆那格自己发 multipart —— 三种接法在模板里写的都是 `${voiceData}`，它不在参数表里声明）。
 
-| 模板 | 调用方式 | 产物形式 | 建音色 | 参考音频怎么交 | 推导出的接口槽 |
-|---|---|---|---|---|---|
-| `deepseek-chat` | sync | none | 否 | — | `同步 · 提交` |
-| `qwen-image` | both | url | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
-| `qwen-tts` | sync | url | 是 | `base64` | `克隆` + `同步 · 提交` |
-| `elevenlabs-voice` | sync | binary | 是 | `form` | `克隆` + `同步 · 提交` |
+| 模板 | 调用方式 | 建音色 | 参考音频怎么交 | 推导出的接口槽 |
+|---|---|---|---|---|
+| `deepseek-chat` | sync | 否 | — | `同步 · 提交` |
+| `qwen-image` | both | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
+| `qwen-tts` | sync | 是 | `base64` | `克隆` + `同步 · 提交` |
+| `elevenlabs-voice` | sync | 是 | `form` | `克隆` + `同步 · 提交` |
 
-### 9.2 每格必须交出的返回项（名字写死，只能填路径）
+### 9.2 每格必须交出的返回项（名字写死，只能填路径）——「产物形式」也是逐格一行，与「产物」成对
 
 这些名字就是引擎读取的键 —— 写错不会报错，只会「产物取不到」或「一路查到超时」，所以不给自定义。
 自定义变量（只给下游 `${它}` 用、引擎不读）另在一格，不进这张表。
 
-| 模板 | 接口槽 | 固定项 | 名字（写死） | 必填 | 引擎拿它干什么 |
-|---|---|---|---|---|---|
-| `deepseek-chat` | 同步 · 提交 | 生成的文本 | `content` | 是 | 引擎只认这个名字 |
-| `deepseek-chat` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `deepseek-chat` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-image` | 同步 · 提交 | 产物 | `fileRef` | 是 | 图片或音频的下载地址（带时效，当场下载） |
-| `qwen-image` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `qwen-image` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-image` | 异步 · 提交 | 任务号 | `taskId` | 是 | 交给调度器存着，之后拿它去查 |
-| `qwen-image` | 异步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `qwen-image` | 异步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-image` | 异步 · 查询 | 任务状态 | `status` | 是 | 没取到它就一直算「还在跑」，查到次数上限才失败 |
-| `qwen-image` | 异步 · 查询 | 产物 | `fileRef` | 是 | 图片或音频的下载地址（带时效，当场下载） |
-| `qwen-image` | 异步 · 查询 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `qwen-image` | 异步 · 查询 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-tts` | 克隆 | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
-| `qwen-tts` | 克隆 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `qwen-tts` | 克隆 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-tts` | 同步 · 提交 | 产物 | `fileRef` | 是 | 图片或音频的下载地址（带时效，当场下载） |
-| `qwen-tts` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `qwen-tts` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `elevenlabs-voice` | 克隆 | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
-| `elevenlabs-voice` | 克隆 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `elevenlabs-voice` | 克隆 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `elevenlabs-voice` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `elevenlabs-voice` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| 模板 | 接口槽 | 这一格的产物形式 | 固定项 | 名字（写死） | 必填 | 引擎拿它干什么 |
+|---|---|---|---|---|---|---|
+| `deepseek-chat` | 同步 · 提交 | `none` | 生成的文本 | `content` | 是 | 引擎只认这个名字 |
+| `deepseek-chat` | 同步 · 提交 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `deepseek-chat` | 同步 · 提交 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-image` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-image` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-image` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-image` | 异步 · 提交 | `none` | 任务号 | `taskId` | 是 | 交给调度器存着，之后拿它去查 |
+| `qwen-image` | 异步 · 提交 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-image` | 异步 · 提交 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-image` | 异步 · 查询 | `url` | 任务状态 | `status` | 是 | 没取到它就一直算「还在跑」，查到次数上限才失败 |
+| `qwen-image` | 异步 · 查询 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-image` | 异步 · 查询 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-image` | 异步 · 查询 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-tts` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
+| `qwen-tts` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-tts` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-tts` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-tts` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-tts` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `elevenlabs-voice` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
+| `elevenlabs-voice` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `elevenlabs-voice` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `elevenlabs-voice` | 同步 · 提交 | `binary` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `elevenlabs-voice` | 同步 · 提交 | `binary` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 
 ### 9.3 4 份模板各自声明了哪些参数
 
@@ -356,7 +357,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 
 #### `deepseek-chat`
 
-- 标量列：`category=llm`，`caps_json={"modes":"sync","artifact":"none"}`
+- 标量列：`category=llm`，`caps_json={"modes":"sync"}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
@@ -498,7 +499,7 @@ null
 
 #### `qwen-image`
 
-- 标量列：`category=image`，`caps_json={"modes":"both","artifact":"url"}`
+- 标量列：`category=image`，`caps_json={"modes":"both"}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
@@ -596,8 +597,9 @@ null
         "watermark": "${watermark}"
       }
     },
+    "artifactForm": "url",
     "outputs": {
-      "fileRef": "output.choices[0].message.content[0].image",
+      "artifact": "output.choices[0].message.content[0].image",
       "errorCode": "code",
       "error": "message"
     }
@@ -678,9 +680,10 @@ null
     "headers": {
       "Authorization": "Bearer ${apiKey}"
     },
+    "artifactForm": "url",
     "outputs": {
       "status": "output.task_status",
-      "fileRef": "output.choices[0].message.content[0].image",
+      "artifact": "output.choices[0].message.content[0].image",
       "errorCode": "code",
       "error": "message"
     },
@@ -710,7 +713,7 @@ null
 
 #### `qwen-tts`
 
-- 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"url","clone":true,"cloneVia":"base64"}`
+- 标量列：`category=tts`，`caps_json={"modes":"sync","clone":true,"cloneVia":"base64"}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
@@ -791,8 +794,9 @@ null
         "language_type": "${languageType}"
       }
     },
+    "artifactForm": "url",
     "outputs": {
-      "fileRef": "output.audio.url",
+      "artifact": "output.audio.url",
       "errorCode": "code",
       "error": "message"
     }
@@ -860,7 +864,7 @@ null
 
 #### `elevenlabs-voice`
 
-- 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"binary","clone":true,"cloneVia":"form"}`
+- 标量列：`category=tts`，`caps_json={"modes":"sync","clone":true,"cloneVia":"form"}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
@@ -926,6 +930,7 @@ null
       "text": "${text}",
       "model_id": "${model}"
     },
+    "artifactForm": "binary",
     "outputs": {
       "errorCode": "detail.code",
       "error": "detail.message"
@@ -997,7 +1002,7 @@ null
 **两份语音上游的实测状态（2026-09-26）**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）。
 
 **ElevenLabs 的整条配音链路也走了一遍（桌面端 UI 里真发）**：⚙ 选这条实例 → 字幕生成 → 音色区出「男声 13 / 女声 7 / 中性 1」→ 点 `Roger` → 加一行 → 生成本句配音 → 行上徽标 `5.7s`，`narration.entries[0].audioId` 指向 `asset` 表里一条 `audio/mpeg`。
-**ElevenLabs 的合成也在应用里的「试调用」跑通了** —— 音色 id 在地址里、响应体就是裸字节（200 · 40KB），`caps.artifact='binary'` 这一档第一次真跑到；
+**ElevenLabs 的合成也在应用里的「试调用」跑通了** —— 音色 id 在地址里、响应体就是裸字节（200 · 40KB），`artifactForm='binary'` 这一档第一次真跑到；
 错误体形状同时实测到 `{detail:{type,code,message,status}}`，所以固定项的 `error` 从猜的 `detail.status` 改成 `detail.message`
 （填错不报错，只是界面只剩一条「HTTP 401」，看不出为什么）。
 建音色那一步：multipart 请求本身发对了（`name` + `files` 两个字段都被受理），上游回的是

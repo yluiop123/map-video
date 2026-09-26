@@ -58,6 +58,14 @@ export interface RequestDef {
   body?: unknown;
   /** multipart 表单（发这一格的判据见 `multipartSlotOf`：上传那格恒用，克隆格在 `cloneVia:'form'` 时用） */
   form?: Record<string, unknown>;
+  /**
+   * **这一格**的产物以什么形式回 —— 与固定项「产物」（`ARTIFACT_KEY`）成对配置：
+   * 这一档决定怎么变成字节，那一格决定去响应的哪个字段取。
+   * `none` = 这一格没有产物（文案生成就是，取一段文本），`binary` = 响应体本身即产物（不用取字段）。
+   * 早先它是整份模板一份（`caps.artifact`），于是同步回链接、异步回 base64 这种配不出来，
+   * 而且和固定项 `fileRef` 撞过一次名 —— 现在逐格一份，固定项统一叫 `artifact`。
+   */
+  artifactForm?: ArtifactEncoding;
   /** 从响应里取字段：固定项名字写死（见 requiredOutputsOf），其余键是留给下游 `${x}` 的变量 */
   outputs?: Record<string, string>;
   /** 只有 query 用；中间态不配（没命中两个列表就继续查） */
@@ -83,13 +91,11 @@ export type CloneVia = 'upload' | 'base64' | 'form';
 export interface Caps {
   /** 调用方式：只同步 / 只异步 / 两套都有（llm 恒 sync）；界面上是两个复选框 */
   modes: 'sync' | 'async' | 'both';
-  /** 产物怎么到手（llm 用 none） */
-  artifact: ArtifactEncoding;
   /** 要不要建音色（仅 tts） */
   clone?: boolean;
   /**
    * 建音色时，参考音频以什么形式交过去（仅 clone 开着时有意义）：
-   * - `upload`：先单独上传拿文件引用，克隆请求里写 `${fileRef}`（于是多出「上传」那一格）
+   * - `upload`：先单独上传拿文件引用，克隆那格写 `${voiceData}` 拿到的就是它（于是多出「上传」那一格）
    * - `base64`：文件转成 `data:<mime>;base64,…` 当 JSON 字段（克隆那格写 `${voiceData}`）
    * - `form`：克隆那一格自己发 multipart 表单 —— 文件是其中的分片，没有 Body
    */
@@ -209,7 +215,7 @@ export function retriable(e: unknown): boolean {
 
 /**
  * **没有任何内置占位符**：`${baseUrl}` `${apiKey}` 都是模板 instanceParams 里声明出来的参数，
- * 取值落在实例的 values.instance；中间变量（taskId / fileRef / voiceId）靠 outputs 流转，也不进声明表。
+ * 取值落在实例的 values.instance；中间变量（taskId / artifact / voiceId）靠 outputs 流转，也不进声明表。
  * 于是"这一份模板要人填什么"只有一处答案 —— 模板本身，界面照它渲染，密钥那几条渲染成密码框。
  */
 export function secretKeysOf(tpl: TemplateDef, reqKey: ReqKey): string[] {
@@ -226,13 +232,13 @@ export const CATEGORY_LABEL: Record<Category, string> = { llm: '文案生成', t
 
 /**
  * 产物 / 上传回来的引用，全项目只有这一个名字 —— 引擎按它找产物。
- * 以前产物叫 `artifact`、上传的叫 `fileRef`，两个名字说的是同一件事（这一步拿到的那个文件 / 地址），
- * 而下一步 `${它}` 也只有一种写法，所以合成一个。
+ * 它以前叫 `fileRef`：那阵子「产物形式」也占着 `artifact` 这个名字，两个不同的东西撞名，
+ * 于是改叫 fileRef 躲开。现在产物形式挪到**每一格**上（`artifactForm`），这里就回到 `artifact` —— 与界面那行「产物」同名。
  */
-export const ARTIFACT_KEY = 'fileRef';
+export const ARTIFACT_KEY = 'artifact';
 
 /**
- * 交进来的那一个文件，全项目只有这一个名字 —— 与固定返回项 `fileRef` 对偶：
+ * 交进来的那一个文件，全项目只有这一个名字 —— 与固定返回项 `artifact`（产物 / 上传回来的引用）对偶：
  * 一个是「这一步现场交进来的文件」，一个是「那一步交回去的文件 / 地址」。
  * **它不是模板声明的参数**：三种接法用的都是同一个文件，所以不让人重复声明，界面上也没有
  * 「要传的文件」那张表 —— 表单里写 `${voiceData}` 就是那个二进制分片，JSON 体里写它就是 data URI。
@@ -273,18 +279,24 @@ export function multipartSlotOf(tpl: TemplateDef, key: ReqKey): boolean {
 /** 某个槽必须交出的字段：名字写死、界面只能填路径。`required:false` = 建议项（不填错误信息会退化） */
 export interface OutputSpec { name: string; label: string; hint: string; required: boolean }
 
-/** 产物要不要从响应的某个字段里取（`bin` = 响应体本身，`none` = 没有产物：这两档都没有那一格） */
-const artifactFromField = (c: Caps) => c.artifact !== 'none' && c.artifact !== 'binary';
+/** 这一格的产物形式（没填 = 这一格没有产物）——「产物怎么变成字节」的唯一答案 */
+export function artifactFormOf(tpl: TemplateDef, key: ReqKey): ArtifactEncoding {
+  return requestOf(tpl, key)?.artifactForm ?? 'none';
+}
+
+/** 这一格的产物要不要从响应的某个字段里取（`bin` = 响应体本身，`none` = 没有产物：这两档都没有那一格） */
+const artifactFromField = (form: ArtifactEncoding) => form !== 'none' && form !== 'binary';
 
 export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
-  const c = tpl.caps;
   const err: OutputSpec[] = [
     { name: 'error', label: '错误信息', hint: '上游报的原文，界面直接显示它', required: false },
     { name: 'errorCode', label: '错误码', hint: '和错误信息拼在一起，方便对文档查', required: false },
   ];
+  const form = artifactFormOf(tpl, key);
+  // 产物这一项只在该格「要从响应里某个字段取产物」时才存在：bin 用响应体本身，none 干脆没产物
   const artifact: OutputSpec[] =
-    !artifactFromField(c) ? [] :
-      [{ name: ARTIFACT_KEY, label: '产物', hint: c.artifact === 'url' ? '图片或音频的下载地址（带时效，当场下载）' : '图片或音频的字节所在字段', required: true }];
+    !artifactFromField(form) ? [] :
+      [{ name: ARTIFACT_KEY, label: '产物', hint: form === 'url' ? '图片或音频的下载地址（带时效，当场下载）' : '图片或音频的字节所在字段', required: true }];
   switch (key) {
     case 'sync.submit':
       return tpl.category === 'llm'
@@ -309,11 +321,6 @@ export function requiredOutputsOf(tpl: TemplateDef, key: ReqKey): OutputSpec[] {
 export function supportsOf(tpl: TemplateDef, key: 'clone' | 'upload' | 'async'): boolean {
   const slots = tpl ? slotsOf(tpl) : [];
   return key === 'async' ? slots.includes('async.submit') : slots.includes(key);
-}
-
-/** 产物按什么形式还原（`none` = 没有产物，调用处自己判） */
-export function artifactFormatOf(tpl: TemplateDef): ArtifactEncoding {
-  return tpl.caps.artifact;
 }
 
 // ========== 请求定位 ==========
@@ -719,7 +726,7 @@ async function http(tpl: TemplateDef, inst: InstanceDef, key: ReqKey, deps: Deps
   return { req, res, values };
 }
 
-/** 同步：提交 → 按 `caps.artifact` 还原产物（`url` 就是当场下载，不再多一问） */
+/** 同步：提交 → 按**这一格的产物形式**还原产物（`url` 就是当场下载，不再多一问） */
 export async function runSync(
   tpl: TemplateDef, inst: InstanceDef, deps: Deps,
   key: ReqKey, callArgs: Record<string, unknown> = {}, upstream0: Record<string, unknown> = {},
@@ -734,7 +741,7 @@ export async function runSync(
 
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
-  const enc = artifactFormatOf(tpl);
+  const enc = artifactFormOf(tpl, key);
   if (enc !== 'none') {
     const got = await toBytes(first.res, enc, first.values, deps);
     bytes = got.bytes; mime = got.mime;
@@ -777,7 +784,7 @@ export async function queryOnce(
 
   let bytes: Uint8Array | undefined;
   let mime: string | undefined;
-  const enc = artifactFormatOf(tpl);
+  const enc = artifactFormOf(tpl, 'async.query');
   if (enc !== 'none') {
     const got2 = await toBytes(got.res, enc, values, deps);
     bytes = got2.bytes; mime = got2.mime;
@@ -857,10 +864,15 @@ export const REQ_LABEL: Record<ReqKey, string> = {
 export function validateTemplate(tpl: TemplateDef): string[] {
   const problems: string[] = [];
   const slots = slotsOf(tpl);
-  if (tpl.category === 'llm' && (tpl.caps.artifact !== 'none' || tpl.caps.clone)) {
+  if (tpl.category === 'llm' && (tpl.caps.clone || slots.some((k) => artifactFormOf(tpl, k) !== 'none'))) {
     problems.push('文案生成不该有产物或克隆开关（它只取一段文本）');
   }
-  if (tpl.category !== 'llm' && tpl.caps.artifact === 'none') problems.push('这个用途必须交回产物，产物形式别选「没有产物」');
+  // 「该交回产物」的格就是终点那两格：同步提交、异步查询。产物形式逐格配，所以每一格各问一次
+  if (tpl.category !== 'llm') {
+    for (const key of slots.filter((k) => k === 'sync.submit' || k === 'async.query')) {
+      if (artifactFormOf(tpl, key) === 'none') problems.push(`${REQ_LABEL[key]}：这一格该交回产物，「产物形式」别选「没有产物」`);
+    }
+  }
   // 那个文件是引擎注入的固定名（与 fileRef 对偶）：声明它 = 同一个 ${它} 有两个来源
   const injected = (where: string) => problems.push(`${where}：\`${VOICE_FILE_KEY}\` 是引擎注入的那个文件，不用声明 —— 表单或体里直接写 \${${VOICE_FILE_KEY}}`);
   if ((tpl.instanceParams ?? []).some((p) => p.key === VOICE_FILE_KEY)) injected('实例级参数');
@@ -887,8 +899,8 @@ export function validateTemplate(tpl: TemplateDef): string[] {
     }
     // 反方向也要点名：产物形式选成「响应体就是产物 / 没有产物」时，那一格里填的产物路径没有消费者
     // （真发会拿 JSON 响应当音频用 —— 填了就说明想要的其实是 base64 / hex / url 那一档）
-    if (!artifactFromField(tpl.caps) && def.outputs?.[ARTIFACT_KEY]?.trim()) {
-      problems.push(`${REQ_LABEL[key]}：产物形式是「${tpl.caps.artifact === 'none' ? '没有产物' : 'bin（响应体即产物）'}」，这一格不用从字段取产物 —— 「产物」那格填了路径说明档位选错了（要取链接该选 url）`);
+    if (!artifactFromField(artifactFormOf(tpl, key)) && def.outputs?.[ARTIFACT_KEY]?.trim()) {
+      problems.push(`${REQ_LABEL[key]}：这一格的「产物形式」是「${artifactFormOf(tpl, key) === 'none' ? '没有产物' : 'bin（响应体即产物）'}」，不用从字段取产物 —— 「产物」那格填了路径说明档位选错了（要取链接该选 url）`);
     }
   }
   // 开关没要求的槽不该存在（否则就是开关与内容对不上，运行时按开关走、那一格永远用不到）

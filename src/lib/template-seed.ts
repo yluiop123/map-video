@@ -43,7 +43,7 @@ const pacing = (intervalMs: number, attempts: number): ParamSpec[] => [
 
 const deepseekChat: TemplateDef = {
   id: 'deepseek-chat', name: 'DeepSeek 对话', category: 'llm',
-  caps: { modes: 'sync', artifact: 'none' },
+  caps: { modes: 'sync' },
 
   instanceParams: net('https://api.deepseek.com'),
   sync: {
@@ -76,11 +76,11 @@ const deepseekChat: TemplateDef = {
 
 // 画面描述每次调用由出图那一栏给；声明出来是为了有中文名与类型
 const imagePrompt: ParamSpec[] = [text('prompt', '画面描述')];
-const imageOutputs = { fileRef: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' };
+const imageOutputs = { artifact: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' };
 
 const qwenImage: TemplateDef = {
   id: 'qwen-image', name: '千问 文生图', category: 'image',
-  caps: { modes: 'both', artifact: 'url' },
+  caps: { modes: 'both' },
 
   // 异步开关头只挂在异步提交那一条上（早先整份模板共用一份，同步端点也被塞了它 —— 那是个没实测过的风险）。
   instanceParams: [...net('https://maas.qianwenaiapi.com/api/v1'), ...pacing(5000, 360)],
@@ -97,6 +97,7 @@ const qwenImage: TemplateDef = {
         input: { messages: [{ role: 'user', content: [{ text: '${prompt}' }] }] },
         parameters: { size: '${size}', watermark: '${watermark}' },
       },
+      artifactForm: 'url',
       outputs: imageOutputs,
     }),
   },
@@ -122,7 +123,8 @@ const qwenImage: TemplateDef = {
       headers: { ...AUTH },
       // 实测（2026-09-23）：异步产物与同步同一路径 output.choices[0].message.content[0].image，
       // 文档写的 output.results[].url 是这个模型不再用的旧形状；任务要排几分钟，queryMaxAttempts 得给够
-      outputs: { status: 'output.task_status', fileRef: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' },
+      artifactForm: 'url',
+      outputs: { status: 'output.task_status', artifact: 'output.choices[0].message.content[0].image', errorCode: 'code', error: 'message' },
       successValues: ['SUCCEEDED'],
       failureValues: ['FAILED', 'CANCELED', 'UNKNOWN'],
     }),
@@ -133,7 +135,7 @@ const qwenImage: TemplateDef = {
 
 const qwenTts: TemplateDef = {
   id: 'qwen-tts', name: '千问 TTS', category: 'tts',
-  caps: { modes: 'sync', artifact: 'url', clone: true, cloneVia: 'base64' },
+  caps: { modes: 'sync', clone: true, cloneVia: 'base64' },
   instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
   sync: {
     submit: jsonReq('${baseUrl}/services/aigc/multimodal-generation/generation', {
@@ -148,7 +150,8 @@ const qwenTts: TemplateDef = {
         // 官方形状：language_type 在 input 里（不是 parameters —— 那是 CosyVoice 那一套的位置）
         input: { text: '${text}', voice: '${voice}', language_type: '${languageType}' },
       },
-      outputs: { fileRef: 'output.audio.url', errorCode: 'code', error: 'message' },
+      artifactForm: 'url',
+      outputs: { artifact: 'output.audio.url', errorCode: 'code', error: 'message' },
     }),
   },
   clone: jsonReq('${baseUrl}/services/audio/tts/customization', {
@@ -169,7 +172,7 @@ const qwenTts: TemplateDef = {
 
 /**
  * 这一家与千问那两条的差异全是数据：
- * 认证头叫 `xi-api-key`（不是 Bearer）；产物不用从字段里取（`caps.artifact='binary'`）；
+ * 认证头叫 `xi-api-key`（不是 Bearer）；产物不用从字段里取（这一格 `artifactForm:'binary'`）；
  * 音色 id 走 **URL 路径**；建音色前不单独上传 —— 文件与 name 一起进同一张 multipart 表单（`cloneVia='form'`）。
  * 官网：https://elevenlabs.io/docs/api-reference/voices/add · /text-to-speech/convert
  * 实测（2026-09-26，都在应用里的「试调用」跑的）：合成 ✅（200 · 40KB 裸字节）；错误体形状 ✅
@@ -179,7 +182,7 @@ const qwenTts: TemplateDef = {
  */
 const elevenLabsVoice: TemplateDef = {
   id: 'elevenlabs-voice', name: 'ElevenLabs 语音', category: 'tts',
-  caps: { modes: 'sync', artifact: 'binary', clone: true, cloneVia: 'form' },
+  caps: { modes: 'sync', clone: true, cloneVia: 'form' },
   instanceParams: net('https://api.elevenlabs.io/v1'),
   sync: {
     submit: req('${baseUrl}/text-to-speech/${voice}', {
@@ -194,6 +197,7 @@ const elevenLabsVoice: TemplateDef = {
       body: { text: '${text}', model_id: '${model}' },
       // 实测（2026-09-26）：错误体是 { detail: { type, code, message, status, request_id } } —— 人话在 detail.message；
       // 填成 detail 或 detail.error 会取到对象 / 空串，界面就只剩一条「HTTP 401」看不出为什么
+      artifactForm: 'binary',
       outputs: { errorCode: 'detail.code', error: 'detail.message' },
     }),
   },
@@ -217,12 +221,13 @@ export const templatesFor = (category: Category): TemplateDef[] => SEED_TEMPLATE
 export function blankTemplate(category: Category): TemplateDef {
   return {
     id: '', name: '', category,
-    caps: category === 'llm' ? { modes: 'sync', artifact: 'none' } : { modes: 'sync', artifact: 'url' },
+    caps: { modes: 'sync' },
     instanceParams: net(''),
     sync: {
       submit: jsonReq('${baseUrl}', {
         requestParams: [text(category === 'image' ? 'prompt' : 'text', category === 'image' ? '画面描述' : '文本')],
         body: { model: '${model}' },
+        artifactForm: category === 'llm' ? undefined : 'url',
       }),
     },
   };

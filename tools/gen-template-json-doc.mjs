@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { REQ_LABEL, requiredOutputsOf, slotsOf } from '../src/lib/request-engine.ts';
+import { REQ_LABEL, artifactFormOf, requiredOutputsOf, slotsOf } from '../src/lib/request-engine.ts';
 import { SEED_TEMPLATES } from '../src/lib/template-seed.ts';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -68,23 +68,23 @@ function block() {
   out.push('`caps_json` 一列装着全部开关，**该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，全由它推导**（`slotsOf` / `requiredOutputsOf` / `multipartSlotOf`）。');
   out.push('界面上「调用方式」是**同步 / 异步 两个复选框**（存的就是 `modes`：只勾一个 = `sync`/`async`，都勾 = `both`）；「建音色」是**克隆开关 + 参考音频三选一**（`cloneVia`：`upload` 先传、交回的引用注入成下一步的 `${voiceData}` / `base64` 文件进 JSON 体 / `form` 克隆那格自己发 multipart —— 三种接法在模板里写的都是 `${voiceData}`，它不在参数表里声明）。');
   out.push('');
-  out.push('| 模板 | 调用方式 | 产物形式 | 建音色 | 参考音频怎么交 | 推导出的接口槽 |');
-  out.push('|---|---|---|---|---|---|');
+  out.push('| 模板 | 调用方式 | 建音色 | 参考音频怎么交 | 推导出的接口槽 |');
+  out.push('|---|---|---|---|---|');
   for (const t of SEED_TEMPLATES) {
-    out.push(`| \`${t.id}\` | ${t.caps.modes} | ${t.caps.artifact} | ${t.caps.clone ? '是' : '否'} | ${t.caps.clone ? `\`${t.caps.cloneVia}\`` : '—'} | ${slotsOf(t).map((k) => `\`${REQ_LABEL[k]}\``).join(' + ') || '（无）'} |`);
+    out.push(`| \`${t.id}\` | ${t.caps.modes} | ${t.caps.clone ? '是' : '否'} | ${t.caps.clone ? `\`${t.caps.cloneVia}\`` : '—'} | ${slotsOf(t).map((k) => `\`${REQ_LABEL[k]}\``).join(' + ') || '（无）'} |`);
   }
   out.push('');
-  out.push('### 9.2 每格必须交出的返回项（名字写死，只能填路径）');
+  out.push('### 9.2 每格必须交出的返回项（名字写死，只能填路径）——「产物形式」也是逐格一行，与「产物」成对');
   out.push('');
   out.push('这些名字就是引擎读取的键 —— 写错不会报错，只会「产物取不到」或「一路查到超时」，所以不给自定义。');
   out.push('自定义变量（只给下游 `${它}` 用、引擎不读）另在一格，不进这张表。');
   out.push('');
-  out.push('| 模板 | 接口槽 | 固定项 | 名字（写死） | 必填 | 引擎拿它干什么 |');
-  out.push('|---|---|---|---|---|---|');
+  out.push('| 模板 | 接口槽 | 这一格的产物形式 | 固定项 | 名字（写死） | 必填 | 引擎拿它干什么 |');
+  out.push('|---|---|---|---|---|---|---|');
   for (const t of SEED_TEMPLATES) {
     for (const key of slotsOf(t)) {
       for (const o of requiredOutputsOf(t, key)) {
-        out.push(`| \`${t.id}\` | ${REQ_LABEL[key]} | ${o.label} | \`${o.name}\` | ${o.required ? '是' : '建议'} | ${o.hint} |`);
+        out.push(`| \`${t.id}\` | ${REQ_LABEL[key]} | \`${artifactFormOf(t, key)}\` | ${o.label} | \`${o.name}\` | ${o.required ? '是' : '建议'} | ${o.hint} |`);
       }
     }
   }

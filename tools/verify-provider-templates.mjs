@@ -42,16 +42,16 @@ const fresh = () => {
 /** 一份字段给满的模板（三层参数 / outputs / 两枚举 / 上传桥接都上，用来验逐字往返） */
 const TPL = {
   id: 'verify-image', name: '回归用图片', category: 'image',
-  caps: { modes: 'both', artifact: 'url' },
+  caps: { modes: 'both' },
   instanceParams: [
     { key: 'baseUrl', label: '服务地址', valueType: 'string', defaultValue: 'https://x/v1' },
     { key: 'apiKey', label: 'API Key', valueType: 'secret' },
     { key: 'timeoutMs', label: '超时', valueType: 'number', defaultValue: 30000 },
   ],
-  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' }, requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }, { key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, outputs: { fileRef: 'output.url' } } },
+  sync: { submit: { path: '${baseUrl}/gen', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}' }, requestParams: [{ key: 'size', label: '尺寸', valueType: 'enum', options: ['1024*1024', '2048*2048'] }, { key: 'prompt', label: '描述', valueType: 'text' }], body: { size: '${size}', prompt: '${prompt}' }, artifactForm: 'url', outputs: { artifact: 'output.url' } } },
   async: {
     submit: { path: '${baseUrl}/submit', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ${apiKey}', 'X-DashScope-Async': 'enable' }, body: { prompt: '${prompt}' }, outputs: { taskId: 'output.task_id' } },
-    query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { status: 'output.task_status', fileRef: 'output.results[0].url' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },
+    query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { Authorization: 'Bearer ${apiKey}' }, outputs: { status: 'output.task_status', artifact: 'output.results[0].url' }, artifactForm: 'url', successValues: ['SUCCEEDED'], failureValues: ['FAILED', 'UNKNOWN'] },
   },
 };
 
@@ -67,8 +67,9 @@ console.log('\n[1] 模板表（一行一份完整模板）');
   eq('1.4 整份逐字往返（三层参数 / outputs / 两枚举 / 上传桥接 / 逐槽请求头）',
     { name: got.name, category: got.category, note: got.note, instanceParams: got.instanceParams, sync: got.sync, async: got.async },
     { name: TPL.name, category: TPL.category, note: TPL.note, instanceParams: TPL.instanceParams, sync: TPL.sync, async: TPL.async });
-  check('1.5 方括号下标原样存回（output.results[0].url）', got.async.query.outputs.fileRef === 'output.results[0].url', got.async.query.outputs);
-  eq('1.6 能力开关逐字往返', got.caps, { modes: 'both', artifact: 'url' });
+  check('1.5 方括号下标原样存回（output.results[0].url）', got.async.query.outputs.artifact === 'output.results[0].url', got.async.query.outputs);
+  eq('1.6 能力开关逐字往返（产物形式不在这里 —— 它是每格的 artifactForm）', got.caps, { modes: 'both' });
+  eq('1.6a 每一格自己的产物形式逐字往返', [got.sync.submit.artifactForm, got.async.query.artifactForm], ['url', 'url']);
   check('1.6b use_clone / upload 两列不再存在（能力开关并进 caps_json）',
     !db.prepare('PRAGMA table_info(provider_template)').all().map((r) => r.name).some((c) => c === 'use_clone' || c === 'upload'));
   check('1.6c voice 的两个过期列已下线（全库没有生产者）',
@@ -120,7 +121,7 @@ console.log('\n[2] 实例：一个模板可以配几套账号');
 console.log('\n[3] voice 幂等键 / task 随项目级联');
 {
   const db = fresh();
-  upsertTemplateV2(db, { ...TPL, category: 'tts', caps: { modes: 'sync', artifact: 'url', clone: true } });
+  upsertTemplateV2(db, { ...TPL, category: 'tts', caps: { modes: 'sync', clone: true, cloneVia: 'base64' } });
   upsertProviderV2(db, { id: 'prov_t', tplId: 'verify-image', name: '配音生产', sync: true, values: { instance: { baseUrl: 'https://a/v1' }, requests: {} } });
   db.prepare(`INSERT INTO asset (asset_id, kind, name, mime, storage, rel_path, created_at)
     VALUES ('as_ref','audio','ref.wav','audio/wav','file','a/ref.wav',1)`).run();
@@ -237,7 +238,7 @@ console.log('\n[5] 旧形状让位 → 密钥搬进 values.instance');
   check('5.4 模板表也换了一行一份的形状', !db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name).includes('role'));
   check('5.5 让位后新表是空的（等 hydrate 铺完模板才搬）', listProvidersV2(db).length === 0);
   db.exec('PRAGMA foreign_keys = ON');
-  upsertTemplateV2(db, { id: 'openai-chat', name: '对话', category: 'llm', caps: { modes: 'sync', artifact: 'none' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/chat/completions', body: {} } } });
+  upsertTemplateV2(db, { id: 'openai-chat', name: '对话', category: 'llm', caps: { modes: 'sync' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/chat/completions', body: {} } } });
   eq('5.6 v1 行搬回：密钥 / baseUrl / 模型并进 values.instance，overrides 汇总进去', migrateProvidersFromStale(db), 1);
   const v1Row = listProvidersV2(db).find((x) => x.id === 'llm-1');
   eq('5.7 values.instance 内容对得上', v1Row.values.instance, { temperature: 7, baseUrl: 'https://api.deepseek.com', apiKey: 'sk-不得丢-v1', model: 'deepseek-flash' });
@@ -269,7 +270,7 @@ console.log('\n[5] 旧形状让位 → 密钥搬进 values.instance');
     && !!db.prepare("SELECT 1 FROM provider_template__stale LIMIT 1").get());
   ensureV2Schema(db);
   db.exec('PRAGMA foreign_keys = ON');
-  upsertTemplateV2(db, { id: 'qwen-image', name: '千问图片', category: 'image', caps: { modes: 'async', artifact: 'url' }, instanceParams: [], async: { submit: { path: '${baseUrl}/x', body: {} }, query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', outputs: { status: 's' }, successValues: ['SUCCEEDED'] } } });
+  upsertTemplateV2(db, { id: 'qwen-image', name: '千问图片', category: 'image', caps: { modes: 'async' }, instanceParams: [], async: { submit: { path: '${baseUrl}/x', body: {} }, query: { path: '${baseUrl}/tasks/${taskId}', method: 'GET', artifactForm: 'url', outputs: { status: 's', artifact: 'output.results.0.url' }, successValues: ['SUCCEEDED'] } } });
   eq('5.12 第二代行搬回', migrateProvidersFromStale(db), 1);
   const row = listProvidersV2(db)[0];
   eq('5.13 具名列并进 values.instance（params_json 一并带过来）', row.values.instance, { size: '2048*2048', baseUrl: 'https://g/v1', apiKey: 'sk-不得丢-v2', model: 'qwen-image-3.0-pro' });
@@ -300,8 +301,8 @@ console.log('\n[5] 旧形状让位 → 密钥搬进 values.instance');
   db.exec('PRAGMA foreign_keys = ON');
   const kept = listProvidersV2(db)[0];
   eq('5.17 实例行不动（它本来就是新形状，Key 原样在 values 里）', kept?.values?.instance, { apiKey: 'sk-不得丢-v4' });
-  upsertTemplateV2(db, { id: 'qwen-tts', name: '千问 TTS', category: 'tts', caps: { modes: 'sync', artifact: 'url', clone: true }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {}, outputs: { fileRef: 'output.audio.url' } } }, clone: { path: '${baseUrl}/customize', body: {}, outputs: { voiceId: 'output.voice' } } });
-  eq('5.19 新模板读回带 caps', listTemplatesV2(db).find((t) => t.id === 'qwen-tts')?.caps, { modes: 'sync', artifact: 'url', clone: true });
+  upsertTemplateV2(db, { id: 'qwen-tts', name: '千问 TTS', category: 'tts', caps: { modes: 'sync', clone: true, cloneVia: 'base64' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {}, artifactForm: 'url', outputs: { artifact: 'output.audio.url' } } }, clone: { path: '${baseUrl}/customize', body: {}, outputs: { voiceId: 'output.voice' } } });
+  eq('5.19 新模板读回带 caps', listTemplatesV2(db).find((t) => t.id === 'qwen-tts')?.caps, { modes: 'sync', clone: true, cloneVia: 'base64' });
   // 归档表由启动时的搬迁那一步清掉（应用真实顺序：铺 seed → migrate → 清归档）
   migrateProvidersFromStale(db);
   check('5.20 归档表搬完清掉，不留尾巴', !db.prepare("SELECT name FROM sqlite_master WHERE name GLOB '*__stale*'").get());
@@ -340,7 +341,7 @@ console.log('\n[7] 作废列清理');
 {
   const db = fresh();
   db.exec('ALTER TABLE provider_template ADD COLUMN note TEXT');
-  upsertTemplateV2(db, { id: 'keep-me', name: '留着这行', category: 'llm', caps: { modes: 'sync', artifact: 'none' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {} } } });
+  upsertTemplateV2(db, { id: 'keep-me', name: '留着这行', category: 'llm', caps: { modes: 'sync' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', body: {} } } });
   check('7.1 启动前确实带着 note 列', db.prepare('PRAGMA table_info(provider_template)').all().some((c) => c.name === 'note'));
   ensureV2Schema(db);
   const cols = db.prepare('PRAGMA table_info(provider_template)').all().map((c) => c.name);

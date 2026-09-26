@@ -851,7 +851,7 @@
 | `tpl_id` | TEXT | `PK` | 模板 id（一行 = 一份完整模板）：deepseek-chat / qwen-image / qwen-tts / custom-1 … |
 | `name` | TEXT | `NOT NULL` | 模板名（用户自填的单个字符串，不做中英两份） · 默认 `''` |
 | `category` | TEXT | `NOT NULL` | 分类：llm 文案 / tts 语音 / image 图片（取值由 TS 联合类型管，不加 CHECK） |
-| `caps_json` | TEXT | `NOT NULL` | 能力开关 JSON { modes: sync\|async\|both, artifact: none\|binary\|base64\|hex\|url, clone, cloneVia: upload\|base64\|form }：该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，全由它推 · `CHECK (json_valid(caps_json))` |
+| `caps_json` | TEXT | `NOT NULL` | 能力开关 JSON { modes: sync\|async\|both, clone, cloneVia: upload\|base64\|form }：该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，全由它推（产物形式不在这里 —— 它是每一格自己的事，见 sync_json 等列的 artifactForm） · `CHECK (json_valid(caps_json))` |
 | `instance_params_json` | TEXT | — | 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json） · `CHECK (instance_params_json IS NULL OR json_valid(instance_params_json))` |
 | `sync_json` | TEXT | — | 同步接法 { submit }（一条请求直接拿产物；地址 / 请求头 / 参数声明 / body / 取字段都在这一格里） · `CHECK (sync_json IS NULL OR json_valid(sync_json))` |
 | `async_json` | TEXT | — | 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举） · `CHECK (async_json IS NULL OR json_valid(async_json))` |

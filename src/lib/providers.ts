@@ -157,7 +157,7 @@ export async function trialCall(inst: InstanceDef, key: ReqKey, callArgs: Record
     const one = await queryOnce(tpl, inst, deps, callArgs);
     return { values: one.values, bytes: one.bytes, mime: one.mime, steps: [one.step] };
   }
-  // 异步提交这一步**只交任务号**：拿 runSync 跑会按 caps.artifact 去响应里找产物，而那儿的响应根本没有产物
+  // 异步提交这一步**只交任务号**：拿 runSync 跑会按这一格的产物形式去响应里找产物，而那儿的响应根本没有产物
   if (key === 'async.submit') {
     const first = await submitAsync(tpl, inst, deps, callArgs);
     return { values: first.values, bytes: undefined as Uint8Array | undefined, mime: undefined as string | undefined, steps: first.steps };
@@ -260,7 +260,7 @@ export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targe
   const one: InstanceDef = { ...inst, values: { ...inst.values, instance: { ...inst.values.instance, model: targetModel || inst.values.instance?.model } } };
   // 交出去的是一个**文件值**（字节 + 自己认出来的 mime + 文件名）：三种接法用同一份，
   // 差在模板那一格怎么写 —— `${voiceData}` 进 JSON 体 = data:<mime>;base64,…，
-  // 进 multipart 表单 = 二进制分片；「单独上传」那类则是上传那一格收下它、克隆体里引用 ${fileRef}。
+  // 进 multipart 表单 = 二进制分片；「单独上传」那类则是上传那一格收下它，交回的引用再注入成克隆那格的 ${voiceData}。
   const r = await runClone(tpl, one, deps, {
     voiceData: { bytes: wav, mime: sniffAudioMime(wav), name: 'reference.wav' },
     prefix: preferred, preferredName: preferred,

@@ -100,8 +100,10 @@ const AUTH_HDR = { Authorization: 'Bearer ${apiKey}' };
 /** 新建一格的草稿：形状照 `multipartSlotOf` 给，不猜具体厂家 */
 const blankRequest = (key: ReqKey, tpl: TemplateDef): RequestDef => {
   if (key === 'async.query') {
-    return { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { ...AUTH_HDR }, body: {}, outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] };
+    return { path: '${baseUrl}/tasks/${taskId}', method: 'GET', headers: { ...AUTH_HDR }, body: {}, artifactForm: tpl.category === 'llm' ? undefined : 'url', outputs: { status: 'status' }, successValues: ['SUCCEEDED'], failureValues: ['FAILED'] };
   }
+  // 终点格（同步提交）先按「回链接、当场下载」起草 —— 多数文生图 / 配音上游是这个形状，选错档会被自检点名
+  const form = (key === 'sync.submit' && tpl.category !== 'llm') ? 'url' as const : undefined;
   // 那个文件不在参数表里声明：引擎注入固定的 `${voiceData}`（表单里是分片，体里是 data URI，
   // 而「先上传」那类传回来的引用也注入成同一个名字 —— 三种接法在模板里写的是同一句）
   const FILE_REF = `\${${VOICE_FILE_KEY}}`;
@@ -115,7 +117,7 @@ const blankRequest = (key: ReqKey, tpl: TemplateDef): RequestDef => {
       body: { audio: FILE_REF }, outputs: {},
     };
   }
-  return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, requestParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
+  return { path: '${baseUrl}/', method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HDR }, artifactForm: form, requestParams: [{ key: 'text', label: '文本', valueType: 'text' }], body: { model: '${model}' }, outputs: {} };
 };
 
 /** 移除一格（同步 / 异步的提交与查询是同一行里的键，删干净要连父对象一起处理） */
@@ -266,15 +268,6 @@ export function TemplatesPane() {
                       ))}
                     </div>
                   </div>
-                  <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
-                    <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('产物形式', 'Artifact')}</Label>
-                    <div className="flex items-center gap-1.5">
-                      <OptionBlocks<ArtifactEncoding> value={tpl.caps.artifact}
-                        options={ARTIFACT_OPTIONS(t).map((o) => ({ value: o.value, label: o.label }))}
-                        onChange={(artifact) => void setCaps({ ...tpl.caps, artifact })} />
-                      <InfoHint text={ARTIFACT_OPTIONS(t).find((o) => o.value === tpl.caps.artifact)?.hint} />
-                    </div>
-                  </div>
                   {tpl.category === 'tts' && (
                     <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-x-3">
                       <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('建音色', 'Voice clone')}</Label>
@@ -363,6 +356,8 @@ function RequestEditor({ tpl, reqKey, onChange }: {
   const custom = Object.entries(def.outputs ?? {}).filter(([k]) => !fixedNames.has(k));
   /** 这一格发的是表单还是 JSON 体 —— 与引擎、校验同一条判据（`multipartSlotOf`） */
   const multipart = multipartSlotOf(tpl, reqKey);
+  /** 只有「终点格」（同步提交 / 异步查询）才谈产物：它的产物形式与产物路径成对显示，逐格一份 */
+  const canCarryArtifact = tpl.category !== 'llm' && (reqKey === 'sync.submit' || reqKey === 'async.query');
 
   return (
     <Card className="gap-0 p-0">
@@ -404,8 +399,21 @@ function RequestEditor({ tpl, reqKey, onChange }: {
 
         {/* 引擎要读的返回项：名字写死（写错就没有消费者），只能填路径 */}
         <Group title={t('从响应里取', 'Read from response')}
-          hint={t('左列名字由引擎写死，只能填路径；剩下的写在折叠的「给下一个请求用的变量」里。', 'names are fixed by the engine — fill the path only')}>
+          hint={t('这一格的产物形式与「产物」是成对的两行（前者怎么变字节，后者去哪个字段取）；其余固定项名字由引擎写死，只能填路径，剩下的写在折叠的「给下一个请求用的变量」里。',
+            'the artifact form and the artifact path pair up here; other fixed names are set by the engine — fill the path only')}>
           <div className="space-y-1">
+            {/* 产物形式与产物是**成对的两行**：上面这档决定怎么变成字节，下面那行决定去响应的哪个字段取（选 bin / 没有产物时那一行自己消失） */}
+            {canCarryArtifact && (
+              <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-x-2">
+                <Label className="text-right text-[10px] font-normal text-muted-foreground" title="artifactForm">{t('产物形式', 'Artifact form')}</Label>
+                <div className="flex items-center gap-1.5">
+                  <OptionBlocks<ArtifactEncoding> value={def.artifactForm ?? 'none'}
+                    options={ARTIFACT_OPTIONS(t).map((o) => ({ value: o.value, label: o.label }))}
+                    onChange={(artifactForm) => set({ artifactForm })} />
+                  <InfoHint text={ARTIFACT_OPTIONS(t).find((o) => o.value === (def.artifactForm ?? 'none'))?.hint} />
+                </div>
+              </div>
+            )}
             {requiredOutputsOf(tpl, reqKey).map((o) => {
               const filled = !!def.outputs?.[o.name]?.trim();
               return (
