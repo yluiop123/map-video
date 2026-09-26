@@ -1,12 +1,14 @@
 /**
  * template-seed.ts — 内置接口模板 seed（首次建库铺成 provider_template 的行）
  *
- * 按用户要求只留这三份（= 四个接口形状）：
- *   deepseek-chat   文案生成                —— https://api-docs.deepseek.com/zh-cn/
- *   qwen-image      图片生成（同步 + 异步 + 任务查询）
- *                   —— platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image{,-30-async,-task-query}
- *   qwen-tts        语音：非流式合成 + 声音复刻
- *                   —— platform.qianwenai.com/docs/developer-guides/speech/voice-cloning
+ * 按用户要求内置这四份（= 六种上游形状）：
+ *   deepseek-chat     文案生成                —— https://api-docs.deepseek.com/zh-cn/
+ *   qwen-image        图片生成（同步 + 异步 + 任务查询）
+ *                     —— platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image{,-30-async,-task-query}
+ *   qwen-tts          语音：非流式合成 + 声音复刻（文件直接进体）
+ *                     —— platform.qianwenai.com/docs/developer-guides/speech/voice-cloning
+ *   elevenlabs-voice  语音：合成（响应体即音频）+ 声音复刻（自己发 multipart 表单）
+ *                     —— elevenlabs.io/docs/api-reference/voices/add · /text-to-speech/convert
  *
  * 这里是**数据**：铺进库后模板就是普通可编辑行，「恢复默认」用本文件覆盖回去；
  * 要接别家 = 界面上「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）。
@@ -163,7 +165,42 @@ const qwenTts: TemplateDef = {
   }),
 };
 
-export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts];
+// ========== 语音：ElevenLabs（合成 = 响应体裸字节 · 复刻 = 自己发 multipart 表单） ==========
+
+/**
+ * 这一家与千问那两条的差异全是数据：
+ * 认证头叫 `xi-api-key`（不是 Bearer）；产物不用从字段里取（`caps.artifact='binary'`）；
+ * 音色 id 走 **URL 路径**；建音色前不单独上传 —— 文件与 name 一起进同一张 multipart 表单（`cloneVia='form'`）。
+ * 官网：https://elevenlabs.io/docs/api-reference/voices/add · /text-to-speech/convert
+ * **未实测**（没有这家的 Key）：路径与字段名照官网逐字抄，产物与错误结构等真发过再改。
+ */
+const elevenLabsVoice: TemplateDef = {
+  id: 'elevenlabs-voice', name: 'ElevenLabs 语音', category: 'tts',
+  caps: { modes: 'sync', artifact: 'binary', clone: true, cloneVia: 'form' },
+  instanceParams: net('https://api.elevenlabs.io/v1'),
+  sync: {
+    submit: req('${baseUrl}/text-to-speech/${voice}', {
+      // 音色名在地址里，不在体里 —— 各家把音色放哪一栏不一样，这正是逐槽配地址的意义
+      headers: { ...JSON_CT, 'xi-api-key': '${apiKey}' },
+      requestParams: [
+        en('model', '模型', ['eleven_multilingual_v2', 'eleven_flash_v2_5'], { defaultValue: 'eleven_multilingual_v2' }),
+        text('text', '合成文本'), p('voice', '音色 ID'),
+      ],
+      body: { text: '${text}', model_id: '${model}' },
+      outputs: { errorCode: 'detail.status', error: 'detail.message' },
+    }),
+  },
+  clone: req('${baseUrl}/voices/add', {
+    // 发的是表单：Content-Type 由传输层生成（它要带 boundary），所以这儿只声明认证头
+    headers: { 'xi-api-key': '${apiKey}' },
+    requestParams: [p('preferredName', '音色名', { defaultValue: 'mapvideo' })],
+    // 官网字段名是复数 `files`（可交多份样本），`${voiceData}` 就是那个二进制分片
+    form: { name: '${preferredName}', files: '${voiceData}' },
+    outputs: { voiceId: 'voice_id', errorCode: 'detail.status', error: 'detail.message' },
+  }),
+};
+
+export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts, elevenLabsVoice];
 
 export const seedTemplate = (id: string): TemplateDef | undefined => SEED_TEMPLATES.find((t) => t.id === id);
 

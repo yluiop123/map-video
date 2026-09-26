@@ -55,7 +55,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 **产物只有四种到手方式**（`caps.artifact` = `bin` 响应体即产物 / `base64` / `hex` / `url` 链接），
 `url` 一律**当场下载**成字节 —— 没有「先问一次才拿到地址」那种中间档：它把一件事拆成两问，多一格要配、多一处会写错，
-而三家上游里没有一家真的需要。
+而这几家上游里没有一家真的需要。
 
 **`upload` 那一格与别的接口不一样**：它发的是一张 multipart 表单 —— 要传的只有那一个文件（`${voiceData}`，引擎注入、不在参数表里声明），随文件一起发的字段写在表单里。卡片里还是那三节，只是「发出去的内容」那一节换成 Headers → 表单。表单是空的会被 `validateTemplate` 点名。
 
@@ -253,6 +253,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `deepseek-chat` | sync | none | 否 | — | `同步 · 提交` |
 | `qwen-image` | both | url | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
 | `qwen-tts` | sync | url | 是 | `base64` | `克隆` + `同步 · 提交` |
+| `elevenlabs-voice` | sync | binary | 是 | `form` | `克隆` + `同步 · 提交` |
 
 ### 9.2 每格必须交出的返回项（名字写死，只能填路径）
 
@@ -280,8 +281,13 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `qwen-tts` | 同步 · 提交 | 产物 | `fileRef` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-tts` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `elevenlabs-voice` | 克隆 | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
+| `elevenlabs-voice` | 克隆 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `elevenlabs-voice` | 克隆 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `elevenlabs-voice` | 同步 · 提交 | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `elevenlabs-voice` | 同步 · 提交 | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 
-### 9.3 三份模板各自声明了哪些参数
+### 9.3 4 份模板各自声明了哪些参数
 
 「层」只有两处声明：实例级整条实例共用、每一格各一张表。同一格里填了值的走实例，没填的由调用点现场给（业务界面或试调用）—— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。
 
@@ -330,6 +336,18 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
 | 这一格 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |
 | 这一格 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
+| 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
+
+#### `elevenlabs-voice` · ElevenLabs 语音（tts）
+
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
+|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://api.elevenlabs.io/v1"` | — |
+| 实例级 | `apiKey` | API Key | secret | — | — |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
+| 这一格 `sync.submit` | `model` | 模型 | enum | `"eleven_multilingual_v2"` | eleven_multilingual_v2 · eleven_flash_v2_5 |
+| 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
+| 这一格 `sync.submit` | `voice` | 音色 ID | string | — | — |
 | 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
 
 ### 9.4 逐列 JSON（照抄可用）
@@ -839,6 +857,122 @@ null
   }
 }
 ```
+
+#### `elevenlabs-voice`
+
+- 标量列：`category=tts`，`caps_json={"modes":"sync","artifact":"binary","clone":true,"cloneVia":"form"}`
+
+- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
+
+**`instance_params_json`**（实例级参数**声明**）
+
+```json
+[
+  {
+    "key": "baseUrl",
+    "label": "服务地址",
+    "valueType": "string",
+    "defaultValue": "https://api.elevenlabs.io/v1"
+  },
+  {
+    "key": "apiKey",
+    "label": "API Key",
+    "valueType": "secret"
+  },
+  {
+    "key": "timeoutMs",
+    "label": "单次超时 ms",
+    "valueType": "number",
+    "defaultValue": 60000
+  }
+]
+```
+
+**`sync_json`**（sync.submit）
+
+```json
+{
+  "submit": {
+    "path": "${baseUrl}/text-to-speech/${voice}",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "xi-api-key": "${apiKey}"
+    },
+    "requestParams": [
+      {
+        "key": "model",
+        "label": "模型",
+        "valueType": "enum",
+        "options": [
+          "eleven_multilingual_v2",
+          "eleven_flash_v2_5"
+        ],
+        "defaultValue": "eleven_multilingual_v2"
+      },
+      {
+        "key": "text",
+        "label": "合成文本",
+        "valueType": "text"
+      },
+      {
+        "key": "voice",
+        "label": "音色 ID",
+        "valueType": "string"
+      }
+    ],
+    "body": {
+      "text": "${text}",
+      "model_id": "${model}"
+    },
+    "outputs": {
+      "errorCode": "detail.status",
+      "error": "detail.message"
+    }
+  }
+}
+```
+
+**`async_json`**（async.submit）
+
+```json
+null
+```
+
+**`upload_json`**（upload）
+
+```json
+null
+```
+
+**`clone_json`**（clone）
+
+```json
+{
+  "path": "${baseUrl}/voices/add",
+  "method": "POST",
+  "headers": {
+    "xi-api-key": "${apiKey}"
+  },
+  "requestParams": [
+    {
+      "key": "preferredName",
+      "label": "音色名",
+      "valueType": "string",
+      "defaultValue": "mapvideo"
+    }
+  ],
+  "form": {
+    "name": "${preferredName}",
+    "files": "${voiceData}"
+  },
+  "outputs": {
+    "voiceId": "voice_id",
+    "errorCode": "detail.status",
+    "error": "detail.message"
+  }
+}
+```
 <!-- END generated:seed-templates -->
 ## 十、内置模板清单（seed）
 
@@ -846,11 +980,20 @@ null
 |---|---|---|---|
 | `deepseek-chat` | llm | `sync.submit` | ✅ 2026-09-23 |
 | `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条路径均通过 |
-| `qwen-tts` | tts | `sync.submit` + `clone` | 合成 ✅；复刻未跑（会在账号下建音色资源） |
+| `qwen-tts` | tts | `sync.submit` + `clone` | ✅ 两条都通：复刻完立刻用那个音色合成一句 |
+| `elevenlabs-voice` | tts | `sync.submit` + `clone` | ❌ 未实测（这台机器没有这家的 Key），形状照官网抄 |
+
+**还配不出来的一家**：MiniMax 的 `/v1/voice_clone` 成功响应里**没有音色 id** —— 官网说音色名就是请求里自己传的那个 `voice_id`。
+而 `outputs` 的固定项现在只能填**响应里的路径**（`applyOutputs` 只查响应），所以「克隆那格交出音色 ID」这一条在它家没有可填的值。
+实测到的其余部分都对得上：`/v1/files/upload` 通（`file.file_id` 是**整数**，multipart 字段名 `file` + `purpose=voice_clone`，错误在 `base_resp.status_code/status_msg`，0 为成功），
+合成 `POST /v1/t2a_v2` 的产物在 `data.audio` 且**是 hex 编码**（`caps.artifact='hex'` 那一档就是为它留的）。
+要么给 `outputs` 一个「取本轮发出去的值」的写法，要么把 voiceId 做成可留空 —— 两种都动到固定项的语义，等他定。
 
 **实测（2026-09-23）**：异步查询回的产物路径与同步**同一条**（`output.choices[0].message.content[0].image`），文档写的 `output.results[].url` 是这个模型不再用的旧形状；一次 1024×1024 出图排队 52 秒～9 分钟不等，所以查询节奏是实例级参数、默认给到 30 分钟预算。
 
-按用户要求只留这三份。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
+按用户要求内置这四份（MiniMax 那份卡在「克隆不回音色 id」，见第十节末）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
+
+**两份语音上游的实测状态**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）；ElevenLabs 那份**只有官网形状，没真发过**（这台机器没有它的 Key）—— 上传那步的 multipart 分片、`xi-api-key` 头、`voice_id` 根层路径都照文档抄的，别当已验证的默认值用。
 
 ## 十一、实现落点
 

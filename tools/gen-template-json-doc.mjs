@@ -89,7 +89,7 @@ function block() {
     }
   }
   out.push('');
-  out.push('### 9.3 三份模板各自声明了哪些参数');
+  out.push(`### 9.3 ${SEED_TEMPLATES.length} 份模板各自声明了哪些参数`);
   out.push('');
   out.push('「层」只有两处声明：实例级整条实例共用、每一格各一张表。同一格里填了值的走实例，没填的由调用点现场给（业务界面或试调用）—— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。');
   for (const t of SEED_TEMPLATES) {
