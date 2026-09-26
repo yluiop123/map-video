@@ -350,6 +350,19 @@ export function usedSlotsOf(tpl: TemplateDef, inst: InstanceDef): ReqKey[] {
   return slotsOf(tpl).filter((k) => !k.includes('.') || side.has(k));
 }
 
+/**
+ * 这条实例**能选**的请求方式：模板没有那一套接口就不摆出来（不做隐式降级，也不给配错的机会）。
+ * 只有一个可选项时界面整行不显示（没得选还摆一排单选 = 假控件）；
+ * 但已存的值对不上时那一档仍然要摆出来（连当前档一起），否则红报错在界面上没有执行掉的入口（见 §6.30）。
+ */
+export function selectableModesOf(tpl: TemplateDef | undefined, inst: InstanceDef): ('sync' | 'async')[] {
+  const out: ('sync' | 'async')[] = [];
+  if (tpl && requestOf(tpl, 'sync.submit')) out.push('sync');
+  if (tpl && requestOf(tpl, 'async.submit')) out.push('async');
+  if (!out.includes(inst.sync ? 'sync' : 'async')) out.push(inst.sync ? 'sync' : 'async');
+  return out;
+}
+
 /** 这一格引用了哪些名字（按出现顺序去重；`${它.mime}` 记作 `它`）—— 只扫真发出去的那部分内容 */
 function referencedIn(def: RequestDef, multipart: boolean): string[] {
   const out: string[] = [];

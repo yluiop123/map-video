@@ -19,7 +19,7 @@ import { Button } from './ui/button';
 import { useEditorStore } from '../stores/editorStore';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  VOICE_FILE_KEY, openKeysOf, paramLabelOf, requestOf, usedSlotsOf, validateTemplate,
+  VOICE_FILE_KEY, openKeysOf, paramLabelOf, requestOf, selectableModesOf, submitKeyOf, usedSlotsOf, validateTemplate,
   type Category, type FileValue, type InstanceDef, type ParamSpec, type ReqKey, type TemplateDef,
 } from '../lib/request-engine';
 import { pickLabel } from '../lib/i18n';
@@ -80,7 +80,7 @@ export function ProviderPanel({ kind }: { kind: Category }) {
         </Button>
       </div>
 
-      {sel && <InstanceForm inst={sel} tplName={tplOf(sel)?.name ?? sel.tplId} missingTpl={!tplOf(sel)} />}
+      {sel && <InstanceForm inst={sel} missingTpl={!tplOf(sel)} />}
       {!list.length && (
         <p className="rounded-md border border-dashed border-white/15 px-3 py-4 text-center text-[11px] text-muted-foreground">
           {t('这个能力还没有实例：点上面「＋实例」建一条，选模板并填地址与 Key。',
@@ -92,7 +92,7 @@ export function ProviderPanel({ kind }: { kind: Category }) {
 }
 
 /** 一条实例的表单 */
-function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplName: string; missingTpl: boolean }) {
+function InstanceForm({ inst, missingTpl }: { inst: InstanceDef; missingTpl: boolean }) {
   const t = useT();
   const store = useProviderStore.getState();
   const templates = useProviderStore((s) => s.templates);
@@ -101,13 +101,18 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
   const mine = templates.filter((x) => x.category === (tpl?.category ?? 'llm'));
   const setValues = (patch: Partial<InstanceDef>, values?: Parameters<typeof store.updateInstance>[2]) => store.updateInstance(inst.id, patch, values);
   const problems = tpl ? validateTemplate(tpl) : [`模板「${inst.tplId}」已经不在了`];
-  /** 只给这份模板真有的接法：没有异步接口就不摆「异步任务」这一格（不做隐式降级，也不给配错的机会） */
-  const modes = [
-    ...(tpl?.sync?.submit ? [{ value: 'sync', label: t('同步', 'Sync') }] : []),
-    ...(tpl?.async?.submit ? [{ value: 'async', label: t('异步任务', 'Async task') }] : []),
-  ];
+  /** 只给这份模板真有的接法；只有一种时整行不显示（见 `selectableModesOf`） */
+  const modes = selectableModesOf(tpl, inst);
   const curMode = inst.sync ? 'sync' : 'async';
-  const badMode = modes.length > 0 && !modes.some((m) => m.value === curMode);
+  /** 实例存的那一档在这份模板里根本没有接口（换了模板才会这样）：这一行必须长出来，否则那条红报错在界面上消不掉 */
+  const badMode = !tpl || !requestOf(tpl, submitKeyOf(inst.sync));
+  const modeLabel = (m: 'sync' | 'async') => (m === 'sync' ? t('同步', 'Sync') : t('异步任务', 'Async task'));
+
+  /** 这一屏的页签 = 这条实例真会走到的那几格；激活哪格就看哪格的参数与试调用 */
+  const slots = tpl ? usedSlotsOf(tpl, inst) : [];
+  const [pickedSlot, setPickedSlot] = useState<ReqKey | ''>('');
+  const slot = slots.find((k) => k === pickedSlot) ?? slots[0];
+  const slotDef = slot && tpl ? requestOf(tpl, slot) : undefined;
 
   const drop = async () => {
     const ok = await confirm({ message: t(`删除实例「${inst.name || inst.id}」？密钥与取值一起删。`, 'Delete this instance?'), danger: true });
@@ -128,49 +133,60 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
       </div>
       {missingTpl && <p className="text-[10px] text-red-400">{t('这条实例引用的模板已被删除，换一份或去接口模板重建。', 'Its template is gone.')}</p>}
 
-      <div className="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-x-3">
-        <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('请求方式', 'Mode')}</Label>
-        <div className="flex flex-wrap items-center gap-2">
-          <OptionBlocks<string>
-            value={badMode ? '' : curMode}
-            options={modes}
-            onChange={(v) => setValues({ sync: v === 'sync' })}
-          />
-          {badMode && (
-            <span className="text-[10px] text-red-400">
-              {t(`这条实例存的是${inst.sync ? '同步' : '异步'}，但这份模板没有那一套接口 —— 点上面改回来`,
-                'Stored mode has no matching endpoint in this template — pick the one above')}
-            </span>
-          )}
-          {modes.length === 1 && !badMode && (
-            <span className="text-[10px] text-muted-foreground/60">
-              {t(`这份模板（${tplName}）只有${inst.sync ? '同步' : '异步'}一种接法`, 'This template only has one mode')}
-            </span>
-          )}
+      {(modes.length > 1 || badMode) && (
+        <div className="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-x-3">
+          <Label className="text-right text-[10px] font-normal text-muted-foreground">{t('请求方式', 'Mode')}</Label>
+          <div className="flex flex-wrap items-center gap-2">
+            <OptionBlocks<string>
+              value={badMode ? '' : curMode}
+              options={modes.map((m) => ({ value: m, label: modeLabel(m) }))}
+              onChange={(v) => setValues({ sync: v === 'sync' })}
+            />
+            {badMode && (
+              <span className="text-[10px] text-red-400">
+                {t(`这条实例存的是${inst.sync ? '同步' : '异步'}，但这份模板没有那一套接口 —— 点上面改回来`,
+                  'Stored mode has no matching endpoint in this template — pick the one above')}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
-
-      {!!tpl?.instanceParams?.length && (
-        <Group title={t('实例参数', 'Instance params')} hint={t('这份模板声明的，全部请求共用', 'declared by the template, shared')}>
-          {tpl.instanceParams.map((p) => (
-            <ParamControl key={p.key} p={p} value={inst.values.instance?.[p.key]}
-              onChange={(v) => setValues({}, { instance: { [p.key]: v } })} />
-          ))}
-        </Group>
       )}
 
-      {/* 只列这条实例真会走到的那几格：模板两套都配了，异步那两组它也不读 */}
-      {tpl && usedSlotsOf(tpl, inst).filter((k) => !!requestOf(tpl, k)?.requestParams?.length).map((k) => (
-        <Group key={k} title={`${t(REQ_TITLE[k].zh, REQ_TITLE[k].en)} · ${t('参数', 'params')}`}
-          hint={t('填了值的存这条实例（同名参数在别的格可以取不同值）；留空的由调用点现场给，会出现在下面的试调用里', 'fill what this account pins; leave the rest to the call site')}>
-          {(requestOf(tpl, k)?.requestParams ?? []).map((p) => (
-            <ParamControl key={p.key} p={p} value={inst.values.requests?.[k]?.[p.key]}
-              onChange={(v) => setValues({}, { requests: { [k]: { ...(inst.values.requests?.[k] ?? {}), [p.key]: v } } })} />
-          ))}
-        </Group>
-      ))}
-
-      {tpl && <TrialBox inst={inst} tpl={tpl} />}
+      {/* 左：激活哪格看哪格（参数 + 试调用都用同一排页签）；右：实例参数固定在这，切页签不动它 */}
+      <div className="grid gap-x-4 gap-y-2 md:grid-cols-[minmax(0,1fr)_220px]">
+        <div className="min-w-0 space-y-2">
+          {slot && (
+            <Tabs value={slot} onValueChange={(v) => setPickedSlot(v as ReqKey)}>
+              <TabsList className="h-8">
+                {slots.map((k) => (
+                  <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_TITLE[k].zh, REQ_TITLE[k].en)}</TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          )}
+          {!!slotDef?.requestParams?.length && (
+            <Group title={`${t(REQ_TITLE[slot].zh, REQ_TITLE[slot].en)} · ${t('参数', 'params')}`}
+              hint={t('填了值的存这条实例（同名参数在别的格可以取不同值）；留空的由调用点现场给', 'fill what this account pins; leave the rest to the call site')}>
+              {slotDef.requestParams.map((p) => (
+                <ParamControl key={p.key} p={p} value={inst.values.requests?.[slot]?.[p.key]}
+                  onChange={(v) => setValues({}, { requests: { [slot]: { ...(inst.values.requests?.[slot] ?? {}), [p.key]: v } } })} />
+              ))}
+            </Group>
+          )}
+          {/* 换页签要重挂载：试调用的草稿（现场参数与选中的文件）按参数名存，两格里同名参数不是一回事（见 §6.30） */}
+          {tpl && slot && <TrialBox key={slot} inst={inst} tpl={tpl} slot={slot} />}
+        </div>
+        {!!tpl?.instanceParams?.length && (
+          <div className="self-start md:sticky md:top-0">
+            <Group title={t('实例参数', 'Instance params')} hint={t('这份模板声明的，全部请求共用', 'declared by the template, shared')}>
+              {tpl.instanceParams.map((p) => (
+                <ParamControl key={p.key} p={p} value={inst.values.instance?.[p.key]}
+                  onChange={(v) => setValues({}, { instance: { [p.key]: v } })} />
+              ))}
+            </Group>
+          </div>
+        )}
+      </div>
 
       <ProblemList problems={problems} />
     </div>
@@ -179,19 +195,17 @@ function InstanceForm({ inst, tplName, missingTpl }: { inst: InstanceDef; tplNam
 
 /**
  * 试调用：真发一条，用**这条实例**的取值与 Key（模板页不发请求）。
+ * 哪一格由上面那排页签决定 —— 参数与试调用读同一个激活格，所以这里不再自带第二排页签。
  * 要现场给哪些参数 = 这一格引用了、而实例里没填的那些名字（从占位符反推，不靠第二张声明表）。
  * 产物只回显字节数与取到的字段，不落库 —— 落库是各业务动作自己的事。
  */
-function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
+function TrialBox({ inst, tpl, slot }: { inst: InstanceDef; tpl: TemplateDef; slot: ReqKey }) {
   const t = useT();
-  const keys = usedSlotsOf(tpl, inst);
-  const [key, setKey] = useState<ReqKey>('sync.submit');
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<Record<string, FileValue>>({});
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState('');
-  const cur = keys.includes(key) ? key : keys[0];
-  if (!cur) return null;
+  const cur = slot;
   const callKeys = openKeysOf(tpl, inst, cur);
   /** `${voiceData}` 是引擎注入的那个文件（不是声明出来的参数）：这里长文件选择框，别的长文本框 */
   const isFileParam = (k: string) => k === VOICE_FILE_KEY;
@@ -225,13 +239,6 @@ function TrialBox({ inst, tpl }: { inst: InstanceDef; tpl: TemplateDef }) {
 
   return (
     <Group title={t('试调用', 'Try a call')} hint={t('用这条实例的取值与 Key 真发一条；产物只回显，不落库', 'sends a real request with this instance key')}>
-      <Tabs value={cur} onValueChange={(v) => setKey(v as ReqKey)}>
-        <TabsList className="h-8">
-          {keys.map((k) => (
-            <TabsTrigger key={k} value={k} className="text-[11px]">{t(REQ_TITLE[k].zh, REQ_TITLE[k].en)}</TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
       {callKeys.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           {callKeys.map((k) => (
