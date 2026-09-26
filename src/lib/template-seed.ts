@@ -54,7 +54,9 @@ const deepseekChat: TemplateDef = {
     submit: jsonReq('${baseUrl}/chat/completions', {
       requestParams: [
         en('model', '模型', ['deepseek-flash', 'deepseek-v4-pro'], { defaultValue: 'deepseek-flash' }),
-        en('reasoningEffort', '思考强度', ['high', 'medium', 'low']),
+        // 官网（2026-09-26 核对）这一档的合法值就是 none / low / high / max —— `none` 直接关掉思考，
+        // 没有 medium（早先那串里抄来的，填上去上游不认）
+        en('reasoningEffort', '思考强度', ['none', 'low', 'high', 'max']),
         en('thinking', '深度思考', ['enabled', 'disabled']),
         num('temperature', '温度', { min: 0, max: 2, step: 0.1 }),
         num('maxTokens', '最大输出 token'),
