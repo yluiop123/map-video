@@ -157,6 +157,11 @@ export async function trialCall(inst: InstanceDef, key: ReqKey, callArgs: Record
     const one = await queryOnce(tpl, inst, deps, callArgs);
     return { values: one.values, bytes: one.bytes, mime: one.mime, steps: [one.step] };
   }
+  // 异步提交这一步**只交任务号**：拿 runSync 跑会按 caps.artifact 去响应里找产物，而那儿的响应根本没有产物
+  if (key === 'async.submit') {
+    const first = await submitAsync(tpl, inst, deps, callArgs);
+    return { values: first.values, bytes: undefined as Uint8Array | undefined, mime: undefined as string | undefined, steps: first.steps };
+  }
   const r = await runSync(tpl, inst, deps, key, callArgs);
   return { values: r.values, bytes: r.bytes, mime: r.mime, steps: r.steps };
 }
