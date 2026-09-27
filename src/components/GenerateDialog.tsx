@@ -576,15 +576,11 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
           </Fold>
         )}
 
-        {/* 脊柱：一行 = 一条字幕 + 一段配音。左边读出场的秒数，右边读时长与停顿 */}
+        {/* 脊柱：一行 = 一条字幕 + 一段配音。出场时间不在这里读（时间线上看得见），只读这一行的停顿 */}
         <div className="border-t border-white/10 pt-2 mb-2">
           <div className="space-y-1.5 max-h-[38vh] overflow-y-auto pr-1">
             {seq(rows).map((r, idx) => (
               <div key={r.id} className="flex items-start gap-1.5 rounded-md border border-white/10 bg-white/[0.03] p-1.5">
-                <span className="shrink-0 w-11 pt-1.5 text-right text-[10px] text-muted-foreground tabular-nums"
-                  title={t('这一行开始显示的时间（顺排算出来的）', 'When this line starts (from the sequence)')}>
-                  {(r.startFrame / fps).toFixed(1)}s
-                </span>
                 <span className="shrink-0 w-4 pt-1.5 text-right text-[10px] text-muted-foreground/60 tabular-nums">{idx + 1}</span>
                 <LineInput
                   value={r.text}
@@ -594,18 +590,19 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
                 />
                 <div className="shrink-0 flex items-center gap-1 pt-0.5">
                   {IS_DESKTOP && <RowStatus r={r} task={taskOf(r.id)} fps={fps} />}
-                  {/* 这一行的停顿：占位显示整片的默认值，填了才脱离 */}
-                  <span className="flex items-center gap-0.5" title={t('这行读完停几秒再排下一行；留空 = 用下面的整片默认', 'Pause after this line; blank = the track-wide default below')}>
-                    <span className="text-[10px] text-muted-foreground/70">{t('停', 'gap')}</span>
+                  {/* 这一行的停顿：一枚控件的样子（标签 + 数字 + 单位），不是一个裸输入框夹在两个灰字中间 */}
+                  <label className="flex h-7 items-center gap-1 rounded-md border border-white/10 bg-black/25 pl-1.5 pr-1 transition-colors focus-within:border-brand/70"
+                    title={t('这行读完停几秒再排下一行；留空 = 用下面的整片默认（灰字就是那个默认）', 'Pause after this line; blank = the track-wide default shown greyed out')}>
+                    <span className="text-[10px] text-muted-foreground/60">{t('停', 'gap')}</span>
                     <input
-                      type="number" min={0} max={10} step={0.1}
+                      type="number" min={0} max={5} step={0.1}
                       value={r.gapSec ?? ''}
                       placeholder={gapSec.toFixed(1)}
-                      onChange={(e) => setRowGap(r.id, e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)))}
-                      className="input h-7 w-14 text-right text-[10px] tabular-nums"
+                      onChange={(e) => setRowGap(r.id, e.target.value === '' ? undefined : Math.min(5, Math.max(0, Number(e.target.value))))}
+                      className="w-9 bg-transparent text-right text-[11px] tabular-nums text-foreground outline-none placeholder:text-muted-foreground/45 focus:text-brand [&::-webkit-inner-spin-button]:appearance-none"
                     />
-                    <span className="text-[10px] text-muted-foreground/70">s</span>
-                  </span>
+                    <span className="text-[10px] text-muted-foreground/45">s</span>
+                  </label>
                   {IS_DESKTOP && <button
                     onClick={() => void genVoice(r)}
                     disabled={!r.text.trim()}
