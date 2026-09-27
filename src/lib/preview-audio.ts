@@ -8,9 +8,33 @@
 import { useEditorStore } from '../stores/editorStore';
 import { useProjectStore } from '../stores/projectStore';
 import { getAssetUrl } from './assets';
+import { narrationGain } from './audio-gain';
 import type { MapVideoProject } from '../types';
 
 const pool = new Map<string, HTMLAudioElement>();
+
+/**
+ * 超过 100% 的倍率只能这么给预览：`el.volume` 的取值域就是 [0,1]（导出端同理，见 lib/audio-gain.ts）。
+ * 所以每个元素挂一枚 GainNode，≤100% 时倍率恒为 1（等于没经过它，行为与从前一致）。
+ * 建不起来（老浏览器 / 策略拦）就退回 `el.volume`，最多是响不上去，不会没声。
+ */
+let ctx: AudioContext | null = null;
+const gains = new Map<string, GainNode>();
+
+function gainOf(assetId: string, el: HTMLAudioElement): GainNode | null {
+  try {
+    ctx ??= new AudioContext();
+    let g = gains.get(assetId);
+    if (!g) {
+      g = ctx.createGain();
+      ctx.createMediaElementSource(el).connect(g).connect(ctx.destination);
+      gains.set(assetId, g);
+    }
+    return g;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 池子按 **assetId** 存（项目里只有 id）：元素先建好、地址异步补。
@@ -44,11 +68,12 @@ function desiredAt(project: MapVideoProject, frame: number, fps: number): Map<st
   const map = new Map<string, Desired>();
   // 配音：字幕条激活区间播放（条目 startFrame 为**项目绝对帧**），音量只有整片这一层
   const nar = project.narration;
+  const gain = narrationGain(nar?.volume);
   if (nar) {
     for (const e of nar.entries) {
       if (!e.audioId) continue;
       if (frame >= e.startFrame && frame < e.startFrame + e.durationFrames) {
-        map.set(e.audioId, { vol: nar.volume ?? 1, offset: (frame - e.startFrame) / fps, loop: false });
+        map.set(e.audioId, { vol: gain, offset: (frame - e.startFrame) / fps, loop: false });
       }
     }
   }
@@ -96,7 +121,14 @@ function sync(): void {
       const el = getEl(assetId);
       if (!el) continue;                       // 地址还在路上
       el.loop = d.loop;
-      el.volume = Math.max(0, Math.min(1, d.vol));
+      const g = gainOf(assetId, el);
+      if (g) {
+        el.volume = 1;
+        g.gain.value = d.vol;
+        if (ctx!.state === 'suspended') void ctx!.resume().catch(() => { /* 还没用户手势 */ });
+      } else {
+        el.volume = Math.max(0, Math.min(1, d.vol));
+      }
       // 倍速预览：让音频自己跑快。实测改之前 playbackRate 一直是 1，播放头跑到 3× / 5× 时
       // 只能靠下面的 seek 硬追。界面最高 5×（本机 Chromium 支持到 16×），
       // preservesPitch 默认为 true，所以倍速下是「连续且不变调」。

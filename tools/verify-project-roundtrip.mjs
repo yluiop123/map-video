@@ -155,6 +155,9 @@ console.log('\n[5c] 配音音量（narration.volume）：只有整片这一层�
   saveProjectV2(db5c, { ...project('vol', FPS), narration: { entries: [{ id: 'v1', text: '一句', durationFrames: 60, startFrame: 0 }], style: {}, volume: 0.8 } });
   const v = getProjectV2(db5c, 'vol');
   check('5c.1 整片音量原样往返', v?.narration?.volume === 0.8, v?.narration?.volume);
+  saveProjectV2(db5c, { ...project('vol25', FPS), narration: { entries: [], style: {}, volume: 2.5 } });
+  check('5c.1b 超过 100% 存得下（CHECK 已放宽到 3：>1 走本地增益，不重跑配音）',
+    getProjectV2(db5c, 'vol25')?.narration?.volume === 2.5, getProjectV2(db5c, 'vol25')?.narration?.volume);
   check('5c.2 条目上没有音量这一层（要一句一句响是合成参数的事，不是混音）',
     v?.narration?.entries?.[0]?.volume === undefined, v?.narration?.entries?.[0]);
   saveProjectV2(db5c, { ...project('vol0', FPS), narration: { entries: [], style: {}, volume: 0 } });

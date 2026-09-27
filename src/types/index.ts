@@ -975,7 +975,10 @@ export interface NarrationTrack {
   style: NarrationStyle;
   /** 整片默认的字幕间隔（秒）。0 = 首尾相接（旧项目的行为） */
   gapSec?: number;
-  /** 整片配音音量（0–1）：只有这一个层级，逐句不做（要一句一句响就重跑那一句的合成参数） */
+  /**
+   * 整片配音音量（0–3）：只有这一个层级，逐句不做。
+   * ≤1 是混音（即时）；>1 由 `lib/audio-gain.ts` 本地增益烘进字节 —— 两端播放器都给不出 >1 的倍率。
+   */
   volume?: number;
   /** 项目级发音修正：每次合成都带着走（支持的端点才有用，见 AGENTS §6.22） */
   hotFix?: HotFix;
@@ -1026,7 +1029,7 @@ export function normalizeNarrationTrack(t?: NarrationTrack | null): NarrationTra
   }));
   const gapSec = typeof t?.gapSec === 'number' && t.gapSec >= 0 ? t.gapSec : 0;
   /** 没填过 = 满格（不是 0）：老项目读回来音量不能凭空变小 */
-  const volume = typeof t?.volume === 'number' && t.volume >= 0 && t.volume <= 1 ? t.volume : DEFAULT_NARRATION_VOLUME;
+  const volume = typeof t?.volume === 'number' && t.volume >= 0 ? Math.min(3, t.volume) : DEFAULT_NARRATION_VOLUME;
   const src = t?.hotFix;
   const hotFix: HotFix = { pronunciation: src?.pronunciation ?? [], replace: src?.replace ?? [] };
   return { style, entries, hotFix, gapSec, volume };

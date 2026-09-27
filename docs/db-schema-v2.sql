@@ -1040,7 +1040,7 @@ CREATE TABLE IF NOT EXISTS narration (  -- 字幕 / 配音档：样式部分，�
   pos_y        REAL NOT NULL CHECK (pos_y BETWEEN 0 AND 40),  -- 字幕距底百分比（0–40）
   max_pct      REAL NOT NULL CHECK (max_pct > 0 AND max_pct <= 100),  -- 字幕最大宽度百分比
   gap_sec      REAL NOT NULL DEFAULT 0,  -- 整片字幕间隔（秒）：每行读完停多久再排下一行；0 = 首尾相接（老项目的行为）
-  volume       REAL NOT NULL DEFAULT 1 CHECK (volume BETWEEN 0 AND 1),  -- 整片配音音量（0–1，与背景音乐相对调）：预览与导出同一个倍率
+  volume       REAL NOT NULL DEFAULT 1 CHECK (volume BETWEEN 0 AND 3),  -- 整片配音音量（0–3）：≤1 走混音，>1 由本地增益烘进字节（播放器两端都吃不下 >1）
   hot_fix_json TEXT CHECK (hot_fix_json IS NULL OR json_valid(hot_fix_json))  -- 发音修正（{pronunciation:[{词:音}],replace:[{原:换}]}，随每次配音带下去）
 );
 

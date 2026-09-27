@@ -2,7 +2,8 @@ import { renderMediaOnWeb, canRenderMediaOnWeb, type WebRendererContainer, type 
 import { MapVideo } from '../compositions/MapVideo';
 import type { MapVideoProject } from '../types';
 import { projectContentDuration } from './project-duration';
-import { getAssetUrl } from './assets';
+import { getAssetUrl, readAsset } from './assets';
+import { amplifiedWavUrl, narrationGain } from './audio-gain';
 
 export interface ExportOptions {
   project: MapVideoProject;
@@ -20,13 +21,21 @@ export interface ExportOptions {
 /**
  * 导出前把音频 assetId 一次性水合成可播放地址：项目里只有 id，
  * 而 Remotion 的 <Audio> 要 src，组件本身不等异步（保持每帧确定性）。
+ * 配音超过 100% 时在这里把倍率烘进字节（web-renderer 吃不下 >1 的音量，见 lib/audio-gain.ts）。
  */
 async function hydrateAudioSrc(project: MapVideoProject): Promise<Record<string, string>> {
+  const gain = narrationGain(project.narration?.volume);
   const ids = new Set<string>();
-  for (const e of project.narration?.entries ?? []) if (e.audioId) ids.add(e.audioId);
+  const narration = new Set<string>();
+  for (const e of project.narration?.entries ?? []) if (e.audioId) { ids.add(e.audioId); narration.add(e.audioId); }
   for (const m of project.music ?? []) if (m.audioId) ids.add(m.audioId);
   const out: Record<string, string> = {};
   for (const id of ids) {
+    if (gain > 1 && narration.has(id)) {
+      const got = await readAsset(id);
+      const baked = got ? await amplifiedWavUrl(got.bytes, gain) : null;
+      if (baked) { out[id] = baked; continue; }
+    }
     const url = await getAssetUrl(id);
     if (url) out[id] = url;
   }

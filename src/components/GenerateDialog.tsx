@@ -663,10 +663,10 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
                 <span className="text-muted-foreground/40">·</span>
                 {t('配音音量', 'Volume')}
                 <input
-                  type="range" min={0} max={1} step={0.05} value={volume}
+                  type="range" min={0} max={3} step={0.05} value={volume}
                   onChange={(e) => setVolume(parseFloat(e.target.value))}
                   className="w-20 h-1 accent-[var(--brand)]"
-                  title={t('配音在成片里的音量（与背景音乐相对调；单行右边那格可以覆盖它）', 'Narration level in the finished video (relative to the music); a line can override it')}
+                  title={t('配音在成片里的音量（与背景音乐相对调）。超过 100% 走本地增益：不重跑配音，但可能削顶', 'Narration level; above 100% is applied by local gain — no re-synthesis, may clip')}
                 />
                 <span className="w-9 text-right tabular-nums">{Math.round(volume * 100)}%</span>
               </>}

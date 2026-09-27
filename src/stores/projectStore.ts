@@ -560,7 +560,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     setNarrationGap: (gapSec: number) =>
       patch((p) => { const cur = normalizeNarrationTrack(p.narration); return { ...p, narration: { ...cur, gapSec: Math.max(0, gapSec) } }; }),
     setNarrationVolume: (volume: number) =>
-      patch((p) => { const cur = normalizeNarrationTrack(p.narration); return { ...p, narration: { ...cur, volume: Math.min(1, Math.max(0, volume)) } }; }),
+      patch((p) => { const cur = normalizeNarrationTrack(p.narration); return { ...p, narration: { ...cur, volume: Math.min(3, Math.max(0, volume)) } }; }),
     setNarrationHotFix: (patchFix: Partial<HotFix>) =>
       patch((p) => {
         const cur = normalizeNarrationTrack(p.narration);

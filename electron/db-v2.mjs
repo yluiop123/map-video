@@ -63,6 +63,7 @@ export function ensureV2Schema(db) {
     retireProviderIfStale(db);
     // task 的 FK 条款换代也在这一步（**早于 ensureAllColumns**：改名让位后建新表，最后把行搬回）
     const taskCols = rebuildTaskIfFkBound(db);
+    const narCols = rebuildNarrationIfOldVolumeCheck(db);
     // 先给旧表补缺失列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）；
     // 必须早于 db.exec(ddl)：视图引用了新列（layer_id），旧表缺列会让整段 DDL 失败。
     ensureAllColumns(db, ddl);
@@ -74,6 +75,7 @@ export function ensureV2Schema(db) {
     foldTemplateHeadersIntoSlots(db);
     dropRetiredColumns(db);
     restoreTaskRows(db, taskCols);
+    restoreNarrationRows(db, narCols);
     // 旧实例行的搬迁要等模板铺好之后（provider.tpl_id 是真外键）→ 由渲染端 hydrate 触发
     repairAssetRefs(db);
     return true;
@@ -239,6 +241,30 @@ function restoreTaskRows(db, cols) {
   const list = cols.filter((c) => keep.has(c));
   db.prepare(`INSERT OR IGNORE INTO task (${list.join(',')}) SELECT ${list.join(',')} FROM task__fk_stale`).run();
   db.exec('DROP TABLE task__fk_stale');
+}
+
+/**
+ * `narration.volume` 的上限从 1 放宽到 3（>100% 走本地增益，见 lib/audio-gain.ts），
+ * 但 CHECK 是**烧在表定义里**的 —— 补列不会改它，旧库写 1.5 会被 `CHECK constraint failed` 顶回来。
+ * 所以认这个正标志让位重建。`narration_entry.project_id` 指向的是 `project` 而不是 `narration`，
+ * 改名不会把子表的 FK 条款带跑（那才是 §6.24 里那个坑）。
+ */
+function rebuildNarrationIfOldVolumeCheck(db) {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='narration'").get()) return null;
+  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='narration'").get()?.sql ?? '';
+  if (!/volume\s+REAL[^,]*BETWEEN 0 AND 1\b/i.test(sql)) return null;
+  db.exec('ALTER TABLE narration RENAME TO narration__vol_stale');
+  console.log('[db-v2] narration.volume 的旧上限（≤1）已让位，建新表后把行搬回');
+  return columnsOf(db, 'narration__vol_stale');
+}
+
+function restoreNarrationRows(db, cols) {
+  if (!cols?.length) return;
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='narration__vol_stale'").get()) return;
+  const keep = new Set(columnsOf(db, 'narration'));
+  const list = cols.filter((c) => keep.has(c));
+  db.prepare(`INSERT OR IGNORE INTO narration (${list.join(',')}) SELECT ${list.join(',')} FROM narration__vol_stale`).run();
+  db.exec('DROP TABLE narration__vol_stale');
 }
 
 // ---------- 小工具 ----------
@@ -506,7 +532,7 @@ export function saveProjectV2(db, project) {
       bg_color: st.bgColor ?? '#000000', pos_y: st.posY ?? 2, max_pct: st.maxPct ?? 92,
       // 间隔存的是**用户输入的秒**（不走 f2s）：它是输入原值，换算成帧再换回来会漂
       gap_sec: typeof nar.gapSec === 'number' && nar.gapSec >= 0 ? nar.gapSec : 0,
-      volume: typeof nar.volume === 'number' && nar.volume >= 0 ? Math.min(1, nar.volume) : 1,
+      volume: typeof nar.volume === 'number' && nar.volume >= 0 ? Math.min(3, nar.volume) : 1,
       hot_fix_json: j(nar.hotFix),
     });
     (nar.entries || []).forEach((e, i) => insEntry.run({

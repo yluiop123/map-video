@@ -4,6 +4,7 @@ import { useProjectStore } from '../stores/projectStore';
 import { OverlayRenderer } from './OverlayRenderer';
 import { ScreenFxLayer, SubtitleLayer } from '../components/fx/FxRender';
 import { screenFxCombinedAt } from '../lib/screenfx';
+import { mixGain, narrationGain } from '../lib/audio-gain';
 import type { MapVideoProject, MusicTrack, NarrationEntry } from '../types';
 
 interface MapVideoProps {
@@ -34,7 +35,7 @@ function narrationVolumeAt(localFrame: number, volume: number): number {
 /** 配音轨：按条摆放（Remotion 内联音频 → web-renderer 混流） */
 export const NarrationAudio: React.FC<{
   narrationEntries: NarrationEntry[];
-  /** 整片配音音量（0–1）：只有这一个层级 */
+  /** 整片配音音量（0–3）：>1 的那一份已在导出水合时烘进字节，这里只吃 ≤1 的 */
   volume?: number;
   audioSrc: Record<string, string>;
 }> = ({ narrationEntries, volume = 1, audioSrc }) => {
@@ -43,7 +44,7 @@ export const NarrationAudio: React.FC<{
       {narrationEntries.map((e) =>
         e.audioId && audioSrc[e.audioId] && e.durationFrames > 0 ? (
           <Sequence key={`nar-${e.id}`} from={e.startFrame} durationInFrames={e.durationFrames} name={`narration-${e.id}`}>
-            <Audio src={audioSrc[e.audioId]} volume={(f) => narrationVolumeAt(f, volume)} />
+            <Audio src={audioSrc[e.audioId]} volume={(f) => narrationVolumeAt(f, mixGain(volume))} />
           </Sequence>
         ) : null
       )}
@@ -105,7 +106,7 @@ export const MapVideo: React.FC<MapVideoProps> = ({ projectId: _projectId, proje
       </AbsoluteFill>
 
       {/* 音频轨：配音（绝对帧）+ 项目级背景音乐 */}
-      <NarrationAudio narrationEntries={project.narration?.entries || []} volume={project.narration?.volume ?? 1} audioSrc={audioSrc} />
+      <NarrationAudio narrationEntries={project.narration?.entries || []} volume={narrationGain(project.narration?.volume)} audioSrc={audioSrc} />
       <ProjectMusic music={project.music || []} fps={fps} audioSrc={audioSrc} />
     </AbsoluteFill>
   );
