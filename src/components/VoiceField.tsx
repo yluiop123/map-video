@@ -14,7 +14,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
 import { callTTS, cloneTargetModel, supports, templateOf, voiceModelOf } from '../lib/providers';
 import { playAudition, stopAudition } from '../lib/audition';
-import { paramSpec, visibleOptions, type InstanceDef, type ParamSpec, type ReqKey } from '../lib/request-engine';
+import { paramSpec, scopeOf, visibleOptions, type InstanceDef, type ParamSpec, type ReqKey } from '../lib/request-engine';
 import { CLIP_PRESETS, fetchClipBytes } from '../lib/voices';
 import { useVoiceStore } from '../stores/voiceStore';
 import type { VoiceRow } from '../types';
@@ -50,6 +50,11 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
   const [auditioning, setAuditioning] = useState(false);
 
   const tpl = templateOf(inst);
+  /**
+   * 显示与选中态看**这一格实际会发出去的那个值**：调用方没显式给（⚙ 里没在这格钉过音色）时，
+   * 回落到模板声明的默认音色 —— 否则组标题上永远写着「未选」，而真发用的是默认值。
+   */
+  const shown = value || (tpl && inst ? String(scopeOf(tpl, inst, slot).values[spec.key] ?? '') : '');
   /** 音色表：候选值按这一格当前 `model` 的取值过滤过（`-vc` 那条模型不吃系统音色，实测） */
   const catalog = tpl && inst ? visibleOptions(tpl, inst, slot, spec.key) : [];
   /** 组名取模板里写的字面量，顺序 = 首次出现；没写 group 的归到不分组那一批（下面 groups 为空即平铺） */
@@ -87,10 +92,10 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
   useEffect(() => () => stopAudition(), []);
 
   const runAudition = async () => {
-    if (!inst || !value) { setMsg(t('先选一个音色', 'Pick a voice first')); return; }
+    if (!inst || !shown) { setMsg(t('先选一个音色', 'Pick a voice first')); return; }
     setBusy('audition'); setMsg('');
     try {
-      const { dataUrl } = await callTTS(inst, t('这段旁白用来试听音色。', 'This line previews the voice.'), value,
+      const { dataUrl } = await callTTS(inst, t('这段旁白用来试听音色。', 'This line previews the voice.'), shown,
         { ...(valueModel ? { model: valueModel } : {}), ...(extra ?? {}) });
       setAuditioning(true);
       // 播不出去（浏览器拦自动播放）就当没在播，别让按钮一直显示在响
@@ -121,7 +126,7 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
         title={`${o.title}${o.sub ? ` · ${o.sub}` : ''}`}
         className={`h-7 px-2 border text-[11px] truncate transition-colors disabled:opacity-40 max-w-[10rem] ${
           o.dashed ? 'rounded-md border-dashed' : 'rounded-l-md'
-        } ${o.id && value === o.id ? 'bg-brand/20 border-brand text-foreground font-semibold' : 'border-white/15 text-foreground/80 hover:bg-white/10'}`}
+        } ${o.id && shown === o.id ? 'bg-brand/20 border-brand text-foreground font-semibold' : 'border-white/15 text-foreground/80 hover:bg-white/10'}`}
       >
         {o.busy ? '⏳' : o.title}
       </button>
@@ -153,11 +158,11 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
 
   const myClones = cloned.filter((c) => !SAMPLE_LABELS.includes(c.label));
   /** 当前值是哪来的：表里 / 克隆账本里 / 都不是（换了模板或换了模型后失效的那个） */
-  const inCatalog = catalog.find((o) => String(o.value) === value);
-  const inLedger = cloned.find((c) => c.voiceId === value);
+  const inCatalog = catalog.find((o) => String(o.value) === shown);
+  const inLedger = cloned.find((c) => c.voiceId === shown);
   /** 选中项绑的模型：克隆账本说了算（合成必须同款），表里的值用实例当前模型 */
   const valueModel = inLedger?.targetModel ?? '';
-  const orphan = !!value && !inCatalog && !inLedger;
+  const orphan = !!shown && !inCatalog && !inLedger;
   const renderCells = (list: typeof catalog) => list.map((o) => cell({
     id: String(o.value), title: o.label ?? String(o.value), sub: [o.note, String(o.value)].filter(Boolean).join(' · '),
   }));
@@ -167,7 +172,7 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
       <div className="space-y-1">
         {groups.map((g) => {
           const vs = catalog.filter((o) => o.group === g);
-          const sel = vs.find((o) => String(o.value) === value);
+          const sel = vs.find((o) => String(o.value) === shown);
           const opened = openGroup[g];
           return (
             <div key={g}>
@@ -190,13 +195,13 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
         {!catalog.length && (
           <label className="flex items-center gap-1.5 text-[11px]">
             <span className="text-muted-foreground">{spec.label || spec.key}</span>
-            <input value={value} onChange={(e) => pick(e.target.value)} placeholder="voice_id / speaker"
+            <input value={shown} onChange={(e) => pick(e.target.value)} placeholder="voice_id / speaker"
               className="input h-7 w-52 text-xs font-mono" />
           </label>
         )}
         {!!catalog.length && orphan && (
           <p className="text-[10px] text-red-400">
-            {t(`当前值「${value}」不在这份模板的音色表里，也不在这条实例的克隆记录里（换过模板或换过模型？）—— 换个音色，或在接口模板里把它加进表`,
+            {t(`当前值「${shown}」不在这份模板的音色表里，也不在这条实例的克隆记录里（换过模板或换过模型？）—— 换个音色，或在接口模板里把它加进表`,
               `Current value isn't in this template's catalog or this instance's clone list`)}
           </p>
         )}
@@ -221,7 +226,7 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
                   >✕</button>
                 ),
               }))}
-              {orphan && cell({ id: value, model: valueModel || undefined, title: t('当前音色', 'Current'), sub: t('不在音色表与克隆记录里', 'Not in the catalog or clone list') })}
+              {orphan && cell({ id: shown, model: valueModel || undefined, title: t('当前音色', 'Current'), sub: t('不在音色表与克隆记录里', 'Not in the catalog or clone list') })}
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={busy !== null || !inst}
@@ -255,14 +260,14 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
               if (auditioning) { stopAudition(); setAuditioning(false); return; }
               void runAudition();
             }}
-            disabled={busy !== null || (!auditioning && !value)}
+            disabled={busy !== null || (!auditioning && !shown)}
             className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
             title={auditioning ? t('停止试听', 'Stop') : t('用当前音色合成一句试听', 'Synthesize one preview line with the current voice')}
           >{busy === 'audition' ? '⏳' : auditioning ? '⏸' : '▶'} {auditioning ? t('停止', 'Stop') : t('试听', 'Audition')}</button>
         )}
-        <span className="text-[10px] text-muted-foreground/70 truncate" title={value}>
+        <span className="text-[10px] text-muted-foreground/70 truncate" title={shown}>
           {t('音色（连同它绑的模型）随每次合成传下去，不写进实例配置', 'The voice and its model go with each call, not the instance')}
-          {value ? ` · ${value}` : ''}
+          {shown ? ` · ${shown}` : ''}
           {(valueModel || inCatalog) ? ` · ${valueModel || instModel}` : ''}
           {msg ? ` · ${msg}` : ''}
         </span>

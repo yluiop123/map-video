@@ -26,6 +26,7 @@ import { pickLabel } from '../lib/i18n';
 import { previewRequest, trialCall, SAMPLE_CALL_ARGS, type TrialResult } from '../lib/providers';
 import { IS_DESKTOP } from '../lib/backend';
 import { useConfirm } from './ui/ConfirmHost';
+import { VoiceField } from './VoiceField';
 
 const KIND_TITLE: Record<Category, { zh: string; en: string }> = {
   llm: { zh: '🤖 文案生成 AI', en: '🤖 Text AI' },
@@ -167,7 +168,16 @@ function InstanceForm({ inst, missingTpl }: { inst: InstanceDef; missingTpl: boo
           {!!slotDef?.requestParams?.length && (
             <Group title={`${t(REQ_TITLE[slot].zh, REQ_TITLE[slot].en)} · ${t('参数', 'params')}`}
               hint={t('填了值的存这条实例（同名参数在别的格可以取不同值）；留空的由调用点现场给', 'fill what this account pins; leave the rest to the call site')}>
-              {slotDef.requestParams.map((p) => (
+              {slotDef.requestParams.map((p) => p.voiceTable ? (
+                /* 音色表那一格：内置（模板声明的候选值，按分组）+ 这条实例的克隆音色池。
+                   试听不在这里 —— 那次真发的正确入口就是下面的「试调用」 */
+                <VoiceField key={p.key} inst={inst} slot={slot} spec={p}
+                  value={String(inst.values.requests?.[slot]?.[p.key] ?? '')}
+                  onPick={(voiceId, voiceModel) => setValues({}, {
+                    // 选克隆音色时把它绑的那条模型一起写进这一格：合成必须同款（实测系统音色喂 -vc 上游直接拒）
+                    requests: { [slot]: { ...(inst.values.requests?.[slot] ?? {}), [p.key]: voiceId, ...(voiceModel ? { model: voiceModel } : {}) } },
+                  })} />
+              ) : (
                 <ParamControl key={p.key} p={p} value={inst.values.requests?.[slot]?.[p.key]}
                   onChange={(v) => setValues({}, { requests: { [slot]: { ...(inst.values.requests?.[slot] ?? {}), [p.key]: v } } })} />
               ))}
