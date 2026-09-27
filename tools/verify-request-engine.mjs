@@ -268,10 +268,10 @@ console.log('\n[6] 音色克隆');
       path: '${baseUrl}/files/upload', method: 'POST', headers: { Authorization: 'Bearer ${apiKey}' },
       form: { file: '${voiceData}', purpose: 'voice_clone', mime_type: '${voiceData.mime}' }, outputs: { artifact: 'file.file_id' },
     },
-    clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${voiceData}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
+    clone: { path: '${baseUrl}/v1/voice_clone', body: { file_id: '${voiceData}', name: '${voiceId}' }, outputs: { voiceId: 'voice_id' } },
   };
   const d2 = mk([{ on: 'files/upload', res: json({ file: { file_id: 'F7' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-7' }) }]);
-  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { voiceData: wav, preferredName: 'mv' });
+  const r2 = await runClone(up, inst('qwen-tts'), d2.deps, { voiceData: wav, voiceId: 'mv' });
   eq('6.4 单独上传：先传拿文件引用再克隆', [r2.values.voiceId, d2.sent.map((x) => x.url.split('/').pop())], ['mm-7', ['upload', 'voice_clone']]);
   eq('6.5 上传交回的引用注入成下一步的 ${voiceData}（克隆那格不用换一个名字）', d2.sent[1].body.file_id, 'F7');
   // 走「先上传」这条路时文件不转 base64：交出去的是二进制分片（带自己的 mime 与文件名）+ 普通字段
@@ -284,10 +284,10 @@ console.log('\n[6] 音色克隆');
   const upUrl = {
     ...up,
     upload: { ...up.upload, form: { file: '${voiceData}' }, outputs: { artifact: 'file.url' } },
-    clone: { path: '${baseUrl}/v1/voice_clone', body: { audio_url: '${voiceData}', name: '${preferredName}' }, outputs: { voiceId: 'voice_id' } },
+    clone: { path: '${baseUrl}/v1/voice_clone', body: { audio_url: '${voiceData}', name: '${voiceId}' }, outputs: { voiceId: 'voice_id' } },
   };
   const d3 = mk([{ on: 'files/upload', res: json({ file: { url: 'https://cdn/ref.wav' } }) }, { on: 'voice_clone', res: json({ voice_id: 'mm-8' }) }]);
-  await runClone(upUrl, inst('qwen-tts'), d3.deps, { voiceData: wav, preferredName: 'mv' });
+  await runClone(upUrl, inst('qwen-tts'), d3.deps, { voiceData: wav, voiceId: 'mv' });
   eq('6.9 上传返回 url 的那类：注入的就是那个地址', d3.sent[1].body.audio_url, 'https://cdn/ref.wav');
   const noRef = { ...up, upload: { ...up.upload, outputs: {} } };
   await throws('6.9b 上传那一格没交出引用 → 当场点名，不发半个克隆',

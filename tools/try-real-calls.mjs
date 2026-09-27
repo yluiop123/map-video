@@ -183,12 +183,14 @@ if (which === 'elevenlabs') {
   // 这一家的三个特殊处全靠数据表达：建音色自己发 multipart（不单独上传）、音色名在地址里、产物就是响应体字节
   // 两步分开跑：Key 没勾 voices_write 时只有复刻那条红，合成（响应体即音频）照样能验
   const tpl = seedTemplate('elevenlabs-voice');
-  const inst = instOf('elevenlabs-voice', 'elevenlabs', { clone: { preferredName: `mv probe ${Date.now().toString().slice(-6)}` } });
+  const inst = instOf('elevenlabs-voice', 'elevenlabs');
+  // 名字是调用点现给的（模板里 `${voiceId}` 就是它），不再占实例参数表一格
+  const probeName = `mv${Date.now().toString().slice(-6)}`;
   let vid = '';
   await step('声音复刻（克隆那格自己发 multipart：name + files）', async () => {
     const sample = path.join(HERE, '..', 'public', 'voices', 'male.mp3');
     const bytes = new Uint8Array(fs.readFileSync(sample));
-    const r = await runClone(tpl, inst, deps, { voiceData: { bytes, mime: 'audio/mpeg', name: 'male.mp3' } });
+    const r = await runClone(tpl, inst, deps, { voiceData: { bytes, mime: 'audio/mpeg', name: 'male.mp3' }, voiceId: probeName });
     vid = String(r.values.voiceId ?? '');
     if (!vid) throw new Error(`没取到 voiceId：${JSON.stringify(r.values)}`);
     return vid;
@@ -236,11 +238,11 @@ if (which === 'all' || which === 'minimax') {
 if (which === 'clone') {
   await step('声音复刻（参考音频 → voiceId）', async () => {
     const tpl = seedTemplate('qwen-tts');
-    const inst = instOf('qwen-tts', 'qwen', { clone: { preferredName: 'mvregtest' } });
+    const inst = instOf('qwen-tts', 'qwen');
     const sample = path.join(HERE, '..', 'public', 'voices', 'male.mp3');
     // 交出去的是**文件值**（字节 + mime + 名字）：`${voiceData}` 在 JSON 体里由引擎换成 data URI
     const bytes = new Uint8Array(fs.readFileSync(sample));
-    const r = await runClone(tpl, inst, deps, { voiceData: { bytes, mime: 'audio/mpeg', name: 'male.mp3' } });
+    const r = await runClone(tpl, inst, deps, { voiceData: { bytes, mime: 'audio/mpeg', name: 'male.mp3' }, voiceId: 'mvregtest' });
     if (typeof r.values.voiceId !== 'string' || !r.values.voiceId) throw new Error(`没取到 voiceId：${JSON.stringify(r.values)}`);
     // 端到端：拿这个音色再合成一句 —— 「复刻用的 target_model 必须与合成同款」只有真发两轮才验得出来
     const vid = r.values.voiceId;
