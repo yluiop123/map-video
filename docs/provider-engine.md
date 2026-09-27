@@ -289,13 +289,13 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `qwen-image` | 异步 · 查询 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-image` | 异步 · 查询 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-image` | 异步 · 查询 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-tts` | 克隆 | `none` | 音色 ID | `voiceId` | 建议 | 这一格自己写了 ${voiceId} —— 名字是你起的、上游不回它，路径留空，引擎拿本轮发出去的那个名字当结果 |
+| `qwen-tts` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
 | `qwen-tts` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `qwen-tts` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-tts` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `elevenlabs-voice` | 克隆 | `none` | 音色 ID | `voiceId` | 建议 | 这一格自己写了 ${voiceId} —— 名字是你起的、上游不回它，路径留空，引擎拿本轮发出去的那个名字当结果 |
+| `elevenlabs-voice` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
 | `elevenlabs-voice` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `elevenlabs-voice` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `elevenlabs-voice` | 同步 · 提交 | `binary` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
@@ -362,6 +362,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
 | 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"Ethan"` | 38 条（女声 19 / 男声 19） —— 逐条见下面那列 JSON |
 | 这一格 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
+| 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
 
 #### `elevenlabs-voice` · ElevenLabs 语音（tts）
 
@@ -373,6 +374,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `model` | 模型 | enum | `"eleven_multilingual_v2"` | eleven_multilingual_v2 · eleven_flash_v2_5 |
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
 | 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"CwhRBWXzGAHq8TQ4Fs17"` | 21 条（男声 13 / 女声 7 / 中性 1） —— 逐条见下面那列 JSON |
+| 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
 
 #### `minimax-voice` · MiniMax 语音（tts）
 
@@ -1230,6 +1232,12 @@ null
         "qwen3-tts-vc-2026-01-22"
       ],
       "defaultValue": "qwen3-tts-vc-2026-01-22"
+    },
+    {
+      "key": "preferredName",
+      "label": "音色名",
+      "valueType": "string",
+      "defaultValue": "mapvideo"
     }
   ],
   "body": {
@@ -1237,7 +1245,7 @@ null
     "input": {
       "action": "create",
       "target_model": "${model}",
-      "preferred_name": "${voiceId}",
+      "preferred_name": "${preferredName}",
       "audio": {
         "data": "${voiceData}"
       }
@@ -1478,8 +1486,16 @@ null
   "headers": {
     "xi-api-key": "${apiKey}"
   },
+  "requestParams": [
+    {
+      "key": "preferredName",
+      "label": "音色名",
+      "valueType": "string",
+      "defaultValue": "mapvideo"
+    }
+  ],
   "form": {
-    "name": "${voiceId}",
+    "name": "${preferredName}",
     "files": "${voiceData}"
   },
   "outputs": {

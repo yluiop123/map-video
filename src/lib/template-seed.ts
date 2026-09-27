@@ -215,12 +215,12 @@ const qwenTts: TemplateDef = {
   clone: jsonReq('${baseUrl}/services/audio/tts/customization', {
     requestParams: [
       en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
+      p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
     ],
     body: {
       model: 'qwen-voice-enrollment',
       // `${voiceData}` 是引擎注入的那个文件（不在上面声明）：这一家要的是 `data:<mime>;base64,…`
-      // 名字不摆格子：这一轮克隆叫什么由调用点现给（`${voiceId}` 就是那个名字）
-      input: { action: 'create', target_model: '${model}', preferred_name: '${voiceId}', audio: { data: '${voiceData}' } },
+      input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${voiceData}' } },
     },
     outputs: { voiceId: 'output.voice', errorCode: 'code', error: 'message' },
   }),
@@ -288,8 +288,9 @@ const elevenLabsVoice: TemplateDef = {
   clone: req('${baseUrl}/voices/add', {
     // 发的是表单：Content-Type 由传输层生成（它要带 boundary），所以这儿只声明认证头
     headers: { 'xi-api-key': '${apiKey}' },
+    requestParams: [p('preferredName', '音色名', { defaultValue: 'mapvideo' })],
     // 官网字段名是复数 `files`（可交多份样本），`${voiceData}` 就是那个二进制分片
-    form: { name: '${voiceId}', files: '${voiceData}' },
+    form: { name: '${preferredName}', files: '${voiceData}' },
     outputs: { voiceId: 'voice_id', errorCode: 'detail.code', error: 'detail.message' },
   }),
 };
