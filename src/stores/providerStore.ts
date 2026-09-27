@@ -178,7 +178,13 @@ export const useProviderStore = create<ProviderState>()(
             if (instances.length !== rows.length)
               console.warn(`[providers] ${rows.length - instances.length} 条实例引用的模板已不存在，未载入（去实例设置重建）`);
             const picked = {} as Record<Category, string | null>;
-            for (const c of CATEGORIES) picked[c] = instances.find((i) => catOf.get(i.tplId) === c)?.id ?? null;
+            const before = get().picked;
+            for (const c of CATEGORIES) {
+              // 上次选的那条还活着就继续用它（不入库，但桌面端记在 localStorage —— 见下面 storage 那段）
+              const kept = before[c];
+              picked[c] = kept && instances.some((i) => i.id === kept && catOf.get(i.tplId) === c)
+                ? kept : instances.find((i) => catOf.get(i.tplId) === c)?.id ?? null;
+            }
             set({ templates, instances, picked });
           } catch (e) {
             console.warn('[providers] SQLite 加载失败:', e);
@@ -193,13 +199,23 @@ export const useProviderStore = create<ProviderState>()(
       // 换成「一份模板一行 + 多实例」后旧本地存储作废（按「不为兼容牺牲设计」直接换 key）
       name: 'mapvideo-providers.v5',
       storage: {
+        /**
+         * 桌面端：模板与实例的账在 SQLite，这里**只攥「每个能力当前选哪条实例」** ——
+         * 那一件事既不属于任何项目，也不值得占一列；不记它就等于每次重启都回到列表第一条。
+         */
         getItem: (name) => {
-          if (IS_DESKTOP) return null;
+          if (IS_DESKTOP) {
+            const raw = localStorage.getItem(`${name}.picked`);
+            return raw ? { state: { picked: JSON.parse(raw) as Record<Category, string> }, version: 0 } : null;
+          }
           const str = localStorage.getItem(name);
           return str ? JSON.parse(str) : null;
         },
         setItem: (name, value) => {
-          if (IS_DESKTOP) return;
+          if (IS_DESKTOP) {
+            localStorage.setItem(`${name}.picked`, JSON.stringify((value as { state?: { picked?: unknown } }).state?.picked ?? {}));
+            return;
+          }
           localStorage.setItem(name, JSON.stringify(value));
         },
         removeItem: (name) => {
