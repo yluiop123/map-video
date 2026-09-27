@@ -9,11 +9,11 @@ import { useT, Section, Field, OptionBlocks, Toggle, ColorPicker, NumberInput } 
 import { FrameTimeField } from './FrameTimeField';
 import {
   generateId, POS_BASE,
-  defaultPersonContent, normalizePersonContent, PERSON_PRESETS, PERSON_STYLE_DEFAULTS,
+  defaultPersonContent,
   type MapVideoProject, type ScreenFxItem, type WeatherType, type ScreenFxType,
   type OverlayItem, type OverlayType, type OverlayBlock, type ChartType,
   type OverlayPosition, type AnimationPreset,
-  type PersonContent, type PersonStyle,
+  type PersonContent,
   type MusicTrack,
 } from '../types';
 import { getAssetUrl, putAssetBytes, uploadAsset } from '../lib/assets';
@@ -395,7 +395,7 @@ function PopupTab({ project }: { project: MapVideoProject }) {
     const start = Math.max(0, currentFrame);
     const overlay: OverlayItem = {
       id: generateId(), type, name: info.label,
-      position: type === 'quote' ? 'top' : 'bottomLeft',
+      position: 'center',
       content: createPopupContent(type),
       startFrame: start,
       endFrame: start + Math.max(1, Math.round(DEFAULT_FX_SEC * fps)),
@@ -616,53 +616,30 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
       );
     }
     case 'person': {
-      const pc = normalizePersonContent(c.person);
+      const pc = c.person ?? defaultPersonContent();
       const setP = (next: Partial<PersonContent>) => onContent({ ...c, person: { ...pc, ...next } });
-      const applyStyle = (style: PersonStyle) => setP({ style, ...PERSON_STYLE_DEFAULTS[style] });
       const rowMini = 'px-1.5 h-7 text-xs rounded-md border bg-white/[0.03] border-white/10 text-muted-foreground hover:bg-white/[0.07] transition-colors';
       return (
         <div className="space-y-2">
-          <Field label={t('样式', 'Style')}>
-            <OptionBlocks<PersonStyle>
-              value={pc.style}
-              options={PERSON_PRESETS.map((x) => ({ value: x.id, label: t(x.zh, x.en) }))}
-              onChange={applyStyle}
-            />
-          </Field>
-          <Toggle checked={pc.showImage} onChange={(v) => setP({ showImage: v })} label={t('显示照片', 'Show photo')} />
-          {pc.showImage && (
-            <>
-              <div className="flex items-center gap-2">
-                <UploadButton label={t('上传照片', 'Photo')} accept="image/*" onPick={(url) => setP({ imageUrl: url })} />
-                {pc.imageUrl && <img src={pc.imageUrl} className="w-8 h-8 rounded object-cover border border-white/15" alt="" />}
-                {pc.imageUrl && (
-                  <button className={rowMini} onClick={() => setP({ imageUrl: undefined })} title={t('移除', 'Remove')}>✕</button>
-                )}
-              </div>
-              <ImageGenerateField onPick={(url) => setP({ imageUrl: url })} />
-              <Field label={t('形状', 'Shape')}>
-                <OptionBlocks<PersonContent['imageShape']>
-                  value={pc.imageShape}
-                  options={[{ value: 'square', label: t('方形', 'Square') }, { value: 'circle', label: t('圆形', 'Circle') }]}
-                  onChange={(v) => setP({ imageShape: v })}
-                />
-              </Field>
-              {pc.style === 'profile' && (
-                <Field label={t('照片方位', 'Side')}>
-                  <OptionBlocks<PersonContent['imageSide']>
-                    value={pc.imageSide}
-                    options={[{ value: 'left', label: t('左', 'L') }, { value: 'right', label: t('右', 'R') }]}
-                    onChange={(v) => setP({ imageSide: v })}
-                  />
-                </Field>
-              )}
-            </>
+          <div className="flex items-center gap-2">
+            <UploadButton label={t('上传照片', 'Photo')} accept="image/*" onPick={(url) => setP({ imageUrl: url })} />
+            {pc.imageUrl && <img src={pc.imageUrl} className="w-8 h-8 rounded object-cover border border-white/15" alt="" />}
+            {pc.imageUrl && (
+              <button className={rowMini} onClick={() => setP({ imageUrl: undefined })} title={t('移除', 'Remove')}>✕</button>
+            )}
+          </div>
+          <ImageGenerateField onPick={(url) => setP({ imageUrl: url })} />
+          {!!pc.imageUrl && (
+            <Field label={t('形状', 'Shape')}>
+              <OptionBlocks<PersonContent['imageShape']>
+                value={pc.imageShape}
+                options={[{ value: 'square', label: t('方形', 'Square') }, { value: 'circle', label: t('圆形', 'Circle') }]}
+                onChange={(v) => setP({ imageShape: v })}
+              />
+            </Field>
           )}
           <Field label={t('姓名', 'Name')}>
             <input value={pc.name || ''} onChange={(e) => setP({ name: e.target.value })} className="input h-7 text-xs" placeholder={t('姓名', 'Name')} />
-          </Field>
-          <Field label={t('职务/身份', 'Title')}>
-            <input value={pc.title || ''} onChange={(e) => setP({ title: e.target.value })} className="input h-7 text-xs" placeholder={t('职务 / 身份（可选）', 'Title (optional)')} />
           </Field>
           <Field label={t('简介', 'Intro')}>
             <textarea value={pc.intro || ''} onChange={(e) => setP({ intro: e.target.value })} className="input h-14 resize-none text-xs" placeholder={t('人物简介…', 'Bio…')} />
@@ -670,18 +647,6 @@ function PopupContentEditor({ overlay: o, onContent }: { overlay: OverlayItem; o
           <Field label={t('名言/台词', 'Quote')}>
             <textarea value={pc.quote || ''} onChange={(e) => setP({ quote: e.target.value })} className="input h-14 resize-none text-xs" placeholder={t('名言 / 台词（可选）', 'Quote (optional)')} />
           </Field>
-          <Section title={t('语音（整卡一条）', 'Voice (one per card)')}>
-            <div className="flex items-center gap-2">
-              <AudioUploadButton label={t('上传语音', 'Upload voice')} onPick={(audioId) => setP({ audioId })} />
-              {pc.audioId && (
-                <>
-                  <span className="text-[11px] text-muted-foreground truncate max-w-[100px]">{t('已上传', 'attached')}</span>
-                  <button className={rowMini} onClick={() => setP({ audioId: undefined })} title={t('移除语音', 'Remove')}>✕</button>
-                </>
-              )}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">{t('卡片出现后可在预览中点击播放（交互演示用）。', 'Click to play in preview (demo only).')}</p>
-          </Section>
         </div>
       );
     }

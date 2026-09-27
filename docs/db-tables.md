@@ -832,7 +832,7 @@
 | `bg_blur` | REAL | — | 卡片背景模糊半径 |
 | `bg_radius` | REAL | — | 卡片圆角半径 |
 | `bg_border` | TEXT | — | 卡片边框颜色 |
-| `payload_json` | TEXT | — | 类型专属载荷整体存取：custom 内容块 / person 人物块（含照片方位与形状）/ report/quote/compare/chart 等 · `CHECK (payload_json IS NULL OR json_valid(payload_json))` |
+| `payload_json` | TEXT | — | 类型专属载荷整体存取：custom 内容块 / person 人物块（照片 + 姓名 + 简介 + 台词）/ report/quote/compare/chart 等 · `CHECK (payload_json IS NULL OR json_valid(payload_json))` |
 | `audio_asset_id` | TEXT | `FK → asset SET NULL` | 背景语音（卡片可见时播放；导出混流待支持） |
 | `parent_overlay_id` | TEXT | `FK → overlay CASCADE` | 父弹窗（group 嵌套结构） |
 | `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |

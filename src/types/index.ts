@@ -602,89 +602,27 @@ export interface OverlayBlock {
   url?: string;
 }
 
-// ========== 人物卡（精简：常用预设 + 少量参数） ==========
-
-/** 常用样式：人物简介 / 名言台词 / 海报大图 / 纯文字 */
-export type PersonStyle = 'profile' | 'quote' | 'poster' | 'text';
+// ========== 人物卡（一张卡：照片 + 姓名 + 简介 + 一句台词） ==========
 
 export interface PersonContent {
-  style: PersonStyle;
-  /** 是否显示照片 */
-  showImage: boolean;
   imageUrl?: string;
   /** 照片形状 */
   imageShape: 'square' | 'circle';
-  /** 照片方位（简介样式：左/右） */
-  imageSide: 'left' | 'right';
   name?: string;
-  /** 职务 / 身份（姓名下小字） */
-  title?: string;
   /** 简介 */
   intro?: string;
   /** 名言 / 台词 */
   quote?: string;
-  /** 整卡语音（编辑端可试听；导出为纯视觉）：asset 表里 kind='audio' 的那一行 */
-  audioId?: string;
 }
-
-export const PERSON_PRESETS: { id: PersonStyle; zh: string; en: string }[] = [
-  { id: 'profile', zh: '人物简介', en: 'Profile' },
-  { id: 'quote', zh: '名言台词', en: 'Quote' },
-  { id: 'poster', zh: '海报大图', en: 'Poster' },
-  { id: 'text', zh: '纯文字', en: 'Text' },
-];
-
-/** 预设对应的默认图片参数（不动已填文字） */
-export const PERSON_STYLE_DEFAULTS: Record<PersonStyle, Partial<PersonContent>> = {
-  profile: { showImage: true, imageShape: 'square', imageSide: 'left' },
-  quote: { showImage: false },
-  poster: { showImage: true, imageShape: 'square' },
-  text: { showImage: false },
-};
 
 export function defaultPersonContent(): PersonContent {
-  return {
-    style: 'profile', showImage: true, imageShape: 'square', imageSide: 'left',
-    name: '', title: '', intro: '', quote: '',
-  };
-}
-
-/** 兼容旧数据（块化 / v1 平铺）→ 精简结构 */
-export function normalizePersonContent(p: unknown): PersonContent {
-  const def = defaultPersonContent();
-  if (!p || typeof p !== 'object') return def;
-  const obj = p as Record<string, unknown> & Partial<PersonContent>;
-  if (obj.style) return { ...def, ...obj } as PersonContent;
-  const blocks = Array.isArray(obj.blocks)
-    ? (obj.blocks as { kind?: string; show?: boolean; text?: string; imageUrl?: string }[])
-    : [];
-  const find = (k: string) => blocks.find((b) => b && b.kind === k && b.show !== false);
-  const vis = blocks.filter((b) => b && b.show !== false);
-  const imgOnly = vis.length === 1 && vis[0]?.kind === 'image';
-  const layout = (obj.layout || {}) as { imageSide?: string };
-  let style: PersonStyle = 'profile';
-  if (imgOnly) style = 'poster';
-  else if (find('quote')) style = 'quote';
-  else if (!find('intro') && !find('image')) style = 'text';
-  return {
-    ...def,
-    style,
-    showImage: !!find('image') || imgOnly,
-    imageUrl: find('image')?.imageUrl || (obj.imageUrl as string) || undefined,
-    imageShape: 'square',
-    imageSide: layout.imageSide === 'right' ? 'right' : 'left',
-    name: find('name')?.text || (obj.name as string) || '',
-    title: (obj.title as string) || '',
-    intro: find('intro')?.text || (obj.description as string) || '',
-    quote: find('quote')?.text || find('dialogue')?.text || (obj.speech as string) || '',
-    audioId: obj.audioId,
-  };
+  return { imageShape: 'square', name: '', intro: '', quote: '' };
 }
 
 export type OverlayType =
   | 'custom'                                        // 自定义（文字/图片/视频块组合 + 背景语音）
   | 'chart'
-  | 'person'                                        // 人物卡（头像+姓名+职务+介绍+说话+音效）
+  | 'person'                                        // 人物卡（照片 + 姓名 + 简介 + 一句台词）
   | 'timeline' | 'quote' | 'compare'               // 时间线 / 引用 / 对比
   | 'stat'                                          // 数字卡
   | 'stats' | 'counter' | 'dialogue' | 'place' | 'report';  // [已删除] 态势 / 计数 / 对话卡 / 地点卡 / 战报卡（仅保留类型用于旧数据迁移）
@@ -706,7 +644,7 @@ export interface OverlayContent {
   type: OverlayType;
   /** custom：内容块组合（文字/图片/视频任意数量）+ 背景语音（卡片可见时播放，导出音频混流待支持） */
   custom?: { blocks: OverlayBlock[]; audio?: { audioId: string; title?: string } };
-  /** person：块化人物卡（图片/姓名/介绍/名言/对话，各块开关+语音，布局可配；见 PersonContent） */
+  /** person：人物卡（照片 + 姓名 + 简介 + 一句台词；见 PersonContent） */
   person?: PersonContent;
   chart?: { type: ChartType; title?: string; data: { label: string; value: number }[]; data2?: { label: string; value: number }[]; color?: string; color2?: string };
   /** [已删除] report 战报卡：仅兼容旧数据，加载时迁移为 custom 文字块 */
@@ -743,9 +681,6 @@ const NEW_OVERLAY_TYPES = new Set<OverlayType>([
 
 /** 旧弹窗内容迁移为自定义块（load/import 入口调用；audio→纯背景语音卡，group 子内容递归拍平；person 迁移为块化） */
 export function normalizeOverlayContent(content: OverlayContent): OverlayContent {
-  if (content.type === 'person' && content.person) {
-    return { ...content, person: normalizePersonContent(content.person) };
-  }
   if (content.type === 'stats') {
     // 态势卡已删除：迁移为自定义文字块（标题 + 指标行）
     const st = content.stats;

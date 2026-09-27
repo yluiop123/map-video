@@ -20,10 +20,7 @@ export function projectAssetIds(project: MapVideoProject): string[] {
   }
   for (const e of project.narration?.entries || []) add(e.audioId);
   for (const m of project.music || []) add(m.audioId);
-  for (const o of project.overlays || []) {
-    add(o.content?.custom?.audio?.audioId);
-    add(o.content?.person?.audioId);
-  }
+  for (const o of project.overlays || []) add(o.content?.custom?.audio?.audioId);
   return [...ids];
 }
 
@@ -51,7 +48,6 @@ export function remapProjectAssetIds(project: MapVideoProject, map: Record<strin
       if (!c) return o;
       const next = { ...c };
       if (next.custom?.audio?.audioId) next.custom = { ...next.custom, audio: { ...next.custom.audio, audioId: id(next.custom.audio.audioId)! } };
-      if (next.person?.audioId) next.person = { ...next.person, audioId: id(next.person.audioId) };
       return { ...o, content: next };
     }),
   };

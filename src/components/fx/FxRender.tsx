@@ -5,7 +5,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import type { AnimationPreset, MapVideoProject, OverlayBlock, OverlayContent, OverlayItem, ScreenFxItem, NarrationTrack } from '../../types';
-import { normalizePersonContent, normalizeNarrationTrack, POS_BASE } from '../../types';
+import { defaultPersonContent, normalizeNarrationTrack, POS_BASE } from '../../types';
 import { screenFxCombinedAt } from '../../lib/screenfx';
 import { getAssetUrl } from '../../lib/assets';
 import { FxCanvas } from './FxCanvas';
@@ -142,7 +142,7 @@ function OverlayContentView({ content, frame, local, fps, interactive }: { conte
     case 'custom':
       return <CustomView content={content} frame={frame} interactive={interactive} />;
     case 'person':
-      return <PersonView content={content} interactive={interactive} />;
+      return <PersonView content={content} />;
     case 'timeline':
       return <TimelineView content={content} local={local} />;
     case 'quote':
@@ -158,79 +158,35 @@ function OverlayContentView({ content, frame, local, fps, interactive }: { conte
   }
 }
 
-// ========== 人物卡（精简） ==========
+// ========== 人物卡 ==========
 
-/** 纯图模式：仅照片、无任何文字（透明浮层，无卡片背景） */
+/** 纯图模式：只有照片、没有任何文字（透明浮层，不给卡片背景） */
 function isImageOnlyPerson(c: OverlayContent): boolean {
   if (c.type !== 'person' || !c.person) return false;
-  const p = normalizePersonContent(c.person);
-  return p.showImage && !!p.imageUrl && !p.name && !p.title && !p.intro && !p.quote;
+  const p = c.person;
+  return !!p.imageUrl && !p.name && !p.intro && !p.quote;
 }
 
-/** 人物卡：4 种常用样式（简介/名言/海报/纯文字）+ 少量参数；照片形状与方位可调 */
-function PersonView({ content, interactive }: { content: OverlayContent; interactive: boolean }) {
-  const p = normalizePersonContent(content.person);
-  const audio = p.audioId ? <AutoAudio assetId={p.audioId} interactive={interactive} /> : null;
+/** 人物卡：照片 + 姓名 + 简介 + 一句台词；没有照片就只剩文字 */
+function PersonView({ content }: { content: OverlayContent }) {
+  const p = content.person ?? defaultPersonContent();
   const radius = p.imageShape === 'circle' ? 999 : 10;
-
-  const avatar = (size: number) =>
-    p.imageUrl ? (
-      <img src={p.imageUrl} alt="" style={{ width: size, height: size, objectFit: 'cover', borderRadius: radius, display: 'block', flexShrink: 0 }} />
-    ) : (
-      <div style={{ width: size, height: size, borderRadius: radius, background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.42, flexShrink: 0 }}>👤</div>
-    );
+  const avatar = p.imageUrl ? (
+    <img src={p.imageUrl} alt="" style={{ width: 84, height: 84, objectFit: 'cover', borderRadius: radius, display: 'block', flexShrink: 0 }} />
+  ) : null;
 
   const nameEl = p.name ? <div style={{ color: '#fff', fontSize: 18, fontWeight: 700, lineHeight: 1.25 }}>{p.name}</div> : null;
-  const titleEl = p.title ? <div style={{ color: '#a8a29e', fontSize: 12, lineHeight: 1.3 }}>{p.title}</div> : null;
   const introEl = p.intro ? <div style={{ color: '#d6d3d1', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{p.intro}</div> : null;
   const quoteEl = p.quote ? (
     <div style={{ color: '#f5f5f4', fontSize: 16, fontWeight: 600, lineHeight: 1.5, whiteSpace: 'pre-wrap', fontStyle: 'italic' }}>“{p.quote}”</div>
   ) : null;
 
-  // 海报大图：大图 + 底部压暗叠加姓名/职务/简介
-  if (p.style === 'poster' && p.showImage) {
-    return (
-      <div style={{ position: 'relative', width: 380, maxWidth: '100%' }}>
-        {p.imageUrl ? (
-          <img src={p.imageUrl} alt="" style={{ width: '100%', height: 240, objectFit: 'cover', borderRadius: 12, display: 'block' }} />
-        ) : (
-          <div style={{ width: '100%', height: 240, borderRadius: 12, background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72 }}>👤</div>
-        )}
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: 14, borderRadius: '0 0 12px 12px', background: 'linear-gradient(transparent, rgba(0,0,0,0.72))', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          {nameEl}
-          {titleEl}
-          {p.intro ? <div style={{ color: '#e7e5e4', fontSize: 12.5, lineHeight: 1.5 }}>{p.intro}</div> : null}
-        </div>
-        {audio}
-      </div>
-    );
-  }
-
-  // 名言台词：居中大字引用（可选小头像）
-  if (p.style === 'quote') {
-    return (
-      <div style={{ width: 360, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center', textAlign: 'center' }}>
-        {p.showImage ? avatar(84) : null}
-        {quoteEl}
-        {(nameEl || titleEl) ? <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>{nameEl}{titleEl}</div> : null}
-        {audio}
-      </div>
-    );
-  }
-
-  // 纯文字：仅文字
-  if (p.style === 'text') {
-    return <div style={{ width: 340, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>{nameEl}{titleEl}{introEl}{quoteEl}{audio}</div>;
-  }
-
-  // 人物简介（默认）：左/右 照片 + 文字
-  const info = <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, flex: 1 }}>{nameEl}{titleEl}{introEl}{quoteEl}</div>;
-  if (!p.showImage) return <div style={{ width: 340, maxWidth: '100%' }}>{info}{audio}</div>;
+  const info = <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, flex: 1 }}>{nameEl}{introEl}{quoteEl}</div>;
+  if (!avatar) return <div style={{ width: 340, maxWidth: '100%' }}>{info}</div>;
   return (
-    <div style={{ width: 380, maxWidth: '100%', display: 'flex', flexDirection: p.imageSide === 'right' ? 'row-reverse' : 'row', gap: 14, alignItems: 'flex-start' }}>
-      {avatar(84)}
+    <div style={{ width: 380, maxWidth: '100%', display: 'flex', flexDirection: 'row', gap: 14, alignItems: 'flex-start' }}>
+      {avatar}
       {info}
-      {audio}
     </div>
   );
 }

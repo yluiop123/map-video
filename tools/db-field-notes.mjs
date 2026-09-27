@@ -457,7 +457,7 @@ const NOTES = {
     "offset_x": "横向微调（%，-40..40）",
     "offset_y": "纵向微调（%，-40..40）",
     "z_index": "层级",
-    "payload_json": "类型专属载荷整体存取：custom 内容块 / person 人物块（含照片方位与形状）/ report/quote/compare/chart 等",
+    "payload_json": "类型专属载荷整体存取：custom 内容块 / person 人物块（照片 + 姓名 + 简介 + 台词）/ report/quote/compare/chart 等",
     "audio_asset_id": "背景语音（卡片可见时播放；导出混流待支持）",
     "parent_overlay_id": "父弹窗（group 嵌套结构）",
     "ord": "同项目内排序",

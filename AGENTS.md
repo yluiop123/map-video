@@ -111,6 +111,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   原「AI 顺带生成地图元素」的整条链路已删除：`lib/generate-elements.ts` / `lib/gazetteer.ts` / `lib/geocode.ts` / `lib/camera-plan.ts` / `projectStore.applyGeneratedProject` / 类型 `GeneratedChapterPlan`·`GeneratedOverlaySpec`，以及弹窗里的地名解析与「待填坐标」区块。
 - **时间线配音块只能整体平移**：`beginBlockDrag` 的 kind 多了一支 `'narration'`，块上只挂 `onPointerDown(mode:'move')`、**不给 `DragHandles`**（所以两端拉不出），拖动写 `setNarrationEntries` 且置 `locked: true`（顺排不再把它拉回）。时长始终由音频/字数估算决定，与其它轨道（fx/弹窗/图层可拉伸）不同。
 - **背景音乐（项目级）**：`project.music: MusicTrack[]` 是**单轨多段**（段用**项目绝对帧**，段内可循环），不是片段字段；默认第一段铺满全片（内置 `public/bgm` 或导入）。时间线只显示与当前章节相交的段；播放/预览/导出（`MapVideo.ProjectMusic` / `preview-audio`）都按项目绝对帧走。
+- **★ 弹窗（overlay）默认横向纵向都居中**：新建时 `position: 'center'`（`POS_BASE.center = [0,0]`），不再按类型给左上角那类默认位。**人物卡只有一种版式**（`PersonContent` = 照片 + 姓名 + 简介 + 一句台词）：原先的 4 种样式预设（`PersonStyle` / `PERSON_PRESETS` / `PERSON_STYLE_DEFAULTS`）、「显示照片」开关（照片有没有就是开关，`imageUrl` 空即不显示）、「照片方位」、「职务/身份」、「整卡语音」（`person.audioId` 连带 `asset-refs` 与 `overlay.audio_asset_id` 那一支）全部下线 —— 界面上没有格子的字段就不该留在数据里。引用卡（`type:'quote'`）是另一类弹窗，与人物卡无关。
 - **坐标显示一律 5 位小数**（toFixed(5) + step=0.00001）；视角缩放显示 1 位小数。
 - **合集（Collection）**：项目之上的一层分组（`合集 ▸ 项目 ▸ 元素`）。`id = 'default'` 的**「默认合集」不可改名、不可删除**（名称由 `DEFAULT_COLLECTION_NAME` 常量决定）；新建项目 / 导入未指定归属时落默认合集；删合集只把项目移回默认合集，**不删项目**。
 
@@ -224,7 +225,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **★ 片长（`project.endFrame`）不入库**（2026-09-19）：`project.end_sec` 列已删——它是纯派生量且**没有任何 UI 能改它**（`setProjectEndFrame` 零调用）。读取端 `getProjectV2` 现按内容实际结束推导：`endFrame = max(60s × fps, 元素/特效/弹窗/机位/字幕/音乐的结束帧)`，与时间线口径一致；空项目从原来的「100 秒幽灵容器」变成 60 秒。新增任何「容器长度」类字段前先问它是不是派生值。
 - **★ 时间一律存秒（REAL），帧是派生量不入库**（2026-09-12）：所有时间点与时长都是 `*_sec`（`start_sec` / `end_sec` / `sec` / `duration_sec` / `move_duration_sec` / `default_duration_sec`），存的是**用户在 UI 上输入的原值**；渲染 / 导出时按 `default_fps` 换算为帧。这样改帧率时时长语义不变（存帧会因 fps 变化而失真）。
 - **★ 只存输入原值，不存派生 / 换算值**：凡是能从别处算出来的都不入库或存为可空覆盖值 —— 例如字幕时长有配音时随音频（不落库）、无配音时才存估算值，`music_track` 的结束时间同理。典型反面：`FrameTimeField` 曾把「秒」输入换算成帧入库，改 fps 后用户输入就永久丢失了。
-- **★ 音频只有 `asset` 一本账（2026-09-24）**：配音 / BGM / 弹窗语音在项目数据里**只有 assetId**（`NarrationEntry.audioId`、`MusicTrack.audioId`、`person.audioId`、`custom.audio.audioId`），字节走 `asset`（`kind='audio'`：桌面落 `userData/media/audio/`、网页存 Dexie Blob）。三条硬规矩：
+- **★ 音频只有 `asset` 一本账（2026-09-24）**：配音 / BGM / 弹窗语音在项目数据里**只有 assetId**（`NarrationEntry.audioId`、`MusicTrack.audioId`、`custom.audio.audioId`），字节走 `asset`（`kind='audio'`：桌面落 `userData/media/audio/`、网页存 Dexie Blob）。三条硬规矩：
   ① 库里对应 `audio_asset_id` 是**真外键 SET NULL**，弹窗那条从 `payload_json` 里摘出来单独成列（同一条事实不留第二份，`v_check_dangling` 才查得到）；
   ② 运行时地址一律现取 `getAssetUrl(assetId)`（按 id 缓存 objectURL）—— 预览池按 **id** 存元素、导出前在 `export-video` 里一次水合成 `audioSrc` 传给 Remotion（组件不等异步、不读库）；
   ③ 内置 BGM 在**「选用」那一刻**就把字节复制进素材库，项目里不留站内路径 —— 所以音频只有一种表示，消费点不用判「是 id 还是 URL」。

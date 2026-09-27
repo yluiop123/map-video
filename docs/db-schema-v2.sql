@@ -986,7 +986,7 @@ CREATE TABLE IF NOT EXISTS overlay (  -- 叠加层（弹窗）：本体一张，
   bg_radius    REAL,  -- 卡片圆角半径
   bg_border    TEXT,  -- 卡片边框颜色
   -- P3：类型专属载荷整体存取：custom 的内容块 / person 的人物块 + report/quote/compare/chart 等
-  payload_json TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),  -- 类型专属载荷整体存取：custom 内容块 / person 人物块（含照片方位与形状）/ report/quote/compare/chart 等
+  payload_json TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),  -- 类型专属载荷整体存取：custom 内容块 / person 人物块（照片 + 姓名 + 简介 + 台词）/ report/quote/compare/chart 等
   -- 整卡语音
   audio_asset_id TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 背景语音（卡片可见时播放；导出混流待支持）
   parent_overlay_id TEXT REFERENCES overlay(overlay_id) ON DELETE CASCADE,  -- 父弹窗（group 嵌套结构）

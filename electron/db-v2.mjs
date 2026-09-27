@@ -386,25 +386,20 @@ function jsonToKfs(json, s2f) {
 }
 
 // ---------- 弹窗语音：id 单独成列（真外键），payload 里只留标题 ----------
-/** custom 的「背景语音」与 person 的「整卡语音」互斥，共用 overlay 这一列 */
 function overlayAudioId(content) {
-  return content?.custom?.audio?.audioId || content?.person?.audioId || null;
+  return content?.custom?.audio?.audioId || null;
 }
 /** 写库前把 id 从 payload 里摘掉：同一条事实只留 audio_asset_id 那一处 */
 function stripOverlayAudio(content) {
   if (!overlayAudioId(content)) return content;
   const next = { ...content };
   if (next.custom?.audio) next.custom = { ...next.custom, audio: { title: next.custom.audio.title } };
-  if (next.person) next.person = { ...next.person, audioId: undefined };
   return next;
 }
 /** 读库时按类型装回去（素材被删 → 列是 NULL，语音自然就没有了） */
 function attachOverlayAudio(content, assetId) {
-  if (!content || !assetId) return content;
-  const next = { ...content };
-  if (next.custom?.audio) next.custom = { ...next.custom, audio: { ...next.custom.audio, audioId: assetId } };
-  if (next.person) next.person = { ...next.person, audioId: assetId };
-  return next;
+  if (!content?.custom?.audio || !assetId) return content;
+  return { ...content, custom: { ...content.custom, audio: { ...content.custom.audio, audioId: assetId } } };
 }
 
 // ---------- 保存 ----------
