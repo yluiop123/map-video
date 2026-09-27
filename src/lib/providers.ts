@@ -280,18 +280,20 @@ export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targe
   if (!tpl.clone) throw new EngineError('这份模板没配克隆接口');
   const wav = await toWavMono(refBytes, REF_SAMPLE_RATE_HZ);
   if (wav.length > 10 * 1024 * 1024) throw new EngineError('参考音频超过 10MB');
-  // 这一轮叫什么名字由调用点现给（模板那一格写 `${voiceId}`，不再摆「音色名」格子）；
-  // 样本名要先过滤 —— 实测上游对名字只收字母数字（带连字符直接 InvalidParameter）
-  const preferred = label.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv';
+  // 音色名优先用实例在 ⚙ 里填的那条，没填才用样本名兜底；两者都要过滤 ——
+  // 实测上游对 `preferred_name` 只收字母数字（带连字符直接 InvalidParameter）
+  const declared = String(inst.values.requests?.clone?.preferredName ?? '').trim();
+  const preferred = (declared || label).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv';
   const one: InstanceDef = { ...inst, values: { ...inst.values, instance: { ...inst.values.instance, model: targetModel || inst.values.instance?.model } } };
   // 交出去的是一个**文件值**（字节 + 自己认出来的 mime + 文件名）：三种接法用同一份，
   // 差在模板那一格怎么写 —— `${voiceData}` 进 JSON 体 = data:<mime>;base64,…，
   // 进 multipart 表单 = 二进制分片；「单独上传」那类则是上传那一格收下它，交回的引用再注入成克隆那格的 ${voiceData}。
   const r = await runClone(tpl, one, deps, {
     voiceData: { bytes: wav, mime: sniffAudioMime(wav), name: 'reference.wav' },
-    // 交出去的就是「本轮给这个音色起的名字」：`prefix` 给那些「你自己报名字、响应再回正式 id」的接法，
-    // `voiceId` 给 MiniMax 那类**响应不回 id** 的（克隆格写 `${voiceId}`，引擎就把这个名字当结果 —— 判据同 `requiredOutputsOf`）
-    prefix: preferred, voiceId: preferred,
+    // 三个名字都是「本轮给这个音色起的名」：`preferredName` / `prefix` 给上游那些「你自己报名字、
+    // 响应再回一个正式 id」的接法，`voiceId` 给 MiniMax 那类**响应不回 id** 的（克隆格写 `${voiceId}`，
+    // 引擎就把这个名字当结果 —— 判据同 `requiredOutputsOf`）
+    prefix: preferred, preferredName: preferred, voiceId: preferred,
   });
   const vid = r.values.voiceId;
   if (typeof vid !== 'string' || !vid) throw new EngineError('克隆那一步没交出音色 ID，检查克隆格里固定项「音色 ID」的路径（上游不回 id 的就写 ${voiceId}）');
