@@ -1,13 +1,15 @@
 /**
  * template-seed.ts — 内置接口模板 seed（首次建库铺成 provider_template 的行）
  *
- * 按用户要求内置这六份（= 六种上游形状）：
+ * 按用户要求内置这七份（= 七种上游形状）：
  *   deepseek-chat     文案生成（显示名按他在界面里改的那一份：`openai`；id 不变）
  *                     —— https://api-docs.deepseek.com/zh-cn/
  *   qwen-image        图片生成（同步 + 异步 + 任务查询）
  *                     —— platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image{,-30-async,-task-query}
  *   qwen-tts          语音：非流式合成 + 声音复刻（文件直接进体）
  *                     —— platform.qianwenai.com/docs/developer-guides/speech/voice-cloning
+ *   qwen-audio-tts    语音：SpeechSynthesizer 那条 —— **只有它带 input.volume 与 input.hot_fix**
+ *                     —— help.aliyun.com/zh/model-studio/cosyvoice-tts-http-api · 音色表 qwen-audio-tts-voice-list
  *   elevenlabs-voice  语音：合成（响应体即音频）+ 声音复刻（自己发 multipart 表单）
  *                     —— elevenlabs.io/docs/api-reference/voices/add · /text-to-speech/convert
  *   minimax-voice     语音：合成（hex）+ 复刻（先单独上传拿 file_id · 上游不回音色 id）
@@ -226,6 +228,59 @@ const qwenTts: TemplateDef = {
   }),
 };
 
+// ========== 语音：Qwen-Audio-TTS（**有音量与发音修正**的那条端点） ==========
+
+/**
+ * 官方音色表，逐字抄自「Qwen-Audio-TTS 音色列表」（2026-09-27）。
+ * 只铺这两条模型的（`qwen-audio-3.1-tts-flash` 那一族有六十多条，要就在 ⚙ 里自己加 —— 表就是数据）；
+ * `models` 决定选了上面那条「模型」之后露出哪些音色。
+ */
+const qwenAudioVoices: OptionSpec[] = [
+  { value: 'longanfengyue', label: '龙安风悦', group: '女声', note: '自然亲切音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longanxiaoxin', label: '龙安小昕', group: '女声', note: '亲切活泼音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longanlingxi', label: '龙安灵希', group: '女声', note: '可爱甜美音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longanyuanfei', label: '龙安元妃', group: '女声', note: '高傲妃子音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longanhuan_v3.6', label: '龙安欢', group: '女声', note: '基础版（后缀与 3.1 不同）', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longpaopao_v3.6', label: '龙泡泡', group: '女声', note: '软糯可爱音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'loongeva_v3.6', label: 'loongeva', group: '女声', note: '高智美音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'loongmary', label: 'loongmary', group: '女声', note: '温暖英音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longjielidou_v3.6', label: '龙杰力豆', group: '男声', note: '天真男童', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longhuohuo_v3.6', label: '龙火火', group: '男声', note: '顽皮少年音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longchuanshu_v3.6', label: '龙川叔', group: '男声', note: '川普大叔音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'loongjohn', label: 'loongJohn', group: '男声', note: '沉稳亲切美音', models: ['qwen-audio-3.0-tts-flash'] },
+  { value: 'longanlingxin', label: '龙安灵心', group: '女声', note: '知心温暖音', models: ['qwen-audio-3.0-tts-plus'] },
+  { value: 'longanlufeng', label: '龙安鲁风', group: '男声', note: '明亮开朗音', models: ['qwen-audio-3.0-tts-plus'] },
+];
+
+const qwenAudioTts: TemplateDef = {
+  id: 'qwen-audio-tts', name: '千问语音（音量 / 发音修正）', category: 'tts',
+  // 这一家要**公网可取的参考音频地址**（本地文件给不出去），所以不勾建音色 —— 要克隆就用「千问 TTS」那条
+  caps: { modes: 'sync' },
+
+  instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
+  sync: {
+    submit: jsonReq('${baseUrl}/services/audio/tts/SpeechSynthesizer', {
+      requestParams: [
+        en('model', '模型', ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'], { defaultValue: 'qwen-audio-3.0-tts-flash' }),
+        text('text', '合成文本'),
+        voice('longanfengyue', qwenAudioVoices),
+        // 上游默认 50（半量），这里钉 100：产物本身就响，预览与导出跟着响
+        num('volume', '音量（0–100）', { defaultValue: 100, min: 0, max: 100 }),
+        // 发音修正是字幕生成那一栏每次带下来的：声明成 json 就原样进体，没给值整键消失
+        p('hotFix', '发音修正', { valueType: 'json' }),
+      ],
+      body: {
+        model: '${model}',
+        // 这一家的控制项全在 input 里（不是 parameters）
+        input: { text: '${text}', voice: '${voice}', volume: '${volume}', hot_fix: '${hotFix}' },
+      },
+      artifactForm: 'url',
+      // 非流式回的是 JSON，音频在 output.audio.url（有效期 24 小时 —— 所以当场下载）
+      outputs: { artifact: 'output.audio.url', errorCode: 'code', error: 'message' },
+    }),
+  },
+};
+
 // ========== 语音：ElevenLabs（合成 = 响应体裸字节 · 复刻 = 自己发 multipart 表单） ==========
 
 /** ElevenLabs 的默认音色表（21 条：男 13 / 女 7 / 中性 1），逐字取自 `/v1/voices` 的真响应（2026-09-26）。 */
@@ -372,7 +427,7 @@ const minimaxImage: TemplateDef = {
   },
 };
 
-export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts, elevenLabsVoice, minimaxVoice, minimaxImage];
+export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts, qwenAudioTts, elevenLabsVoice, minimaxVoice, minimaxImage];
 
 export const seedTemplate = (id: string): TemplateDef | undefined => SEED_TEMPLATES.find((t) => t.id === id);
 

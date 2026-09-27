@@ -264,6 +264,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `deepseek-chat` | sync | 否 | — | `同步 · 提交` |
 | `qwen-image` | both | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
 | `qwen-tts` | sync | 是 | `base64` | `克隆` + `同步 · 提交` |
+| `qwen-audio-tts` | sync | 否 | — | `同步 · 提交` |
 | `elevenlabs-voice` | sync | 是 | `form` | `克隆` + `同步 · 提交` |
 | `minimax-voice` | sync | 是 | `upload` | `上传` + `克隆` + `同步 · 提交` |
 | `minimax-image` | sync | 否 | — | `同步 · 提交` |
@@ -294,6 +295,9 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `qwen-tts` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-tts` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-audio-tts` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
+| `qwen-audio-tts` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-audio-tts` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `elevenlabs-voice` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
 | `elevenlabs-voice` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `elevenlabs-voice` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
@@ -312,7 +316,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `minimax-image` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `minimax-image` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 
-### 9.3 6 份模板各自声明了哪些参数
+### 9.3 7 份模板各自声明了哪些参数
 
 「层」只有两处声明：实例级整条实例共用、每一格各一张表。同一格里填了值的走实例，没填的由调用点现场给（业务界面或试调用）—— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。
 
@@ -362,6 +366,19 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"Ethan"` | 38 条（女声 19 / 男声 19） —— 逐条见下面那列 JSON |
 | 这一格 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
 | 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
+
+#### `qwen-audio-tts` · 千问语音（音量 / 发音修正）（tts）
+
+| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
+|---|---|---|---|---|---|
+| 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |
+| 实例级 | `apiKey` | API Key | secret | — | — |
+| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
+| 这一格 `sync.submit` | `model` | 模型 | enum | `"qwen-audio-3.0-tts-flash"` | qwen-audio-3.0-tts-flash · qwen-audio-3.0-tts-plus |
+| 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
+| 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"longanfengyue"` | 14 条（女声 9 / 男声 5） —— 逐条见下面那列 JSON |
+| 这一格 `sync.submit` | `volume` | 音量（0–100） | number | `100` | ≥0 ≤100 |
+| 这一格 `sync.submit` | `hotFix` | 发音修正 | json | — | — |
 
 #### `elevenlabs-voice` · ElevenLabs 语音（tts）
 
@@ -1258,6 +1275,249 @@ null
 }
 ```
 
+#### `qwen-audio-tts`
+
+- 标量列：`category=tts`，`caps_json={"modes":"sync"}`
+
+- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
+
+**`instance_params_json`**（实例级参数**声明**）
+
+```json
+[
+  {
+    "key": "baseUrl",
+    "label": "服务地址",
+    "valueType": "string",
+    "defaultValue": "https://maas.qianwenaiapi.com/api/v1"
+  },
+  {
+    "key": "apiKey",
+    "label": "API Key",
+    "valueType": "secret"
+  },
+  {
+    "key": "timeoutMs",
+    "label": "单次超时 ms",
+    "valueType": "number",
+    "defaultValue": 60000
+  }
+]
+```
+
+**`sync_json`**（sync.submit）
+
+```json
+{
+  "submit": {
+    "path": "${baseUrl}/services/audio/tts/SpeechSynthesizer",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer ${apiKey}"
+    },
+    "requestParams": [
+      {
+        "key": "model",
+        "label": "模型",
+        "valueType": "enum",
+        "options": [
+          "qwen-audio-3.0-tts-flash",
+          "qwen-audio-3.0-tts-plus"
+        ],
+        "defaultValue": "qwen-audio-3.0-tts-flash"
+      },
+      {
+        "key": "text",
+        "label": "合成文本",
+        "valueType": "text"
+      },
+      {
+        "key": "voice",
+        "label": "音色 ID",
+        "valueType": "enum",
+        "voiceTable": true,
+        "options": [
+          {
+            "value": "longanfengyue",
+            "label": "龙安风悦",
+            "group": "女声",
+            "note": "自然亲切音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longanxiaoxin",
+            "label": "龙安小昕",
+            "group": "女声",
+            "note": "亲切活泼音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longanlingxi",
+            "label": "龙安灵希",
+            "group": "女声",
+            "note": "可爱甜美音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longanyuanfei",
+            "label": "龙安元妃",
+            "group": "女声",
+            "note": "高傲妃子音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longanhuan_v3.6",
+            "label": "龙安欢",
+            "group": "女声",
+            "note": "基础版（后缀与 3.1 不同）",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longpaopao_v3.6",
+            "label": "龙泡泡",
+            "group": "女声",
+            "note": "软糯可爱音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "loongeva_v3.6",
+            "label": "loongeva",
+            "group": "女声",
+            "note": "高智美音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "loongmary",
+            "label": "loongmary",
+            "group": "女声",
+            "note": "温暖英音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longjielidou_v3.6",
+            "label": "龙杰力豆",
+            "group": "男声",
+            "note": "天真男童",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longhuohuo_v3.6",
+            "label": "龙火火",
+            "group": "男声",
+            "note": "顽皮少年音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longchuanshu_v3.6",
+            "label": "龙川叔",
+            "group": "男声",
+            "note": "川普大叔音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "loongjohn",
+            "label": "loongJohn",
+            "group": "男声",
+            "note": "沉稳亲切美音",
+            "models": [
+              "qwen-audio-3.0-tts-flash"
+            ]
+          },
+          {
+            "value": "longanlingxin",
+            "label": "龙安灵心",
+            "group": "女声",
+            "note": "知心温暖音",
+            "models": [
+              "qwen-audio-3.0-tts-plus"
+            ]
+          },
+          {
+            "value": "longanlufeng",
+            "label": "龙安鲁风",
+            "group": "男声",
+            "note": "明亮开朗音",
+            "models": [
+              "qwen-audio-3.0-tts-plus"
+            ]
+          }
+        ],
+        "defaultValue": "longanfengyue"
+      },
+      {
+        "key": "volume",
+        "label": "音量（0–100）",
+        "valueType": "number",
+        "defaultValue": 100,
+        "min": 0,
+        "max": 100
+      },
+      {
+        "key": "hotFix",
+        "label": "发音修正",
+        "valueType": "json"
+      }
+    ],
+    "body": {
+      "model": "${model}",
+      "input": {
+        "text": "${text}",
+        "voice": "${voice}",
+        "volume": "${volume}",
+        "hot_fix": "${hotFix}"
+      }
+    },
+    "artifactForm": "url",
+    "outputs": {
+      "artifact": "output.audio.url",
+      "errorCode": "code",
+      "error": "message"
+    }
+  }
+}
+```
+
+**`async_json`**（async.submit）
+
+```json
+null
+```
+
+**`upload_json`**（upload）
+
+```json
+null
+```
+
+**`clone_json`**（clone）
+
+```json
+null
+```
+
 #### `elevenlabs-voice`
 
 - 标量列：`category=tts`，`caps_json={"modes":"sync","clone":true,"cloneVia":"form"}`
@@ -1784,7 +2044,9 @@ null
 ④ 同一份响应改成 base64 档、路径不动：把那条 `https://…` 链接当 base64 解，抛 `Invalid character`。
 ② 与 ④ 的区别只在档位，取的是同一个字段 —— 这一格既决定**去哪个字段取**之后的**怎么变成字节**，也证明它是逐格一份而不是整份模板一份。
 
-按用户要求内置这六份（两份 MiniMax 里，**只有「上传」那一格真发通过**，其余卡在账号余额 `1008` —— 见第十节那张表）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
+按用户要求内置这七份（两份 MiniMax 里，**只有「上传」那一格真发通过**，其余卡在账号余额 `1008` —— 见第十节那张表）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
+
+**「千问语音（音量 / 发音修正）」这一份只到「照官方 HTTP 参考抄对」为止，还没真发**：请求形状、`input.volume`（整数 0–100，上游默认 50，这里声明成默认 100）、`input.hot_fix`（`{pronunciation:[{词:音}], replace:[{原:换}]}`，`cosyvoice-v2` 不支持）与 14 条音色名都逐字取自文档，产物路径 `output.audio.url`（有效期 24 小时，所以 `artifactForm='url'` 当场下载）。它**不勾建音色** —— 那一家的声音复刻要的是公网可取的参考音频地址，本地文件给不出去。
 
 **两份语音上游的实测状态（2026-09-26）**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）。
 
