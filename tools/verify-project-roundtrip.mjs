@@ -128,6 +128,27 @@ console.log('\n[5] 发音修正（narration.hot_fix_json）逐字往返');
   })());
 }
 
+console.log('\n[5b] 字幕间隔（gap_sec）：存输入原值，三态分得开');
+{
+  const db5b = open();
+  const gapEntries = [
+    { id: 'g1', text: '跟整片', durationFrames: 60, startFrame: 0 },
+    { id: 'g2', text: '明确不间隔', durationFrames: 60, startFrame: 60, gapSec: 0 },
+    { id: 'g3', text: '单独 0.7 秒', durationFrames: 60, startFrame: 120, gapSec: 0.7 },
+  ];
+  saveProjectV2(db5b, { ...project('gap', FPS), narration: { entries: gapEntries, style: {}, gapSec: 0.5 } });
+  const g5b = getProjectV2(db5b, 'gap');
+  check('5b.1 整片间隔原样往返（秒，不经帧换算）', g5b?.narration?.gapSec === 0.5, g5b?.narration?.gapSec);
+  check('5b.2 三态分得开：未填 / 0 / 0.7',
+    JSON.stringify(g5b?.narration?.entries?.map((e) => (e.gapSec === undefined ? 'null' : e.gapSec))) === '["null",0,0.7]',
+    JSON.stringify(g5b?.narration?.entries?.map((e) => (e.gapSec === undefined ? 'null' : e.gapSec))));
+  const row5b = db5b.prepare('SELECT gap_sec FROM narration WHERE project_id=?').get('gap');
+  check('5b.3 库里就是那一列（0.5 秒），没被 f2s 乘成 15', row5b.gap_sec === 0.5, row5b.gap_sec);
+  saveProjectV2(db5b, { ...project('gap0', FPS), narration: { entries: [], style: {} } });
+  check('5b.4 老数据没这个值 → 读出来是 0（不是 undefined 也不是假默认）',
+    getProjectV2(db5b, 'gap0')?.narration?.gapSec === 0, getProjectV2(db5b, 'gap0')?.narration?.gapSec);
+}
+
 console.log('\n[6] 音频只存 assetId（字节不进项目数据）');
 {
   const db6 = open();

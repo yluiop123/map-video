@@ -915,6 +915,11 @@ export interface NarrationEntry {
   startFrame: number;
   /** 手动定位后不再自动顺排 */
   locked?: boolean;
+  /**
+   * 这一行读完停多久再排下一行（**秒 = 用户输入的原值**，不换算成帧）。
+   * 空 = 跟整片的 `narration.gapSec`；填 0 = 这一行明确不间隔（0 与「没填」必须分得开）。
+   */
+  gapSec?: number;
   status?: 'none' | 'pending' | 'ready' | 'error';
   error?: string;
 }
@@ -960,9 +965,14 @@ export function hotFixPayload(h?: HotFix): HotFix | undefined {
   return out.pronunciation.length || out.replace.length ? out : undefined;
 }
 
+/** 新建项目的字幕间隔：0.5 秒读起来像人讲话。**老项目没这个值按 0 处理** —— 不然打开旧项目动一行，整片字幕被凭空推开 */
+export const DEFAULT_NARRATION_GAP_SEC = 0.5;
+
 export interface NarrationTrack {
   entries: NarrationEntry[];
   style: NarrationStyle;
+  /** 整片默认的字幕间隔（秒）。0 = 首尾相接（旧项目的行为） */
+  gapSec?: number;
   /** 项目级发音修正：每次合成都带着走（支持的端点才有用，见 AGENTS §6.22） */
   hotFix?: HotFix;
 }
@@ -1010,9 +1020,10 @@ export function normalizeNarrationTrack(t?: NarrationTrack | null): NarrationTra
     ...e,
     durationFrames: Math.max(1, e.durationFrames || estimateTextDurationFrames(e.text || '', 30)),
   }));
+  const gapSec = typeof t?.gapSec === 'number' && t.gapSec >= 0 ? t.gapSec : 0;
   const src = t?.hotFix;
   const hotFix: HotFix = { pronunciation: src?.pronunciation ?? [], replace: src?.replace ?? [] };
-  return { style, entries, hotFix };
+  return { style, entries, hotFix, gapSec };
 }
 
 // ========== 导出/导入格式 ==========

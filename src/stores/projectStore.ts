@@ -7,7 +7,7 @@ import type {
   NarrationEntry, NarrationStyle, MusicTrack, HotFix,
   Layer, LayerType,
 } from '../types';
-import { generateId, DEFAULT_COLLECTION_ID, normalizeOverlayContent, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
+import { generateId, DEFAULT_COLLECTION_ID, DEFAULT_NARRATION_GAP_SEC, normalizeOverlayContent, normalizeNarrationTrack, defaultNarrationStyle } from '../types';
 import { normalizeTerritoryDisplay } from '../lib/territory';
 import { deriveElements, layerTypeOf, insertLayerSorted, LAYER_TYPE_LABEL, resolveTargetLayerId } from '../lib/layers';
 import { useEditorStore } from './editorStore';
@@ -260,6 +260,7 @@ interface ProjectState {
 
   // 字幕/配音轨道
   setNarrationStyle: (patch: Partial<NarrationStyle>) => void;
+  setNarrationGap: (gapSec: number) => void;
   setNarrationHotFix: (patch: Partial<HotFix>) => void;
   setNarrationEntries: (entries: NarrationEntry[]) => void;
   updateNarrationEntry: (entryId: string, patch: Partial<NarrationEntry>) => void;
@@ -351,7 +352,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         camera: [{ frame: 0, center: [104.0, 35.0], zoom: 4 }],
         overlays: [],
         fx: [],
-        narration: { entries: [], style: defaultNarrationStyle() },
+        // 新建项目给 0.5 秒字幕间隔（读起来像人讲话）；老项目没这个值按 0 处理，不动已排好的字幕
+        narration: { entries: [], style: defaultNarrationStyle(), gapSec: DEFAULT_NARRATION_GAP_SEC },
         music: [],
         baseMaps: [...DEFAULT_BASE_MAPS],
         activeBaseMapId: 'satellite',
@@ -554,6 +556,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
     // ----- 字幕/配音 -----
     setNarrationStyle: (patchStyle: Partial<NarrationStyle>) =>
       patch((p) => { const cur = normalizeNarrationTrack(p.narration); return { ...p, narration: { ...cur, style: { ...cur.style, ...patchStyle } } }; }),
+    setNarrationGap: (gapSec: number) =>
+      patch((p) => { const cur = normalizeNarrationTrack(p.narration); return { ...p, narration: { ...cur, gapSec: Math.max(0, gapSec) } }; }),
     setNarrationHotFix: (patchFix: Partial<HotFix>) =>
       patch((p) => {
         const cur = normalizeNarrationTrack(p.narration);
