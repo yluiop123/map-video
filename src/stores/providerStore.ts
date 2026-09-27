@@ -36,6 +36,12 @@ interface ProviderState {
   removeTemplate: (tplId: string) => void;
   /** 丢弃本地改动，取回内置默认形状 */
   restoreTemplate: (tplId: string) => void;
+  /**
+   * 把 seed 里**库里没有的那几份**铺进来，返回铺了几份。
+   * 不在 hydrate 里自动做：底图那条教训是「不能替用户复活他删掉的东西」，
+   * 所以新内置模板要靠界面上点一下「补内置模板」才进来（他删过的不会被塞回来）。
+   */
+  addMissingSeeds: () => number;
 
   hydrate: () => Promise<void>;
 }
@@ -142,6 +148,12 @@ export const useProviderStore = create<ProviderState>()(
       restoreTemplate: (tplId) => {
         const seed = seedTemplate(tplId);
         if (seed) get().saveTemplate(structuredClone(seed));
+      },
+      addMissingSeeds: () => {
+        const have = new Set(get().templates.map((t) => t.id));
+        const missing = seedCopy().filter((t) => !have.has(t.id));
+        for (const t of missing) get().saveTemplate(t);
+        return missing.length;
       },
 
       /** 桌面端启动时从 SQLite 加载；库里一份模板都没有时按 seed 铺一次表 */

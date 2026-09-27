@@ -24,7 +24,7 @@ import { Switch } from './ui/switch';
 import { Checkbox } from './ui/checkbox';
 import { useConfirm } from './ui/ConfirmHost';
 import { useProviderStore } from '../stores/providerStore';
-import { seedTemplate } from '../lib/template-seed';
+import { SEED_TEMPLATES, seedTemplate } from '../lib/template-seed';
 import {
   ARTIFACT_KEY, REQ_KEYS, VOICE_FILE_KEY, asOption, cloneViaOf, multipartSlotOf, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
   REQ_LABEL as SLOT_LABEL,
@@ -136,6 +136,7 @@ export function TemplatesPane() {
   const instances = useProviderStore((s) => s.instances);
   const saveTemplate = useProviderStore((s) => s.saveTemplate);
   const addTemplate = useProviderStore((s) => s.addTemplate);
+  const addMissingSeeds = useProviderStore((s) => s.addMissingSeeds);
   const removeTemplate = useProviderStore((s) => s.removeTemplate);
   const restoreTemplate = useProviderStore((s) => s.restoreTemplate);
   const confirm = useConfirm();
@@ -146,6 +147,11 @@ export function TemplatesPane() {
   const [view, setView] = useState<'sync' | 'async'>('sync');
 
   const mine = useMemo(() => templates.filter((x) => x.category === category), [templates, category]);
+  /** seed 里有、库里没有的那几份（新内置模板要靠人点一下才进来） */
+  const missingSeeds = useMemo(() => {
+    const have = new Set(mine.map((x) => x.id));
+    return SEED_TEMPLATES.filter((s) => s.category === category && !have.has(s.id));
+  }, [mine, category]);
   const tpl = mine.find((x) => x.id === selId) ?? mine[0];
   const slots = useMemo(() => (tpl ? slotsOf(tpl) : []), [tpl]);
   // 开关是数据改出来的（别的机器改过、恢复默认之前），这一格可能还在：让它进得去，别报一条没法执行的错
@@ -233,6 +239,13 @@ export function TemplatesPane() {
           <Button variant="outline" size="sm" className="w-full h-7 text-[11px]" onClick={() => setSelId(addTemplate(category).id)}>
             ＋ {t('模板', 'template')}
           </Button>
+          {/* 新内置模板不会自己冒出来（那等于替用户复活他删掉的东西）—— 要就点一下 */}
+          {missingSeeds.length > 0 && (
+            <Button variant="outline" size="sm" className="w-full h-7 text-[11px] border-sky-400/40 text-sky-200"
+              onClick={() => { addMissingSeeds(); setSelId(missingSeeds[0].id); }}>
+              ＋ {t(`补内置模板 ${missingSeeds.length}`, `add built-in ${missingSeeds.length}`)}
+            </Button>
+          )}
         </div>
 
         {/* 中：模板头 + 选中的那条接口 */}
