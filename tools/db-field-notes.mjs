@@ -150,6 +150,7 @@ const NOTES = {
     "pos_y": "字幕距底百分比（0–40）",
     "max_pct": "字幕最大宽度百分比",
     "gap_sec": "整片字幕间隔（秒）：每行读完停多久再排下一行；0 = 首尾相接（老项目的行为）",
+    "volume": "整片配音音量（0–1，与背景音乐相对调）：预览与导出同一个倍率",
     "hot_fix_json": "发音修正（{pronunciation:[{词:音}],replace:[{原:换}]}，随每次配音带下去）"
   },
   "narration_entry": {
@@ -161,6 +162,7 @@ const NOTES = {
     "start_sec": "起始时间（秒，项目绝对时间；默认自动顺排）",
     "locked": "手动定位后锁定，不再参与自动顺排",
     "gap_sec": "这一行的字幕间隔（秒）：空=跟整片 narration.gap_sec，0=这一行明确不间隔",
+    "volume": "这一行的配音音量（0–1）：空=跟整片 narration.volume，0=这一句不出声",
     "ord": "同项目内排序"
   },
   "music_track": {

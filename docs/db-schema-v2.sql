@@ -1040,6 +1040,7 @@ CREATE TABLE IF NOT EXISTS narration (  -- 字幕 / 配音档：样式部分，�
   pos_y        REAL NOT NULL CHECK (pos_y BETWEEN 0 AND 40),  -- 字幕距底百分比（0–40）
   max_pct      REAL NOT NULL CHECK (max_pct > 0 AND max_pct <= 100),  -- 字幕最大宽度百分比
   gap_sec      REAL NOT NULL DEFAULT 0,  -- 整片字幕间隔（秒）：每行读完停多久再排下一行；0 = 首尾相接（老项目的行为）
+  volume       REAL NOT NULL DEFAULT 1 CHECK (volume BETWEEN 0 AND 1),  -- 整片配音音量（0–1，与背景音乐相对调）：预览与导出同一个倍率
   hot_fix_json TEXT CHECK (hot_fix_json IS NULL OR json_valid(hot_fix_json))  -- 发音修正（{pronunciation:[{词:音}],replace:[{原:换}]}，随每次配音带下去）
 );
 
@@ -1052,6 +1053,7 @@ CREATE TABLE IF NOT EXISTS narration_entry (  -- 字幕条：文本 + 配音音�
   start_sec     REAL NOT NULL CHECK (start_sec >= 0),  -- 起始时间（秒，项目绝对时间；默认自动顺排）
   locked        INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),  -- 手动定位后锁定，不再参与自动顺排
   gap_sec       REAL CHECK (gap_sec IS NULL OR gap_sec >= 0),  -- 这一行的字幕间隔（秒）：空=跟整片 narration.gap_sec，0=这一行明确不间隔
+  volume        REAL CHECK (volume IS NULL OR volume BETWEEN 0 AND 1),  -- 这一行的配音音量（0–1）：空=跟整片 narration.volume，0=这一句不出声
   ord           INTEGER NOT NULL DEFAULT 0  -- 同项目内排序
 );
 CREATE INDEX IF NOT EXISTS ix_narration_entry ON narration_entry(project_id, start_sec);

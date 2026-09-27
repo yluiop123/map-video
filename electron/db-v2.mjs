@@ -450,11 +450,11 @@ export function saveProjectV2(db, project) {
       @offset_x,@offset_y,@z_index,@bg_color,@bg_opacity,@bg_blur,@bg_radius,@bg_border,
       @payload_json,@audio_asset_id,@parent_overlay_id,@ord)`);
     const insNarration = db.prepare(`INSERT INTO narration (
-      project_id, font_size, font_family, color, stroke_color, stroke_width, bg, bg_color, pos_y, max_pct, gap_sec, hot_fix_json
-    ) VALUES (@project_id,@font_size,@font_family,@color,@stroke_color,@stroke_width,@bg,@bg_color,@pos_y,@max_pct,@gap_sec,@hot_fix_json)`);
+      project_id, font_size, font_family, color, stroke_color, stroke_width, bg, bg_color, pos_y, max_pct, gap_sec, volume, hot_fix_json
+    ) VALUES (@project_id,@font_size,@font_family,@color,@stroke_color,@stroke_width,@bg,@bg_color,@pos_y,@max_pct,@gap_sec,@volume,@hot_fix_json)`);
     const insEntry = db.prepare(`INSERT INTO narration_entry (
-      entry_id, project_id, text, audio_asset_id, duration_sec, start_sec, locked, gap_sec, ord
-    ) VALUES (@entry_id,@project_id,@text,@audio_asset_id,@duration_sec,@start_sec,@locked,@gap_sec,@ord)`);
+      entry_id, project_id, text, audio_asset_id, duration_sec, start_sec, locked, gap_sec, volume, ord
+    ) VALUES (@entry_id,@project_id,@text,@audio_asset_id,@duration_sec,@start_sec,@locked,@gap_sec,@volume,@ord)`);
     const insMusic = db.prepare(`INSERT INTO music_track (
       track_id, project_id, name, audio_asset_id, start_sec, end_sec, volume, loop, fade_in, fade_out, ord
     ) VALUES (@track_id,@project_id,@name,@audio_asset_id,@start_sec,@end_sec,@volume,@loop,@fade_in,@fade_out,@ord)`);
@@ -506,6 +506,7 @@ export function saveProjectV2(db, project) {
       bg_color: st.bgColor ?? '#000000', pos_y: st.posY ?? 2, max_pct: st.maxPct ?? 92,
       // 间隔存的是**用户输入的秒**（不走 f2s）：它是输入原值，换算成帧再换回来会漂
       gap_sec: typeof nar.gapSec === 'number' && nar.gapSec >= 0 ? nar.gapSec : 0,
+      volume: typeof nar.volume === 'number' && nar.volume >= 0 ? Math.min(1, nar.volume) : 1,
       hot_fix_json: j(nar.hotFix),
     });
     (nar.entries || []).forEach((e, i) => insEntry.run({
@@ -513,6 +514,7 @@ export function saveProjectV2(db, project) {
       duration_sec: e.durationFrames == null ? null : f2s(e.durationFrames),
       start_sec: f2s(e.startFrame), locked: e.locked ? 1 : 0,
       gap_sec: typeof e.gapSec === 'number' ? e.gapSec : null,   // 空 = 跟整片；0 = 这一行明确不间隔
+      volume: typeof e.volume === 'number' ? Math.min(1, Math.max(0, e.volume)) : null,   // 空 = 跟整片；0 = 这一句静音
       ord: i,
     }));
     // 项目级背景音乐：单轨多段，挂在项目上（绝对秒）
@@ -743,6 +745,7 @@ export function getProjectV2(db, id) {
   const entries = db.prepare('SELECT * FROM narration_entry WHERE project_id = ? ORDER BY ord').all(pid).map((e) => ({
     id: e.entry_id, text: e.text, audioId: e.audio_asset_id ?? undefined, durationFrames: s2f(e.duration_sec ?? 0), startFrame: s2f(e.start_sec), locked: e.locked === 1,
     gapSec: e.gap_sec == null ? undefined : e.gap_sec,
+    volume: e.volume == null ? undefined : e.volume,   // 0 是「这一句静音」，别用 || 读
   }));
   const elements = readElementsV2(db, pid, s2f);
   const music = db.prepare('SELECT * FROM music_track WHERE project_id = ? ORDER BY ord').all(pid).map((m) => ({
@@ -795,7 +798,7 @@ export function getProjectV2(db, id) {
     startFrame: 0,
     endFrame,
     layers, elements, camera, fx, overlays,
-    narration: { entries, style: st ? { fontSize: st.font_size, fontFamily: st.font_family ?? undefined, color: st.color, strokeColor: st.stroke_color, strokeWidth: st.stroke_width, bg: st.bg, bgColor: st.bg_color, posY: st.pos_y, maxPct: st.max_pct } : undefined, hotFix: J(st?.hot_fix_json, undefined), gapSec: st?.gap_sec ?? 0 },
+    narration: { entries, style: st ? { fontSize: st.font_size, fontFamily: st.font_family ?? undefined, color: st.color, strokeColor: st.stroke_color, strokeWidth: st.stroke_width, bg: st.bg, bgColor: st.bg_color, posY: st.pos_y, maxPct: st.max_pct } : undefined, hotFix: J(st?.hot_fix_json, undefined), gapSec: st?.gap_sec ?? 0, volume: st?.volume ?? 1 },
     music,
     baseMaps, elevationMaps,
     activeBaseMapId: p.active_base_map_id ?? 'osm', activeElevationMapId: p.active_elevation_map_id ?? 'none',

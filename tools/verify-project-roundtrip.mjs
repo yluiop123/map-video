@@ -149,6 +149,31 @@ console.log('\n[5b] 字幕间隔（gap_sec）：存输入原值，三态分得�
     getProjectV2(db5b, 'gap0')?.narration?.gapSec === 0, getProjectV2(db5b, 'gap0')?.narration?.gapSec);
 }
 
+console.log('\n[5c] 配音音量（volume）：整片一个默认，每行可覆盖，0 与「没填」分得开');
+{
+  const db5c = open();
+  saveProjectV2(db5c, {
+    ...project('vol', FPS),
+    narration: {
+      entries: [
+        { id: 'v1', text: '跟整片', durationFrames: 60, startFrame: 0 },
+        { id: 'v2', text: '这一句静音', durationFrames: 60, startFrame: 60, volume: 0 },
+        { id: 'v3', text: '单独 40%', durationFrames: 60, startFrame: 120, volume: 0.4 },
+      ],
+      style: {}, volume: 0.8,
+    },
+  });
+  const v = getProjectV2(db5c, 'vol');
+  check('5c.1 整片音量原样往返', v?.narration?.volume === 0.8, v?.narration?.volume);
+  check('5c.2 三态分得开：未填 / 0 / 0.4',
+    JSON.stringify(v?.narration?.entries?.map((e) => (e.volume === undefined ? 'null' : e.volume))) === '["null",0,0.4]',
+    JSON.stringify(v?.narration?.entries?.map((e) => (e.volume === undefined ? 'null' : e.volume))));
+  check('5c.3 0 不是「没填」：读回来仍是数字 0（`||` 会把它吞成整片值）', v?.narration?.entries?.[1]?.volume === 0);
+  saveProjectV2(db5c, { ...project('vol0', FPS), narration: { entries: [], style: {} } });
+  check('5c.4 老项目没这个值 → 读出来是 1（满格，不是 0 静音）',
+    getProjectV2(db5c, 'vol0')?.narration?.volume === 1, getProjectV2(db5c, 'vol0')?.narration?.volume);
+}
+
 console.log('\n[6] 音频只存 assetId（字节不进项目数据）');
 {
   const db6 = open();
