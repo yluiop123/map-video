@@ -1084,8 +1084,8 @@ CREATE TABLE IF NOT EXISTS provider_template (  -- 接口模板：一行 = 一�
   instance_params_json TEXT CHECK (instance_params_json IS NULL OR json_valid(instance_params_json)),  -- 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json）
   sync_json   TEXT CHECK (sync_json IS NULL OR json_valid(sync_json)),  -- 同步接法 { submit }（一条请求直接拿产物；地址 / 请求头 / 参数声明 / body / 取字段都在这一格里）
   async_json  TEXT CHECK (async_json IS NULL OR json_valid(async_json)),  -- 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举）
-  upload_json TEXT CHECK (upload_json IS NULL OR json_valid(upload_json)),  -- 桥接请求：本地文件 → 文件引用 fileRef（url 或文件号；仅克隆用）
-  clone_json  TEXT CHECK (clone_json IS NULL OR json_valid(clone_json)),  -- 克隆音色请求：参考音频 → voiceId
+  upload_json TEXT CHECK (upload_json IS NULL OR json_valid(upload_json)),  -- 单独上传那一格（仅 cloneVia=upload 时存在）：本地文件 → 交回的文件号 / 地址，写在固定项 artifact 那一路径上，引擎把它注入成下一格的 ${voiceData}
+  clone_json  TEXT CHECK (clone_json IS NULL OR json_valid(clone_json)),  -- 克隆音色请求：参考音频 → 音色 ID（上游不回 id 的那种，这一格自己写 ${voiceId}）
   ord        INTEGER NOT NULL DEFAULT 0,  -- 列表排序（同分类内）
   created_at INTEGER,  -- 创建时间（epoch ms，审计用）
   updated_at INTEGER  -- 最后修改时间（epoch ms，审计用）

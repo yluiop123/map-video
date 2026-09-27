@@ -855,8 +855,8 @@
 | `instance_params_json` | TEXT | — | 实例级参数声明 JSON（超时 / 并发 / 查询节奏 / 失效信号…取值回落到 provider.values_json） · `CHECK (instance_params_json IS NULL OR json_valid(instance_params_json))` |
 | `sync_json` | TEXT | — | 同步接法 { submit }（一条请求直接拿产物；地址 / 请求头 / 参数声明 / body / 取字段都在这一格里） · `CHECK (sync_json IS NULL OR json_valid(sync_json))` |
 | `async_json` | TEXT | — | 异步接法 { submit, query }（query 里配 successValues / failureValues 两个枚举） · `CHECK (async_json IS NULL OR json_valid(async_json))` |
-| `upload_json` | TEXT | — | 桥接请求：本地文件 → 文件引用 fileRef（url 或文件号；仅克隆用） · `CHECK (upload_json IS NULL OR json_valid(upload_json))` |
-| `clone_json` | TEXT | — | 克隆音色请求：参考音频 → voiceId · `CHECK (clone_json IS NULL OR json_valid(clone_json))` |
+| `upload_json` | TEXT | — | 单独上传那一格（仅 cloneVia=upload 时存在）：本地文件 → 交回的文件号 / 地址，写在固定项 artifact 那一路径上，引擎把它注入成下一格的 ${voiceData} · `CHECK (upload_json IS NULL OR json_valid(upload_json))` |
+| `clone_json` | TEXT | — | 克隆音色请求：参考音频 → 音色 ID（上游不回 id 的那种，这一格自己写 ${voiceId}） · `CHECK (clone_json IS NULL OR json_valid(clone_json))` |
 | `ord` | INTEGER | `NOT NULL` | 列表排序（同分类内） · 默认 `0` |
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
