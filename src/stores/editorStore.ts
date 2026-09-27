@@ -70,6 +70,14 @@ interface EditorState {
   toggleTerrSelPlot: (id: string) => void;
   setTerrSelPlots: (ids: string[]) => void;
 
+  /**
+   * 弹窗里各个可折叠区的展开状态（键 = 弹窗名 + 区名，如 `subtitle:style`）。
+   * 记在会话里而不是组件内：刚展开的东西不该因为关掉再打开弹窗就缩回去，
+   * 也不该落库 —— 它不是项目内容。
+   */
+  dialogSections: Record<string, boolean>;
+  toggleDialogSection: (key: string) => void;
+
   // 属性面板界面语言（顶栏最右切换）：zh=中文 / en=English
   lang: 'zh' | 'en';
   setLang: (l: 'zh' | 'en') => void;
@@ -173,6 +181,8 @@ export const useEditorStore = create<EditorState>()((set) => ({
   setFxSelId: (id) => set({ fxSelId: id }),
   lang: 'zh',
   setLang: (l) => set({ lang: l }),
+  dialogSections: {},
+  toggleDialogSection: (key) => set((st) => ({ dialogSections: { ...st.dialogSections, [key]: !st.dialogSections[key] } })),
   routeEdit: 'none',
   setRouteEdit: (m) => set({ routeEdit: m }),
   terrPlotId: null,

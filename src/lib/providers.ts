@@ -386,30 +386,4 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-// ========== SRT ==========
-
-export function srtTime(sec: number): string {
-  const ms = Math.round(sec * 1000);
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  const s = Math.floor((ms % 60000) / 1000);
-  const msPart = ms % 1000;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(msPart).padStart(3, '0')}`;
-}
-
-export function parseSrt(content: string): string[] {
-  // 兼容编号行/时间行，只取文本行（按空行分段）
-  return content
-    .replace(/\r/g, '')
-    .split(/\n{2,}/)
-    .map((blk) => {
-      const lines = blk.split('\n').filter((l) => l.trim());
-      return lines
-        .filter((l) => !/^\d+$/.test(l.trim()) && !/-->\s|\d{2}:\d{2}:\d{2}/.test(l))
-        .join(' ')
-        .trim();
-    })
-    .filter((x) => x);
-}
-
 export type { Category, InstanceDef, ReqKey, ResolvedRequest, TemplateDef };
