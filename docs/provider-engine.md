@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 所有 JSON 列都带 `CHECK (… IS NULL OR json_valid(…))`；`category` 不写 CHECK —— 接一家新供应商不改表、不加 switch。
 
-**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, cloneVia: upload|base64|form|url|tempurl }`。
+**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, cloneVia: upload|base64|form }`。
 开关是输入，该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，都是它的推导结果（`slotsOf` / `requiredOutputsOf` / `multipartSlotOf`），界面上没有第二处「配了却没人读」的开关。
 
 内置模板由 seed（`src/lib/template-seed.ts`）在首次建库时铺成行，之后就是普通可编辑数据；「恢复默认」= 用 seed 覆盖那一行。
@@ -59,13 +59,11 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 **`upload` 那一格与别的接口不一样**：它发的是一张 multipart 表单 —— 要传的只有那一个文件（`${voiceData}`，引擎注入、不在参数表里声明），随文件一起发的字段写在表单里。卡片里还是那三节，只是「发出去的内容」那一节换成 Headers → 表单。表单是空的会被 `validateTemplate` 点名。
 
-**`caps.clone`（建音色）开着时再问一句：参考音频以什么形式交过去 —— 五选一（`caps.cloneVia`）**。这一问同时决定该不该多出「上传」那一格、以及克隆那一格发什么：
+**`caps.clone`（建音色）开着时再问一句：参考音频以什么形式交过去 —— 三选一（`caps.cloneVia`）**。这一问同时决定该不该多出「上传」那一格、以及克隆那一格发什么：
 
 | `cloneVia` | 接口格 | 克隆格发什么 | 那个文件怎么写进去 | 参照 |
 |---|---|---|---|---|
 | `upload` 单独上传 | 多一格 `upload` | JSON 体 | 先跑上传那一格（文件交给它），它交回的文件引用由引擎**注入成下一步的 `${voiceData}`**，所以克隆那格写的还是同一个名字 | MiniMax `/v1/voice_clone` 的 `file_id` |
-| `url` 公网地址 | 只有 `clone` | JSON 体 | **不给文件**：界面上是一个地址输入框（不是上传按钮，内置样本那两格也不出现），填的东西落进克隆那格写的 `${voiceUrl}`；那份音频另存一份进 `asset`，音色失效时靠它重建 | 千问 SpeechSynthesizer 一族的 `input.url` |
-| `tempurl` 先传平台拿临时地址 | 多一格 `upload` | JSON 体 | 界面上仍是**挑文件**（内置样本那两格也在）：上传那一格发之前先跑一条 `pre`（问凭证），它交回的名字喂给这一格的表单；固定项「产物」写的是**拼出来的地址**（含 `${}` 即当模板串求值），再原样注入克隆那格的 `${voiceData}` | 千问 `uploads?action=getPolicy` → OSS 表单 → `oss://{dir}/{文件名}` |
 | `base64` | 无 | JSON 体 | 体里写 `${voiceData}`，引擎换成 `data:<mime>;base64,…`；要裸 base64 写 `${voiceData.base64}` | 千问 voice cloning 的 `input.audio.data`（收 Data URL） |
 | `form` | 无 | **multipart 表单，没有 Body** | `${voiceData}` 就是那个二进制分片（自带 mime 与文件名），`name` / `language` 这些参数写成同表的字段 | ElevenLabs IVC `/v1/voices/add` 的 `files` + `name` |
 
@@ -204,8 +202,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 异步：async.submit 交出 taskId → 调度器/内存轮询按节奏打 async.query → SUCCEEDED → 字节
 克隆：cloneVia=upload → upload 交出 artifact（文件引用），引擎把它注入成下一步的 ${voiceData}，再 clone 交出 voiceId
      cloneVia=base64 / form → 只有 clone 这一步，${voiceData} 就是那份文件
-     cloneVia=url → 也没有上传那一格，且连 ${voiceData} 都不出现：界面收一个公网地址，交进 ${voiceUrl}
-     cloneVia=tempurl → upload 这一格自己前面还有一条 `pre`（先问一次凭证）：问凭证 → 把文件 POST 到中转存储 → clone
+
 ```
 
 两条硬规矩：
@@ -245,7 +242,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → **请求方式**（`selectableModesOf`：**模板只有一种接法时整行不显示** —— 没得选还摆一排单选就是假控件；但实例存的那一档在模板里没有接口时仍然长出来，否则那条红报错在界面上消不掉）→ **一排接口页签**（只列这条实例真会走到的那几格：`usedSlotsOf`，模板两套都配了也只列自己那一侧；名字只写动作名 上传 / 克隆 / 提交 / 查询）→ 左栏是**激活那一格的参数**（按 `requestParams`）与**试调用**（回显每一步的响应原文 → 取到的字段 → 产物预览：音频给播放器、图片直接显示；失败时那一步的响应原文照带回来，挂在 `EngineError.step` 上），右栏是**实例参数**（固定显示、切页签不动它，`sticky`）。现场要给的按 `trialKeysOf`（= `openKeysOf` 去掉这一格声明出来的参数 —— 那些在上面的参数表里填，不重复一栏）长控件，`${voiceData}` 那一个是「上传文件」按钮 + 已选文件名与大小 —— 三种接法都在这儿发得出去；试调用挂在页签上，所以**换页签会重挂载它**（草稿按参数名存，两格同名参数不是一回事，见 §6.30）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口，**只在开发构建里露出来**：`IS_DEV = import.meta.env.DEV`） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、建音色（**克隆开关 + 参考音频五选一：单独上传 / base64 / form / 公网地址 / 先传平台拿临时地址**），按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、**一个页签就是这一个接口的全部配置**、只写动作名（提交 / 查询）—— 两套都勾了时「同步 \| 异步」切换在这一排**最左边**，切换说清在看哪一侧，所以两份名字不重复；卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；发 multipart 的那格换成表单，判据 `multipartSlotOf`）→ **参数**（这一格一张表：填了值的走实例，没填的调用时给）→ **从响应里取**（**「产物形式」与固定项「产物」是并排的两行、逐格一份**；其余固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**两层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，会留在库里的层每行装框、调用时给值的那种不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口，**只在开发构建里露出来**：`IS_DEV = import.meta.env.DEV`） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、建音色（**克隆开关 + 参考音频三选一：单独上传 / base64 / form**），按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、**一个页签就是这一个接口的全部配置**、只写动作名（提交 / 查询）—— 两套都勾了时「同步 \| 异步」切换在这一排**最左边**，切换说清在看哪一侧，所以两份名字不重复；卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；发 multipart 的那格换成表单，判据 `multipartSlotOf`）→ **参数**（这一格一张表：填了值的走实例，没填的调用时给）→ **从响应里取**（**「产物形式」与固定项「产物」是并排的两行、逐格一份**；其余固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**两层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，会留在库里的层每行装框、调用时给值的那种不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - **验收口只有一个：实例页的「试调用」**（它同时给求值后的请求形状与真发一条的结果 —— 真发要的是这条实例的 Key，所以这件事只能在实例页做）。模板页不预览、不发请求：那一页只有形状本身，拼得出拼不出由保存前自检点名。
@@ -268,7 +265,6 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `deepseek-chat` | sync | 否 | — | `同步 · 提交` |
 | `qwen-image` | both | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
 | `qwen-tts` | sync | 是 | `base64` | `克隆` + `同步 · 提交` |
-| `qwen-audio-tts` | sync | 是 | `tempurl` | `上传` + `克隆` + `同步 · 提交` |
 | `elevenlabs-voice` | sync | 是 | `form` | `克隆` + `同步 · 提交` |
 | `minimax-voice` | sync | 是 | `upload` | `上传` + `克隆` + `同步 · 提交` |
 | `minimax-image` | sync | 否 | — | `同步 · 提交` |
@@ -293,22 +289,13 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `qwen-image` | 异步 · 查询 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-image` | 异步 · 查询 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-image` | 异步 · 查询 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-tts` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
+| `qwen-tts` | 克隆 | `none` | 音色 ID | `voiceId` | 建议 | 这一格自己写了 ${voiceId} —— 名字是你起的、上游不回它，路径留空，引擎拿本轮发出去的那个名字当结果 |
 | `qwen-tts` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `qwen-tts` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-tts` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-audio-tts` | 上传 | `none` | 文件地址 / 文件号 | `artifact` | 是 | 下一步建音色要用它：引擎把它注入成 ${voiceData}，克隆那一格写这个名就行 |
-| `qwen-audio-tts` | 上传 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `qwen-audio-tts` | 上传 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-audio-tts` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
-| `qwen-audio-tts` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `qwen-audio-tts` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `qwen-audio-tts` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
-| `qwen-audio-tts` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
-| `qwen-audio-tts` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
-| `elevenlabs-voice` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
+| `elevenlabs-voice` | 克隆 | `none` | 音色 ID | `voiceId` | 建议 | 这一格自己写了 ${voiceId} —— 名字是你起的、上游不回它，路径留空，引擎拿本轮发出去的那个名字当结果 |
 | `elevenlabs-voice` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `elevenlabs-voice` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `elevenlabs-voice` | 同步 · 提交 | `binary` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
@@ -326,7 +313,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `minimax-image` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `minimax-image` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 
-### 9.3 7 份模板各自声明了哪些参数
+### 9.3 6 份模板各自声明了哪些参数
 
 「层」只有两处声明：实例级整条实例共用、每一格各一张表。同一格里填了值的走实例，没填的由调用点现场给（业务界面或试调用）—— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。
 
@@ -375,23 +362,6 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
 | 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"Ethan"` | 38 条（女声 19 / 男声 19） —— 逐条见下面那列 JSON |
 | 这一格 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
-| 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
-
-#### `qwen-audio-tts` · 千问语音（音量 / 发音修正）（tts）
-
-| 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
-|---|---|---|---|---|---|
-| 实例级 | `baseUrl` | 服务地址 | string | `"https://maas.qianwenaiapi.com/api/v1"` | — |
-| 实例级 | `apiKey` | API Key | secret | — | — |
-| 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
-| 这一格 `sync.submit` | `model` | 模型 | enum | `"qwen-audio-3.0-tts-flash"` | qwen-audio-3.0-tts-flash · qwen-audio-3.0-tts-plus |
-| 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
-| 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"longanfengyue"` | 14 条（女声 9 / 男声 5） —— 逐条见下面那列 JSON |
-| 这一格 `sync.submit` | `volume` | 音量（0–100） | number | `100` | ≥0 ≤100 |
-| 这一格 `sync.submit` | `hotFix` | 发音修正 | json | — | — |
-| 这一格 `upload` | `model` | 模型（换凭证那一问要带它） | enum | `"qwen-audio-3.0-tts-flash"` | qwen-audio-3.0-tts-flash · qwen-audio-3.0-tts-plus |
-| 这一格 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen-audio-3.0-tts-flash"` | qwen-audio-3.0-tts-flash · qwen-audio-3.0-tts-plus |
-| 这一格 `clone` | `prefix` | 音色前缀（只收字母数字，≤10） | string | `"mapvideo"` | — |
 
 #### `elevenlabs-voice` · ElevenLabs 语音（tts）
 
@@ -403,7 +373,6 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `model` | 模型 | enum | `"eleven_multilingual_v2"` | eleven_multilingual_v2 · eleven_flash_v2_5 |
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
 | 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"CwhRBWXzGAHq8TQ4Fs17"` | 21 条（男声 13 / 女声 7 / 中性 1） —— 逐条见下面那列 JSON |
-| 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
 
 #### `minimax-voice` · MiniMax 语音（tts）
 
@@ -1261,12 +1230,6 @@ null
         "qwen3-tts-vc-2026-01-22"
       ],
       "defaultValue": "qwen3-tts-vc-2026-01-22"
-    },
-    {
-      "key": "preferredName",
-      "label": "音色名",
-      "valueType": "string",
-      "defaultValue": "mapvideo"
     }
   ],
   "body": {
@@ -1274,7 +1237,7 @@ null
     "input": {
       "action": "create",
       "target_model": "${model}",
-      "preferred_name": "${preferredName}",
+      "preferred_name": "${voiceId}",
       "audio": {
         "data": "${voiceData}"
       }
@@ -1282,333 +1245,6 @@ null
   },
   "outputs": {
     "voiceId": "output.voice",
-    "errorCode": "code",
-    "error": "message"
-  }
-}
-```
-
-#### `qwen-audio-tts`
-
-- 标量列：`category=tts`，`caps_json={"modes":"sync","clone":true,"cloneVia":"tempurl"}`
-
-- 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
-
-**`instance_params_json`**（实例级参数**声明**）
-
-```json
-[
-  {
-    "key": "baseUrl",
-    "label": "服务地址",
-    "valueType": "string",
-    "defaultValue": "https://maas.qianwenaiapi.com/api/v1"
-  },
-  {
-    "key": "apiKey",
-    "label": "API Key",
-    "valueType": "secret"
-  },
-  {
-    "key": "timeoutMs",
-    "label": "单次超时 ms",
-    "valueType": "number",
-    "defaultValue": 60000
-  }
-]
-```
-
-**`sync_json`**（sync.submit）
-
-```json
-{
-  "submit": {
-    "path": "${baseUrl}/services/audio/tts/SpeechSynthesizer",
-    "method": "POST",
-    "headers": {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer ${apiKey}"
-    },
-    "requestParams": [
-      {
-        "key": "model",
-        "label": "模型",
-        "valueType": "enum",
-        "options": [
-          "qwen-audio-3.0-tts-flash",
-          "qwen-audio-3.0-tts-plus"
-        ],
-        "defaultValue": "qwen-audio-3.0-tts-flash"
-      },
-      {
-        "key": "text",
-        "label": "合成文本",
-        "valueType": "text"
-      },
-      {
-        "key": "voice",
-        "label": "音色 ID",
-        "valueType": "enum",
-        "voiceTable": true,
-        "options": [
-          {
-            "value": "longanfengyue",
-            "label": "龙安风悦",
-            "group": "女声",
-            "note": "自然亲切音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longanxiaoxin",
-            "label": "龙安小昕",
-            "group": "女声",
-            "note": "亲切活泼音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longanlingxi",
-            "label": "龙安灵希",
-            "group": "女声",
-            "note": "可爱甜美音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longanyuanfei",
-            "label": "龙安元妃",
-            "group": "女声",
-            "note": "高傲妃子音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longanhuan_v3.6",
-            "label": "龙安欢",
-            "group": "女声",
-            "note": "基础版（后缀与 3.1 不同）",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longpaopao_v3.6",
-            "label": "龙泡泡",
-            "group": "女声",
-            "note": "软糯可爱音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "loongeva_v3.6",
-            "label": "loongeva",
-            "group": "女声",
-            "note": "高智美音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "loongmary",
-            "label": "loongmary",
-            "group": "女声",
-            "note": "温暖英音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longjielidou_v3.6",
-            "label": "龙杰力豆",
-            "group": "男声",
-            "note": "天真男童",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longhuohuo_v3.6",
-            "label": "龙火火",
-            "group": "男声",
-            "note": "顽皮少年音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longchuanshu_v3.6",
-            "label": "龙川叔",
-            "group": "男声",
-            "note": "川普大叔音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "loongjohn",
-            "label": "loongJohn",
-            "group": "男声",
-            "note": "沉稳亲切美音",
-            "models": [
-              "qwen-audio-3.0-tts-flash"
-            ]
-          },
-          {
-            "value": "longanlingxin",
-            "label": "龙安灵心",
-            "group": "女声",
-            "note": "知心温暖音",
-            "models": [
-              "qwen-audio-3.0-tts-plus"
-            ]
-          },
-          {
-            "value": "longanlufeng",
-            "label": "龙安鲁风",
-            "group": "男声",
-            "note": "明亮开朗音",
-            "models": [
-              "qwen-audio-3.0-tts-plus"
-            ]
-          }
-        ],
-        "defaultValue": "longanfengyue"
-      },
-      {
-        "key": "volume",
-        "label": "音量（0–100）",
-        "valueType": "number",
-        "defaultValue": 100,
-        "min": 0,
-        "max": 100
-      },
-      {
-        "key": "hotFix",
-        "label": "发音修正",
-        "valueType": "json"
-      }
-    ],
-    "body": {
-      "model": "${model}",
-      "input": {
-        "text": "${text}",
-        "voice": "${voice}",
-        "volume": "${volume}",
-        "hot_fix": "${hotFix}"
-      }
-    },
-    "artifactForm": "url",
-    "outputs": {
-      "artifact": "output.audio.url",
-      "errorCode": "code",
-      "error": "message"
-    }
-  }
-}
-```
-
-**`async_json`**（async.submit）
-
-```json
-null
-```
-
-**`upload_json`**（upload）
-
-```json
-{
-  "path": "${uploadHost}",
-  "method": "POST",
-  "requestParams": [
-    {
-      "key": "model",
-      "label": "模型（换凭证那一问要带它）",
-      "valueType": "enum",
-      "options": [
-        "qwen-audio-3.0-tts-flash",
-        "qwen-audio-3.0-tts-plus"
-      ],
-      "defaultValue": "qwen-audio-3.0-tts-flash"
-    }
-  ],
-  "pre": {
-    "path": "${baseUrl}/uploads?action=getPolicy&model=${model}",
-    "method": "GET",
-    "headers": {
-      "Authorization": "Bearer ${apiKey}"
-    },
-    "outputs": {
-      "policy": "data.policy",
-      "signature": "data.signature",
-      "uploadHost": "data.upload_host",
-      "dir": "data.upload_dir",
-      "akid": "data.oss_access_key_id",
-      "acl": "data.x_oss_object_acl",
-      "forbid": "data.x_oss_forbid_overwrite"
-    }
-  },
-  "form": {
-    "OSSAccessKeyId": "${akid}",
-    "policy": "${policy}",
-    "Signature": "${signature}",
-    "key": "${dir}/${voiceData.name}",
-    "x-oss-object-acl": "${acl}",
-    "x-oss-forbid-overwrite": "${forbid}",
-    "success_action_status": "200",
-    "file": "${voiceData}"
-  },
-  "outputs": {
-    "artifact": "oss://${dir}/${voiceData.name}"
-  }
-}
-```
-
-**`clone_json`**（clone）
-
-```json
-{
-  "path": "${baseUrl}/services/audio/tts/customization",
-  "method": "POST",
-  "headers": {
-    "Content-Type": "application/json",
-    "Authorization": "Bearer ${apiKey}",
-    "X-DashScope-OssResourceResolve": "enable"
-  },
-  "requestParams": [
-    {
-      "key": "model",
-      "label": "复刻目标模型（须与合成同款）",
-      "valueType": "enum",
-      "options": [
-        "qwen-audio-3.0-tts-flash",
-        "qwen-audio-3.0-tts-plus"
-      ],
-      "defaultValue": "qwen-audio-3.0-tts-flash"
-    },
-    {
-      "key": "prefix",
-      "label": "音色前缀（只收字母数字，≤10）",
-      "valueType": "string",
-      "defaultValue": "mapvideo"
-    }
-  ],
-  "body": {
-    "model": "voice-enrollment",
-    "input": {
-      "action": "create_voice",
-      "target_model": "${model}",
-      "prefix": "${prefix}",
-      "url": "${voiceData}"
-    }
-  },
-  "outputs": {
-    "voiceId": "output.voice_id",
     "errorCode": "code",
     "error": "message"
   }
@@ -1842,16 +1478,8 @@ null
   "headers": {
     "xi-api-key": "${apiKey}"
   },
-  "requestParams": [
-    {
-      "key": "preferredName",
-      "label": "音色名",
-      "valueType": "string",
-      "defaultValue": "mapvideo"
-    }
-  ],
   "form": {
-    "name": "${preferredName}",
+    "name": "${voiceId}",
     "files": "${voiceData}"
   },
   "outputs": {
@@ -2141,9 +1769,9 @@ null
 ④ 同一份响应改成 base64 档、路径不动：把那条 `https://…` 链接当 base64 解，抛 `Invalid character`。
 ② 与 ④ 的区别只在档位，取的是同一个字段 —— 这一格既决定**去哪个字段取**之后的**怎么变成字节**，也证明它是逐格一份而不是整份模板一份。
 
-按用户要求内置这七份（两份 MiniMax 里，**只有「上传」那一格真发通过**，其余卡在账号余额 `1008` —— 见第十节那张表）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
+按用户要求内置这六份（两份 MiniMax 里，**只有「上传」那一格真发通过**，其余卡在账号余额 `1008` —— 见第十节那张表）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
 
-**「千问语音（音量 / 发音修正）」这一份只到「照官方 HTTP 参考抄对」为止，还没真发**：请求形状、`input.volume`（整数 0–100，上游默认 50，这里声明成默认 100）、`input.hot_fix`（`{pronunciation:[{词:音}], replace:[{原:换}]}`，`cosyvoice-v2` 不支持）与 14 条音色名都逐字取自文档，产物路径 `output.audio.url`（有效期 24 小时，所以 `artifactForm='url'` 当场下载）。它**不勾建音色** —— 那一家的声音复刻要的是公网可取的参考音频地址，本地文件给不出去。
+**SpeechSynthesizer 那一条（`input.volume` 0–100 默认 50、`input.hot_fix`）曾作为第七份内置模板接进来并真发跑通，2026-09-27 按要求删掉**：它的复刻只认一个可访问地址（实测塞 base64 回 `provide url, or provide both voice_prompt and preview_text`，而 Qwen-TTS 那族的 `qwen-voice-enrollment` 对它的 target_model 回 `PipelineNotFound`），要走「挑文件」就得先问凭证再传中转存储 —— 为此加过的 `cloneVia:'url'/'tempurl'`、`RequestDef.pre`、「产物路径可以是模板串」三样都随之撤掉（没有消费者的形状不留）。要接回来照这段实测记录写模板即可。
 
 **两份语音上游的实测状态（2026-09-26）**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）。
 

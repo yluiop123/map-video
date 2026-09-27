@@ -76,8 +76,6 @@ const CLONE_VIA_OPTIONS = (t: (a: string, b: string) => string) => [
   { value: 'upload' as const, label: t('单独上传', 'Upload first'), hint: t('先调上传那一格；它交回的文件引用由引擎注入成下一步的 ${voiceData}，克隆那格写的还是同一个名字', 'the 上传 endpoint runs first; what it returns is injected as ${voiceData} for the clone request') },
   { value: 'base64' as const, label: 'base64', hint: t('文件当场转成 data:<mime>;base64,… 作为一个 JSON 字段（克隆那格写 ${voiceData}）', 'the file becomes a data: URI in the JSON body, referenced as ${voiceData}') },
   { value: 'form' as const, label: 'form', hint: t('克隆这一格自己发 multipart：${voiceData} 是个分片，别的参数写成同表的字段，没有 Body', 'the clone request itself is multipart: ${voiceData} is one part, other params are fields, no body') },
-  { value: 'url' as const, label: t('公网地址', 'URL'), hint: t('这一家不吃文件，只收 `input.url` 那样的音频直链：界面上因此是一个地址输入框而不是上传按钮（克隆那格写 ${voiceUrl}）', 'this upstream takes only a reachable audio link, so the UI shows a URL box instead of an upload button — the clone slot references ${voiceUrl}') },
-  { value: 'tempurl' as const, label: t('先传平台拿临时地址', 'Upload for a temp link'), hint: t('界面上仍是挑文件：上传那一格发之前先问一次凭证（`pre`），拿凭证把文件 POST 到平台的中转存储，再把拼出来的地址交给克隆那一格的 ${voiceData}', 'still a file picker: the upload endpoint asks for a credential first (pre), POSTs the file with it, and the address it builds goes to the clone endpoint as ${voiceData}') },
 ];
 
 const present = (t: TemplateDef, key: ReqKey) => !!requestOf(t, key);
@@ -386,28 +384,6 @@ function RequestEditor({ tpl, reqKey, onChange }: {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-1 p-2 pt-0">
-
-        {/* 有的家上传要先问一次凭证 —— 那一问交回的名字，就是下面表单里的 ${它} */}
-        {def.pre && (
-          <Group title={t('发出去之前先问一次', 'Pre-flight')}
-            hint={t('这一问的响应按名字取出来，喂给上面这条请求（表单字段、地址都行）。它是「形状」不是厂商：任何一家要两步上传的都能这么配。',
-              'fields from this first response are named and reused by the request above — a shape, not a vendor')}
-          >
-            <div className="flex items-center gap-1.5">
-              <Select value={def.pre.method ?? 'POST'} onValueChange={(method) => set({ pre: { ...def.pre!, method } })}>
-                <SelectTrigger className="h-7 w-[70px] text-[11px]"><SelectValue /></SelectTrigger>
-                <SelectContent>{['GET', 'POST', 'PUT'].map((m) => <SelectItem key={m} value={m} className="text-[11px]">{m}</SelectItem>)}</SelectContent>
-              </Select>
-              <Input value={def.pre.path} onChange={(e) => set({ pre: { ...def.pre!, path: e.target.value } })}
-                className="input h-7 min-w-40 flex-1 text-xs font-mono" placeholder="${baseUrl}/…?action=getPolicy" />
-            </div>
-            <JsonBox label="Headers" rows={2} value={def.pre.headers ?? {}}
-              onChange={(headers) => set({ pre: { ...def.pre!, headers: headers as Record<string, unknown> } })} />
-            <JsonBox label={t('从响应里取（这些名字进上面那一格的表单）', 'Fields to take')} rows={4}
-              value={def.pre.outputs ?? {}}
-              onChange={(outputs) => set({ pre: { ...def.pre!, outputs: outputs as Record<string, string> } })} />
-          </Group>
-        )}
 
         {/* 顺序照发出去的样子排：先这条请求自己的头与体，再声明它引用了哪些参数 */}
         <Group title={t('发出去的内容', 'Payload')}>

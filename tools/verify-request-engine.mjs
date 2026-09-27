@@ -176,14 +176,6 @@ console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
     { replace: [{ AI: '人工智能' }] });
   check('3.7 没填修正 → hot_fix 这个键整个消失（不发给上游）',
     buildRequest(t4, inst('x'), 'sync.submit', { text: '重庆' }).req.body.input.hot_fix === undefined);
-  // 内置那份「千问语音（音量 / 发音修正）」：机制之外还要证明**这一格真的接上了**（旧模板不认，界面上因此点名）
-  const audio = seedTemplate('qwen-audio-tts');
-  const audioBody = buildRequest(audio, inst('qwen-audio-tts'), 'sync.submit', { text: '重庆', hotFix: { pronunciation: [{ 重庆: 'chong2 qing4' }] } }).req.body;
-  eq('3.7b seed 的 SpeechSynthesizer 格：hot_fix 原样进 input、volume 是数字不是字符串',
-    [audioBody.input.hot_fix, audioBody.input.volume],
-    [{ pronunciation: [{ 重庆: 'chong2 qing4' }] }, 100]);
-  check('3.7c 这一格引用了 hotFix（界面上因此不说「不认这个参数」）',
-    referencesArg(audio, 'sync.submit', 'hotFix') && !referencesArg(seedTemplate('qwen-tts'), 'sync.submit', 'hotFix'));
   const t3 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { n: '${n}' }, requestParams: [{ key: 'n', label: '个数', valueType: 'number' }] } } };
   eq('3.8 字符串数字按声明转成数字（只看 valueType，没有加工那格）', buildRequest(t3, inst('x'), 'sync.submit', { n: '3' }).req.body.n, 3);
 }
@@ -260,7 +252,8 @@ console.log('\n[6] 音色克隆');
   const qwen = seedTemplate('qwen-tts');
   const d = mk([{ on: 'customization', res: json({ output: { voice: 'qwen-voice-77' } }) }]);
   const wav = { bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]), mime: 'audio/x-wav', name: 'reference.wav' };
-  const r = await runClone(qwen, inst('qwen-tts'), d.deps, { voiceData: wav, model: 'qwen3-tts-vc-2026-01-22', preferredName: 'mv' });
+  // 名字由调用点现给（模板里不再声明「音色名」那一格）：`${voiceId}` 就是本轮起的名字
+  const r = await runClone(qwen, inst('qwen-tts'), d.deps, { voiceData: wav, model: 'qwen3-tts-vc-2026-01-22', voiceId: 'mv' });
   eq('6.1 接法二「base64」：文件进 body 就是 data URI，一步拿音色 ID', [r.values.voiceId, d.sent.length], ['qwen-voice-77', 1]);
   const body = d.sent[0].body;
   eq('6.2 复刻目标模型走请求级参数（合成必须同款）', body.input.target_model, 'qwen3-tts-vc-2026-01-22');
@@ -338,25 +331,6 @@ console.log('\n[6] 音色克隆');
   eq('6.18 status_code=0 不算错（产物按 hex 还原成字节）', Array.from(r6.bytes ?? []), [0x89, 0x50, 0x4e, 0x47]);
   eq('6.19 真报错了照原样抛回', errorOf({ errorCode: 1008, error: 'insufficient balance' }, { status: 200 }), '1008 · insufficient balance');
 
-  // 接法五「先传平台拿临时地址」：上传那一格发之前先问一次凭证（seed 里那份 qwen-audio-tts 就是这样）
-  const au = seedTemplate('qwen-audio-tts');
-  const POLICY = { data: { policy: 'P1', signature: 'S1', upload_host: 'https://oss.example/tmp', upload_dir: 'dashscope-instant/abc', oss_access_key_id: 'AK', x_oss_object_acl: 'private', x_oss_forbid_overwrite: 'true' } };
-  const d7 = mk([
-    { on: 'uploads?action=getPolicy', res: json(POLICY) },
-    { on: 'oss.example/tmp', res: json({}) },
-    { on: 'customization', res: json({ output: { voice_id: 'qwen-audio-mv-1' } }) },
-  ]);
-  const r7 = await runClone(au, inst('qwen-audio-tts'), d7.deps, { voiceData: wav, prefix: 'mv' });
-  eq('6.21 三步：先问凭证 → 拿凭证 POST 文件 → 克隆', [r7.values.voiceId, d7.sent.length], ['qwen-audio-mv-1', 3]);
-  eq('6.22 第一问带 model（平台按模型给目录与配额；实例填的赢过声明默认）', d7.sent[0].url, 'https://x.example/v1/uploads?action=getPolicy&model=m-instance');
-  eq('6.23 表单字段全来自第一问的响应，文件仍是最后一个分片',
-    [d7.sent[1].form.policy, d7.sent[1].form.OSSAccessKeyId, d7.sent[1].form.key, d7.sent[1].form.file === wav],
-    ['P1', 'AK', 'dashscope-instant/abc/reference.wav', true]);
-  eq('6.24 第二问的地址用第一问交回的 upload_host', d7.sent[1].url, 'https://oss.example/tmp');
-  eq('6.25 固定项「产物」写成模板串：拼出来的 oss:// 就是交给下一格的引用', d7.sent[2].body.input.url, 'oss://dashscope-instant/abc/reference.wav');
-  eq('6.26 克隆那一格带上去中转存储取文件的头', d7.sent[2].headers['X-DashScope-OssResourceResolve'], 'enable');
-  eq('6.27 步骤里那一问单独成一步并标出来（试调用要看得清是哪一步）',
-    [r7.steps.length, r7.steps[0].label, r7.steps[1].label], [3, '先问一次', undefined]);
   await throws('6.20 失败那一步把响应原文挂在错误上带回来（「试调用」要看的就是它）',
     () => runSync(mm, inst('minimax-voice'),
       mk([{ on: 't2a_v2', res: json({ data: null, base_resp: { status_code: 1008, status_msg: 'insufficient balance' } }) }]).deps,

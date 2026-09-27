@@ -1,15 +1,13 @@
 /**
  * template-seed.ts — 内置接口模板 seed（首次建库铺成 provider_template 的行）
  *
- * 按用户要求内置这七份（= 七种上游形状）：
+ * 按用户要求内置这六份（= 六种上游形状）：
  *   deepseek-chat     文案生成（显示名按他在界面里改的那一份：`openai`；id 不变）
  *                     —— https://api-docs.deepseek.com/zh-cn/
  *   qwen-image        图片生成（同步 + 异步 + 任务查询）
  *                     —— platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image{,-30-async,-task-query}
  *   qwen-tts          语音：非流式合成 + 声音复刻（文件直接进体）
  *                     —— platform.qianwenai.com/docs/developer-guides/speech/voice-cloning
- *   qwen-audio-tts    语音：SpeechSynthesizer 那条 —— **只有它带 input.volume 与 input.hot_fix**
- *                     —— help.aliyun.com/zh/model-studio/cosyvoice-tts-http-api · 音色表 qwen-audio-tts-voice-list
  *   elevenlabs-voice  语音：合成（响应体即音频）+ 声音复刻（自己发 multipart 表单）
  *                     —— elevenlabs.io/docs/api-reference/voices/add · /text-to-speech/convert
  *   minimax-voice     语音：合成（hex）+ 复刻（先单独上传拿 file_id · 上游不回音色 id）
@@ -217,109 +215,18 @@ const qwenTts: TemplateDef = {
   clone: jsonReq('${baseUrl}/services/audio/tts/customization', {
     requestParams: [
       en('model', '复刻目标模型（须与合成同款）', ['qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-vc-2026-01-22' }),
-      p('preferredName', '音色名', { defaultValue: 'mapvideo' }),
     ],
     body: {
       model: 'qwen-voice-enrollment',
       // `${voiceData}` 是引擎注入的那个文件（不在上面声明）：这一家要的是 `data:<mime>;base64,…`
-      input: { action: 'create', target_model: '${model}', preferred_name: '${preferredName}', audio: { data: '${voiceData}' } },
+      // 名字不摆格子：这一轮克隆叫什么由调用点现给（`${voiceId}` 就是那个名字）
+      input: { action: 'create', target_model: '${model}', preferred_name: '${voiceId}', audio: { data: '${voiceData}' } },
     },
     outputs: { voiceId: 'output.voice', errorCode: 'code', error: 'message' },
   }),
 };
 
 // ========== 语音：Qwen-Audio-TTS（**有音量与发音修正**的那条端点） ==========
-
-/**
- * 官方音色表，逐字抄自「Qwen-Audio-TTS 音色列表」（2026-09-27）。
- * 只铺这两条模型的（`qwen-audio-3.1-tts-flash` 那一族有六十多条，要就在 ⚙ 里自己加 —— 表就是数据）；
- * `models` 决定选了上面那条「模型」之后露出哪些音色。
- */
-const qwenAudioVoices: OptionSpec[] = [
-  { value: 'longanfengyue', label: '龙安风悦', group: '女声', note: '自然亲切音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longanxiaoxin', label: '龙安小昕', group: '女声', note: '亲切活泼音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longanlingxi', label: '龙安灵希', group: '女声', note: '可爱甜美音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longanyuanfei', label: '龙安元妃', group: '女声', note: '高傲妃子音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longanhuan_v3.6', label: '龙安欢', group: '女声', note: '基础版（后缀与 3.1 不同）', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longpaopao_v3.6', label: '龙泡泡', group: '女声', note: '软糯可爱音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'loongeva_v3.6', label: 'loongeva', group: '女声', note: '高智美音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'loongmary', label: 'loongmary', group: '女声', note: '温暖英音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longjielidou_v3.6', label: '龙杰力豆', group: '男声', note: '天真男童', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longhuohuo_v3.6', label: '龙火火', group: '男声', note: '顽皮少年音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longchuanshu_v3.6', label: '龙川叔', group: '男声', note: '川普大叔音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'loongjohn', label: 'loongJohn', group: '男声', note: '沉稳亲切美音', models: ['qwen-audio-3.0-tts-flash'] },
-  { value: 'longanlingxin', label: '龙安灵心', group: '女声', note: '知心温暖音', models: ['qwen-audio-3.0-tts-plus'] },
-  { value: 'longanlufeng', label: '龙安鲁风', group: '男声', note: '明亮开朗音', models: ['qwen-audio-3.0-tts-plus'] },
-];
-
-const qwenAudioTts: TemplateDef = {
-  id: 'qwen-audio-tts', name: '千问语音（音量 / 发音修正）', category: 'tts',
-  // 参考音频**只收一个可访问的地址**（官方 create-voice：`input.url` 必填；实测塞 base64 被顶回 `provide url, …`），
-  // 但界面上仍是「挑文件」：上传那一格先问一次凭证，把文件传到平台的中转存储，再把拼出来的 `oss://` 交给克隆
-  caps: { modes: 'sync', clone: true, cloneVia: 'tempurl' },
-
-  instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
-  sync: {
-    submit: jsonReq('${baseUrl}/services/audio/tts/SpeechSynthesizer', {
-      requestParams: [
-        en('model', '模型', ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'], { defaultValue: 'qwen-audio-3.0-tts-flash' }),
-        text('text', '合成文本'),
-        voice('longanfengyue', qwenAudioVoices),
-        // 上游默认 50（半量），这里钉 100：产物本身就响，预览与导出跟着响
-        num('volume', '音量（0–100）', { defaultValue: 100, min: 0, max: 100 }),
-        // 发音修正是字幕生成那一栏每次带下来的：声明成 json 就原样进体，没给值整键消失
-        p('hotFix', '发音修正', { valueType: 'json' }),
-      ],
-      body: {
-        model: '${model}',
-        // 这一家的控制项全在 input 里（不是 parameters）
-        input: { text: '${text}', voice: '${voice}', volume: '${volume}', hot_fix: '${hotFix}' },
-      },
-      artifactForm: 'url',
-      // 非流式回的是 JSON，音频在 output.audio.url（有效期 24 小时 —— 所以当场下载）
-      outputs: { artifact: 'output.audio.url', errorCode: 'code', error: 'message' },
-    }),
-  },
-  // 上传那一格是两步：`pre` 先问一次凭证，再拿凭证把文件 POST 到平台的中转存储。
-  // 它交回的「文件引用」是拼出来的 `oss://…`（响应里没有这个地址），克隆那一格照旧写 `${voiceData}`。
-  upload: req('${uploadHost}', {
-    // 那一问要带 model（平台按模型给配额与目录），所以这一格也得有自己的 model —— 同名不同格各存各的
-    requestParams: [
-      en('model', '模型（换凭证那一问要带它）', ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'], { defaultValue: 'qwen-audio-3.0-tts-flash' }),
-    ],
-    pre: req('${baseUrl}/uploads?action=getPolicy&model=${model}', {
-      method: 'GET',
-      headers: { ...AUTH },
-      outputs: {
-        policy: 'data.policy', signature: 'data.signature', uploadHost: 'data.upload_host',
-        dir: 'data.upload_dir', akid: 'data.oss_access_key_id',
-        acl: 'data.x_oss_object_acl', forbid: 'data.x_oss_forbid_overwrite',
-      },
-    }),
-    form: {
-      OSSAccessKeyId: '${akid}', policy: '${policy}', Signature: '${signature}',
-      key: '${dir}/${voiceData.name}',
-      'x-oss-object-acl': '${acl}', 'x-oss-forbid-overwrite': '${forbid}',
-      success_action_status: '200',
-      // 文件分片必须是最后一个字段（上游按此解析）
-      file: '${voiceData}',
-    },
-    outputs: { artifact: 'oss://${dir}/${voiceData.name}' },
-  }),
-  clone: jsonReq('${baseUrl}/services/audio/tts/customization', {
-    // 地址是平台内部的 `oss://`，带这个头它才去取
-    headers: { ...JSON_CT, ...AUTH, 'X-DashScope-OssResourceResolve': 'enable' },
-    requestParams: [
-      en('model', '复刻目标模型（须与合成同款）', ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'], { defaultValue: 'qwen-audio-3.0-tts-flash' }),
-      p('prefix', '音色前缀（只收字母数字，≤10）', { defaultValue: 'mapvideo' }),
-    ],
-    body: {
-      model: 'voice-enrollment',
-      input: { action: 'create_voice', target_model: '${model}', prefix: '${prefix}', url: '${voiceData}' },
-    },
-    outputs: { voiceId: 'output.voice_id', errorCode: 'code', error: 'message' },
-  }),
-};
 
 // ========== 语音：ElevenLabs（合成 = 响应体裸字节 · 复刻 = 自己发 multipart 表单） ==========
 
@@ -381,9 +288,8 @@ const elevenLabsVoice: TemplateDef = {
   clone: req('${baseUrl}/voices/add', {
     // 发的是表单：Content-Type 由传输层生成（它要带 boundary），所以这儿只声明认证头
     headers: { 'xi-api-key': '${apiKey}' },
-    requestParams: [p('preferredName', '音色名', { defaultValue: 'mapvideo' })],
     // 官网字段名是复数 `files`（可交多份样本），`${voiceData}` 就是那个二进制分片
-    form: { name: '${preferredName}', files: '${voiceData}' },
+    form: { name: '${voiceId}', files: '${voiceData}' },
     outputs: { voiceId: 'voice_id', errorCode: 'detail.code', error: 'detail.message' },
   }),
 };
@@ -467,7 +373,7 @@ const minimaxImage: TemplateDef = {
   },
 };
 
-export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts, qwenAudioTts, elevenLabsVoice, minimaxVoice, minimaxImage];
+export const SEED_TEMPLATES: TemplateDef[] = [deepseekChat, qwenImage, qwenTts, elevenLabsVoice, minimaxVoice, minimaxImage];
 
 export const seedTemplate = (id: string): TemplateDef | undefined => SEED_TEMPLATES.find((t) => t.id === id);
 
