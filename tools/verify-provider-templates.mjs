@@ -5,8 +5,8 @@
  *       values 两段读写、真外键（删被引用的模板要拦住 / 删实例不牵连模板）、voice 幂等键、
  *       task 随项目删除被应用层清掉、异步配对的自检视图，以及四代旧形状（provider_endpoint 副本 /
  *       组表 + 每 role 一行 / 每能力一条实例 / 带 use_clone+upload 列的模板表）启动让位后把密钥搬进 values.instance，
- *       和 [8] 的 task 表换代（旧的真外键 → 弱引用，行不丢）。
- * 运行：node --experimental-sqlite tools/verify-provider-templates.mjs
+ *       和 [8] 的 task 表换代（旧的真外键 → 弱引用，行不丢），以及 [9] 那份初始化 SQL 执行后读回 = seed。
+ * 运行：node --experimental-strip-types --experimental-sqlite tools/verify-provider-templates.mjs
  */
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
@@ -18,6 +18,7 @@ import {
   listVoicesV2, saveVoiceV2, removeVoiceV2,
   saveTaskV2, dueTasksV2, batchTasksV2, openTasksV2, pruneFinishedTasksV2, removeProjectV2,
 } from '../electron/db-v2.mjs';
+import { SEED_TEMPLATES } from '../src/lib/template-seed.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DDL = fs.readFileSync(path.join(HERE, '..', 'docs', 'db-schema-v2.sql'), 'utf8');
@@ -438,6 +439,22 @@ console.log('\n[8] task 表换代：指向项目 / 字幕的真外键 → 弱引
   const kept = db.prepare('SELECT * FROM task WHERE task_id=?').get('tk_keep');
   check('8.4 在途任务行没被换代丢掉，引用值原样搬回',
     kept?.status === 'querying' && kept.entry_id === 'e1' && kept.project_id === 'p1' && kept.next_query_at === 1, kept);
+  db.close();
+}
+
+// ========== 9. 接口模板的初始化 SQL（它是 seed 的导出，不是第二份真相） ==========
+console.log('\n[9] docs/provider-template-init.sql');
+{
+  const sql = fs.readFileSync(path.join(HERE, '..', 'docs', 'provider-template-init.sql'), 'utf8');
+  const db = fresh();
+  db.exec(sql);
+  db.exec(sql);  // 可反复执行：存在即覆盖成内置那一版（不是先 DELETE —— 有实例引用时删父行会被外键拒）
+  const rows = listTemplatesV2(db).map((r) => { const { ord, ...rest } = r; return rest; });
+  eq('9.1 执行两遍仍是 seed 的份数（没插重）', rows.length, SEED_TEMPLATES.length);
+  const drift = SEED_TEMPLATES.filter((s) => JSON.stringify(canon(rows.find((r) => r.id === s.id))) !== JSON.stringify(canon(s))).map((s) => s.id);
+  check('9.2 逐份读回与 seed 逐字同值', drift.length === 0, drift);
+  const withKey = rows.filter((r) => /sk-[A-Za-z0-9]{16,}/.test(JSON.stringify(r)));
+  check('9.3 导出的模板行里没有任何密钥（密钥在 provider.values_json 那一侧）', withKey.length === 0, withKey.map((x) => x.id));
   db.close();
 }
 
