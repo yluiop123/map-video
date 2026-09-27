@@ -299,7 +299,7 @@ function TrialBox({ inst, tpl, slot }: { inst: InstanceDef; tpl: TemplateDef; sl
         <div className="space-y-1.5">
           {got.steps.map((s, n) => (
             <div key={`${s.key}:${n}`} className="space-y-0.5">
-              <div className="text-[10px] text-muted-foreground">{t(REQ_TITLE[s.key].zh, REQ_TITLE[s.key].en)} · HTTP {s.status}</div>
+              <div className="text-[10px] text-muted-foreground">{t(REQ_TITLE[s.key].zh, REQ_TITLE[s.key].en)}{s.label ? ` · ${t(s.label, 'pre-flight')}` : ''} · HTTP {s.status}</div>
               {/* 响应原文：普通 JSON 就是美化过的那一份，二进制只报字节数（产物在下一节） */}
               <pre className="max-h-44 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{s.raw}</pre>
             </div>

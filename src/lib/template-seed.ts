@@ -254,8 +254,9 @@ const qwenAudioVoices: OptionSpec[] = [
 
 const qwenAudioTts: TemplateDef = {
   id: 'qwen-audio-tts', name: '千问语音（音量 / 发音修正）', category: 'tts',
-  // 参考音频**只收公网可取的 HTTPS 地址**（官方 create-voice 文档：`input.url` 必填，没有 base64 / 表单两种接法）
-  caps: { modes: 'sync', clone: true, cloneVia: 'url' },
+  // 参考音频**只收一个可访问的地址**（官方 create-voice：`input.url` 必填；实测塞 base64 被顶回 `provide url, …`），
+  // 但界面上仍是「挑文件」：上传那一格先问一次凭证，把文件传到平台的中转存储，再把拼出来的 `oss://` 交给克隆
+  caps: { modes: 'sync', clone: true, cloneVia: 'tempurl' },
 
   instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
   sync: {
@@ -279,16 +280,42 @@ const qwenAudioTts: TemplateDef = {
       outputs: { artifact: 'output.audio.url', errorCode: 'code', error: 'message' },
     }),
   },
+  // 上传那一格是两步：`pre` 先问一次凭证，再拿凭证把文件 POST 到平台的中转存储。
+  // 它交回的「文件引用」是拼出来的 `oss://…`（响应里没有这个地址），克隆那一格照旧写 `${voiceData}`。
+  upload: req('${uploadHost}', {
+    // 那一问要带 model（平台按模型给配额与目录），所以这一格也得有自己的 model —— 同名不同格各存各的
+    requestParams: [
+      en('model', '模型（换凭证那一问要带它）', ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'], { defaultValue: 'qwen-audio-3.0-tts-flash' }),
+    ],
+    pre: req('${baseUrl}/uploads?action=getPolicy&model=${model}', {
+      method: 'GET',
+      headers: { ...AUTH },
+      outputs: {
+        policy: 'data.policy', signature: 'data.signature', uploadHost: 'data.upload_host',
+        dir: 'data.upload_dir', akid: 'data.oss_access_key_id',
+        acl: 'data.x_oss_object_acl', forbid: 'data.x_oss_forbid_overwrite',
+      },
+    }),
+    form: {
+      OSSAccessKeyId: '${akid}', policy: '${policy}', Signature: '${signature}',
+      key: '${dir}/${voiceData.name}',
+      'x-oss-object-acl': '${acl}', 'x-oss-forbid-overwrite': '${forbid}',
+      success_action_status: '200',
+      // 文件分片必须是最后一个字段（上游按此解析）
+      file: '${voiceData}',
+    },
+    outputs: { artifact: 'oss://${dir}/${voiceData.name}' },
+  }),
   clone: jsonReq('${baseUrl}/services/audio/tts/customization', {
+    // 地址是平台内部的 `oss://`，带这个头它才去取
+    headers: { ...JSON_CT, ...AUTH, 'X-DashScope-OssResourceResolve': 'enable' },
     requestParams: [
       en('model', '复刻目标模型（须与合成同款）', ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'], { defaultValue: 'qwen-audio-3.0-tts-flash' }),
       p('prefix', '音色前缀（只收字母数字，≤10）', { defaultValue: 'mapvideo' }),
-      // 官方 create-voice：`input.url` = 公网可访问的参考音频直链。本地文件给不出去（实测塞 base64 被顶回）
-      p('voiceUrl', '参考音频地址（公网可取的 https 直链）'),
     ],
     body: {
       model: 'voice-enrollment',
-      input: { action: 'create_voice', target_model: '${model}', prefix: '${prefix}', url: '${voiceUrl}' },
+      input: { action: 'create_voice', target_model: '${model}', prefix: '${prefix}', url: '${voiceData}' },
     },
     outputs: { voiceId: 'output.voice_id', errorCode: 'code', error: 'message' },
   }),

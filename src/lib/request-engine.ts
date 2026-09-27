@@ -81,6 +81,11 @@ export interface RequestDef {
    */
   requestParams?: ParamSpec[];
   body?: unknown;
+  /**
+   * 发这一格**之前**先跑一条（形状，不是厂商分支）：有的家上传文件要先问一次凭证，
+   * 凭证字段再喂给这一格的表单。它的 `outputs` 只在这一格里有效（并进取值域，同名被它盖住）。
+   */
+  pre?: RequestDef;
   /** multipart 表单（发这一格的判据见 `multipartSlotOf`：上传那格恒用，克隆格在 `cloneVia:'form'` 时用） */
   form?: Record<string, unknown>;
   /**
@@ -107,7 +112,7 @@ export type ArtifactEncoding = 'none' | 'binary' | 'base64' | 'hex' | 'url';
 export type ArtifactFormat = Exclude<ArtifactEncoding, 'none'>;
 
 /** 参考音频交到克隆接口手里的三种形式（一家一种，全是数据，不是代码分支） */
-export type CloneVia = 'upload' | 'base64' | 'form' | 'url';
+export type CloneVia = 'upload' | 'base64' | 'form' | 'url' | 'tempurl';
 
 /**
  * 能力开关：模板头上那几个问题的答案。**这是唯一输入** —— 该有哪些接口槽、
@@ -295,6 +300,8 @@ export const cloneViaOf = (tpl: TemplateDef): CloneVia => tpl.caps.cloneVia ?? '
  * 长一个地址输入框。判据仍是 caps —— 与「文件怎么交」是同一个问题的四种答案之一。
  */
 export const cloneTakesUrl = (tpl: TemplateDef | undefined | null): boolean => !!tpl && cloneViaOf(tpl) === 'url';
+/** 先传平台拿临时地址那种：界面上仍是「挑文件」，只是上传那一格发之前要先问一次凭证 */
+export const cloneTakesTempUrl = (tpl: TemplateDef | undefined | null): boolean => !!tpl && cloneViaOf(tpl) === 'tempurl';
 
 /** 这一份模板该有哪些接口槽 —— 由 caps 推出来，不是让人一条条加 */
 export function slotsOf(tpl: TemplateDef): ReqKey[] {
@@ -303,8 +310,9 @@ export function slotsOf(tpl: TemplateDef): ReqKey[] {
   if (c.modes !== 'async') out.push('sync.submit');
   if (c.modes !== 'sync') out.push('async.submit', 'async.query');
   if (tpl.category === 'tts' && c.clone) {
-    // 只有「先单独上传拿文件引用」这一种接法需要多一格；另两种都是文件直接进克隆那一条
-    if (cloneViaOf(tpl) === 'upload') out.push('upload');
+    // 「先单独上传拿文件引用」与「先传平台拿临时地址」两种接法要多一格；其余都是文件直接进克隆那一条
+    const via = cloneViaOf(tpl);
+    if (via === 'upload' || via === 'tempurl') out.push('upload');
     out.push('clone');
   }
   return REQ_KEYS.filter((k) => out.includes(k));
@@ -498,15 +506,31 @@ export function readPath(doc: unknown, rel: string): unknown {
   }
 }
 
-/** 按 outputs 声明从响应里取一批中间变量 */
-export function applyOutputs(doc: unknown, outputs?: Record<string, string>): Record<string, unknown> {
+/**
+ * 按 outputs 声明从响应里取一批中间变量。
+ * 写的东西**含 `${}` 时当模板串求值**，否则当响应里的路径读 —— 有的家要的地址不在响应里，
+ * 是「前缀 + 刚拿到的目录 + 文件名」拼出来的（这条判据只有这一处，界面与校验都读它）。
+ */
+export function applyOutputs(
+  doc: unknown, outputs?: Record<string, string>,
+  vars: Record<string, unknown> = {},
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, rel] of Object.entries(outputs ?? {})) {
+    if (typeof rel === 'string' && rel.includes('${')) {
+      const scope: Scope = { values: { ...asRecord(doc), ...vars }, declared: new Set<string>(), missing: new Set<string>() };
+      const v = walk(rel, scope);
+      if (v !== undefined) out[name] = v;
+      continue;
+    }
     const v = readPath(doc, rel);
     if (v !== undefined) out[name] = v;
   }
   return out;
 }
+
+const asRecord = (v: unknown): Record<string, unknown> =>
+  (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {});
 
 /**
  * 参数声明的 valueType 落到实际值：控件给的是字符串，进请求体前按声明成形。
@@ -537,8 +561,10 @@ export function scopeOf(
   reqKey: ReqKey,
   callArgs: Record<string, unknown> = {},
   upstream: Record<string, unknown> = {},
+  /** 槽上的 `pre` 也走这里：它不是一个槽，声明与取值分区都得由调用处给 */
+  defOverride?: RequestDef,
 ): Scope {
-  const req = requestOf(tpl, reqKey);
+  const req = defOverride ?? requestOf(tpl, reqKey);
   const specs = new Map<string, ParamSpec>();
   for (const p of tpl.instanceParams ?? []) specs.set(p.key, p);
   for (const p of req?.requestParams ?? []) specs.set(p.key, p);
@@ -670,7 +696,15 @@ export function buildRequest(
 ): { req: ResolvedRequest; missing: Set<string> } {
   const def = requestOf(tpl, reqKey);
   if (!def) throw new EngineError(`模板「${tpl.name}」没有 ${reqKey} 这条请求`);
-  const s = scopeOf(tpl, inst, reqKey, callArgs, upstream);
+  return buildSlot(tpl, inst, reqKey, def, callArgs, upstream, multipartSlotOf(tpl, reqKey));
+}
+
+/** 一条请求定义 + 一个取值域 → 可发送的请求。槽与槽上的 `pre` 共用这一处（差别只在谁供声明与表单判据） */
+function buildSlot(
+  tpl: TemplateDef, inst: InstanceDef, reqKey: ReqKey, def: RequestDef,
+  callArgs: Record<string, unknown>, upstream: Record<string, unknown>, multipart: boolean,
+): { req: ResolvedRequest; missing: Set<string> } {
+  const s = scopeOf(tpl, inst, reqKey, callArgs, upstream, def);
   const headers: Record<string, string> = {};
   // 请求头逐条请求各配一份：认证头家家一样是巧合不是约定，而异步开关头只有提交那条要
   // （早先整份模板共用一份，同步端点也被塞了那个头）。
@@ -681,7 +715,6 @@ export function buildRequest(
   const url = String(walk(def.path, s) ?? '');
   // 一格只发一种内容：发表单的格不会同时塞一份 JSON 体（反过来也一样）——
   // 换 `cloneVia` 时另一格里留着的内容就地失效，界面上也不摆那一格（判据同为 multipartSlotOf）
-  const multipart = multipartSlotOf(tpl, reqKey);
   const body = multipart || def.body === undefined ? undefined : inlineFiles(walk(structuredClone(def.body), s));
   const form: Record<string, string | FileValue> = {};
   if (multipart) {
@@ -832,6 +865,8 @@ export interface Step {
   values: Record<string, unknown>;
   /** 响应原文（截断）：JSON 美化后给，二进制只说字节数 —— 「试调用」那一栏用它 */
   raw: string;
+  /** 这一条不是槽本身，而是槽上的 `pre`（发这一格之前先问的那一次）：页面上要标出来 */
+  label?: string;
 }
 
 /** 上游回的东西可能很大（一张图 1.5MB），界面那一栏只吃截断后的 */
@@ -858,12 +893,28 @@ export interface RunResult {
 }
 
 async function http(tpl: TemplateDef, inst: InstanceDef, key: ReqKey, deps: Deps, callArgs: Record<string, unknown>, upstream: Record<string, unknown>) {
-  const { req, missing } = buildRequest(tpl, inst, key, callArgs, upstream);
+  const def = requestOf(tpl, key);
+  const up = { ...upstream };
+  const steps: Step[] = [];
+  // 槽上写了 `pre` = 发这一格之前先问一次（凭证、签名地址…），交回的名字并进取值域
+  if (def?.pre) {
+    // 那一问用的声明就是这一格的声明（`${model}` 这类参数在槽上声明，不在 `pre` 里重复一份）
+    const preDef = { ...def.pre, requestParams: [...(def.requestParams ?? []), ...(def.pre.requestParams ?? [])] };
+    const p = buildSlot(tpl, inst, key, preDef, callArgs, up, false);
+    if (p.missing.size) throw new EngineError(`「${REQ_LABEL[key]}」发出去之前那一问缺来源：${[...p.missing].map((m) => `\${${m}}`).join('、')}`);
+    const pres = await deps.send(p.req);
+    const pvals = applyOutputs(pres.json ?? pres.text, def.pre.outputs, { ...up, ...callArgs });
+    Object.assign(up, pvals);
+    steps.push({ key, label: '先问一次', url: redact(p.req, secretsOf(tpl, inst)).url, status: pres.status, values: pvals, raw: rawOf(pres) });
+    const perr = errorOf(pvals, pres);
+    if (perr) throw new EngineError(perr, pres.status, steps[0]);
+  }
+  const { req, missing } = buildSlot(tpl, inst, key, def!, callArgs, up, multipartSlotOf(tpl, key));
   if (missing.size) throw new EngineError(`这些占位符没有任何来源给值：${[...missing].map((m) => `\${${m}}`).join('、')}`);
   const res = await deps.send(req);
   const doc = res.json ?? (res.bytes ? undefined : res.text);
-  const values = applyOutputs(doc, requestOf(tpl, key)?.outputs);
-  return { req, res, values };
+  const values = applyOutputs(doc, def?.outputs, { ...up, ...callArgs });
+  return { req, res, values, preSteps: steps };
 }
 
 /** 同步：提交 → 按**这一格的产物形式**还原产物（`url` 就是当场下载，不再多一问） */
@@ -876,7 +927,7 @@ export async function runSync(
   const first = await http(tpl, inst, key, deps, callArgs, up);
   Object.assign(up, first.values);
   const step = stepOf(tpl, inst, key, first.req, first.res, first.values);
-  steps.push(step);
+  steps.push(...first.preSteps, step);
   const err = errorOf(first.values, first.res);
   if (err) throw new EngineError(err, first.res.status, step);
 
@@ -907,7 +958,7 @@ export async function submitAsync(
   return {
     values: got.values,
     taskId,
-    steps: [step],
+    steps: [...got.preSteps, step],
   };
 }
 
@@ -949,7 +1000,7 @@ export async function runClone(
     const up1 = await http(tpl, inst, 'upload', deps, callArgs, up);
     Object.assign(up, up1.values);
     const s1 = stepOf(tpl, inst, 'upload', up1.req, up1.res, up1.values);
-    steps.push(s1);
+    steps.push(...up1.preSteps, s1);
     const e1 = errorOf(up1.values, up1.res);
     if (e1) throw new EngineError(e1, up1.res.status, s1);
     const ref = up1.values[ARTIFACT_KEY];
@@ -959,7 +1010,7 @@ export async function runClone(
   const cl = await http(tpl, inst, 'clone', deps, nextArgs, up);
   Object.assign(up, cl.values);
   const s2 = stepOf(tpl, inst, 'clone', cl.req, cl.res, cl.values);
-  steps.push(s2);
+  steps.push(...cl.preSteps, s2);
   const err = errorOf(cl.values, cl.res);
   if (err) throw new EngineError(err, cl.res.status, s2);
   // 上游不回 id 的那种接法：本轮叫的那个名字就是结果（判据与固定项同一处 —— 都看这一格有没有写 `${voiceId}`）
@@ -986,7 +1037,12 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
     else if (node && typeof node === 'object') Object.values(node).forEach((x) => scan(key, x, declared));
   };
   const produced = new Set<string>();
-  for (const key of REQ_KEYS) for (const name of Object.keys(requestOf(tpl, key)?.outputs ?? {})) produced.add(name);
+  for (const key of REQ_KEYS) {
+    const def = requestOf(tpl, key);
+    for (const name of Object.keys(def?.outputs ?? {})) produced.add(name);
+    // 槽上 `pre` 交回的那些名字同样是「有来源」—— 它是一条先跑的请求，不是凭空的占位符
+    for (const name of Object.keys(def?.pre?.outputs ?? {})) produced.add(name);
+  }
   for (const key of REQ_KEYS) {
     const def = requestOf(tpl, key);
     if (!def) continue;
@@ -996,6 +1052,8 @@ export function referencedVars(tpl: TemplateDef): { key: ReqKey; name: string }[
     scan(key, def.headers, declared);
     // 与 buildRequest 同一条判据：这一格不发的那部分内容，引用的名字也不算问题
     if (multipartSlotOf(tpl, key)) scan(key, def.form, declared); else scan(key, def.body, declared);
+    // 那一问自己写的东西同样要体检（占位符打错字别留到运行时）
+    if (def.pre) { scan(key, def.pre.path, declared); scan(key, def.pre.headers, declared); }
   }
   return out;
 }

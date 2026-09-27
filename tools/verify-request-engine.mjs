@@ -337,6 +337,26 @@ console.log('\n[6] 音色克隆');
   const r6 = await runSync(mm, inst('minimax-voice'), d6.deps, 'sync.submit', { text: '喂', voice: 'mvsample' });
   eq('6.18 status_code=0 不算错（产物按 hex 还原成字节）', Array.from(r6.bytes ?? []), [0x89, 0x50, 0x4e, 0x47]);
   eq('6.19 真报错了照原样抛回', errorOf({ errorCode: 1008, error: 'insufficient balance' }, { status: 200 }), '1008 · insufficient balance');
+
+  // 接法五「先传平台拿临时地址」：上传那一格发之前先问一次凭证（seed 里那份 qwen-audio-tts 就是这样）
+  const au = seedTemplate('qwen-audio-tts');
+  const POLICY = { data: { policy: 'P1', signature: 'S1', upload_host: 'https://oss.example/tmp', upload_dir: 'dashscope-instant/abc', oss_access_key_id: 'AK', x_oss_object_acl: 'private', x_oss_forbid_overwrite: 'true' } };
+  const d7 = mk([
+    { on: 'uploads?action=getPolicy', res: json(POLICY) },
+    { on: 'oss.example/tmp', res: json({}) },
+    { on: 'customization', res: json({ output: { voice_id: 'qwen-audio-mv-1' } }) },
+  ]);
+  const r7 = await runClone(au, inst('qwen-audio-tts'), d7.deps, { voiceData: wav, prefix: 'mv' });
+  eq('6.21 三步：先问凭证 → 拿凭证 POST 文件 → 克隆', [r7.values.voiceId, d7.sent.length], ['qwen-audio-mv-1', 3]);
+  eq('6.22 第一问带 model（平台按模型给目录与配额；实例填的赢过声明默认）', d7.sent[0].url, 'https://x.example/v1/uploads?action=getPolicy&model=m-instance');
+  eq('6.23 表单字段全来自第一问的响应，文件仍是最后一个分片',
+    [d7.sent[1].form.policy, d7.sent[1].form.OSSAccessKeyId, d7.sent[1].form.key, d7.sent[1].form.file === wav],
+    ['P1', 'AK', 'dashscope-instant/abc/reference.wav', true]);
+  eq('6.24 第二问的地址用第一问交回的 upload_host', d7.sent[1].url, 'https://oss.example/tmp');
+  eq('6.25 固定项「产物」写成模板串：拼出来的 oss:// 就是交给下一格的引用', d7.sent[2].body.input.url, 'oss://dashscope-instant/abc/reference.wav');
+  eq('6.26 克隆那一格带上去中转存储取文件的头', d7.sent[2].headers['X-DashScope-OssResourceResolve'], 'enable');
+  eq('6.27 步骤里那一问单独成一步并标出来（试调用要看得清是哪一步）',
+    [r7.steps.length, r7.steps[0].label, r7.steps[1].label], [3, '先问一次', undefined]);
   await throws('6.20 失败那一步把响应原文挂在错误上带回来（「试调用」要看的就是它）',
     () => runSync(mm, inst('minimax-voice'),
       mk([{ on: 't2a_v2', res: json({ data: null, base_resp: { status_code: 1008, status_msg: 'insufficient balance' } }) }]).deps,
@@ -438,6 +458,8 @@ for (const t of SEED_TEMPLATES) {
       const i = inst(t.id, { sync: !(k === 'async.submit' || k === 'async.query') });
       const args = {};
       for (const x of openKeysOf(t, i, k)) args[x] = `v-${x}`;
+      // 那个文件是真的文件值：有的家在表单字段里写 `${voiceData.name}`，给字符串会当成没给值
+      if ('voiceData' in args) args.voiceData = { bytes: new Uint8Array([1]), mime: 'audio/wav', name: 'ref.wav' };
       if (k === 'async.query') args.taskId = 'T1';
       const built = buildRequest(t, i, k, args, k === 'async.query' ? { taskId: 'T1' } : {});
       if (built.missing.size) { ok = false; why = `没人给值：${[...built.missing].join(',')}`; break; }
