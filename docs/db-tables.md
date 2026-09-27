@@ -411,7 +411,7 @@
 
 #### narration_entry — 字幕条：文本 + 配音音频 + 显示时长
 
-**职责**：字幕条：文本 + 配音音频 + 显示时长　**前端**：顶栏「字幕生成」弹窗逐条编辑 / TTS / 导入 SRT（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）
+**职责**：字幕条：文本 + 配音音频 + 显示时长 + 读完停顿　**前端**：顶栏「字幕生成」弹窗逐条编辑 / TTS（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）
 
 9 列 · 主键 `entry_id`
 

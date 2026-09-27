@@ -73,7 +73,7 @@ const TABLE_FRONTEND = {
   camera_keyframe: { role: '视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）', fe: '「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）' },
   screen_fx: { role: '屏幕空间特效窗口（天气 / 画面叠加，非地图元素）', fe: '右侧「特效」面板（FxPanelBody.tsx）+ 时间轴特效轨道' },
   narration: { role: '字幕 / 配音档（样式部分，1:1）', fe: '顶栏「字幕生成」弹窗的字幕样式区（GenerateDialog.tsx）' },
-  narration_entry: { role: '字幕条：文本 + 配音音频 + 显示时长', fe: '顶栏「字幕生成」弹窗逐条编辑 / TTS / 导入 SRT（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）' },
+  narration_entry: { role: '字幕条：文本 + 配音音频 + 显示时长 + 读完停顿', fe: '顶栏「字幕生成」弹窗逐条编辑 / TTS（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）' },
   music_track: { role: '项目级背景音乐：单轨多段（绝对时间、循环、淡入淡出）', fe: '时间轴「音乐」轨道（TimelineEditor.tsx）+ 音乐面板（内置/导入）' },
   element_marker: { role: '标记类元素：Pin 工具产出，3 种 type 合并一张宽表', fe: '工具条「标记」按钮 + 标记属性面板（PropertiesPanel，10 种视觉形态）' },
   element_route: { role: '路线类元素：line / moving_point', fe: '工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）' },
