@@ -14,7 +14,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
 import { callTTS, cloneTargetModel, supports, templateOf, voiceModelOf } from '../lib/providers';
 import { playAudition, stopAudition } from '../lib/audition';
-import { asOption, cloneTakesUrl, paramSpec, scopeOf, visibleOptions, type InstanceDef, type OptionSpec, type ParamSpec, type ReqKey } from '../lib/request-engine';
+import { asOption, paramSpec, scopeOf, visibleOptions, type InstanceDef, type OptionSpec, type ParamSpec, type ReqKey } from '../lib/request-engine';
 import { CLIP_PRESETS, fetchClipBytes } from '../lib/voices';
 import { useVoiceStore } from '../stores/voiceStore';
 import type { VoiceRow } from '../types';
@@ -78,9 +78,6 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
   const flat = catalog.filter((o) => !o.group);
   /** 能不能克隆 = 这份模板有没有配 clone 请求（不再是协议字符串判断）—— 与有没有音色表无关 */
   const canClone = supports(inst, 'clone');
-  /** 这一家怎么收参考音频：给文件（三种接法）还是**只给一个公网地址** —— 界面因此长得不一样 */
-  const viaUrl = cloneTakesUrl(templateOf(inst));
-  const [urlDraft, setUrlDraft] = useState('');
   const cloneModel = cloneTargetModel(inst);
   const instModel = voiceModelOf(inst);
 
@@ -94,11 +91,11 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
   const pick = (voiceId: string, model?: string) => { onPick(voiceId, model); setMsg(''); };
 
   /** 参考音频 → 音色 ID；同样本同模型已克隆过就直接复用，不在服务端反复建音色 */
-  const cloneFrom = async (bytes: ArrayBuffer, label: string, prefix: string, mime = 'audio/wav', name = `${prefix}.wav`, url?: string) => {
+  const cloneFrom = async (bytes: ArrayBuffer, label: string, prefix: string, mime = 'audio/wav', name = `${prefix}.wav`) => {
     if (!inst || !strOf(inst.values.instance?.baseUrl)) { setMsg(t('未配置语音服务（顶栏 ⚙ 设置）', 'No TTS instance configured')); return; }
     setBusy('clone'); setBusyLabel(label); setMsg(t('克隆中…（约几秒）', 'Cloning…'));
     try {
-      const row = await cloneLedger({ inst, bytes, mime, name, url, label, targetModel: cloneModel, prefix });
+      const row = await cloneLedger({ inst, bytes, mime, name, label, targetModel: cloneModel, prefix });
       if (row.voiceId) pick(row.voiceId, row.targetModel || cloneModel);
       setMsg(`✓ ${row.voiceId ?? ''}`);
     } catch (e) {
@@ -106,13 +103,6 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
     } finally {
       setBusy(null); setBusyLabel('');
     }
-  };
-
-  /** 公网地址 → 音色 ID（那一家不吃文件；原件仍会被取回存进素材库，账本才重建得起来） */
-  const cloneFromUrl = async () => {
-    const link = urlDraft.trim();
-    if (!link) { setMsg(t('先粘一个可访问的音频地址', 'Paste a reachable audio URL first')); return; }
-    await cloneFrom(undefined as unknown as ArrayBuffer, `地址 ${link.slice(-18)}`, 'mvurl', undefined, undefined, link);
   };
 
   useEffect(() => () => stopAudition(), []);
@@ -194,8 +184,15 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
     : inLedger ? `${inLedger.label}·克隆` : shown;
   const orphan = !!shown && !inCatalog && !inLedger;
   const renderCells = (list: typeof catalog) => list.map((o) => cell({
-    id: String(o.value), title: o.label ?? String(o.value), sub: [o.note, String(o.value)].filter(Boolean).join(' · '),
+    id: String(o.value),
+    // 内置音色也带着自己绑的模型：点它就把那一格的 model 一起换回去 ——
+    // 否则选过克隆音色（-vc）之后再点内置，模型还停在 -vc，整张表会被过滤空、只剩一个手填框
+    model: o.models?.[0],
+    title: o.label ?? String(o.value), sub: [o.note, String(o.value)].filter(Boolean).join(' · '),
   }));
+  /** 表里有货、只是被当前模型过滤空了：这不该退化成「手填音色 ID」，而该给一条回来的路 */
+  const allOptions = (spec.options ?? []).map(asOption);
+  const filteredOut = !catalog.length && allOptions.length > 0;
 
   return (
     <div className="space-y-2">
@@ -221,8 +218,22 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
           );
         })}
         {!!flat.length && <div className="flex flex-wrap gap-1">{renderCells(flat)}</div>}
-        {/* 这份模板没填音色表（或当前模型下一条都不适用）：给一个手填框，别让人只能干瞪眼 */}
-        {!catalog.length && (
+        {filteredOut && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+            <span>{t(`当前模型「${instModel || '未设'}」只吃克隆出来的音色，这份内置表一条都不适用`,
+              `The current model only takes cloned voices, so none of this catalog applies`)}</span>
+            <button
+              onClick={() => {
+                const back = allOptions.find((o) => String(o.value) === shown) ?? allOptions[0];
+                pick(String(back.value), back.models?.[0]);
+              }}
+              className="h-6 px-2 rounded-md border border-white/15 hover:bg-white/10">
+              {t('换回内置音色', 'Use a built-in voice')}
+            </button>
+          </div>
+        )}
+        {/* 这份模板真的没填音色表：给一个手填框，别让人只能干瞪眼（表里有货只是被模型过滤空了 → 上面那条路） */}
+        {!catalog.length && !filteredOut && (
           <label className="flex items-center gap-1.5 text-[11px]">
             <span className="text-muted-foreground">{spec.label || spec.key}</span>
             <input value={shown} onChange={(e) => pick(e.target.value)} placeholder="voice_id / speaker"
@@ -242,7 +253,7 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
           <p className="text-[11px] text-muted-foreground mb-1">{t('克隆音色', 'Cloned voices')}</p>
           {canClone ? (
             <div className="flex flex-wrap items-center gap-1.5">
-              {!viaUrl && sampleCells}
+              {sampleCells}
               {myClones.map((c) => cell({
                 id: c.voiceId,
                 model: c.targetModel,
@@ -257,26 +268,13 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
                 ),
               }))}
               {orphan && cell({ id: shown, model: valueModel || undefined, title: t('当前音色', 'Current'), sub: t('不在音色表与克隆记录里', 'Not in the catalog or clone list') })}
-              {viaUrl && <input
-                value={urlDraft}
-                onChange={(e) => setUrlDraft(e.target.value)}
-                placeholder={t('参考音频的公网 https 直链', 'Public https link to the reference audio')}
-                className="input h-7 min-w-0 flex-1 text-[11px]"
-                title={t('这一家的复刻只收可访问的音频地址（不吃本地文件）；地址指向的音频会另存一份进素材库，音色失效时靠它重建', 'This upstream takes only a reachable audio URL; the file is copied into the asset store so the voice can be rebuilt')}
-              />}
-              {viaUrl && <button
-                onClick={() => void cloneFromUrl()}
-                disabled={busy !== null || !inst}
-                className="h-7 shrink-0 whitespace-nowrap rounded-md border border-white/15 px-2 text-[11px] hover:bg-white/10 disabled:opacity-40"
-                title={t(`用这个地址造一个绑定模型 ${cloneModel || '未设'} 的新音色`, 'Create a voice for model from this URL')}
-              >✚ {t('造一个音色', 'Create voice')}</button>}
-              {!viaUrl && <button
+              <button
                 onClick={() => fileRef.current?.click()}
                 disabled={busy !== null || !inst}
                 className="h-7 shrink-0 whitespace-nowrap rounded-md border border-white/15 px-2 text-[11px] hover:bg-white/10 disabled:opacity-40"
                 title={t(`上传 10 秒 ~ 5 分钟参考音频，克隆成绑定模型 ${cloneModel || '未设'} 的新音色`, `Upload reference audio to clone a voice for model ${cloneModel || 'unset'}`)}
-              >⬆ {t('上传其它音色', 'Upload reference')}</button>}
-              {!viaUrl && <input
+              >⬆ {t('上传其它音色', 'Upload reference')}</button>
+              <input
                 ref={fileRef}
                 type="file"
                 accept="audio/*"
@@ -286,7 +284,7 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
                   if (f) await cloneFrom(await f.arrayBuffer(), f.name.replace(/\.[^.]+$/, ''), 'mv');
                   e.target.value = '';
                 }}
-              />}
+              />
             </div>
           ) : (
             <p className="text-[11px] text-muted-foreground/70">

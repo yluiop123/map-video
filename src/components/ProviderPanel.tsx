@@ -72,8 +72,12 @@ export function ProviderPanel({ kind }: { kind: Category }) {
       <div className="flex flex-wrap items-center gap-1.5">
         {list.map((i) => (
           <button key={i.id} onClick={() => pick(kind, i.id)}
-            className={`h-7 px-2 rounded-md border text-[11px] ${i.id === sel?.id ? 'border-white/35 bg-white/10' : 'border-white/10 hover:bg-white/[0.06]'}`}>
+            title={i.id === sel?.id ? t('调用时用的就是这条', 'Calls use this one') : t('点它设为激活（选择会记住，重启还在）', 'Click to activate — the choice survives a restart')}
+            className={`h-7 px-2 rounded-md border text-[11px] inline-flex items-center gap-1.5 ${i.id === sel?.id ? 'border-brand/70 bg-brand/15 text-foreground' : 'border-white/10 text-foreground/75 hover:bg-white/[0.06]'}`}>
+            {/* 激活的那枚带一个点与字样：只靠边框深浅看不出来「现在用的是哪条」 */}
+            {i.id === sel?.id && <span className="h-1.5 w-1.5 rounded-full bg-brand" />}
             {i.name || i.id}
+            {i.id === sel?.id && <span className="text-[10px] text-muted-foreground">{t('使用中', 'active')}</span>}
           </button>
         ))}
         <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => { const n = addInstance(kind); pick(kind, n.id); }}>
@@ -299,7 +303,7 @@ function TrialBox({ inst, tpl, slot }: { inst: InstanceDef; tpl: TemplateDef; sl
         <div className="space-y-1.5">
           {got.steps.map((s, n) => (
             <div key={`${s.key}:${n}`} className="space-y-0.5">
-              <div className="text-[10px] text-muted-foreground">{t(REQ_TITLE[s.key].zh, REQ_TITLE[s.key].en)}{s.label ? ` · ${t(s.label, 'pre-flight')}` : ''} · HTTP {s.status}</div>
+              <div className="text-[10px] text-muted-foreground">{t(REQ_TITLE[s.key].zh, REQ_TITLE[s.key].en)} · HTTP {s.status}</div>
               {/* 响应原文：普通 JSON 就是美化过的那一份，二进制只报字节数（产物在下一节） */}
               <pre className="max-h-44 overflow-auto rounded bg-black/40 p-2 text-[10px] whitespace-pre-wrap break-all">{s.raw}</pre>
             </div>
