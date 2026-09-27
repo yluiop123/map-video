@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 所有 JSON 列都带 `CHECK (… IS NULL OR json_valid(…))`；`category` 不写 CHECK —— 接一家新供应商不改表、不加 switch。
 
-**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, cloneVia: upload|base64|form }`。
+**能力开关只有一列**：`caps_json = { modes: sync|async|both, artifact: none|binary|base64|hex|url, clone, cloneVia: upload|base64|form|url }`。
 开关是输入，该有哪些接口槽、每槽必须交出哪些字段、那一格发 Body 还是表单，都是它的推导结果（`slotsOf` / `requiredOutputsOf` / `multipartSlotOf`），界面上没有第二处「配了却没人读」的开关。
 
 内置模板由 seed（`src/lib/template-seed.ts`）在首次建库时铺成行，之后就是普通可编辑数据；「恢复默认」= 用 seed 覆盖那一行。
@@ -59,11 +59,12 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 
 **`upload` 那一格与别的接口不一样**：它发的是一张 multipart 表单 —— 要传的只有那一个文件（`${voiceData}`，引擎注入、不在参数表里声明），随文件一起发的字段写在表单里。卡片里还是那三节，只是「发出去的内容」那一节换成 Headers → 表单。表单是空的会被 `validateTemplate` 点名。
 
-**`caps.clone`（建音色）开着时再问一句：参考音频以什么形式交过去 —— 三选一（`caps.cloneVia`）**。这一问同时决定该不该多出「上传」那一格、以及克隆那一格发什么：
+**`caps.clone`（建音色）开着时再问一句：参考音频以什么形式交过去 —— 四选一（`caps.cloneVia`）**。这一问同时决定该不该多出「上传」那一格、以及克隆那一格发什么：
 
 | `cloneVia` | 接口格 | 克隆格发什么 | 那个文件怎么写进去 | 参照 |
 |---|---|---|---|---|
 | `upload` 单独上传 | 多一格 `upload` | JSON 体 | 先跑上传那一格（文件交给它），它交回的文件引用由引擎**注入成下一步的 `${voiceData}`**，所以克隆那格写的还是同一个名字 | MiniMax `/v1/voice_clone` 的 `file_id` |
+| `url` 公网地址 | 只有 `clone` | JSON 体 | **不给文件**：界面上是一个地址输入框（不是上传按钮，内置样本那两格也不出现），填的东西落进克隆那格写的 `${voiceUrl}`；那份音频另存一份进 `asset`，音色失效时靠它重建 | 千问 SpeechSynthesizer 一族的 `input.url` |
 | `base64` | 无 | JSON 体 | 体里写 `${voiceData}`，引擎换成 `data:<mime>;base64,…`；要裸 base64 写 `${voiceData.base64}` | 千问 voice cloning 的 `input.audio.data`（收 Data URL） |
 | `form` | 无 | **multipart 表单，没有 Body** | `${voiceData}` 就是那个二进制分片（自带 mime 与文件名），`name` / `language` 这些参数写成同表的字段 | ElevenLabs IVC `/v1/voices/add` 的 `files` + `name` |
 
@@ -202,6 +203,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 异步：async.submit 交出 taskId → 调度器/内存轮询按节奏打 async.query → SUCCEEDED → 字节
 克隆：cloneVia=upload → upload 交出 artifact（文件引用），引擎把它注入成下一步的 ${voiceData}，再 clone 交出 voiceId
      cloneVia=base64 / form → 只有 clone 这一步，${voiceData} 就是那份文件
+     cloneVia=url → 也没有上传那一格，且连 ${voiceData} 都不出现：界面收一个公网地址，交进 ${voiceUrl}
 ```
 
 两条硬规矩：
@@ -241,7 +243,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_voice_once ON voice(provider_id, source_has
 | 页面 | 装什么 |
 |---|---|
 | **⚙ 实例设置**（`ProviderPanel`，按 文案 / 语音 / 图片 三屏） | 实例芯片一排 + `＋实例`；当前实例：名称 → 模板下拉 → **请求方式**（`selectableModesOf`：**模板只有一种接法时整行不显示** —— 没得选还摆一排单选就是假控件；但实例存的那一档在模板里没有接口时仍然长出来，否则那条红报错在界面上消不掉）→ **一排接口页签**（只列这条实例真会走到的那几格：`usedSlotsOf`，模板两套都配了也只列自己那一侧；名字只写动作名 上传 / 克隆 / 提交 / 查询）→ 左栏是**激活那一格的参数**（按 `requestParams`）与**试调用**（回显每一步的响应原文 → 取到的字段 → 产物预览：音频给播放器、图片直接显示；失败时那一步的响应原文照带回来，挂在 `EngineError.step` 上），右栏是**实例参数**（固定显示、切页签不动它，`sticky`）。现场要给的按 `trialKeysOf`（= `openKeysOf` 去掉这一格声明出来的参数 —— 那些在上面的参数表里填，不重复一栏）长控件，`${voiceData}` 那一个是「上传文件」按钮 + 已选文件名与大小 —— 三种接法都在这儿发得出去；试调用挂在页签上，所以**换页签会重挂载它**（草稿按参数名存，两格同名参数不是一回事，见 §6.30）。控件一律按 `valueType`+`options` 渲染（`secret` → 密码框，枚举 → `OptionBlocks`） |
-| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口，**只在开发构建里露出来**：`IS_DEV = import.meta.env.DEV`） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、建音色（**克隆开关 + 参考音频三选一：单独上传 / base64 / form**），按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、**一个页签就是这一个接口的全部配置**、只写动作名（提交 / 查询）—— 两套都勾了时「同步 \| 异步」切换在这一排**最左边**，切换说清在看哪一侧，所以两份名字不重复；卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；发 multipart 的那格换成表单，判据 `multipartSlotOf`）→ **参数**（这一格一张表：填了值的走实例，没填的调用时给）→ **从响应里取**（**「产物形式」与固定项「产物」是并排的两行、逐格一份**；其余固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**两层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，会留在库里的层每行装框、调用时给值的那种不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
+| **接口模板页**（`TemplatesPane`，⚙ 左侧独立入口，**只在开发构建里露出来**：`IS_DEV = import.meta.env.DEV`） | 左：模板列表（按 category 分组，**只显示 name，主键不外显**）；中：模板头（名字 + 恢复默认 + 删除）→ **能力开关那几行**（**调用方式 = 同步 / 异步 两个复选框**、建音色（**克隆开关 + 参考音频四选一：单独上传 / base64 / form / 公网地址**），按 category 只显示问得上的；文案生成全用不上就不显示，且界面不写「机制怎么运作」的解说句）→ 开关推导出的接口槽卡片（关掉开关会弹窗问「移除这几格吗」，确定即连内容一起删），页签按调用顺序排、**一个页签就是这一个接口的全部配置**、只写动作名（提交 / 查询）—— 两套都勾了时「同步 \| 异步」切换在这一排**最左边**，切换说清在看哪一侧，所以两份名字不重复；卡片标题行只有方法与地址（格名已在页签上，不重复）；卡片内按**发出去的顺序**排：**发出去的内容**（这一条自己的 headers → body；发 multipart 的那格换成表单，判据 `multipartSlotOf`）→ **参数**（这一格一张表：填了值的走实例，没填的调用时给）→ **从响应里取**（**「产物形式」与固定项「产物」是并排的两行、逐格一份**；其余固定项逐行 + 折叠的自定义变量；查询那一格的两个状态值也在这一节里）；右：实例级参数表。**两层参数表不用颜色区分**：小标题 + 一条延伸到右边界的细线，会留在库里的层每行装框、调用时给值的那种不装框并整组缩进一道竖线。小节名旁一枚 **ⓘ**（说明收在弹层里，页面不铺长句）。**这一页不发请求、也不预览请求** —— 看形状与真发都在实例页 |
 | **字幕生成 / 出图处** | 选哪条实例 + 调用级参数（文本、描述、尺寸、文件），不碰模板 |
 
 - **验收口只有一个：实例页的「试调用」**（它同时给求值后的请求形状与真发一条的结果 —— 真发要的是这条实例的 Key，所以这件事只能在实例页做）。模板页不预览、不发请求：那一页只有形状本身，拼得出拼不出由保存前自检点名。
@@ -264,7 +266,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `deepseek-chat` | sync | 否 | — | `同步 · 提交` |
 | `qwen-image` | both | 否 | — | `同步 · 提交` + `异步 · 提交` + `异步 · 查询` |
 | `qwen-tts` | sync | 是 | `base64` | `克隆` + `同步 · 提交` |
-| `qwen-audio-tts` | sync | 否 | — | `同步 · 提交` |
+| `qwen-audio-tts` | sync | 是 | `url` | `克隆` + `同步 · 提交` |
 | `elevenlabs-voice` | sync | 是 | `form` | `克隆` + `同步 · 提交` |
 | `minimax-voice` | sync | 是 | `upload` | `上传` + `克隆` + `同步 · 提交` |
 | `minimax-image` | sync | 否 | — | `同步 · 提交` |
@@ -295,6 +297,9 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | `qwen-tts` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-tts` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-tts` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
+| `qwen-audio-tts` | 克隆 | `none` | 音色 ID | `voiceId` | 是 | 存进音色账本，绑这条实例与目标模型 |
+| `qwen-audio-tts` | 克隆 | `none` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
+| `qwen-audio-tts` | 克隆 | `none` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
 | `qwen-audio-tts` | 同步 · 提交 | `url` | 产物 | `artifact` | 是 | 图片或音频的下载地址（带时效，当场下载） |
 | `qwen-audio-tts` | 同步 · 提交 | `url` | 错误信息 | `error` | 建议 | 上游报的原文，界面直接显示它 |
 | `qwen-audio-tts` | 同步 · 提交 | `url` | 错误码 | `errorCode` | 建议 | 和错误信息拼在一起，方便对文档查 |
@@ -379,6 +384,9 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"longanfengyue"` | 14 条（女声 9 / 男声 5） —— 逐条见下面那列 JSON |
 | 这一格 `sync.submit` | `volume` | 音量（0–100） | number | `100` | ≥0 ≤100 |
 | 这一格 `sync.submit` | `hotFix` | 发音修正 | json | — | — |
+| 这一格 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen-audio-3.0-tts-flash"` | qwen-audio-3.0-tts-flash · qwen-audio-3.0-tts-plus |
+| 这一格 `clone` | `prefix` | 音色前缀（只收字母数字，≤10） | string | `"mapvideo"` | — |
+| 这一格 `clone` | `voiceUrl` | 参考音频地址（公网可取的 https 直链） | string | — | — |
 
 #### `elevenlabs-voice` · ElevenLabs 语音（tts）
 
@@ -1277,7 +1285,7 @@ null
 
 #### `qwen-audio-tts`
 
-- 标量列：`category=tts`，`caps_json={"modes":"sync"}`
+- 标量列：`category=tts`，`caps_json={"modes":"sync","clone":true,"cloneVia":"url"}`
 
 - 请求头**没有独立列**：每条接口自己的 `headers` 就写在下面那几列的 JSON 里（同一家不同端点要的头并不相同）。
 
@@ -1515,7 +1523,51 @@ null
 **`clone_json`**（clone）
 
 ```json
-null
+{
+  "path": "${baseUrl}/services/audio/tts/customization",
+  "method": "POST",
+  "headers": {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer ${apiKey}"
+  },
+  "requestParams": [
+    {
+      "key": "model",
+      "label": "复刻目标模型（须与合成同款）",
+      "valueType": "enum",
+      "options": [
+        "qwen-audio-3.0-tts-flash",
+        "qwen-audio-3.0-tts-plus"
+      ],
+      "defaultValue": "qwen-audio-3.0-tts-flash"
+    },
+    {
+      "key": "prefix",
+      "label": "音色前缀（只收字母数字，≤10）",
+      "valueType": "string",
+      "defaultValue": "mapvideo"
+    },
+    {
+      "key": "voiceUrl",
+      "label": "参考音频地址（公网可取的 https 直链）",
+      "valueType": "string"
+    }
+  ],
+  "body": {
+    "model": "voice-enrollment",
+    "input": {
+      "action": "create_voice",
+      "target_model": "${model}",
+      "prefix": "${prefix}",
+      "url": "${voiceUrl}"
+    }
+  },
+  "outputs": {
+    "voiceId": "output.voice_id",
+    "errorCode": "code",
+    "error": "message"
+  }
+}
 ```
 
 #### `elevenlabs-voice`

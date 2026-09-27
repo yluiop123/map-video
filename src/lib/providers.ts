@@ -300,6 +300,24 @@ export async function cloneVoice(inst: InstanceDef, refBytes: ArrayBuffer, targe
   return vid;
 }
 
+/**
+ * 参考音频是一个**公网地址**的那一家（千问 SpeechSynthesizer 那一族就这样）：
+ * 不转码、不上传，只把地址交给那一格的 `${voiceUrl}`。targetModel 同样必须与合成同款。
+ */
+export async function cloneVoiceFromUrl(inst: InstanceDef, url: string, targetModel: string, label = 'mv'): Promise<string> {
+  const tpl = tplOf(inst);
+  if (!tpl.clone) throw new EngineError('这份模板没配克隆接口');
+  const link = url.trim();
+  if (!/^https?:\/\//i.test(link)) throw new EngineError('参考音频地址要是 http(s) 直链');
+  const declared = String(inst.values.requests?.clone?.prefix ?? '').trim();
+  const prefix = (declared || label).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) || 'mv';
+  const one: InstanceDef = { ...inst, values: { ...inst.values, instance: { ...inst.values.instance, model: targetModel || inst.values.instance?.model } } };
+  const r = await runClone(tpl, one, deps, { voiceUrl: link, prefix, preferredName: prefix, voiceId: prefix });
+  const vid = r.values.voiceId;
+  if (typeof vid !== 'string' || !vid) throw new EngineError('克隆那一步没交出音色 ID，检查克隆格里固定项「音色 ID」的路径');
+  return vid;
+}
+
 // ========== 音频 / 图片小工具 ==========
 
 async function blobToDataUrl(blob: Blob): Promise<string> {

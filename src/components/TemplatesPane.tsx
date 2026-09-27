@@ -76,6 +76,7 @@ const CLONE_VIA_OPTIONS = (t: (a: string, b: string) => string) => [
   { value: 'upload' as const, label: t('单独上传', 'Upload first'), hint: t('先调上传那一格；它交回的文件引用由引擎注入成下一步的 ${voiceData}，克隆那格写的还是同一个名字', 'the 上传 endpoint runs first; what it returns is injected as ${voiceData} for the clone request') },
   { value: 'base64' as const, label: 'base64', hint: t('文件当场转成 data:<mime>;base64,… 作为一个 JSON 字段（克隆那格写 ${voiceData}）', 'the file becomes a data: URI in the JSON body, referenced as ${voiceData}') },
   { value: 'form' as const, label: 'form', hint: t('克隆这一格自己发 multipart：${voiceData} 是个分片，别的参数写成同表的字段，没有 Body', 'the clone request itself is multipart: ${voiceData} is one part, other params are fields, no body') },
+  { value: 'url' as const, label: t('公网地址', 'URL'), hint: t('这一家不吃文件，只收 `input.url` 那样的音频直链：界面上因此是一个地址输入框而不是上传按钮（克隆那格写 ${voiceUrl}）', 'this upstream takes only a reachable audio link, so the UI shows a URL box instead of an upload button — the clone slot references ${voiceUrl}') },
 ];
 
 const present = (t: TemplateDef, key: ReqKey) => !!requestOf(t, key);

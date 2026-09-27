@@ -254,8 +254,8 @@ const qwenAudioVoices: OptionSpec[] = [
 
 const qwenAudioTts: TemplateDef = {
   id: 'qwen-audio-tts', name: '千问语音（音量 / 发音修正）', category: 'tts',
-  // 这一家要**公网可取的参考音频地址**（本地文件给不出去），所以不勾建音色 —— 要克隆就用「千问 TTS」那条
-  caps: { modes: 'sync' },
+  // 参考音频**只收公网可取的 HTTPS 地址**（官方 create-voice 文档：`input.url` 必填，没有 base64 / 表单两种接法）
+  caps: { modes: 'sync', clone: true, cloneVia: 'url' },
 
   instanceParams: net('https://maas.qianwenaiapi.com/api/v1'),
   sync: {
@@ -279,6 +279,19 @@ const qwenAudioTts: TemplateDef = {
       outputs: { artifact: 'output.audio.url', errorCode: 'code', error: 'message' },
     }),
   },
+  clone: jsonReq('${baseUrl}/services/audio/tts/customization', {
+    requestParams: [
+      en('model', '复刻目标模型（须与合成同款）', ['qwen-audio-3.0-tts-flash', 'qwen-audio-3.0-tts-plus'], { defaultValue: 'qwen-audio-3.0-tts-flash' }),
+      p('prefix', '音色前缀（只收字母数字，≤10）', { defaultValue: 'mapvideo' }),
+      // 官方 create-voice：`input.url` = 公网可访问的参考音频直链。本地文件给不出去（实测塞 base64 被顶回）
+      p('voiceUrl', '参考音频地址（公网可取的 https 直链）'),
+    ],
+    body: {
+      model: 'voice-enrollment',
+      input: { action: 'create_voice', target_model: '${model}', prefix: '${prefix}', url: '${voiceUrl}' },
+    },
+    outputs: { voiceId: 'output.voice_id', errorCode: 'code', error: 'message' },
+  }),
 };
 
 // ========== 语音：ElevenLabs（合成 = 响应体裸字节 · 复刻 = 自己发 multipart 表单） ==========

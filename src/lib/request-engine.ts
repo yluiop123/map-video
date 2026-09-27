@@ -107,7 +107,7 @@ export type ArtifactEncoding = 'none' | 'binary' | 'base64' | 'hex' | 'url';
 export type ArtifactFormat = Exclude<ArtifactEncoding, 'none'>;
 
 /** 参考音频交到克隆接口手里的三种形式（一家一种，全是数据，不是代码分支） */
-export type CloneVia = 'upload' | 'base64' | 'form';
+export type CloneVia = 'upload' | 'base64' | 'form' | 'url';
 
 /**
  * 能力开关：模板头上那几个问题的答案。**这是唯一输入** —— 该有哪些接口槽、
@@ -290,6 +290,11 @@ export const VOICE_ID_KEY = 'voiceId';
  * 这一句只写一次，界面与推导都读它，不在两处各写一个兜底。
  */
 export const cloneViaOf = (tpl: TemplateDef): CloneVia => tpl.caps.cloneVia ?? 'base64';
+/**
+ * 这一家的复刻**只收一个公网音频地址**（不给文件）：于是界面上不长上传按钮，
+ * 长一个地址输入框。判据仍是 caps —— 与「文件怎么交」是同一个问题的四种答案之一。
+ */
+export const cloneTakesUrl = (tpl: TemplateDef | undefined | null): boolean => !!tpl && cloneViaOf(tpl) === 'url';
 
 /** 这一份模板该有哪些接口槽 —— 由 caps 推出来，不是让人一条条加 */
 export function slotsOf(tpl: TemplateDef): ReqKey[] {

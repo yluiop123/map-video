@@ -13,7 +13,7 @@ import type { VoiceRow } from '../types';
 import type { InstanceDef } from '../lib/request-engine';
 import { IS_DESKTOP } from '../lib/backend';
 import { putAssetBytes } from '../lib/assets';
-import { cloneVoice } from '../lib/providers';
+import { cloneVoice, cloneVoiceFromUrl } from '../lib/providers';
 
 /** 参考音频内容哈希（幂等键的一维）。FNV-1a 64bit 足够：只用来判「同一份字节」 */
 export function hashBytes(bytes: Uint8Array): string {
@@ -39,8 +39,9 @@ interface VoiceState {
    * 参考音频 → 音色 ID。已有可用条目直接复用（不重复建），否则先落一行 `cloning` 再真克隆。
    * 失败不吞：写回 `failed` + 原因，界面上要看得见为什么没成。
    */
+  /** 交一份音频（转码后克隆），或交一个公网地址（那一家只吃地址，原件仍会被取回存进素材库） */
   clone: (o: {
-    inst: InstanceDef; bytes: ArrayBuffer; mime: string; name: string;
+    inst: InstanceDef; bytes?: ArrayBuffer; mime?: string; name?: string; url?: string;
     label: string; targetModel: string; prefix: string;
   }) => Promise<VoiceRow>;
   remove: (rowId: string) => Promise<void>;
@@ -68,8 +69,21 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   readyFor: (providerId, targetModel) =>
     get().rows.filter((x) => x.providerId === providerId && x.targetModel === targetModel && get().usable(x)),
 
-  clone: async ({ inst, bytes, mime, name, label, targetModel, prefix }) => {
-    const hash = hashBytes(toU8(bytes));
+  clone: async ({ inst, bytes, mime, name, url, label, targetModel, prefix }) => {
+    let ref = bytes;
+    let refMime = mime;
+    let refName = name;
+    if (!ref && url) {
+      // 这一家的复刻只吃公网地址（见模板 cloneVia:'url'），但账本要求每一行都存得下原件 ——
+      // 所以把那份音频**当场取回来存进素材库**，音色失效时还能拿它重建。
+      const got = await window.mapvideo?.net.fetchUrl(url);
+      if (!got?.bytes) throw new Error(`取不到那份参考音频：${got?.error ?? '地址不可访问'}`);
+      ref = got.bytes;
+      refMime = got.contentType || 'audio/mpeg';
+      refName = url.split('/').pop()?.split('?')[0] || 'reference';
+    }
+    if (!ref) throw new Error('克隆要么给音频，要么给一个可访问的地址');
+    const hash = hashBytes(toU8(ref));
     const hit = get().findFor(inst.id, hash, targetModel);
     if (hit && get().usable(hit)) return hit;
 
@@ -81,10 +95,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     let assetId = hit?.sourceAssetId;
     try {
       // 原件先入库再占行：`source_asset_id` 是 NOT NULL —— 账本上每一行都必须带着能重建自己的那段音频
-      assetId ??= (await putAssetBytes(toU8(bytes), mime, name, 'audio')).assetId;
+      assetId ??= (await putAssetBytes(toU8(ref!), refMime!, refName!, 'audio')).assetId;
       // 先占住这一行：并发的第二次点同一个样本会读到 cloning，而不再往服务端建第二条音色
       await writeRow({ ...base, sourceAssetId: assetId, status: 'cloning' });
-      const voiceId = await cloneVoice(inst, bytes, targetModel, prefix);
+      const voiceId = url ? await cloneVoiceFromUrl(inst, url, targetModel, prefix) : await cloneVoice(inst, ref!, targetModel, prefix);
       return await writeRow({ ...base, sourceAssetId: assetId, voiceId, status: 'ready' });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
