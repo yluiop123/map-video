@@ -18,11 +18,12 @@ import { useT, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
 import { Badge } from './ui/badge';
 import { Progress } from './ui/progress';
 import { callLLM, defaultVoiceOf, templateOf } from '../lib/providers';
-import { asOption, referencesArg, submitKeyOf, type ReqKey } from '../lib/request-engine';
+import { referencesArg, submitKeyOf, type ReqKey } from '../lib/request-engine';
 import { useTaskStore } from '../stores/taskStore';
+import { useVoiceStore } from '../stores/voiceStore';
 import { playAudition, stopAudition } from '../lib/audition';
 import { getAssetUrl } from '../lib/assets';
-import { VoiceField, voiceSpecOf } from './VoiceField';
+import { VoiceField, voiceLabelOf, voiceSpecOf } from './VoiceField';
 import { HotFixField } from './HotFixField';
 import type { InstanceDef } from '../lib/request-engine';
 import type { TaskRow } from '../types';
@@ -266,6 +267,9 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   /** 这一行的停顿：填了就脱离整片默认（0 也是有效值，与「没填」必须分得开） */
   const setRowGap = (id: string, sec?: number) => setRows((rs) => seq(rs.map((r) => (r.id === id ? { ...r, gapSec: sec } : r))));
 
+  /** 这条实例的克隆记录：标题要把 voice_id 翻成「男声·克隆」那样的话 */
+  const voiceRows = useVoiceStore((s) => s.rows);
+  const voiceClones = voiceRows.filter((r) => r.providerId === tts?.id && r.voiceId).map((r) => ({ voiceId: r.voiceId!, label: r.label }));
   const taskRows = useTaskStore((s) => s.rows);
   const taskResults = useTaskStore((s) => s.results);
   const startTask = useTaskStore((s) => s.start);
@@ -475,15 +479,8 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
   const toggleSection = useEditorStore((s) => s.toggleDialogSection);
   /** 折叠区的键统一带弹窗前缀（一屏一个命名空间，别和别的弹窗撞） */
   const fold = (k: string) => ({ open: !!sections[`subtitle:${k}`], onToggle: () => toggleSection(`subtitle:${k}`) });
-  /**
-   * 折叠标题上显示的是**这一名音色是谁**（「男声 · 晨煦」），不是那串音色 id ——
-   * id 是发给上游的东西，不是给人读的（克隆来的没名字，只能退回 id）。
-   */
-  const voiceLabel = (() => {
-    const o = (voiceSpec?.options ?? []).map(asOption).find((x) => String(x.value) === voice);
-    if (!o) return voice;
-    return [o.group, o.label ?? o.value].filter(Boolean).join(' · ');
-  })();
+  /** 折叠标题显示「是谁」（「男声 · 晨煦」/「男声·克隆」），不是那串发给上游的音色 id */
+  const voiceLabel = voiceLabelOf(voiceSpec?.options, voiceClones, voice);
 
   return (
     <div
@@ -565,19 +562,15 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
           </Fold>
         )}
 
-        {IS_DESKTOP && (
+        {/* 这一格在不在，看当前这条实例的请求体里有没有 ${hotFix}：不认就整段不显示（填了也不会发出去的东西不该占一屏） */}
+        {IS_DESKTOP && hotFixSupported && (
           <Fold
             title={t('发音修正', 'Pronunciation fixes')}
-            summary={hotFixSupported
-              ? (hotFixCount ? t(`${hotFixCount} 条`, `${hotFixCount} rule(s)`) : t('未填', 'none'))
-              : t('当前配音模板不认这个参数', 'not supported by this template')}
+            summary={hotFixCount ? t(`${hotFixCount} 条`, `${hotFixCount} rule(s)`) : t('未填', 'none')}
             {...fold('hotfix')}
           >
-            <p className={`mb-1.5 text-[10px] ${hotFixSupported ? 'text-muted-foreground' : 'text-amber-300'}`}>
-              {hotFixSupported
-                ? t('项目级，随每次配音带下去', 'Project-wide; goes with every synthesis')
-                : t('这条模板的请求体里没有 ${hotFix}，填了不会发出去。要它生效：把配音实例换成声明了 hot_fix 的那条模板（内置的「千问语音（音量 / 发音修正）」就是），或在 ⚙ 接口模板的「提交」那一格里加一条参数 hotFix 并把 ${hotFix} 写进 body。',
-                  'This template never references ${hotFix}, so nothing is sent. Switch the TTS instance to a template that declares hot_fix, or add a hotFix parameter to its submit slot.')}
+            <p className="mb-1.5 text-[10px] text-muted-foreground">
+              {t('项目级，随每次配音带下去', 'Project-wide; goes with every synthesis')}
             </p>
             <HotFixField value={hotFixRows} onChange={setNarrationHotFix} />
           </Fold>

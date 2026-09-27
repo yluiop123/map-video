@@ -14,12 +14,28 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useT } from './ui/primitives';
 import { callTTS, cloneTargetModel, supports, templateOf, voiceModelOf } from '../lib/providers';
 import { playAudition, stopAudition } from '../lib/audition';
-import { cloneTakesUrl, paramSpec, scopeOf, visibleOptions, type InstanceDef, type ParamSpec, type ReqKey } from '../lib/request-engine';
+import { asOption, cloneTakesUrl, paramSpec, scopeOf, visibleOptions, type InstanceDef, type OptionSpec, type ParamSpec, type ReqKey } from '../lib/request-engine';
 import { CLIP_PRESETS, fetchClipBytes } from '../lib/voices';
 import { useVoiceStore } from '../stores/voiceStore';
 import type { VoiceRow } from '../types';
 
 const SAMPLE_LABELS: string[] = CLIP_PRESETS.map((pr) => pr.label);
+
+/**
+ * 音色 id → 给人看的那句话：表里查得到就是「女声 · 龙安风悦」，克隆账本里查得到就是「男声·克隆」，
+ * 都不是才退回那串 id（它是发给上游的，不是给人读的）。折叠标题与组件内那行共用这一处。
+ */
+export const voiceLabelOf = (
+  options: (OptionSpec | string | number | boolean)[] | undefined,
+  clones: { voiceId: string; label: string }[],
+  value: string,
+): string => {
+  if (!value) return '';
+  const o = (options ?? []).map(asOption).find((x) => String(x.value) === value);
+  if (o) return [o.group, o.label ?? o.value].filter(Boolean).join(' · ');
+  const c = clones.find((x) => x.voiceId === value);
+  return c ? `${c.label}·克隆` : value;
+};
 const strOf = (v: unknown) => (typeof v === 'string' ? v : '');
 
 export function VoiceField({ inst, slot, spec, value, extra, audition = false, onPick }: {
@@ -172,6 +188,10 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
   const inLedger = cloned.find((c) => c.voiceId === shown);
   /** 选中项绑的模型：克隆账本说了算（合成必须同款），表里的值用实例当前模型 */
   const valueModel = inLedger?.targetModel ?? '';
+  /** 这一行给人看的是**是谁**（「女声 · 龙安风悦」/「男声·克隆」），不是那串发给上游的 id —— id 留在悬停里 */
+  const shownName = inCatalog
+    ? [inCatalog.group, inCatalog.label ?? inCatalog.value].filter(Boolean).join(' · ')
+    : inLedger ? `${inLedger.label}·克隆` : shown;
   const orphan = !!shown && !inCatalog && !inLedger;
   const renderCells = (list: typeof catalog) => list.map((o) => cell({
     id: String(o.value), title: o.label ?? String(o.value), sub: [o.note, String(o.value)].filter(Boolean).join(' · '),
@@ -289,7 +309,7 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
           >{busy === 'audition' ? '⏳' : auditioning ? '⏸' : '▶'} {auditioning ? t('停止', 'Stop') : t('试听', 'Audition')}</button>
         )}
         <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70" title={shown}>
-          {shown ? `${shown}` : ''}
+          {shownName ? `${shownName}` : ''}
           {(valueModel || inCatalog) ? ` · ${valueModel || instModel}` : ''}
           {msg ? ` · ${msg}` : ''}
         </span>
