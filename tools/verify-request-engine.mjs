@@ -136,6 +136,14 @@ console.log('\n[2] 三层参数与求值');
   const badDef = { ...tVoice, sync: { submit: { ...tVoice.sync.submit, requestParams: voiceParams.map((p) => (p.key === 'voice' ? { ...p, defaultValue: 'Nobody' } : p)) } } };
   check('2.21 enum 的默认值不在候选值里 → 点名（界面选不到、真发却照它发）',
     validateTemplate(badDef).some((x) => x.includes('不在候选值')), validateTemplate(badDef));
+
+  // 搬表快照：音色表进了 seed 之后，条数与分组必须与改造前逐字一致 —— 少一条不会报错，只会少一个音色
+  const cat = (id, model) => visibleOptions(seedTemplate(id), inst(id, { instance: { model } }), 'sync.submit', 'voice');
+  eq('2.22 千问音色表 38 条；换 -vc 模型一条不吃（实测系统音色喂它必拒）',
+    [cat('qwen-tts', 'qwen3-tts-flash').length, cat('qwen-tts', 'qwen3-tts-vc-2026-01-22').length], [38, 0]);
+  eq('2.23 ElevenLabs 21 条（男 13 / 女 7 / 中性 1，中性是官方 labels 给的）',
+    cat('elevenlabs-voice', 'eleven_multilingual_v2').reduce((a, o) => ({ ...a, [o.group]: (a[o.group] ?? 0) + 1 }), {}),
+    { 男声: 13, 女声: 7, 中性: 1 });
 }
 
 // ========== 3. headers 覆盖 / outputs / 发音修正 ==========

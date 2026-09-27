@@ -19,7 +19,7 @@
  * 要接别家 = 界面上「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）。
  * 只声明到「该请求真引用到的那几个参数」为止，其余留给用户自己加。
  */
-import type { Category, ParamSpec, RequestDef, TemplateDef } from './request-engine';
+import type { Category, OptionSpec, ParamSpec, RequestDef, TemplateDef } from './request-engine';
 
 const AUTH = { Authorization: 'Bearer ${apiKey}' };
 const JSON_CT = { 'Content-Type': 'application/json' };
@@ -33,6 +33,12 @@ const num = (key: string, label: string, extra: Partial<ParamSpec> = {}): ParamS
 const en = (key: string, label: string, options: string[], extra: Partial<ParamSpec> = {}): ParamSpec =>
   ({ key, label, valueType: 'enum', options, ...extra });
 const bool = (key: string, label: string, defaultValue = false): ParamSpec => ({ key, label, valueType: 'boolean', defaultValue });
+/**
+ * 一条**音色表**参数：候选值带分组，且这一格声明成音色表 ——
+ * 界面因此长成分组选择器 + 克隆音色那一段（判据是声明的形状，不认参数名，也不认厂商）。
+ */
+const voice = (defaultValue: string, options: OptionSpec[]): ParamSpec =>
+  ({ key: 'voice', label: '音色 ID', valueType: 'enum', voiceTable: true, options, defaultValue });
 const text = (key: string, label: string): ParamSpec => ({ key, label, valueType: 'text' });
 
 /** 实例级共用的三样：地址、密钥、超时（密钥就是 valueType=secret 的普通参数，界面渲染成密码框） */
@@ -140,6 +146,49 @@ const qwenImage: TemplateDef = {
 
 // ========== 语音：千问 TTS（非流式合成 + 声音复刻） ==========
 
+/** 千问 TTS 的系统音色（38 条：男 19 / 女 19）。id 与中文名逐字抄官方表。
+ * 全部只吃 `qwen3-tts-flash` —— 实测拿系统音色喂 `-vc` 那条模型，上游回 InvalidParameter（官方另有 10 个方言音色，没进表：要用时在界面上手填）。 */
+const qwenVoices: OptionSpec[] = [
+  { value: 'Cherry', label: '芊悦', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Serena', label: '苏瑶', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Chelsie', label: '千雪', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Ethan', label: '晨煦', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Moon', label: '月白', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Kai', label: '凯', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Nofish', label: '不吃鱼', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Ryan', label: '甜茶', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Aiden', label: '艾登', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Eldric Sage', label: '沧明子', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Mochi', label: '沙小弥', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Vincent', label: '田叔', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Neil', label: '阿闻', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Arthur', label: '徐大爷', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Pip', label: '顽屁小孩', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Bodega', label: '博德加', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Alek', label: '阿列克', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Dolce', label: '多尔切', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Lenn', label: '莱恩', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Emilien', label: '埃米尔安', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Andre', label: '安德雷', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Radio Gol', label: '拉迪奥·戈尔', group: '男声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Momo', label: '茉兔', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Vivian', label: '十三', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Maia', label: '四月', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Bella', label: '萌宝', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Jennifer', label: '詹妮弗', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Katerina', label: '卡捷琳娜', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Mia', label: '乖小妹', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Bellona', label: '燕铮莺', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Bunny', label: '萌小姬', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Elias', label: '墨讲师', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Nini', label: '邻家妹妹', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Seren', label: '小婉', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Stella', label: '少女阿月', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Sonrisa', label: '索尼莎', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Sohee', label: '素熙', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+  { value: 'Ono Anna', label: '小野杏', group: '女声', note: '中英多语', models: ['qwen3-tts-flash'] },
+];
+
 const qwenTts: TemplateDef = {
   id: 'qwen-tts', name: '千问 TTS', category: 'tts',
   caps: { modes: 'sync', clone: true, cloneVia: 'base64' },
@@ -150,7 +199,9 @@ const qwenTts: TemplateDef = {
         en('model', '模型', ['qwen3-tts-flash', 'qwen3-tts-vc-2026-01-22'], { defaultValue: 'qwen3-tts-flash' }),
         en('languageType', '语种', ['Chinese', 'English', 'Auto'], { defaultValue: 'Chinese' }),
         // 这两条每次调用由字幕生成那一行给（voice 也可以在这儿钉死一个默认音色）
-        text('text', '合成文本'), p('voice', '音色 ID', { defaultValue: 'Ethan' }),
+        text('text', '合成文本'),
+        // 音色表就是这条参数的候选值（界面上因此长成分组选择器 + 克隆音色那段）
+        voice('Ethan', qwenVoices),
       ],
       body: {
         model: '${model}',
@@ -177,6 +228,31 @@ const qwenTts: TemplateDef = {
 
 // ========== 语音：ElevenLabs（合成 = 响应体裸字节 · 复刻 = 自己发 multipart 表单） ==========
 
+/** ElevenLabs 的默认音色表（21 条：男 13 / 女 7 / 中性 1），逐字取自 `/v1/voices` 的真响应（2026-09-26）。 */
+const elevenLabsVoices: OptionSpec[] = [
+  { value: 'CwhRBWXzGAHq8TQ4Fs17', label: 'Roger', group: '男声', note: '随性、浑厚 · 日常对话' },
+  { value: 'IKne3meq5aSn9XLyUdCD', label: 'Charlie', group: '男声', note: '澳洲青年 · 有精神' },
+  { value: 'JBFqnCBsd6RMkjVDRZzb', label: 'George', group: '男声', note: '暖 · 抓人的讲述感' },
+  { value: 'N2lVS1w4EtoT3dr4eOWO', label: 'Callum', group: '男声', note: '沙哑 · 带刺' },
+  { value: 'TX3LPaxmHKxFdv7VOQHJ', label: 'Liam', group: '男声', note: '短视频向 · 有活力' },
+  { value: 'bIHbv24MWmeRgasZH58o', label: 'Will', group: '男声', note: '松弛 · 乐观' },
+  { value: 'cjVigY5qzO86Huf0OWal', label: 'Eric', group: '男声', note: '男中音 · 稳' },
+  { value: 'iP95p4xoKVk53GoZ742B', label: 'Chris', group: '男声', note: '朴实 · 百搭' },
+  { value: 'nPczCjzI2devNBz1zQrb', label: 'Brian', group: '男声', note: '低沉 · 安抚' },
+  { value: 'onwK4e9ZLuTAKqWW03F9', label: 'Daniel', group: '男声', note: '播音腔 · 新闻' },
+  { value: 'pNInz6obpgDQGcFmaJgB', label: 'Adam', group: '男声', note: '明亮男高音 · 有压' },
+  { value: 'pqHfZKP75CvOlQylNhV4', label: 'Bill', group: '男声', note: '成熟 · 讲故事' },
+  { value: 'SOYHLrjzK2X1ezoPC6cr', label: 'Harry', group: '男声', note: '战士腔 · 有冲劲' },
+  { value: 'EXAVITQu4vr4xnSDxMaL', label: 'Sarah', group: '女声', note: '自信 · 专业 · 让人放心' },
+  { value: 'FGY2WhTYpPnrIDTdsKH5', label: 'Laura', group: '女声', note: '明媚 · 一点古怪' },
+  { value: 'Xb7hH8MSUJpSbSDYk0k2', label: 'Alice', group: '女声', note: '英音 · 教学向' },
+  { value: 'XrExE9yKIg1WjnnlVkGX', label: 'Matilda', group: '女声', note: '职业 · 中低音' },
+  { value: 'cgSgspJ2msm6clMCkdW9', label: 'Jessica', group: '女声', note: '美式 · 俏皮' },
+  { value: 'hpp4J3VqNfWAUOO0d1Us', label: 'Bella', group: '女声', note: '明亮 · 叙述感' },
+  { value: 'pFZP5JQG7iQjIQuC4Bku', label: 'Lily', group: '女声', note: '英音 · 新闻与旁白' },
+  { value: 'SAz9YHcvj6GT2YYXdXww', label: 'River', group: '中性', note: '松弛中性 · 旁白与对话都行' },
+];
+
 /**
  * 这一家与千问那两条的差异全是数据：
  * 认证头叫 `xi-api-key`（不是 Bearer）；产物不用从字段里取（这一格 `artifactForm:'binary'`）；
@@ -198,8 +274,7 @@ const elevenLabsVoice: TemplateDef = {
       requestParams: [
         en('model', '模型', ['eleven_multilingual_v2', 'eleven_flash_v2_5'], { defaultValue: 'eleven_multilingual_v2' }),
         text('text', '合成文本'),
-        // 默认音色给一个官方默认表里的（Roger），实例可以改；配音那侧的可选清单在 lib/voices.ts 的 ELEVENLABS_VOICES
-        p('voice', '音色 ID', { defaultValue: 'CwhRBWXzGAHq8TQ4Fs17' }),
+        voice('CwhRBWXzGAHq8TQ4Fs17', elevenLabsVoices),
       ],
       body: { text: '${text}', model_id: '${model}' },
       // 实测（2026-09-26）：错误体是 { detail: { type, code, message, status, request_id } } —— 人话在 detail.message；

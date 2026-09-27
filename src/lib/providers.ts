@@ -2,7 +2,7 @@ import { IS_DESKTOP } from './backend';
 import { useProviderStore } from '../stores/providerStore';
 import {
   EngineError, asOption, buildRequest, redact, runSync, runClone, submitAsync, queryOnce,
-  requestOf, submitKeyOf, secretsOf, supportsOf,
+  requestOf, scopeOf, submitKeyOf, secretsOf, supportsOf,
   type Category, type Deps, type InstanceDef, type ReqKey, type ResolvedRequest, type TemplateDef,
 } from './request-engine';
 
@@ -47,6 +47,29 @@ export function declaredOptions(inst: InstanceDef | null | undefined, key: strin
 
 /** 某个参数声明的默认值 —— 只当输入框的占位提示，真实取值仍由引擎三层解析 */
 export const declaredDefault = (inst: InstanceDef | null | undefined, key: string): string => String(specOf(inst, key)?.defaultValue ?? '');
+
+/** 这条实例配音用的模型：先看请求级（同步 / 异步各一份），再退到实例级，最后退到模板声明的默认值 */
+export function voiceModelOf(inst: InstanceDef | null | undefined): string {
+  if (!inst) return '';
+  const v = inst.values;
+  const given = v.requests?.['sync.submit']?.model ?? v.requests?.['async.submit']?.model ?? v.instance?.model;
+  if (typeof given === 'string' && given.trim()) return given.trim();
+  return declaredDefault(inst, 'model');
+}
+
+/**
+ * 克隆出来的音色绑在哪条模型上：**克隆那一格自己声明的 `model`**（千问就是这么声明的：
+ * `qwen3-tts-vc-*` 只出现在克隆格的候选值里），那一格没声明模型的（ElevenLabs 一条模型通吃）
+ * 就退回这条实例合成用的模型。
+ * 以前这里是 `declaredOptions(inst, 'model').find(m => m.includes('-vc'))` —— 猜字符串，
+ * 换一家命名不带 `-vc` 的上游就废；现在读的是模板声明。
+ */
+export function cloneTargetModel(inst: InstanceDef | null | undefined): string {
+  const tpl = templateOf(inst);
+  if (!tpl || !inst) return '';
+  const got = scopeOf(tpl, inst, 'clone').values.model;
+  return typeof got === 'string' && got.trim() ? got.trim() : voiceModelOf(inst);
+}
 
 /** 该实例这次该走哪条提交接口（实例的同步开关决定） */
 export function submitKeyOfInstance(inst: InstanceDef): ReqKey {

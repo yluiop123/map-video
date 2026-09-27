@@ -15,10 +15,11 @@ import { useT, Section, Field, OptionBlocks, ColorPicker, NumberInput } from './
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { callLLM, defaultVoiceOf, parseSrt, srtTime } from '../lib/providers';
+import { submitKeyOf, type ReqKey } from '../lib/request-engine';
 import { useTaskStore } from '../stores/taskStore';
 import { playAudition, stopAudition } from '../lib/audition';
 import { getAssetUrl } from '../lib/assets';
-import { VoicePicker } from './VoicePicker';
+import { VoiceField, voiceSpecOf } from './VoiceField';
 import { HotFixField } from './HotFixField';
 import type { InstanceDef } from '../lib/request-engine';
 import type { TaskRow } from '../types';
@@ -146,6 +147,9 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const [voice, setVoice] = useState(() => defaultVoiceOf(useProviderStore.getState().current('tts')));
   /** 克隆音色绑一条模型，合成时得一起传（系统音色为空 = 用实例配的） */
   const [voiceModel, setVoiceModel] = useState('');
+  /** 音色区读的是这条实例那一格的候选值（音色表），所以要知道看哪一格 */
+  const voiceSlot: ReqKey = submitKeyOf(tts?.sync ?? true);
+  const voiceSpec = voiceSpecOf(tts, voiceSlot);
   /** 项目级发音修正（存进配音档，每次合成原样带下去）；没填完的行在这一步被滤掉，全空 = 不传这个参数 */
   const hotFix = hotFixPayload(project?.narration?.hotFix);
   const hotFixRows = project?.narration?.hotFix ?? NO_HOT_FIX;
@@ -521,10 +525,10 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        {IS_DESKTOP && (
+        {IS_DESKTOP && voiceSpec && (
           <div className="mb-2">
             <p className="text-[11px] text-muted-foreground mb-1.5">{t('配音音色', 'Voice')}</p>
-            <VoicePicker inst={tts} voice={voice} voiceModel={voiceModel}
+            <VoiceField inst={tts} slot={voiceSlot} spec={voiceSpec} value={voice} audition
               extra={hotFix ? { hotFix } : undefined}
               onPick={(id, m) => { setVoice(id); setVoiceModel(m ?? ''); }} />
           </div>
