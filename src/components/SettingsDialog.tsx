@@ -11,6 +11,7 @@ import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { ProviderPanel } from './ProviderPanel';
 import { TemplatesPane } from './TemplatesPane';
 import { useT } from './ui/primitives';
+import { IS_DEV } from '../lib/backend';
 
 interface SettingsDialogProps {
   open: boolean;
@@ -27,7 +28,8 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     { id: 'llm', label: t('文案生成', 'Text'), icon: <Bot size={15} className="text-emerald-400" /> },
     { id: 'tts', label: t('语音克隆', 'Voice'), icon: <AudioLines size={15} className="text-sky-400" /> },
     { id: 'image', label: t('图片生成', 'Image'), icon: <ImageIcon size={15} className="text-amber-400" /> },
-    { id: 'templates', label: t('接口模板', 'Templates'), icon: <Blocks size={15} className="text-violet-400" /> },
+    // 专家项：改错一份模板会让全部调用坏掉，所以只在开发构建里露出来（打包出去的包没有这一行）
+    ...(IS_DEV ? [{ id: 'templates' as const, label: t('接口模板', 'Templates'), icon: <Blocks size={15} className="text-violet-400" /> }] : []),
   ];
 
   return (

@@ -86,6 +86,12 @@ declare global {
 
 export const IS_DESKTOP = typeof window !== 'undefined' && !!window.mapvideo?.desktop;
 
+/**
+ * 开发模式 = vite 的开发构建（`npm run dev` / `electron:dev`），打包后的正式包里是 false。
+ * 目前只有一个消费者：「接口模板」那一页只在开发模式开放 —— 它是专家项，改错一份模板会让全部调用坏掉。
+ */
+export const IS_DEV = import.meta.env.DEV;
+
 export type AppMode = 'desktop' | 'web-full' | 'lite';
 
 interface BackendState {
