@@ -501,7 +501,7 @@ function ParamTable({ title, hint, variant = 'framed', params, onChange }: {
       </div>
       <div className="grid min-w-0 grid-cols-2 gap-1">
         <Input value={p.label ?? ''} onChange={(e) => at(i, { label: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('说明', 'label')} />
-        <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('默认值', 'default')} />
+        <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: defaultByType(p, e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder={t('默认值', 'default')} />
       </div>
       <div className="flex min-w-0 flex-wrap items-center gap-1">
         {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
@@ -539,6 +539,14 @@ function ParamTable({ title, hint, variant = 'framed', params, onChange }: {
 }
 
 const num = (s: string) => (s === '' ? undefined : Number(s));
+/**
+ * 文本框交回来的总是字符串，而「取值成形只看 `valueType`」这条规则要在**写下的这一刻**就成立 ——
+ * 否则声明成 number 的默认值会存成 `"1"`，`${n}` 进请求体就是字符串（上游可能照收，也可能悄悄改掉语义）。
+ */
+const defaultByType = (p: ParamSpec, s: string): unknown =>
+  p.valueType === 'number' ? num(s)
+    : p.valueType === 'boolean' ? (s === '' ? undefined : s === 'true')
+      : s;
 
 /** `a, b=乙, 16000=16k` → 候选值（数字 / 真假自动成形；只有 value 会进请求体） */
 function parseList(s: string): ParamSpec['options'] {
