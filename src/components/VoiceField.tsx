@@ -230,7 +230,7 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={busy !== null || !inst}
-                className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
+                className="h-7 shrink-0 whitespace-nowrap rounded-md border border-white/15 px-2 text-[11px] hover:bg-white/10 disabled:opacity-40"
                 title={t(`上传 10 秒 ~ 5 分钟参考音频，克隆成绑定模型 ${cloneModel || '未设'} 的新音色`, `Upload reference audio to clone a voice for model ${cloneModel || 'unset'}`)}
               >⬆ {t('上传其它音色', 'Upload reference')}</button>
               <input
@@ -261,13 +261,12 @@ export function VoiceField({ inst, slot, spec, value, extra, audition = false, o
               void runAudition();
             }}
             disabled={busy !== null || (!auditioning && !shown)}
-            className="h-7 px-2 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
+            className="h-7 shrink-0 whitespace-nowrap rounded-md border border-white/15 px-2 text-[11px] hover:bg-white/10 disabled:opacity-40"
             title={auditioning ? t('停止试听', 'Stop') : t('用当前音色合成一句试听', 'Synthesize one preview line with the current voice')}
           >{busy === 'audition' ? '⏳' : auditioning ? '⏸' : '▶'} {auditioning ? t('停止', 'Stop') : t('试听', 'Audition')}</button>
         )}
-        <span className="text-[10px] text-muted-foreground/70 truncate" title={shown}>
-          {t('音色（连同它绑的模型）随每次合成传下去，不写进实例配置', 'The voice and its model go with each call, not the instance')}
-          {shown ? ` · ${shown}` : ''}
+        <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70" title={shown}>
+          {shown ? `${shown}` : ''}
           {(valueModel || inCatalog) ? ` · ${valueModel || instModel}` : ''}
           {msg ? ` · ${msg}` : ''}
         </span>
