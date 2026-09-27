@@ -453,6 +453,16 @@ export function trialKeysOf(tpl: TemplateDef, inst: InstanceDef, key: ReqKey): s
   return openKeysOf(tpl, inst, key).filter((n) => !declared.has(n));
 }
 
+/**
+ * 这一格**有没有写 `${arg}`** —— 界面对「没有消费者的格子」说实话要用它。
+ * 引擎对没人引用的调用级参数是删键不发（不报错），所以「填了没反应」只能由界面提前点名：
+ * 比如发音修正，只有把 `hot_fix` 摆进请求体的那类端点（SpeechSynthesizer 一家）才吃它。
+ */
+export function referencesArg(tpl: TemplateDef | undefined | null, key: ReqKey, arg: string): boolean {
+  const def = tpl ? requestOf(tpl, key) : undefined;
+  return !!def && referencedIn(def, multipartSlotOf(tpl!, key)).includes(arg);
+}
+
 /** 这一格声明的参数（实例设置页按格分区渲染） */
 export function requestParamsOf(tpl: TemplateDef, key: ReqKey): ParamSpec[] {
   return requestOf(tpl, key)?.requestParams ?? [];

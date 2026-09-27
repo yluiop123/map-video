@@ -17,8 +17,8 @@ import { useProviderStore } from '../stores/providerStore';
 import { useT, OptionBlocks, ColorPicker, NumberInput } from './ui/primitives';
 import { Badge } from './ui/badge';
 import { Progress } from './ui/progress';
-import { callLLM, defaultVoiceOf } from '../lib/providers';
-import { asOption, submitKeyOf, type ReqKey } from '../lib/request-engine';
+import { callLLM, defaultVoiceOf, templateOf } from '../lib/providers';
+import { asOption, referencesArg, submitKeyOf, type ReqKey } from '../lib/request-engine';
 import { useTaskStore } from '../stores/taskStore';
 import { playAudition, stopAudition } from '../lib/audition';
 import { getAssetUrl } from '../lib/assets';
@@ -206,6 +206,8 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   };
   /** 项目级发音修正（存进配音档，每次合成原样带下去）；没填完的行在这一步被滤掉，全空 = 不传这个参数 */
   const hotFix = hotFixPayload(project?.narration?.hotFix);
+  /** 这一格到底吃不吃 hotFix：看请求体里有没有 `${hotFix}` —— 没有就别假装生效（AGENTS §6.29） */
+  const hotFixSupported = referencesArg(templateOf(tts), voiceSlot, 'hotFix');
   const hotFixRows = project?.narration?.hotFix ?? NO_HOT_FIX;
   const ready = (i: InstanceDef | null) => !!i && !!String(i.values.instance?.baseUrl ?? '');
   const fps = project?.globalConfig.defaultFPS || 30;
@@ -563,11 +565,16 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
         {IS_DESKTOP && (
           <Fold
             title={t('发音修正', 'Pronunciation fixes')}
-            summary={hotFixCount ? t(`${hotFixCount} 条`, `${hotFixCount} rule(s)`) : t('未填', 'none')}
+            summary={hotFixSupported
+              ? (hotFixCount ? t(`${hotFixCount} 条`, `${hotFixCount} rule(s)`) : t('未填', 'none'))
+              : t('当前配音模板不认这个参数', 'not supported by this template')}
             {...fold('hotfix')}
           >
-            <p className="mb-1.5 text-[10px] text-muted-foreground">
-              {t('项目级，随每次配音带下去（模板声明了 hotFix 参数才生效）', 'Project-wide; applies when the template declares a hotFix parameter')}
+            <p className={`mb-1.5 text-[10px] ${hotFixSupported ? 'text-muted-foreground' : 'text-amber-300'}`}>
+              {hotFixSupported
+                ? t('项目级，随每次配音带下去', 'Project-wide; goes with every synthesis')
+                : t('这条模板的请求体里没有 ${hotFix}，填了不会发出去。要它生效：把配音实例换成声明了 hot_fix 的那条模板（内置的「千问语音（音量 / 发音修正）」就是），或在 ⚙ 接口模板的「提交」那一格里加一条参数 hotFix 并把 ${hotFix} 写进 body。',
+                  'This template never references ${hotFix}, so nothing is sent. Switch the TTS instance to a template that declares hot_fix, or add a hotFix parameter to its submit slot.')}
             </p>
             <HotFixField value={hotFixRows} onChange={setNarrationHotFix} />
           </Fold>

@@ -10,7 +10,7 @@
  * 运行：node --experimental-strip-types tools/verify-request-engine.mjs
  */
 import {
-  REQ_KEYS, applyOutputs, buildRequest, classify, errorOf, openKeysOf, readPath, trialKeysOf, visibleOptions,
+  REQ_KEYS, applyOutputs, buildRequest, classify, errorOf, openKeysOf, readPath, referencesArg, trialKeysOf, visibleOptions,
   redact, requestOf, runClone, runSync, secretsOf, slotsOf, submitAsync, queryOnce, validateTemplate, EngineError,
   retriable,
 } from '../src/lib/request-engine.ts';
@@ -176,6 +176,14 @@ console.log('\n[3] headers 覆盖、outputs 流转、hotFix');
     { replace: [{ AI: '人工智能' }] });
   check('3.7 没填修正 → hot_fix 这个键整个消失（不发给上游）',
     buildRequest(t4, inst('x'), 'sync.submit', { text: '重庆' }).req.body.input.hot_fix === undefined);
+  // 内置那份「千问语音（音量 / 发音修正）」：机制之外还要证明**这一格真的接上了**（旧模板不认，界面上因此点名）
+  const audio = seedTemplate('qwen-audio-tts');
+  const audioBody = buildRequest(audio, inst('qwen-audio-tts'), 'sync.submit', { text: '重庆', hotFix: { pronunciation: [{ 重庆: 'chong2 qing4' }] } }).req.body;
+  eq('3.7b seed 的 SpeechSynthesizer 格：hot_fix 原样进 input、volume 是数字不是字符串',
+    [audioBody.input.hot_fix, audioBody.input.volume],
+    [{ pronunciation: [{ 重庆: 'chong2 qing4' }] }, 100]);
+  check('3.7c 这一格引用了 hotFix（界面上因此不说「不认这个参数」）',
+    referencesArg(audio, 'sync.submit', 'hotFix') && !referencesArg(seedTemplate('qwen-tts'), 'sync.submit', 'hotFix'));
   const t3 = { ...tpl, sync: { submit: { path: '${baseUrl}/x', body: { n: '${n}' }, requestParams: [{ key: 'n', label: '个数', valueType: 'number' }] } } };
   eq('3.8 字符串数字按声明转成数字（只看 valueType，没有加工那格）', buildRequest(t3, inst('x'), 'sync.submit', { n: '3' }).req.body.n, 3);
 }
