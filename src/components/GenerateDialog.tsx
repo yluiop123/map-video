@@ -45,6 +45,8 @@ interface SubRow {
   locked?: boolean;
   /** 这一行读完停多久（秒）；空 = 跟整片的 `gapSec`，0 = 这一行明确不间隔 */
   gapSec?: number;
+  /** 这一句的音量（0–1）；空 = 跟整片的 `volume`，0 = 这一句不出声 */
+  volume?: number;
 }
 
 /**
@@ -66,7 +68,7 @@ function resequenceRows(rows: SubRow[], gapSec = 0, fps = 30): SubRow[] {
 function rowsFromProject(entries: NarrationEntry[] | undefined): SubRow[] {
   return (entries || []).map((e) => ({
     id: e.id, text: e.text, audioId: e.audioId, durationFrames: Math.max(1, e.durationFrames),
-    startFrame: e.startFrame, status: e.status, error: e.error, locked: e.locked, gapSec: e.gapSec,
+    startFrame: e.startFrame, status: e.status, error: e.error, locked: e.locked, gapSec: e.gapSec, volume: e.volume,
   }));
 }
 
@@ -171,6 +173,9 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   /** 整片字幕间隔（秒，项目级）：改了立刻重排未锁定的行 */
   const gapSec = project?.narration?.gapSec ?? 0;
   const setGapSec = useProjectStore((s) => s.setNarrationGap);
+  /** 整片配音音量（0–1，项目级）：与背景音乐相对调，预览与导出同一个倍率 */
+  const volume = project?.narration?.volume ?? 1;
+  const setVolume = useProjectStore((s) => s.setNarrationVolume);
   /**
    * 字幕文案 = 整篇草稿，与下面的行列表是**同一份内容的两种看法**。
    * 没编辑过草稿时它显示行的 join（改哪边都跟得上）；一旦动过草稿就锁定草稿，
@@ -260,6 +265,8 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const delRow = (id: string) => setRows((rs) => seq(rs.filter((r) => r.id !== id)));
   /** 这一行的停顿：填了就脱离整片默认（0 也是有效值，与「没填」必须分得开） */
   const setRowGap = (id: string, sec?: number) => setRows((rs) => seq(rs.map((r) => (r.id === id ? { ...r, gapSec: sec } : r))));
+  /** 这一句的音量：填了就脱离整片（0 = 这一句不出声，与「没填」分得开）。不影响排版，所以不必重排 */
+  const setRowVolume = (id: string, vol?: number) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, volume: vol } : r)));
 
   const taskRows = useTaskStore((s) => s.rows);
   const taskResults = useTaskStore((s) => s.results);
@@ -289,7 +296,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           id: r.id, text: r.text,
           audioId: r.audioId ?? keep?.audioId,
           durationFrames: Math.max(1, r.audioId ? r.durationFrames : keep?.durationFrames ?? r.durationFrames),
-          startFrame: r.startFrame, locked: r.locked, gapSec: r.gapSec,
+          startFrame: r.startFrame, locked: r.locked, gapSec: r.gapSec, volume: r.volume,
           status: keep?.status ?? r.status, error: keep ? undefined : (r.status === 'error' ? r.error : undefined),
         };
       }),
@@ -412,7 +419,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       .filter((r) => r.text.trim())
       .map((r) => ({
         id: r.id, text: r.text, audioId: r.audioId, durationFrames: Math.max(1, r.durationFrames),
-        startFrame: r.startFrame, locked: r.locked, gapSec: r.gapSec,
+        startFrame: r.startFrame, locked: r.locked, gapSec: r.gapSec, volume: r.volume,
         status: r.status, error: r.status === 'error' ? r.error : undefined,
       }));
     setNarrationEntries(entries);
@@ -596,6 +603,18 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
                     />
                     <span className="text-[10px] text-muted-foreground/70">s</span>
                   </span>
+                  {/* 这一句的音量：同样占位显示整片默认，填了才脱离（0 = 这一句不出声） */}
+                  <span className="flex items-center gap-0.5" title={t('这一句的音量；留空 = 用下面的整片音量，0 = 这一句不出声', 'Volume of this line; blank = the track-wide value below, 0 = mute')}>
+                    <span className="text-[10px] text-muted-foreground/70">{t('量', 'vol')}</span>
+                    <input
+                      type="number" min={0} max={100} step={5}
+                      value={r.volume == null ? '' : Math.round(r.volume * 100)}
+                      placeholder={String(Math.round(volume * 100))}
+                      onChange={(e) => setRowVolume(r.id, e.target.value === '' ? undefined : Math.min(1, Math.max(0, Number(e.target.value) / 100)))}
+                      className="input h-7 w-14 text-right text-[10px] tabular-nums"
+                    />
+                    <span className="text-[10px] text-muted-foreground/70">%</span>
+                  </span>
                   {IS_DESKTOP && <button
                     onClick={() => void genVoice(r)}
                     disabled={!r.text.trim()}
@@ -642,6 +661,17 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
                 title={t('每行读完停几秒再排下一行（单行右边那格可以覆盖它）', 'Pause after each line; a line can override it on its right')}
               />
               {t('秒', 's')}
+              {IS_DESKTOP && <>
+                <span className="text-muted-foreground/40">·</span>
+                {t('配音音量', 'Volume')}
+                <input
+                  type="range" min={0} max={1} step={0.05} value={volume}
+                  onChange={(e) => setVolume(parseFloat(e.target.value))}
+                  className="w-20 h-1 accent-[var(--brand)]"
+                  title={t('配音在成片里的音量（与背景音乐相对调；单行右边那格可以覆盖它）', 'Narration level in the finished video (relative to the music); a line can override it')}
+                />
+                <span className="w-9 text-right tabular-nums">{Math.round(volume * 100)}%</span>
+              </>}
             </span>
           </div>
           <p className="mt-1 text-[10px] text-muted-foreground/80">

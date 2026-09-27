@@ -26,22 +26,24 @@ function musicVolumeAt(track: MusicTrack, localFrame: number, fps: number): numb
   return (track.volume ?? 0.6) * Math.min(inV, outV);
 }
 
-/** 配音音量包络：进出各 5 帧微淡，避免爆音 */
-function narrationVolumeAt(localFrame: number): number {
-  return Math.min(1, localFrame / 5, 1);
+/** 配音音量包络：进出各 5 帧微淡，避免爆音；整条乘这一句的音量 */
+function narrationVolumeAt(localFrame: number, volume: number): number {
+  return volume * Math.min(1, localFrame / 5);
 }
 
 /** 配音轨：按条摆放（Remotion 内联音频 → web-renderer 混流） */
 export const NarrationAudio: React.FC<{
   narrationEntries: NarrationEntry[];
+  /** 整片配音音量（0–1）：条目自己填过的覆盖它 */
+  volume?: number;
   audioSrc: Record<string, string>;
-}> = ({ narrationEntries, audioSrc }) => {
+}> = ({ narrationEntries, volume = 1, audioSrc }) => {
   return (
     <>
       {narrationEntries.map((e) =>
         e.audioId && audioSrc[e.audioId] && e.durationFrames > 0 ? (
           <Sequence key={`nar-${e.id}`} from={e.startFrame} durationInFrames={e.durationFrames} name={`narration-${e.id}`}>
-            <Audio src={audioSrc[e.audioId]} volume={(f) => narrationVolumeAt(f)} />
+            <Audio src={audioSrc[e.audioId]} volume={(f) => narrationVolumeAt(f, e.volume ?? volume)} />
           </Sequence>
         ) : null
       )}
@@ -103,7 +105,7 @@ export const MapVideo: React.FC<MapVideoProps> = ({ projectId: _projectId, proje
       </AbsoluteFill>
 
       {/* 音频轨：配音（绝对帧）+ 项目级背景音乐 */}
-      <NarrationAudio narrationEntries={project.narration?.entries || []} audioSrc={audioSrc} />
+      <NarrationAudio narrationEntries={project.narration?.entries || []} volume={project.narration?.volume ?? 1} audioSrc={audioSrc} />
       <ProjectMusic music={project.music || []} fps={fps} audioSrc={audioSrc} />
     </AbsoluteFill>
   );
