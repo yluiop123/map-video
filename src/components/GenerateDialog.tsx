@@ -154,7 +154,7 @@ function RowStatus({ r, task, fps }: { r: SubRow; task?: TaskRow; fps: number })
   }
   if (task?.status === 'canceled') return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/60`}>{t('已取消', 'canceled')}</Badge>;
   if (task || r.status === 'pending') return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/70`}>{t('排队中', 'queued')}</Badge>;
-  if (!r.text.trim()) return null;
+  // 空行也占这一格（返回 null 会让刚点「＋加一行」的那一行输入框比别的行宽）
   return <Badge variant="outline" className={`${base} border-white/10 text-muted-foreground/50`}>{t('未配音', 'no audio')}</Badge>;
 }
 
@@ -623,13 +623,13 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
                   >
                     {taskOf(r.id) && stillOpen(taskOf(r.id)!) ? '⏳' : r.status === 'error' ? '⚠' : r.audioId ? '🔁' : '🔊'}
                   </button>}
-                  {r.audioId && (
-                    <button
-                      onClick={() => audit(r)}
-                      className="w-7 h-7 shrink-0 rounded-md border border-white/15 text-[11px] hover:bg-white/10"
-                      title={auditingId === r.id ? t('停止试听本句', 'Stop this clip') : t('试听本句配音', 'Preview this clip')}
-                    >{auditingId === r.id ? '⏸' : '▶'}</button>
-                  )}
+                  {/* 没有配音时也在（只是按不动）—— 否则这一行比别的行少一格，输入框就宽了一截 */}
+                  <button
+                    onClick={() => audit(r)}
+                    disabled={!r.audioId}
+                    className="w-7 h-7 shrink-0 rounded-md border border-white/15 text-[11px] hover:bg-white/10 disabled:opacity-40"
+                    title={!r.audioId ? t('这一行还没有配音', 'No clip yet') : auditingId === r.id ? t('停止试听本句', 'Stop this clip') : t('试听本句配音', 'Preview this clip')}
+                  >{auditingId === r.id ? '⏸' : '▶'}</button>
                   <button
                     onClick={() => delRow(r.id)}
                     className="w-7 h-7 shrink-0 rounded-md text-[11px] text-muted-foreground hover:text-red-400 hover:bg-white/10"
