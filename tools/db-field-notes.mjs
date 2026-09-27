@@ -162,7 +162,6 @@ const NOTES = {
     "start_sec": "起始时间（秒，项目绝对时间；默认自动顺排）",
     "locked": "手动定位后锁定，不再参与自动顺排",
     "gap_sec": "这一行的字幕间隔（秒）：空=跟整片 narration.gap_sec，0=这一行明确不间隔",
-    "volume": "这一行的配音音量（0–1）：空=跟整片 narration.volume，0=这一句不出声",
     "ord": "同项目内排序"
   },
   "music_track": {

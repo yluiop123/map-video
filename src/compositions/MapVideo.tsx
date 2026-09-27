@@ -34,7 +34,7 @@ function narrationVolumeAt(localFrame: number, volume: number): number {
 /** 配音轨：按条摆放（Remotion 内联音频 → web-renderer 混流） */
 export const NarrationAudio: React.FC<{
   narrationEntries: NarrationEntry[];
-  /** 整片配音音量（0–1）：条目自己填过的覆盖它 */
+  /** 整片配音音量（0–1）：只有这一个层级 */
   volume?: number;
   audioSrc: Record<string, string>;
 }> = ({ narrationEntries, volume = 1, audioSrc }) => {
@@ -43,7 +43,7 @@ export const NarrationAudio: React.FC<{
       {narrationEntries.map((e) =>
         e.audioId && audioSrc[e.audioId] && e.durationFrames > 0 ? (
           <Sequence key={`nar-${e.id}`} from={e.startFrame} durationInFrames={e.durationFrames} name={`narration-${e.id}`}>
-            <Audio src={audioSrc[e.audioId]} volume={(f) => narrationVolumeAt(f, e.volume ?? volume)} />
+            <Audio src={audioSrc[e.audioId]} volume={(f) => narrationVolumeAt(f, volume)} />
           </Sequence>
         ) : null
       )}

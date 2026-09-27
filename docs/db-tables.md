@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 699 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，699 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 698 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，698 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -414,7 +414,7 @@
 
 **职责**：字幕条：文本 + 配音音频 + 显示时长 + 读完停顿　**前端**：顶栏「字幕生成」弹窗逐条编辑 / TTS（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）
 
-10 列 · 主键 `entry_id`
+9 列 · 主键 `entry_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -426,7 +426,6 @@
 | `start_sec` | REAL | `NOT NULL` | 起始时间（秒，项目绝对时间；默认自动顺排） · `CHECK (start_sec >= 0)` |
 | `locked` | INTEGER | `NOT NULL` | 手动定位后锁定，不再参与自动顺排 · 默认 `0` · `CHECK (locked IN (0,1))` |
 | `gap_sec` | REAL | — | 这一行的字幕间隔（秒）：空=跟整片 narration.gap_sec，0=这一行明确不间隔 · `CHECK (gap_sec IS NULL OR gap_sec >= 0)` |
-| `volume` | REAL | — | 这一行的配音音量（0–1）：空=跟整片 narration.volume，0=这一句不出声 · `CHECK (volume IS NULL OR volume BETWEEN 0 AND 1)` |
 | `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
 #### music_track — 项目级背景音乐：单轨多段（项目绝对时间、段内循环、淡入淡出）

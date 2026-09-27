@@ -45,8 +45,6 @@ interface SubRow {
   locked?: boolean;
   /** 这一行读完停多久（秒）；空 = 跟整片的 `gapSec`，0 = 这一行明确不间隔 */
   gapSec?: number;
-  /** 这一句的音量（0–1）；空 = 跟整片的 `volume`，0 = 这一句不出声 */
-  volume?: number;
 }
 
 /**
@@ -68,7 +66,7 @@ function resequenceRows(rows: SubRow[], gapSec = 0, fps = 30): SubRow[] {
 function rowsFromProject(entries: NarrationEntry[] | undefined): SubRow[] {
   return (entries || []).map((e) => ({
     id: e.id, text: e.text, audioId: e.audioId, durationFrames: Math.max(1, e.durationFrames),
-    startFrame: e.startFrame, status: e.status, error: e.error, locked: e.locked, gapSec: e.gapSec, volume: e.volume,
+    startFrame: e.startFrame, status: e.status, error: e.error, locked: e.locked, gapSec: e.gapSec,
   }));
 }
 
@@ -267,8 +265,6 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
   const delRow = (id: string) => setRows((rs) => seq(rs.filter((r) => r.id !== id)));
   /** 这一行的停顿：填了就脱离整片默认（0 也是有效值，与「没填」必须分得开） */
   const setRowGap = (id: string, sec?: number) => setRows((rs) => seq(rs.map((r) => (r.id === id ? { ...r, gapSec: sec } : r))));
-  /** 这一句的音量：填了就脱离整片（0 = 这一句不出声，与「没填」分得开）。不影响排版，所以不必重排 */
-  const setRowVolume = (id: string, vol?: number) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, volume: vol } : r)));
 
   const taskRows = useTaskStore((s) => s.rows);
   const taskResults = useTaskStore((s) => s.results);
@@ -298,7 +294,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
           id: r.id, text: r.text,
           audioId: r.audioId ?? keep?.audioId,
           durationFrames: Math.max(1, r.audioId ? r.durationFrames : keep?.durationFrames ?? r.durationFrames),
-          startFrame: r.startFrame, locked: r.locked, gapSec: r.gapSec, volume: r.volume,
+          startFrame: r.startFrame, locked: r.locked, gapSec: r.gapSec,
           status: keep?.status ?? r.status, error: keep ? undefined : (r.status === 'error' ? r.error : undefined),
         };
       }),
@@ -421,7 +417,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
       .filter((r) => r.text.trim())
       .map((r) => ({
         id: r.id, text: r.text, audioId: r.audioId, durationFrames: Math.max(1, r.durationFrames),
-        startFrame: r.startFrame, locked: r.locked, gapSec: r.gapSec, volume: r.volume,
+        startFrame: r.startFrame, locked: r.locked, gapSec: r.gapSec,
         status: r.status, error: r.status === 'error' ? r.error : undefined,
       }));
     setNarrationEntries(entries);
@@ -479,8 +475,15 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
   const toggleSection = useEditorStore((s) => s.toggleDialogSection);
   /** 折叠区的键统一带弹窗前缀（一屏一个命名空间，别和别的弹窗撞） */
   const fold = (k: string) => ({ open: !!sections[`subtitle:${k}`], onToggle: () => toggleSection(`subtitle:${k}`) });
-  /** 折叠标题上显示音色的**名字**（表里的中文名），没有名字的（克隆音色 / 手填）就显示 id */
-  const voiceName = (voiceSpec?.options ?? []).map(asOption).find((o) => String(o.value) === voice)?.label ?? voice;
+  /**
+   * 折叠标题上显示的是**这一名音色是谁**（「男声 · 晨煦」），不是那串音色 id ——
+   * id 是发给上游的东西，不是给人读的（克隆来的没名字，只能退回 id）。
+   */
+  const voiceLabel = (() => {
+    const o = (voiceSpec?.options ?? []).map(asOption).find((x) => String(x.value) === voice);
+    if (!o) return voice;
+    return [o.group, o.label ?? o.value].filter(Boolean).join(' · ');
+  })();
 
   return (
     <div
@@ -553,7 +556,7 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
         {IS_DESKTOP && voiceSpec && (
           <Fold
             title={t('配音音色', 'Voice')}
-            summary={voice ? `${voiceName} · ${voice}` : t('未选', 'none')}
+            summary={voice ? voiceLabel : t('未选', 'none')}
             {...fold('voice')}
           >
             <VoiceField inst={tts} slot={voiceSlot} spec={voiceSpec} value={voice} audition
@@ -610,18 +613,6 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
                     />
                     <span className="text-[10px] text-muted-foreground/70">s</span>
                   </span>
-                  {/* 这一句的音量：同样占位显示整片默认，填了才脱离（0 = 这一句不出声） */}
-                  <span className="flex items-center gap-0.5" title={t('这一句的音量；留空 = 用下面的整片音量，0 = 这一句不出声', 'Volume of this line; blank = the track-wide value below, 0 = mute')}>
-                    <span className="text-[10px] text-muted-foreground/70">{t('量', 'vol')}</span>
-                    <input
-                      type="number" min={0} max={100} step={5}
-                      value={r.volume == null ? '' : Math.round(r.volume * 100)}
-                      placeholder={String(Math.round(volume * 100))}
-                      onChange={(e) => setRowVolume(r.id, e.target.value === '' ? undefined : Math.min(1, Math.max(0, Number(e.target.value) / 100)))}
-                      className="input h-7 w-14 text-right text-[10px] tabular-nums"
-                    />
-                    <span className="text-[10px] text-muted-foreground/70">%</span>
-                  </span>
                   {IS_DESKTOP && <button
                     onClick={() => void genVoice(r)}
                     disabled={!r.text.trim()}
@@ -662,12 +653,12 @@ function SliderRow({ min, max, value, suffix, onCommit }: {
             <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
               {t('整片字幕间隔', 'Track gap')}
               <input
-                type="number" min={0} max={10} step={0.1} value={gapSec}
-                onChange={(e) => setGapSec(Math.max(0, Number(e.target.value) || 0))}
-                className="input h-7 w-14 text-right text-[11px] tabular-nums"
+                type="range" min={0} max={5} step={0.1} value={gapSec}
+                onChange={(e) => setGapSec(parseFloat(e.target.value))}
+                className="w-20 h-1 accent-[var(--brand)]"
                 title={t('每行读完停几秒再排下一行（单行右边那格可以覆盖它）', 'Pause after each line; a line can override it on its right')}
               />
-              {t('秒', 's')}
+              <span className="w-9 text-right tabular-nums">{gapSec.toFixed(1)}s</span>
               {IS_DESKTOP && <>
                 <span className="text-muted-foreground/40">·</span>
                 {t('配音音量', 'Volume')}

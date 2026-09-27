@@ -453,8 +453,8 @@ export function saveProjectV2(db, project) {
       project_id, font_size, font_family, color, stroke_color, stroke_width, bg, bg_color, pos_y, max_pct, gap_sec, volume, hot_fix_json
     ) VALUES (@project_id,@font_size,@font_family,@color,@stroke_color,@stroke_width,@bg,@bg_color,@pos_y,@max_pct,@gap_sec,@volume,@hot_fix_json)`);
     const insEntry = db.prepare(`INSERT INTO narration_entry (
-      entry_id, project_id, text, audio_asset_id, duration_sec, start_sec, locked, gap_sec, volume, ord
-    ) VALUES (@entry_id,@project_id,@text,@audio_asset_id,@duration_sec,@start_sec,@locked,@gap_sec,@volume,@ord)`);
+      entry_id, project_id, text, audio_asset_id, duration_sec, start_sec, locked, gap_sec, ord
+    ) VALUES (@entry_id,@project_id,@text,@audio_asset_id,@duration_sec,@start_sec,@locked,@gap_sec,@ord)`);
     const insMusic = db.prepare(`INSERT INTO music_track (
       track_id, project_id, name, audio_asset_id, start_sec, end_sec, volume, loop, fade_in, fade_out, ord
     ) VALUES (@track_id,@project_id,@name,@audio_asset_id,@start_sec,@end_sec,@volume,@loop,@fade_in,@fade_out,@ord)`);
@@ -514,7 +514,6 @@ export function saveProjectV2(db, project) {
       duration_sec: e.durationFrames == null ? null : f2s(e.durationFrames),
       start_sec: f2s(e.startFrame), locked: e.locked ? 1 : 0,
       gap_sec: typeof e.gapSec === 'number' ? e.gapSec : null,   // 空 = 跟整片；0 = 这一行明确不间隔
-      volume: typeof e.volume === 'number' ? Math.min(1, Math.max(0, e.volume)) : null,   // 空 = 跟整片；0 = 这一句静音
       ord: i,
     }));
     // 项目级背景音乐：单轨多段，挂在项目上（绝对秒）
@@ -745,7 +744,6 @@ export function getProjectV2(db, id) {
   const entries = db.prepare('SELECT * FROM narration_entry WHERE project_id = ? ORDER BY ord').all(pid).map((e) => ({
     id: e.entry_id, text: e.text, audioId: e.audio_asset_id ?? undefined, durationFrames: s2f(e.duration_sec ?? 0), startFrame: s2f(e.start_sec), locked: e.locked === 1,
     gapSec: e.gap_sec == null ? undefined : e.gap_sec,
-    volume: e.volume == null ? undefined : e.volume,   // 0 是「这一句静音」，别用 || 读
   }));
   const elements = readElementsV2(db, pid, s2f);
   const music = db.prepare('SELECT * FROM music_track WHERE project_id = ? ORDER BY ord').all(pid).map((m) => ({

@@ -42,13 +42,13 @@ interface Desired {
 
 function desiredAt(project: MapVideoProject, frame: number, fps: number): Map<string, Desired> {
   const map = new Map<string, Desired>();
-  // 配音：字幕条激活区间播放（条目 startFrame 为**项目绝对帧**），音量 = 整片 × 这一行（行没填走整片）
+  // 配音：字幕条激活区间播放（条目 startFrame 为**项目绝对帧**），音量只有整片这一层
   const nar = project.narration;
   if (nar) {
     for (const e of nar.entries) {
       if (!e.audioId) continue;
       if (frame >= e.startFrame && frame < e.startFrame + e.durationFrames) {
-        map.set(e.audioId, { vol: e.volume ?? nar.volume ?? 1, offset: (frame - e.startFrame) / fps, loop: false });
+        map.set(e.audioId, { vol: nar.volume ?? 1, offset: (frame - e.startFrame) / fps, loop: false });
       }
     }
   }
