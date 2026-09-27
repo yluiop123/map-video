@@ -313,7 +313,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 
 「层」只有两处声明：实例级整条实例共用、每一格各一张表。同一格里填了值的走实例，没填的由调用点现场给（业务界面或试调用）—— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。
 
-#### `deepseek-chat` · DeepSeek 对话（llm）
+#### `deepseek-chat` · openai（llm）
 
 | 层 | key | 显示名 | 类型 | 默认值 | 候选值 / 范围 |
 |---|---|---|---|---|---|
@@ -323,8 +323,8 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `model` | 模型 | enum | `"deepseek-flash"` | deepseek-flash · deepseek-v4-pro |
 | 这一格 `sync.submit` | `reasoningEffort` | 思考强度 | enum | — | none · low · high · max |
 | 这一格 `sync.submit` | `thinking` | 深度思考 | enum | — | enabled · disabled |
-| 这一格 `sync.submit` | `temperature` | 温度 | number | — | ≥0 ≤2 步长 0.1 |
-| 这一格 `sync.submit` | `maxTokens` | 最大输出 token | number | — | — |
+| 这一格 `sync.submit` | `temperature` | 温度 | number | `1` | ≥0 ≤2 步长 0.1 |
+| 这一格 `sync.submit` | `maxTokens` | 最大输出 token | number | `200000` | — |
 | 这一格 `sync.submit` | `systemPrompt` | 系统提示词 | text | — | — |
 | 这一格 `sync.submit` | `userPrompt` | 用户提示词 | text | — | — |
 
@@ -476,6 +476,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
         "key": "temperature",
         "label": "温度",
         "valueType": "number",
+        "defaultValue": 1,
         "min": 0,
         "max": 2,
         "step": 0.1
@@ -483,7 +484,8 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
       {
         "key": "maxTokens",
         "label": "最大输出 token",
-        "valueType": "number"
+        "valueType": "number",
+        "defaultValue": 200000
       },
       {
         "key": "systemPrompt",

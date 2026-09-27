@@ -80,7 +80,8 @@ console.log('\n[2] 三层参数与求值');
   eq('2.1 请求级覆盖实例级（同名 key 各存各的）', req.body.model, 'deepseek-flash');
   eq('2.2 数字参数保留类型', req.body.temperature, 0.6);
   eq('2.3 写死在模板里的字面量原样带走', req.body.stream, false);
-  eq('2.4 没填的可选参数连键删掉', 'max_tokens' in req.body, false);
+  // （max_tokens 现在有内置默认值，删键这一条改拿没默认值的 reasoning_effort 验）
+  eq('2.4 没填的可选参数连键删掉', 'reasoning_effort' in req.body, false);
   eq('2.5 嵌套对象里全空 → 父键一起删（不留半成品 thinking）', 'thinking' in req.body, false);
   eq('2.6 调用级参数进骨架', [req.body.messages[0].content, req.body.messages[1].content], ['你是助手', '写三行']);
   eq('2.7 baseUrl 求值后就是完整地址（不再二次拼接）', req.url, 'https://x.example/v1/chat/completions');

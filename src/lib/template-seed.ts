@@ -2,7 +2,8 @@
  * template-seed.ts — 内置接口模板 seed（首次建库铺成 provider_template 的行）
  *
  * 按用户要求内置这六份（= 六种上游形状）：
- *   deepseek-chat     文案生成                —— https://api-docs.deepseek.com/zh-cn/
+ *   deepseek-chat     文案生成（显示名按他在界面里改的那一份：`openai`；id 不变）
+ *                     —— https://api-docs.deepseek.com/zh-cn/
  *   qwen-image        图片生成（同步 + 异步 + 任务查询）
  *                     —— platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image{,-30-async,-task-query}
  *   qwen-tts          语音：非流式合成 + 声音复刻（文件直接进体）
@@ -46,7 +47,7 @@ const pacing = (intervalMs: number, attempts: number): ParamSpec[] => [
 // ========== 文案：DeepSeek ==========
 
 const deepseekChat: TemplateDef = {
-  id: 'deepseek-chat', name: 'DeepSeek 对话', category: 'llm',
+  id: 'deepseek-chat', name: 'openai', category: 'llm',
   caps: { modes: 'sync' },
 
   instanceParams: net('https://api.deepseek.com'),
@@ -58,8 +59,8 @@ const deepseekChat: TemplateDef = {
         // 没有 medium（早先那串里抄来的，填上去上游不认）
         en('reasoningEffort', '思考强度', ['none', 'low', 'high', 'max']),
         en('thinking', '深度思考', ['enabled', 'disabled']),
-        num('temperature', '温度', { min: 0, max: 2, step: 0.1 }),
-        num('maxTokens', '最大输出 token'),
+        num('temperature', '温度', { defaultValue: 1, min: 0, max: 2, step: 0.1 }),
+        num('maxTokens', '最大输出 token', { defaultValue: 200000 }),
         // 这两条不在这儿填值 —— 每次调用由字幕生成那边给；声明出来是为了有中文名与类型
         text('systemPrompt', '系统提示词'), text('userPrompt', '用户提示词'),
       ],
