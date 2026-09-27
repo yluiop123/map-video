@@ -1,7 +1,7 @@
 import { IS_DESKTOP } from './backend';
 import { useProviderStore } from '../stores/providerStore';
 import {
-  EngineError, buildRequest, redact, runSync, runClone, submitAsync, queryOnce,
+  EngineError, asOption, buildRequest, redact, runSync, runClone, submitAsync, queryOnce,
   requestOf, submitKeyOf, secretsOf, supportsOf,
   type Category, type Deps, type InstanceDef, type ReqKey, type ResolvedRequest, type TemplateDef,
 } from './request-engine';
@@ -35,13 +35,14 @@ export function supports(inst: InstanceDef | null | undefined, key: 'clone' | 'u
 function specOf(inst: InstanceDef | null | undefined, key: string) {
   const t = templateOf(inst);
   if (!t) return undefined;
+  // 两条提交接口都看：实例是同步还是异步决定哪一格真的引用到这个参数（与 paramSpec 同一条查法）
   const all = [...(t.instanceParams ?? []), ...(requestOf(t, 'sync.submit')?.requestParams ?? []), ...(requestOf(t, 'async.submit')?.requestParams ?? [])];
   return all.find((s) => s.key === key);
 }
 
 /** 某个参数在模板里声明的候选值（有就长按钮组，没有就是文本框） */
 export function declaredOptions(inst: InstanceDef | null | undefined, key: string): string[] {
-  return (specOf(inst, key)?.options ?? []).map((o) => String(typeof o === 'object' && o !== null ? (o as { value: unknown }).value : o));
+  return (specOf(inst, key)?.options ?? []).map((o) => String(asOption(o).value));
 }
 
 /** 某个参数声明的默认值 —— 只当输入框的占位提示，真实取值仍由引擎三层解析 */

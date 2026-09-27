@@ -19,7 +19,26 @@ export type ValueType =
 /** 产物封装方式：binary 响应体即产物 / hex / base64 / url 是带时效的链接 */
 export type OutputFormat = 'binary' | 'hex' | 'base64' | 'url';
 
-export interface OptionSpec { value: string | number | boolean; label?: string }
+export interface OptionSpec {
+  value: string | number | boolean;
+  label?: string;
+  /**
+   * 分组名（自由字面量，如 `男声` / `女声` / `中性`）：界面按它分组，组名就是这个字面量本身，
+   * 顺序 = 首次出现的顺序；一组为空则整组不显示。音色表就是靠它分组的（`voiceTable` 那一档）。
+   */
+  group?: string;
+  /** 备注（音色表里是官方风格摘要） */
+  note?: string;
+  /**
+   * 这条候选值只在**同格那个叫 `model` 的参数**取这些值时可选（实测约束：克隆音色只吃 `-vc` 那条模型，
+   * 系统音色反过来不吃它）。只影响「看得见哪些候选值」，不参与求值。
+   */
+  models?: string[];
+}
+
+/** 候选值可以简写成裸字面量，界面与过滤都走这一个规范化（原来在 providers 里各 map 了一遍） */
+export const asOption = (o: OptionSpec | string | number | boolean): OptionSpec =>
+  (typeof o === 'object' && o !== null ? o : { value: o }) as OptionSpec;
 
 /**
  * 一条参数声明。名字 / 说明都是用户自填的单个字符串（自定义的东西没有自动翻这回事）。
@@ -40,6 +59,12 @@ export interface ParamSpec {
   maxCount?: number;
   /** array 的元素类型 */
   itemType?: 'string' | 'number';
+  /**
+   * 这一条是**音色表**（候选值带分组的那一类）：界面长成分组选择器 + 克隆音色一段，
+   * 且「这个音色绑哪条模型」由账本给，不靠猜候选值里有没有 `-vc`。
+   * 判据是这一格声明的形状，不是参数名叫什么 —— 自定义模板勾一下就能用。
+   */
+  voiceTable?: boolean;
 }
 
 /** 一条请求（核心或桥接）。请求头逐条各配一份：同一个账号的认证头家家一样，但异步开关头只有提交那条要 */
@@ -523,6 +548,27 @@ export function scopeOf(
   return { values, declared, missing: new Set<string>() };
 }
 
+/** 某个参数在这一格里怎么声明的（实例级与格级两张表合起来看，格级赢） */
+export function paramSpec(tpl: TemplateDef, reqKey: ReqKey, name: string): ParamSpec | undefined {
+  const req = requestOf(tpl, reqKey);
+  return [...(req?.requestParams ?? []), ...(tpl.instanceParams ?? [])].find((p) => p.key === name);
+}
+
+/**
+ * 这一格里某个参数的候选值，按**当前取值**过滤后的结果（界面长控件读它）。
+ * 过滤只看候选值自己声明的 `models` 与同格 `model` 参数的求值后取值；`model` 还没选出来时不藏东西（全给）。
+ * 它不影响求值 —— 值照原样进请求体，这里管的只是「界面上让你选哪些」。
+ */
+export function visibleOptions(
+  tpl: TemplateDef, inst: InstanceDef, reqKey: ReqKey, name: string,
+  callArgs: Record<string, unknown> = {},
+): OptionSpec[] {
+  const opts = paramSpec(tpl, reqKey, name)?.options?.map(asOption) ?? [];
+  if (!opts.some((o) => o.models?.length)) return opts;
+  const model = String(scopeOf(tpl, inst, reqKey, callArgs).values.model ?? '').trim();
+  return opts.filter((o) => !o.models?.length || !model || o.models.includes(model));
+}
+
 // ========== 求值 ==========
 
 const WHOLE = /^\$\{([A-Za-z_][A-Za-z0-9_.]*)\}$/;
@@ -970,6 +1016,18 @@ export function validateTemplate(tpl: TemplateDef): string[] {
     if ((def.requestParams ?? []).some((p) => p.key === VOICE_FILE_KEY)) injected(REQ_LABEL[key]);
     if (Object.keys(def.outputs ?? {}).includes(VOICE_FILE_KEY)) injected(`${REQ_LABEL[key]} 的自定义变量`);
   }
+  // 有候选值的参数：默认值必须是其中一个。界面选不到、真发却照它发的那个值，是最难查的一种错
+  const badDefault = (where: string, specs: ParamSpec[]) => {
+    for (const p of specs) {
+      const opts = p.options?.map(asOption) ?? [];
+      if (!opts.length || p.defaultValue === undefined) continue;
+      if (!opts.some((o) => String(o.value) === String(p.defaultValue))) {
+        problems.push(`${where}：参数「${p.label || p.key}」的默认值 ${JSON.stringify(p.defaultValue)} 不在候选值里（界面上选不到它，真发却会照它发）`);
+      }
+    }
+  };
+  badDefault('实例级参数', tpl.instanceParams ?? []);
+  for (const key of slots) badDefault(REQ_LABEL[key], requestOf(tpl, key)?.requestParams ?? []);
   // 开关要求的槽：必须在、必须有地址、固定项必须填路径
   for (const key of slots) {
     const def = requestOf(tpl, key);

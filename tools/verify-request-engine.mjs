@@ -10,7 +10,7 @@
  * 运行：node --experimental-strip-types tools/verify-request-engine.mjs
  */
 import {
-  REQ_KEYS, applyOutputs, buildRequest, classify, errorOf, openKeysOf, readPath, trialKeysOf,
+  REQ_KEYS, applyOutputs, buildRequest, classify, errorOf, openKeysOf, readPath, trialKeysOf, visibleOptions,
   redact, requestOf, runClone, runSync, secretsOf, slotsOf, submitAsync, queryOnce, validateTemplate, EngineError,
   retriable,
 } from '../src/lib/request-engine.ts';
@@ -118,6 +118,24 @@ console.log('\n[2] 三层参数与求值');
   eq('2.17 seed 的出图格：画面描述走参数表，试调用不再摆一个框', trialKeysOf(seedTemplate('qwen-image'), i, 'sync.submit'), []);
   eq('2.18 剩下的才是它该收的：那个文件（引擎注入、没有别处可填）',
     trialKeysOf(seedTemplate('minimax-voice'), inst('minimax-voice'), 'clone'), ['voiceData']);
+
+  // 候选值带分组 / 备注 / 适用模型：音色表就是这么挂到模板上的（`voiceTable` 那一档）
+  const voiceParams = [
+    { key: 'model', label: '模型', valueType: 'enum', options: ['m-flash', 'm-vc'], defaultValue: 'm-flash' },
+    { key: 'voice', label: '音色', valueType: 'enum', voiceTable: true, options: [
+      { value: 'Ann', label: '安', group: '女声', note: '中英多语' },
+      { value: 'Bob', label: '博', group: '男声', models: ['m-flash'] },
+      { value: 'Cy', label: '赛', group: '中性', models: ['m-vc'] },
+    ] },
+  ];
+  const tVoice = { ...tpl, sync: { submit: { path: '${baseUrl}/s', method: 'POST', body: { voice: '${voice}' }, requestParams: voiceParams } } };
+  eq('2.19 候选值按当前 model 的取值过滤（没标 models 的一直在）',
+    visibleOptions(tVoice, inst('deepseek-chat', { instance: { model: 'm-flash' } }), 'sync.submit', 'voice').map((o) => o.value), ['Ann', 'Bob']);
+  eq('2.20 实例把 model 改成 -vc → 换一批候选值',
+    visibleOptions(tVoice, inst('deepseek-chat', { requests: { 'sync.submit': { model: 'm-vc' } } }), 'sync.submit', 'voice').map((o) => o.value), ['Ann', 'Cy']);
+  const badDef = { ...tVoice, sync: { submit: { ...tVoice.sync.submit, requestParams: voiceParams.map((p) => (p.key === 'voice' ? { ...p, defaultValue: 'Nobody' } : p)) } } };
+  check('2.21 enum 的默认值不在候选值里 → 点名（界面选不到、真发却照它发）',
+    validateTemplate(badDef).some((x) => x.includes('不在候选值')), validateTemplate(badDef));
 }
 
 // ========== 3. headers 覆盖 / outputs / 发音修正 ==========
