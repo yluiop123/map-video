@@ -715,13 +715,16 @@ function TimelineView({ content, local }: { content: OverlayContent; local: numb
   );
 }
 
+/** 引文用衬线：视频里「被引用的那句话」要有书卷的分量，黑体撑不起来 */
+const QUOTE_SERIF = "Georgia, 'Times New Roman', 'Noto Serif SC', 'Source Han Serif SC', 'SimSun', serif";
+
 function QuoteView({ content }: { content: OverlayContent }) {
   const q = content.quote;
   return (
-    <div style={{ maxWidth: 400 }}>
-      <div style={{ fontSize: 34, color: '#4C9EFF', lineHeight: 0.7, marginBottom: 6 }}>❝</div>
-      <div style={{ color: '#f5f5f4', fontSize: 16, lineHeight: 1.7 }}>{q?.text}</div>
-      {q?.source && <div style={{ color: '#a8a29e', fontSize: 12, marginTop: 8, textAlign: 'right' }}>—— {q.source}</div>}
+    // 左侧一道竖尺 = 引文的标识（原来那枚 ❝ 只会读成「多出来的双引号」），其余全部留白
+    <div style={{ maxWidth: 520, paddingLeft: 18, borderLeft: '3px solid #4C9EFF' }}>
+      <div style={{ color: '#f5f5f4', fontSize: 26, lineHeight: 1.6, fontFamily: QUOTE_SERIF, whiteSpace: 'pre-wrap' }}>{q?.text}</div>
+      {q?.source && <div style={{ color: '#a8a29e', fontSize: 16, lineHeight: 1.5, marginTop: 10, textAlign: 'right', fontFamily: QUOTE_SERIF }}>—— {q.source}</div>}
     </div>
   );
 }

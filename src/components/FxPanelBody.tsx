@@ -321,7 +321,7 @@ export const POPUP_TYPES: { type: OverlayType; label: string; icon: string }[] =
   { type: 'chart', label: '图表', icon: '📊' },
   { type: 'person', label: '人物', icon: '👤' },
   { type: 'timeline', label: '时间线', icon: '🕒' },
-  { type: 'quote', label: '引用', icon: '❝' },
+  { type: 'quote', label: '引用', icon: '📖' },
   { type: 'compare', label: '对比', icon: '⚖️' },
   { type: 'stat', label: '数字', icon: '🔢' },
 ];
