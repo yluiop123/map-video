@@ -26,9 +26,9 @@ import { useConfirm } from './ui/ConfirmHost';
 import { useProviderStore } from '../stores/providerStore';
 import { seedTemplate } from '../lib/template-seed';
 import {
-  ARTIFACT_KEY, REQ_KEYS, VOICE_FILE_KEY, cloneViaOf, multipartSlotOf, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
+  ARTIFACT_KEY, REQ_KEYS, VOICE_FILE_KEY, asOption, cloneViaOf, multipartSlotOf, requestOf, requiredOutputsOf, slotsOf, validateTemplate,
   REQ_LABEL as SLOT_LABEL,
-  type ArtifactEncoding, type Caps, type Category, type CloneVia, type ParamSpec, type ReqKey,
+  type ArtifactEncoding, type Caps, type Category, type CloneVia, type OptionSpec, type ParamSpec, type ReqKey,
   type RequestDef, type TemplateDef, type ValueType,
 } from '../lib/request-engine';
 
@@ -504,9 +504,16 @@ function ParamTable({ title, hint, variant = 'framed', params, onChange }: {
         <Input value={String(p.defaultValue ?? '')} onChange={(e) => at(i, { defaultValue: defaultByType(p, e.target.value) })} className="h-6 min-w-0 text-[10px]" placeholder={t('默认值', 'default')} />
       </div>
       <div className="flex min-w-0 flex-wrap items-center gap-1">
-        {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (
-          <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 min-w-0 flex-1 basis-32 text-[10px] font-mono"
-            placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />
+        {(p.valueType === 'enum' || p.valueType === 'multiEnum' || p.valueType === 'array') && (richOptions(p)
+          ? <div className="min-w-0 flex-1 basis-full"><OptionsEditor options={(p.options ?? []).map(asOption)} onChange={(options) => at(i, { options })} /></div>
+          : <Input value={optsText(p)} onChange={(e) => at(i, { options: parseList(e.target.value) })} className="h-6 min-w-0 flex-1 basis-32 text-[10px] font-mono"
+            placeholder={t('候选值：mp3, wav 或 16000=16k', 'options: mp3, wav or 16000=16k')} />)}
+        {p.valueType === 'enum' && (
+          // 勾了它，这一格在 ⚙ 与字幕生成就长成分组音色选择器 + 克隆音色那一段（判据是声明，不是参数名）
+          <label className="flex items-center gap-1 text-[10px] text-muted-foreground" title={t('这一条候选值是音色表', 'this option list is a voice catalog')}>
+            <Switch checked={!!p.voiceTable} onCheckedChange={(v) => at(i, { voiceTable: v || undefined })} className="h-4 w-7" />
+            {t('音色表', 'voice list')}
+          </label>
         )}
         {p.valueType === 'number' && (
           <div className="grid min-w-0 flex-1 basis-32 grid-cols-3 gap-1">
@@ -534,6 +541,57 @@ function ParamTable({ title, hint, variant = 'framed', params, onChange }: {
       {variant === 'framed'
         ? <div className="space-y-1">{params.map(row)}{add}</div>
         : <div className="border-l border-white/15 pl-2">{params.map(row)}{add}</div>}
+    </div>
+  );
+}
+
+/** 候选值带分组 / 备注 / 适用模型时，一行逗号文本改不动（38 条音色塞一个框里），换行编辑器 */
+const richOptions = (p: ParamSpec) => !!p.voiceTable || (p.options ?? []).some((o) => {
+  const x = asOption(o);
+  return !!x.group || !!x.note || !!x.models?.length;
+});
+
+/**
+ * 候选值的行编辑器：一条一行（值 / 显示名 / 分组 / 备注 / 适用模型）。
+ * 默认折叠，标题带条数与分组摘要 —— 音色表几十条，展开着会把整张参数卡撑没。
+ */
+function OptionsEditor({ options, onChange }: { options: OptionSpec[]; onChange: (o: OptionSpec[]) => void }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const groups = [...new Set(options.map((o) => o.group ?? '').filter(Boolean))];
+  const set = (i: number, p: Partial<OptionSpec>) => onChange(options.map((x, j) => (j === i ? { ...x, ...p } : x)));
+  const summary = groups.length
+    ? groups.map((g) => `${g} ${options.filter((o) => (o.group ?? '') === g).length}`).join(' · ')
+    : t(`${options.length} 条`, `${options.length} item(s)`);
+  return (
+    <div className="min-w-0 space-y-1">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-1.5 text-left text-[10px] text-muted-foreground hover:text-foreground">
+        <span className="w-2.5 shrink-0">{open ? '▾' : '▸'}</span>
+        <span className="shrink-0">{t('候选值', 'options')} {options.length}</span>
+        <span className="truncate opacity-70">{summary}</span>
+      </button>
+      {open && (
+        <div className="max-h-60 space-y-1.5 overflow-y-auto pr-1">
+          {options.map((o, i) => (
+            <div key={i} className="min-w-0 space-y-1">
+              <div className="grid min-w-0 grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_58px_18px] items-center gap-1">
+                <Input value={String(o.value)} onChange={(e) => set(i, { value: e.target.value })} className="h-6 min-w-0 text-[10px] font-mono" placeholder="value" />
+                <Input value={o.label ?? ''} onChange={(e) => set(i, { label: e.target.value })} className="h-6 min-w-0 text-[10px]" placeholder={t('显示名', 'label')} />
+                <Input value={o.group ?? ''} onChange={(e) => set(i, { group: e.target.value || undefined })} className="h-6 min-w-0 text-[10px]" placeholder={t('分组', 'group')} />
+                <button onClick={() => onChange(options.filter((_, j) => j !== i))} className="text-[10px] text-muted-foreground hover:text-red-400">✕</button>
+              </div>
+              <div className="grid min-w-0 grid-cols-2 gap-1">
+                <Input value={o.note ?? ''} onChange={(e) => set(i, { note: e.target.value || undefined })} className="h-6 min-w-0 text-[10px]" placeholder={t('备注', 'note')} />
+                <Input value={(o.models ?? []).join(', ')} onChange={(e) => { const models = e.target.value.split(',').map((x) => x.trim()).filter(Boolean); set(i, { models: models.length ? models : undefined }); }} className="h-6 min-w-0 text-[10px] font-mono"
+                  placeholder={t('适用模型（留空 = 都适用）', 'models (blank = any)')} />
+              </div>
+            </div>
+          ))}
+          <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => onChange([...options, { value: '' }])}>
+            ＋ {t('一条', 'item')}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

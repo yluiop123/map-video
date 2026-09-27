@@ -103,6 +103,9 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
     既不填路径又不写 `${voiceId}` 的仍然点名（那样克隆完真的拿不到 id）。
   - **自定义变量**（可选、界面默认折叠）—— 只用于在别的请求里写 `${它}`，引擎从不读它们。
     与三层参数同名会被点名（同一个 `${x}` 有两个来源，谁赢取决于调用时给没给值）。
+- **候选值（`options`）可以带形状**：`{ value, label, group, note, models }`。`group` 是分组名（自由字面量，界面按它分组、组名就是它）；`note` 是备注；`models` 声明「这条候选值只在同格 `model` 取这些值时可选」，由 `visibleOptions` 按当前取值过滤 —— **只影响界面上让你选哪些，不参与求值**。
+  参数自己还可以勾 `voiceTable`：这一条候选值就是**音色表**，界面因此长成分组选择器 + 克隆音色那一段（`VoiceField`，⚙ 与字幕生成共用）。**代码里没有音色表**：千问 38 条与 ElevenLabs 21 条是 seed 里那份模板的候选值，铺进库后可在模板页改；`lib/voices.ts` 只剩随包发布的克隆样本清单。
+  另有一条自检：**有候选值的参数，默认值必须在候选值里**（界面选不到、真发却照它发的那个值是最难查的错）。
 - **产物形式是逐格的一件事**（`RequestDef.artifactForm`：这一格没产物 / 响应体即字节 / base64 / hex / 链接当场下），
   与固定项「产物」并排配在界面「从响应里取」那一节。它以前住在 `caps` 里（整份模板一份），于是「同步回链接、异步回 base64」配不出来，还和固定项撞过一次名；改成逐格后一个词只管一件事。
   **上游那个「你要 hex 还是 url」的字段（MiniMax 叫 `output_format`）seed 里没有声明** —— 它必须与这一格的产物形式配套，
@@ -356,7 +359,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 这一格 `sync.submit` | `model` | 模型 | enum | `"qwen3-tts-flash"` | qwen3-tts-flash · qwen3-tts-vc-2026-01-22 |
 | 这一格 `sync.submit` | `languageType` | 语种 | enum | `"Chinese"` | Chinese · English · Auto |
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
-| 这一格 `sync.submit` | `voice` | 音色 ID | string | `"Ethan"` | — |
+| 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"Ethan"` | 38 条（女声 19 / 男声 19） —— 逐条见下面那列 JSON |
 | 这一格 `clone` | `model` | 复刻目标模型（须与合成同款） | enum | `"qwen3-tts-vc-2026-01-22"` | qwen3-tts-vc-2026-01-22 |
 | 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
 
@@ -369,7 +372,7 @@ _（本节由 `node --experimental-strip-types tools/gen-template-json-doc.mjs` 
 | 实例级 | `timeoutMs` | 单次超时 ms | number | `60000` | — |
 | 这一格 `sync.submit` | `model` | 模型 | enum | `"eleven_multilingual_v2"` | eleven_multilingual_v2 · eleven_flash_v2_5 |
 | 这一格 `sync.submit` | `text` | 合成文本 | text | — | — |
-| 这一格 `sync.submit` | `voice` | 音色 ID | string | `"CwhRBWXzGAHq8TQ4Fs17"` | — |
+| 这一格 `sync.submit` | `voice` | 音色 ID | enum | `"CwhRBWXzGAHq8TQ4Fs17"` | 21 条（男声 13 / 女声 7 / 中性 1） —— 逐条见下面那列 JSON |
 | 这一格 `clone` | `preferredName` | 音色名 | string | `"mapvideo"` | — |
 
 #### `minimax-voice` · MiniMax 语音（tts）
@@ -830,7 +833,352 @@ null
       {
         "key": "voice",
         "label": "音色 ID",
-        "valueType": "string",
+        "valueType": "enum",
+        "voiceTable": true,
+        "options": [
+          {
+            "value": "Cherry",
+            "label": "芊悦",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Serena",
+            "label": "苏瑶",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Chelsie",
+            "label": "千雪",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Ethan",
+            "label": "晨煦",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Moon",
+            "label": "月白",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Kai",
+            "label": "凯",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Nofish",
+            "label": "不吃鱼",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Ryan",
+            "label": "甜茶",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Aiden",
+            "label": "艾登",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Eldric Sage",
+            "label": "沧明子",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Mochi",
+            "label": "沙小弥",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Vincent",
+            "label": "田叔",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Neil",
+            "label": "阿闻",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Arthur",
+            "label": "徐大爷",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Pip",
+            "label": "顽屁小孩",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Bodega",
+            "label": "博德加",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Alek",
+            "label": "阿列克",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Dolce",
+            "label": "多尔切",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Lenn",
+            "label": "莱恩",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Emilien",
+            "label": "埃米尔安",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Andre",
+            "label": "安德雷",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Radio Gol",
+            "label": "拉迪奥·戈尔",
+            "group": "男声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Momo",
+            "label": "茉兔",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Vivian",
+            "label": "十三",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Maia",
+            "label": "四月",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Bella",
+            "label": "萌宝",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Jennifer",
+            "label": "詹妮弗",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Katerina",
+            "label": "卡捷琳娜",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Mia",
+            "label": "乖小妹",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Bellona",
+            "label": "燕铮莺",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Bunny",
+            "label": "萌小姬",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Elias",
+            "label": "墨讲师",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Nini",
+            "label": "邻家妹妹",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Seren",
+            "label": "小婉",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Stella",
+            "label": "少女阿月",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Sonrisa",
+            "label": "索尼莎",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Sohee",
+            "label": "素熙",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          },
+          {
+            "value": "Ono Anna",
+            "label": "小野杏",
+            "group": "女声",
+            "note": "中英多语",
+            "models": [
+              "qwen3-tts-flash"
+            ]
+          }
+        ],
         "defaultValue": "Ethan"
       }
     ],
@@ -970,7 +1318,136 @@ null
       {
         "key": "voice",
         "label": "音色 ID",
-        "valueType": "string",
+        "valueType": "enum",
+        "voiceTable": true,
+        "options": [
+          {
+            "value": "CwhRBWXzGAHq8TQ4Fs17",
+            "label": "Roger",
+            "group": "男声",
+            "note": "随性、浑厚 · 日常对话"
+          },
+          {
+            "value": "IKne3meq5aSn9XLyUdCD",
+            "label": "Charlie",
+            "group": "男声",
+            "note": "澳洲青年 · 有精神"
+          },
+          {
+            "value": "JBFqnCBsd6RMkjVDRZzb",
+            "label": "George",
+            "group": "男声",
+            "note": "暖 · 抓人的讲述感"
+          },
+          {
+            "value": "N2lVS1w4EtoT3dr4eOWO",
+            "label": "Callum",
+            "group": "男声",
+            "note": "沙哑 · 带刺"
+          },
+          {
+            "value": "TX3LPaxmHKxFdv7VOQHJ",
+            "label": "Liam",
+            "group": "男声",
+            "note": "短视频向 · 有活力"
+          },
+          {
+            "value": "bIHbv24MWmeRgasZH58o",
+            "label": "Will",
+            "group": "男声",
+            "note": "松弛 · 乐观"
+          },
+          {
+            "value": "cjVigY5qzO86Huf0OWal",
+            "label": "Eric",
+            "group": "男声",
+            "note": "男中音 · 稳"
+          },
+          {
+            "value": "iP95p4xoKVk53GoZ742B",
+            "label": "Chris",
+            "group": "男声",
+            "note": "朴实 · 百搭"
+          },
+          {
+            "value": "nPczCjzI2devNBz1zQrb",
+            "label": "Brian",
+            "group": "男声",
+            "note": "低沉 · 安抚"
+          },
+          {
+            "value": "onwK4e9ZLuTAKqWW03F9",
+            "label": "Daniel",
+            "group": "男声",
+            "note": "播音腔 · 新闻"
+          },
+          {
+            "value": "pNInz6obpgDQGcFmaJgB",
+            "label": "Adam",
+            "group": "男声",
+            "note": "明亮男高音 · 有压"
+          },
+          {
+            "value": "pqHfZKP75CvOlQylNhV4",
+            "label": "Bill",
+            "group": "男声",
+            "note": "成熟 · 讲故事"
+          },
+          {
+            "value": "SOYHLrjzK2X1ezoPC6cr",
+            "label": "Harry",
+            "group": "男声",
+            "note": "战士腔 · 有冲劲"
+          },
+          {
+            "value": "EXAVITQu4vr4xnSDxMaL",
+            "label": "Sarah",
+            "group": "女声",
+            "note": "自信 · 专业 · 让人放心"
+          },
+          {
+            "value": "FGY2WhTYpPnrIDTdsKH5",
+            "label": "Laura",
+            "group": "女声",
+            "note": "明媚 · 一点古怪"
+          },
+          {
+            "value": "Xb7hH8MSUJpSbSDYk0k2",
+            "label": "Alice",
+            "group": "女声",
+            "note": "英音 · 教学向"
+          },
+          {
+            "value": "XrExE9yKIg1WjnnlVkGX",
+            "label": "Matilda",
+            "group": "女声",
+            "note": "职业 · 中低音"
+          },
+          {
+            "value": "cgSgspJ2msm6clMCkdW9",
+            "label": "Jessica",
+            "group": "女声",
+            "note": "美式 · 俏皮"
+          },
+          {
+            "value": "hpp4J3VqNfWAUOO0d1Us",
+            "label": "Bella",
+            "group": "女声",
+            "note": "明亮 · 叙述感"
+          },
+          {
+            "value": "pFZP5JQG7iQjIQuC4Bku",
+            "label": "Lily",
+            "group": "女声",
+            "note": "英音 · 新闻与旁白"
+          },
+          {
+            "value": "SAz9YHcvj6GT2YYXdXww",
+            "label": "River",
+            "group": "中性",
+            "note": "松弛中性 · 旁白与对话都行"
+          }
+        ],
         "defaultValue": "CwhRBWXzGAHq8TQ4Fs17"
       }
     ],
@@ -1318,7 +1795,7 @@ null
 建音色那一步：multipart 请求本身发对了（`name` + `files` 两个字段都被受理），上游回的是
 `paid_plan_required · Your subscription does not include instant voice cloning` —— **这是账号套餐，不是形状错**；
 所以 `files` 这个分片名目前只有「上游受理了它」这一层证据，没有成功响应可对照。
-它家的默认音色表（21 条，含官方 labels 里 `gender: neutral` 那一档）逐字取自 `/v1/voices` 的真响应，存在 `lib/voices.ts` 的 `ELEVENLABS_VOICES`。
+它家的默认音色表（21 条，含官方 labels 里 `gender: neutral` 那一档）逐字取自 `/v1/voices` 的真响应，现在是 seed 里那份模板的候选值（`elevenLabsVoices`），不再是 `lib/voices.ts` 的常量。
 
 **「试调用」的回显在应用里逐类看过（2026-09-26）**：文案生成 → 响应原文那一栏就是美化过的 JSON；语音（千问配音 · 提交）→ 播控条长出来了（`<audio controls>` 吃一个 blob 地址）；图片（千问出图 · 提交）→ 图直接显示，`naturalWidth` 报回 **2048×1152**，也就是真解码出来了、不是个坏链接。
 DeepSeek 那条实例这次在应用里回的是 `HTTP 404` —— 不是引擎：他那行 `deepseek-chat` 模板被改名成 `openai`，且「提交」的地址栏里贴着一串千问异步生图的任务号（`260a1ade-…`），地址就成了那样；CLI 走 seed 是同一条链路，正常出文本。

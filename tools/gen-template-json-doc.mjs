@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { REQ_LABEL, artifactFormOf, requiredOutputsOf, slotsOf } from '../src/lib/request-engine.ts';
+import { REQ_LABEL, artifactFormOf, asOption, requiredOutputsOf, slotsOf } from '../src/lib/request-engine.ts';
 import { SEED_TEMPLATES } from '../src/lib/template-seed.ts';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,7 +34,14 @@ const json = (v) => '```json\n' + JSON.stringify(v ?? null, null, 2) + '\n```';
 /** 候选值 / 范围 / 文件限制挤进同一列：一个参数只可能用得上其中一种 */
 function rangeOf(p) {
   if (p.options?.length) {
-    return p.options.map((o) => (typeof o === 'object' && o !== null ? `${o.value}（${o.label ?? ''}）` : String(o))).join(' · ');
+    const opts = p.options.map(asOption);
+    // 大表（音色表几十条）在总表里只写摘要，逐条在下面那列 JSON 里 —— 全列出来这一节就没法读了
+    if (opts.length > 8) {
+      const groups = [...new Set(opts.map((o) => o.group ?? '').filter(Boolean))];
+      const by = groups.map((g) => `${g} ${opts.filter((o) => (o.group ?? '') === g).length}`).join(' / ');
+      return `${opts.length} 条${by ? `（${by}）` : ''} —— 逐条见下面那列 JSON`;
+    }
+    return opts.map((o) => (o.label ? `${o.value}（${o.label}）` : String(o.value))).join(' · ');
   }
   if (p.valueType === 'number' || p.min !== undefined || p.max !== undefined) {
     return [p.min !== undefined ? `≥${p.min}` : '', p.max !== undefined ? `≤${p.max}` : '', p.step !== undefined ? `步长 ${p.step}` : '']
