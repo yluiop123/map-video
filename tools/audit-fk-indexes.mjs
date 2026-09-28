@@ -22,12 +22,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 // 有意豁免：理由必须写清楚，否则未来审计会产生噪音
-const EXPECTED_EXCEPTIONS = [
-  {
-    match: (r) => r.table === 'project' && r.childCols.join(',') === 'active_base_map_id',
-    reason: 'project 表恒为 1 行，父行删除时的全表扫描成本是常数 1 行，无需索引',
-  },
-];
+// project.active_base_map_id / active_elevation_map_id 现在是**弱引用**（指向全局目录，
+// 但目录行由渲染端铺，挂成真外键会让「目录还没铺好时的一次保存」直接崩）—— 不在这里豁免，
+// 因为它们根本不出现在外键清单里；悬空由 v_check_dangling 照。
+const EXPECTED_EXCEPTIONS = [];
 
 const argv = process.argv.slice(2);
 const verbose = argv.includes('--verbose');

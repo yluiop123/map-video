@@ -76,7 +76,9 @@
 
 #### 弱引用的补偿机制
 
-取消基表后剩下的弱引用只有五处，全部由写入端保证（**不使用触发器**）：
+取消基表后剩下的弱引用只有三处，全部由写入端保证（**不使用触发器**）：
+
+（`project.active_base_map_id` / `active_elevation_map_id` 曾是「父子互引」的弱引用；底图 / 高程目录改成全库一份后互引不存在了，两列仍保持弱引用 —— 目录行由渲染端按常量铺，挂成真外键会让「目录还没铺好时的一次保存」直接崩。悬空由 `v_check_dangling` 照。）
 
 1. **写入端保证**：`element_image.asset_id`（贴图本体）、`public_element_*.asset_id`（公共库副本）、`element_territory` 的 countries / plots / events JSON 内部引用、`project.active_base_map_id` / `active_elevation_map_id`（项目 ↔ 子行互引，见 1.2）、`task.project_id` / `task.entry_id`（任务行是调度状态、不是项目内容，而保存项目 = 删了重写，挂成真外键会让每次自动保存 CASCADE 掉在途任务；删项目由 `removeProjectV2` 显式清）。项目侧 `element_marker.asset_id`、`move_icon_asset_id`、音频列、`camera_keyframe.follow_route_element_id` 都是真外键（SET NULL），删除父行由数据库负责，应用层无需连带清理
 2. **`v_check_dangling` 视图**：检出悬空的跟随机位（`PRAGMA foreign_keys=OFF` 的批量迁移与老库才会出现），`v_check_territory_ref` 检出疆域 JSON 内部失配，正常应返回 0 行

@@ -1,14 +1,5 @@
 %% MapVideo V2 核心 E-R 图（数据源：docs/db-schema-v2.sql / src/types/index.ts）
 %% 用法：直接以 ```mermaid 代码块嵌入 docs/db-redesign.md（Markdown 渲染器原生支持，不再预渲染 SVG）
-%% 2026-09-10 改版：元素表由「element 基表 + 13 子表」改为 4 张类别宽表；图片类下线；疆域内部实体 JSON 内联。
-%% 2026-09-13 精简：15 表 / 3 视图；project_config 并入 project；overlay_block / person_block 删除（内容块内联）；
-%%              元素动画关键帧早已内联 keyframes_json（无 element_keyframe 表）；派生字段不入库。
-%% 2026-09-19 公共图层库：+ public_layer 与 5 张同构副本表 = 22 表。副本脱离项目独立存在，
-%%              副本 asset_id 是弱引用；element_id 为全库主键，副本一律加后缀避免撞车。
-%% 2026-09-19 底图 / 高程图入库：+ base_map / elevation_map（每项目一份，复合主键），
-%%              project.elevation_exaggeration 覆盖值随之删除（夸张系数直接落在行上）。
-%% 2026-09-19 连接线（connector）整条下线：删除 from/to_element_id 端点弱引用与 animated/arrowhead，
-%%              它是唯一「元素引用元素」的边，去掉后元素表之间不再有互相指向的关系。
 erDiagram
   COLLECTION {
     text collection_id PK
@@ -20,8 +11,9 @@ erDiagram
     text collection_id FK
     text name
     text projection
-    text active_base_map_id "弱引用 base_map"
-    text active_elevation_map_id "弱引用 elevation_map"
+    text active_base_map_id "弱引用全局 base_map；悬空=用第一条"
+    text active_elevation_map_id "弱引用全局 elevation_map；NULL=无高程"
+    real terrain_exaggeration "夸张系数 0..50，跟项目走；空=默认1.5"
     real default_duration_sec
     int default_fps
     int resolution_w
@@ -29,21 +21,16 @@ erDiagram
     text default_easing
   }
   BASE_MAP {
-    text project_id PK_FK
-    text base_map_id PK "同项目内唯一，内置 id 各项目同名"
+    text base_map_id PK "全库唯一：目录是所有项目共用的一份"
     text name
-    text style_url "与 style_json 二选一"
-    text style_json "内联样式对象"
+    text style_json "只一格：字符串=样式 URL，对象=内联样式"
     int ord
   }
   ELEVATION_MAP {
-    text project_id PK_FK
-    text elevation_map_id PK "同项目内唯一"
+    text elevation_map_id PK "全库唯一"
     text name
     text url "空串=无高程"
     text encoding "mapbox 或 terrarium"
-    real exaggeration "地形夸张 0..50 空=默认1.5"
-    text style_url
     int ord
   }
   LAYER {
@@ -228,8 +215,6 @@ erDiagram
   PROJECT ||--o{ NARRATION_ENTRY : "1:N 字幕条"
   PROJECT ||--o{ MUSIC_TRACK : "1:N 配乐"
   PROJECT ||--o{ OVERLAY : "1:N 弹窗"
-  PROJECT ||--o{ BASE_MAP : "1:N 底图目录 每项目一份"
-  PROJECT ||--o{ ELEVATION_MAP : "1:N 高程目录 每项目一份"
   ELEMENT_MARKER }o--o| ASSET : "媒体资源 asset_id"
   ELEMENT_ROUTE }o--o| ASSET : "移动标记 asset_id"
   ELEMENT_SHAPE }o--o| ASSET : "移动标记 asset_id"

@@ -35,7 +35,7 @@
 - **5 张**是「时间轴上的子集合」：镜头关键帧、屏幕特效、字幕档、字幕条目、配乐段落；
 - **1 张**是「弹窗」：`overlay` 本体（custom / person 内容块内联 `payload_json`，原 3 张内容块表已删除）；
 - **1 张**是「素材库」：`asset`（自定义图标 / 图片 / GIF / 模型 / 音频等二进制，`kind` 区分，按「项目 / 类型 / 时间戳」落盘）；
-- **2 张**是「底图 / 高程目录」：`base_map` · `elevation_map`，**每项目一份**（内置项在创建项目时作为普通行复制进来，之后各项目各改各的）；
+- **2 张**是「底图 / 高程目录」：`base_map` · `elevation_map`，**全库一份、所有项目共用**（内置行由渲染端按 `lib/map-catalog.ts` 的常量铺进表）；
 - **4 张**是「应用配置」：`provider_template` · `provider` · `voice` · `task`（与项目内容解耦，见 `docs/provider-engine.md`）；
 - **3 张**是合集、项目本体、图层。
 
@@ -49,9 +49,9 @@
 | `MapVideoProject.id / name / description / createdAt / updatedAt` | `project` | P1 列化 |
 | `globalConfig`（defaultDuration / defaultFPS / defaultResolution / defaultEasing） | `project` 的配置列（`default_duration_sec` / `default_fps` / `resolution_w` / `resolution_h` / `default_easing`） | P1 列化：配置并入项目本体（原 1:1 `project_config` 表已取消） |
 | `globalConfig.projection` | `project` 的 `projection` 列 | P1 列化：地图投影是项目自身的属性（渲染方式），随项目走，不属于「默认值类」配置 |
-| `baseMaps[]`（`BaseMapConfig`：id/name/style） | `base_map`（**每项目一份**） | 面板能增删改 → 必须能存：内置目录在创建项目时作为普通行复制进来，之后各项目各改各的；`style` 是 URL 走 `style_url`，是内联样式对象走 `style_json` |
-| `elevationMaps[]`（`ElevationMapConfig`：id/name/url/encoding/exaggeration/style） | `elevation_map`（**每项目一份**） | 同上；**地形夸张系数直接落在本行**（0–50，空=渲染端默认 1.5），不再是 `project` 上的孤立覆盖值 |
-| `activeBaseMapId` / `activeElevationMapId` | `project.active_base_map_id` / `active_elevation_map_id` | 弱引用上面两张表的行；不建外键是因为父子互引（项目行须先于子行写入） |
+| `BaseMapConfig`（id/name/style） | `base_map`（**全库一份**） | 目录不是项目内容：所有项目读同一套行，内置那几份由渲染端按常量铺。`style` **只一格** —— 是 URL 就是 JSON 字符串、是内联样式就是 JSON 对象（拆成两列时，写入端还得按 `typeof` 决定填哪一列） |
+| `ElevationMapConfig`（id/name/url/encoding） | `elevation_map`（**全库一份**） | 同上。「选这张高程就顺带换个底图样式」那一格已删（全项目没有任何读取点）；夸张系数也不在这里 |
+| `activeBaseMapId` / `activeElevationMapId` / `terrainExaggeration` | `project.active_base_map_id` / `active_elevation_map_id` / `terrain_exaggeration` | 前两列是弱引用（目录行由渲染端铺，挂成真外键会让「目录还没铺好时的一次保存」直接崩；悬空由 `v_check_dangling` 照，读取端回落目录第一条）；**夸张系数是这一片片子的创作选择**，跟项目走（0 是有效值） |
 | `customSymbols[]` / `customImages[]`（图标库 / 图片库登记） | `asset`（`kind='icon'` / `kind='image'`） | **三表已合并**：两者都只是项目收录的一个素材行，二进制走 P4 外置 |
 | `layers[]`（`Layer`：type/name/visible/startFrame/endFrame/elements[]） | `layer` + 各元素表的 `layer_id` | P2：**项目 ▸ 图层 ▸ 元素**；单类型图层（marker / route / shape / territory / image）；删图层连带删元素（CASCADE） |
 | （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— `asset_id` 是弱引用，失效引用由启动体检清空（不造假素材行）；`element_id` 是全库主键，副本一律加后缀避免撞车 |
@@ -68,8 +68,8 @@
 | （二进制素材） | `asset` | P4 外置存储：图片 / 音频 / 视频 / 字体统一入表，业务表只留 `asset_id` |
 | `providers` | `provider` + `provider_template` | 独立聚合；界面拿到的实例 = provider 行 + 它引用的模板行（`values_json` 两段 + 模板声明），**没有 `active` 与部分唯一索引** —— 一个模板多条实例，调用处选一条 |
 
-> 注：底图 / 高程图**每项目一份**（`base_map` / `elevation_map`）—— 面板支持增删改与调地形夸张，「内置常量不入库」的前提早已不成立。
-> **例外**：「地形夸张系数」用户在面板可调（0–50，默认 1.5），是对当前生效高程图的覆盖值，因此落在 `project.elevation_exaggeration`（为空则用内置默认）。
+> 注：底图 / 高程目录是**全库一份**（`base_map` / `elevation_map`）—— 面板只能选哪一行，目录本身不是项目内容；每个项目复制一套，等于同一件事存 N 遍。
+> 「地形夸张系数」（0–50，默认 1.5）是这一片片子的创作选择，落在 `project.terrain_exaggeration`：同一份高程，纪录片想平一点、地形演示想陡一点。
 
 ## 三、27 张表逐表速查（按 11 组）
 
@@ -87,8 +87,8 @@
 
 | 表 | 职责 | 主键 | 删除行为 | 前端对应 |
 |---|---|---|---|---|
-| `base_map` | 底图目录（**项目自带一份**）：id / 名称 / 样式（URL 或内联对象二选一） | `project_id + base_map_id`（内置 id 各项目同名） | 随项目 **CASCADE** | 地图左下角底图芯片面板（`MapStyleChip.tsx`）+ `projectStore.addBaseMap / removeBaseMap` |
-| `elevation_map` | 高程图目录（**项目自带一份**）：瓦片 URL / 编码 / **地形夸张系数** / 可选配套底图 | `project_id + elevation_map_id` | 随项目 **CASCADE** | 同一面板的「高程」区（选择 + 夸张系数滑动条） |
+| `base_map` | 底图目录（**全库一份**）：id / 名称 / 样式（一格：字符串=URL、对象=内联样式） | `base_map_id` | 删一行只少一个可选项；引用它的项目照样读得回来 | 左下角底图芯片面板（`MapStyleChip.tsx`）+ `stores/mapCatalogStore` |
+| `elevation_map` | 高程图目录（**全库一份**）：瓦片 URL / 编码 | `elevation_map_id` | 同上 | 同一面板的「高程」区（选行 + 夸张系数滑动条，滑动条写项目） |
 | `asset` | 唯一素材存储（图片 / GIF / 模型 / 音频 / 字体 / 用户图标，`kind` 区分），按「项目 / 类型 / 时间戳」落盘（随机 `assetId`，不做内容寻址去重） | `asset_id` | 随项目 **CASCADE**；孤儿回收是待办项（需定期清理或引用计数） | 属性面板上传行（`ResourceUploadRow`）、标记面板自定义图片网格（`CustomImageGrid`）、字幕/配乐音频上传（`lib/assets.ts`） |
 
 ### 组 3 · 时间轴 5 张
@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 698 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，698 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 694 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，694 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -226,11 +226,11 @@
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后修改时间（毫秒时间戳） |
 
-#### project — 项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程指针 / GlobalConfig 配置列
+#### project — 项目本体：身份 / 归属 / 审计 / 投影 / 选了全局目录里哪一行 / 地形夸张 / GlobalConfig 配置列
 
 **职责**：项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程指针　**前端**：项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project
 
-14 列 · 主键 `project_id`
+15 列 · 主键 `project_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -241,8 +241,9 @@
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后保存时间（毫秒时间戳） |
 | `projection` | TEXT | `NOT NULL` | 地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走） · 默认 `'mercator'` · `CHECK (projection IN ('mercator','globe'))` |
-| `active_base_map_id` | TEXT | — | 当前生效底图 id（弱引用 base_map.base_map_id，只引用本项目内的行） |
-| `active_elevation_map_id` | TEXT | — | 当前生效高程图 id（弱引用 elevation_map.elevation_map_id；NULL = 无高程） |
+| `active_base_map_id` | TEXT | — | 当前生效底图 id（弱引用全局目录 base_map.base_map_id；NULL 或已失效 = 用目录第一条） |
+| `active_elevation_map_id` | TEXT | — | 当前生效高程图 id（弱引用全局目录 elevation_map.elevation_map_id；NULL = 无高程） |
+| `terrain_exaggeration` | REAL | — | 地形夸张系数（0=平坦、1=真实比例；NULL = 渲染端默认 1.5）—— 创作选择，跟项目走不跟全局目录走 · `CHECK (terrain_exaggeration IS NULL OR terrain_exaggeration BETWEEN 0 AND 50)` |
 | `default_duration_sec` | REAL | `NOT NULL` | 默认时长（秒，仅作新建项目的初始容器长度） · 默认 `5` · `CHECK (default_duration_sec > 0)` |
 | `default_fps` | INTEGER | `NOT NULL` | 默认帧率（1–240） · 默认 `30` · `CHECK (default_fps BETWEEN 1 AND 240)` |
 | `resolution_w` | INTEGER | `NOT NULL` | 默认导出宽度（px） · 默认 `1920` · `CHECK (resolution_w > 0)` |
@@ -272,46 +273,32 @@
 
 ### 组 2 · 底图 / 高程图 / 素材
 
-#### base_map — 底图目录：项目自带一份（内置项在创建项目时复制进来），存底图名与样式（URL 或内联对象）
+#### base_map — 底图目录：全库一份、所有项目共用；内置行由渲染端按 lib/map-catalog.ts 的常量铺，样式只一格（字符串=URL、对象=内联样式）
 
-**职责**：底图目录：项目自带一份（内置项创建项目时复制进来），可增删改　**前端**：地图左下角「底图」芯片面板（MapStyleChip.tsx）+ projectStore.addBaseMap / removeBaseMap
+**职责**：底图目录：全库一份、所有项目共用（内置行由渲染端按 lib/map-catalog.ts 的常量铺）　**前端**：地图左下角「底图」芯片面板（MapStyleChip.tsx）+ projectStore.addBaseMap / removeBaseMap
 
-6 列 · 主键 —
+4 列 · 主键 `base_map_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `base_map_id` | TEXT | `NOT NULL` | 底图 id（同项目内唯一：内置项如 osm / satellite 在各项目里同名） |
-| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `base_map_id` | TEXT | `PK` | 底图 id（全库唯一：目录是全局一份，所有项目共用） |
 | `name` | TEXT | `NOT NULL` | 显示名（底图面板里的名字） · 默认 `''` |
-| `style_url` | TEXT | — | 底图样式 URL（与 style_json 二选一；可为相对路径如 geo/x.json） |
-| `style_json` | TEXT | — | 内联 MapLibre 样式对象（卫星底图走这条；与 style_url 二选一） · `CHECK (style_json IS NULL OR json_valid(style_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同项目内排序（面板顺序） · 默认 `0` |
+| `style_json` | TEXT | `NOT NULL` | 底图样式，只这一格：URL 就是 JSON 字符串、内联样式就是 JSON 对象（与运行时 style: string \| StyleSpecification 同形） · `CHECK (json_valid(style_json))` |
+| `ord` | INTEGER | `NOT NULL` | 面板顺序 · 默认 `0` |
 
-**表级约束**
+#### elevation_map — 高程图目录：全库一份、所有项目共用；夸张系数不在这里（它是项目的创作选择，落在 project.terrain_exaggeration）
 
-- `CHECK (style_url IS NOT NULL OR style_json IS NOT NULL)`（同项目内排序（面板顺序））
-- `PRIMARY KEY (project_id, base_map_id)`
+**职责**：高程图目录：全库一份、所有项目共用；夸张系数在 project.terrain_exaggeration，不在这一行　**前端**：底图芯片面板的「高程」区（MapStyleChip.tsx 选择 + 夸张系数滑动条）
 
-#### elevation_map — 高程图目录：项目自带一份，地形夸张系数直接落在本行
-
-**职责**：高程图目录：项目自带一份，地形夸张系数直接落在本行　**前端**：底图芯片面板的「高程」区（MapStyleChip.tsx 选择 + 夸张系数滑动条）
-
-8 列 · 主键 —
+5 列 · 主键 `elevation_map_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `elevation_map_id` | TEXT | `NOT NULL` | 高程图 id（同项目内唯一：内置项如 none / aws-terrain 在各项目里同名） |
-| `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
+| `elevation_map_id` | TEXT | `PK` | 高程图 id（全库唯一：none / maplibre-terrain / aws-terrain…） |
 | `name` | TEXT | `NOT NULL` | 显示名（高程面板里的名字） · 默认 `''` |
 | `url` | TEXT | `NOT NULL` | 高程栅格瓦片 URL；空串 = 「无高程（平面）」占位项 · 默认 `''` |
 | `encoding` | TEXT | — | 高程编码：mapbox / terrarium（缺省按 terrarium） · `CHECK (encoding IS NULL OR encoding IN ('mapbox','terrarium'))` |
-| `exaggeration` | REAL | — | 地形夸张系数（0=平坦、1=真实比例；空=用渲染端默认 1.5） · `CHECK (exaggeration IS NULL OR exaggeration BETWEEN 0 AND 50)` |
-| `style_url` | TEXT | — | 可选：选用该高程时一并换用的底图样式 URL |
-| `ord` | INTEGER | `NOT NULL` | 同项目内排序（面板顺序） · 默认 `0` |
-
-**表级约束**
-
-- `PRIMARY KEY (project_id, elevation_map_id)`（同项目内排序（面板顺序））
+| `ord` | INTEGER | `NOT NULL` | 面板顺序 · 默认 `0` |
 
 #### asset — 素材仓库：图片 / GIF / 模型 / 音频 / 视频 / 图标 / 字体统一存此表，业务表只留 asset_id
 

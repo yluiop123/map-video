@@ -67,6 +67,7 @@ components/
 compositions/          # Remotion 导出端：MapVideo / MapScene / OverlayRenderer
 lib/
   map-renderer.ts      # ★ 核心：所有地图元素的渲染
+  map-catalog.ts       # 内置底图 / 高程目录的唯一清单（全库一份；库里为空时由渲染端按它铺）
   keyframe-interpolation.ts  # 相机插值（frame=到达时间 + moveDuration=起飞提前量）
   military-*.ts        # 军标几何（燕尾/钳形/进攻/集结地）
   regions.ts / geojson.ts / gpx.ts / export-video.ts / time.ts / easing-labels.ts / utils.ts
@@ -85,6 +86,7 @@ lib/
 stores/
   projectStore.ts      # 项目数据操作 + 撤销重做 + 持久化
   editorStore.ts       # 播放头 / 选中元素 / currentCamera / 门禁 selectedLayerId / 弹窗开合
+  mapCatalogStore.ts   # 全局底图 / 高程目录的读写（面板与两端渲染都读它；项目只记选了哪一行）
   interactionStore.ts  # 绘制模式 + pendingPlace
   providerStore.ts     # 模板与实例两张表；current(category) 给调用处选实例（激活记 picked，不入库）
   voiceStore.ts        # 克隆音色账本（voice 表）：命中唯一键就复用
@@ -94,7 +96,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 5. 领域模型
 
-- **项目 = 单条连续时间线**：`startFrame` 恒 0、`endFrame` 是派生量（不入库，见 §10）；`elements/camera/overlays/fx/narration/music` 全用**项目绝对帧**；底图/高程/投影是项目自己的数据（`base_map` / `elevation_map` 行）。
+- **项目 = 单条连续时间线**：`startFrame` 恒 0、`endFrame` 是派生量（不入库，见 §10）；`elements/camera/overlays/fx/narration/music` 全用**项目绝对帧**；投影、「选了全局目录里哪张底图 / 高程」与地形夸张是项目属性，**目录本身不是项目数据**（§10）。
 - **★ 图层（Layer）是元素的唯一归属：项目 ▸ 图层 ▸ 元素**。图层单类型（marker / route / shape / territory / 图片），带自己的显隐与区间；`project.elements` 是 `deriveElements(layers)` 算出的**派生镜像**（store 的 patch 自动重算），**不要直接写它** —— 改元素一律经 `updateElement` / 图层 API，否则丢归属。`layerTypeOf(element.type)` 决定它进哪个图层。删图层连带删其元素。
 - **★ 图层顺序 = 地图叠放顺序**（列表靠前在上层）：新建图层一律经 `insertLayerSorted()` 按 `LAYER_RANK`（标记 0 → 路线 1 → 形状 2 → 疆域 3 → 图片 4）插入；用户拖动后以拖动结果为准。MapLibre 只认 `addLayer` 先后，所以 `renderElements` 之后要调 **`restackByLayerOrder(map, ids)`**（**编辑端与导出端都要调**）：它按倒序自底向上排，同图层元素保持组内序，故「移动标记在其线之上」「疆域标签在其面之上」不会被打破；签名未变时直接返回。
 - **★ 选中图层 = 地图上的「可编辑层」**：`editorStore.selectedLayerId` 非空时只有该层可编辑，为 null 时全部可编辑。门禁由 **`editableIdSet(project, selectedLayerId)`** 一处给出，插在 `pickElement`（命中不可编辑者要继续往下找，否则上层会吃掉点击）、`hitRouteVertex`、顶点 feats、`routeEdit` 失效判定。
@@ -228,10 +230,13 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **元素按工具栏聚合为类别宽表**（`element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`），表内用 `type` 判别子类型，**没有 `element` 基表**；元素经 `layer_id` 归属单类型图层。
 - **★ 不使用触发器**：网页端 Dexie 没有触发器，触发器只在桌面端生效 = 同一条规则两套真相，且规则藏在表定义外。跨表一致性由写入端 + 自检视图（`v_check_dangling` / `v_check_territory_ref` / `v_check_async_pairing`，都不拦截写入，只做体检）。**新增跨表引用时重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补。**
 - **弱引用只用在扛不住「整项目重写」的地方**：`saveProjectV2` 是「删掉项目行 + 连子表整批重写」，字幕行每次保存都被删了重建 —— 挂成真外键等于**用户每次自动保存都 CASCADE 掉正在跑的任务**。所以 `task.project_id`/`entry_id` 是弱引用，删项目由 `removeProjectV2` 显式清在途任务。**推广**：凡是「指向 `project` 或某个每次保存都重写的行」的引用，都不能挂 `ON DELETE CASCADE`。其余（`element_marker.asset_id`、`camera_keyframe.follow_route_element_id` 等）能挂真外键就挂（SET NULL）。
-- **五处弱引用清单**：`element_image.asset_id`、`public_element_*.asset_id`、`element_territory` 的 JSON 内部引用、`project.active_*_map_id`（父子互引）、`task.{project_id,entry_id}`。
+- **三处弱引用清单**：`element_image.asset_id`、`public_element_*.asset_id`、`element_territory` 的 JSON 内部引用（另有 `project.active_*_map_id` 两列指向全局目录，也是弱引用，但原因不同 —— 见上面那条）。
 - **★ 素材登记只有 `asset` 表这一本账**：`assets:save/read/remove/list/exists` 全读写 `asset`（`storage='file'` + `rel_path`）。删素材时项目侧靠 FK SET NULL，**公共库副本的引用要手工清** + 启动 `repairAssetRefs` 兜底（引用了已删素材就清空引用、**不补占位行**）。配置 JSON 导入走 `putAssetBytes`，**任一素材失败就中止整笔导入**。
 - **★ 公共图层副本必须自洽**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 是弱引用。副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`）—— `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归 `verify-public-layers`。
-- **底图 / 高程图每项目一份**：创建项目时从内置目录**复制成行**，之后各项目各改各的；`active_*_map_id` 是弱引用。地形夸张存 `elevation_map.exaggeration`（**0 是合法值，读取端一律 `??` / `== null`**）。推论：用户删掉的内置底图**不再自动补回**（`stripRemovedBaseMaps` 只清已下线 id）—— 要推新内置底图得单独做，别塞回 load 路径。
+- **底图 / 高程目录是全库一份**（`base_map` / `elevation_map`，主键就是 id）：面板只能选哪一行，目录不是项目内容 —— 每个项目复制一套等于同一件事存 N 遍。内置那几份由渲染端按 `lib/map-catalog.ts` 的常量铺进表（**主进程不复制一份清单**）。
+  - 项目侧只有三列：`activeBaseMapId` / `activeElevationMapId`（**弱引用**目录行 —— 目录行由渲染端铺，挂成真外键会让「目录还没铺好时的一次保存」直接崩；悬空由 `v_check_dangling` 照，读取端回落到目录第一条）与 `terrainExaggeration`。
+  - **夸张系数跟项目走、不跟目录走**：同一份高程，纪录片想平一点、地形演示想陡一点。**0 是合法值（完全平坦），读取端一律 `??` 不用 `||`**。
+  - 旧库那代「每项目一套」（复合主键 `(project_id, *_map_id)`）在启动体检里让位重建：认「还带 project_id 列」这个正标志，改名归档不直接删；旧行不搬 —— 那是常量的复制品，重铺即可。
 - **能力矩阵三处联动**（改一处必须同步另两处）：DDL 的 CHECK · 属性面板（隐藏不可用控件）· 渲染端管线。**只有 `emoji` 不可着色、`model` 不可贴地**，其余 9 种形态都可 multiply 染色。唯一事实源 `lib/pin-visual.ts`。
 - **外键策略**：保留外键（强制检查 ≈1µs/行，真瓶颈是子表 FK 列无索引 —— 补索引后 27×）；最大杠杆是事务批处理（63×），保存/导入必须整项目单事务 + WAL。
 - **★ 新增/改动字段的同步清单**（漏一步就会设计↔实现漂移）：
