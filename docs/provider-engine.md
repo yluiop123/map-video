@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 | `base64` | 无 | JSON 体 | 体里写 `${voiceData}`，引擎换成 `data:<mime>;base64,…`；要裸 base64 写 `${voiceData.base64}` | 千问 voice cloning 的 `input.audio.data`（收 Data URL） |
 | `form` | 无 | **multipart 表单，没有 Body** | `${voiceData}` 就是那个二进制分片（自带 mime 与文件名），`name` / `language` 这些参数写成同表的字段 | ElevenLabs IVC `/v1/voices/add` 的 `files` + `name` |
 
-**`${voiceData}` 是引擎注入的那个文件，不是声明出来的参数**（与固定返回项 `artifact` 对偶：一个是「这一步交进来的文件」，一个是「那一步交回去的文件 / 地址」）。所以：三种接法在模板里写的是同一句 `${voiceData}`；参数表里没有它（声明了会被 `validateTemplate` 点名 —— 同一个名字两个来源）；`valueType` 也不再收 `file` 这一档，`accept` / `maxSize` 两格随之作废。界面只在「试调用」那儿给它一个文件选择框。
+**`${voiceData}` 是引擎注入的那个文件，不是声明出来的参数**（与固定返回项 `artifact` 对偶：一个是「这一步交进来的文件」，一个是「那一步交回去的文件 / 地址」）。所以：三种接法在模板里写的是同一句 `${voiceData}`；参数表里没有它（声明了会被 `validateTemplate` 点名 —— 同一个名字两个来源）；`valueType` 里**没有 `file` 这一档** —— 文件不是一种参数类型，而是这一个固定名。界面只在「试调用」那儿给它一个文件选择框。
 
 于是「发哪部分内容」只有一个判据：`multipartSlotOf(tpl, slot)`（上传那格恒为表单；克隆那格看 `cloneVia`，**这一项没填过按 `base64` 算** —— 兜底写在 `cloneViaOf` 一处）。界面摆 Body 还是表单、`validateTemplate` 查哪一格为空、新建草稿给什么形状、`buildRequest` 真发什么，全读它 —— **一格的两种形状不会同时发出去**，换了接法之后留在另一格里的旧内容就地失效（不报错，也不发半个请求）。
 
@@ -113,7 +113,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   整份模板共用一份就配不出这种接法。
   **上游那个「你要 hex 还是 url」的字段（MiniMax 叫 `output_format`）seed 里没有声明** —— 它必须与这一格的产物形式配套，
   摆一个能单独改的格子等于造一个静默错（改了字段没改档位，就把一串十六进制当音频用）。
-- **两个枚举而不是三个**：`successValues` / `failureValues`，都没命中 = 中间态继续查。省掉 `pendingValues` 是因为它没法穷举（`PENDING`/`RUNNING`/`QUEUING`/…），漏一个就把在途任务判成失败。
+- **只有两个枚举**：命中 `successValues` = 成功，命中 `failureValues` = 失败，**都没命中 = 中间态、继续查**。不设第三张「中间态清单」：它穷举不完（`PENDING` / `RUNNING` / `QUEUING` / 各家自己造的词），漏一个就把在途任务判成失败。
 - 路径写法用**方括号下标**（`output.choices[0].message.content[0].image`），与上游文档、jq 逐字一致；纯点号 `output.results.0.url` 同样收，库存原样。只支持 `[数字]`，不做 `$..` / `[*]` / 过滤表达式 —— 模板里一旦能写表达式，「看模板就知道实际发了什么」这个前提就没了。
 
 ## 四、`provider`（实例）：只有五个业务列
