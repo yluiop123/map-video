@@ -1813,10 +1813,10 @@ DeepSeek 那条实例这次在应用里回的是 `HTTP 404` —— 不是引擎�
 | `tools/gen-template-json-doc.mjs` | 把 seed 展开成第九节（参数总表 + 逐列 JSON），`--check` 只校验 |
 | `src/stores/taskStore.ts` | 在途任务的调度：并发上限取实例参数、按 `next_query_at` 错峰、逐条进度、失败行按 `retriable` 决定重试还是点名 |
 | `src/lib/providers.ts` | `callLLM` / `callTTS` / `callImage` / `cloneVoice` 薄壳：实例 → 模板 → 引擎 → 产物落 `asset` |
-| `src/stores/providerStore.ts` | 模板与实例两份实体的读写与持久化；`currentInstance(category)` 取调用处选中的实例 |
+| `src/stores/providerStore.ts` | 模板与实例两份实体的读写与持久化；`current(category)` 取调用处激活的那条实例（`picked` 记在本地，不入库） |
 | `electron/db-v2.mjs` / `main.mjs` | 表映射与 IPC（`templates:*` / `providers:*`）、通用 `net:request`（含 multipart 与超时） |
 | `src/components/ProviderPanel.tsx` `TemplatesPane.tsx` | 实例设置页 / 接口模板页 |
-| `src/components/VoicePicker.tsx` `GenerateDialog.tsx` | 音色区（含克隆）/ 逐行配音与批量队列 |
+| `src/components/VoiceField.tsx` `GenerateDialog.tsx` | 音色区（内置表 + 克隆池）/ 逐行配音与批量队列 |
 | `tools/verify-request-engine.mjs` | 引擎离线回归（真机抓到的响应原样留桩） |
 | `tools/verify-provider-templates.mjs` | 四张表 + 旧形状让位的库侧回归 |
 | `tools/try-real-calls.mjs` | 真实上游验证（会花配额，只在明确要求时跑） |

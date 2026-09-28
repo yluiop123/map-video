@@ -85,7 +85,7 @@ const TABLE_FRONTEND = {
   person_block: { role: '人物卡片内容块（头像 / 姓名 / 简介 / 引言 / 对白 5 种）', fe: '弹窗面板「人物」类型的块编辑（FxPanelBody.tsx）' },
   provider_template: { role: '接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）', fe: '⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）' },
   provider: { role: '实例：用哪份模板 + 全部取值（密钥是声明成 secret 的普通参数，不占具名列）', fe: '⚙ 设置 · AI → 左侧文案 / 语音 / 图片（ProviderPanel.tsx，实例芯片 + 表单）' },
-  voice: { role: '克隆音色账本：同实例 + 同参考音频 + 同目标模型只建一次（幂等键）', fe: '字幕生成弹窗内的「克隆音色」区（VoicePicker.tsx）+ 音色管理' },
+  voice: { role: '克隆音色账本：同实例 + 同参考音频 + 同目标模型只建一次（幂等键）', fe: '字幕生成弹窗内的「配音音色」区（VoiceField.tsx）' },
   task: { role: '异步任务：跨重启续跑（提交 / 查询 / 当场落素材 / 回填字幕）', fe: '字幕生成的逐条状态 + 顶栏在途任务浮层；调度在主进程扫库' },
   public_layer: { role: '公共图层：跨项目图库的图层（把项目图层连元素整体复制过来）', fe: '左侧「图层」浮层「加入公共图层 / 导入公共图层」' },
   public_element_marker: { role: '公共标记元素（public_layer 内副本，与 element_marker 同构）', fe: '同上' },
