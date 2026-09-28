@@ -77,7 +77,7 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
 { "path": "${baseUrl}/services/aigc/image-generation/generation",  // 查询串直接拼在串上
   "method": "POST",
   "headers": { "Content-Type": "application/json", "Authorization": "Bearer ${apiKey}", "X-DashScope-Async": "enable" },
-  "requestParams": [ /* 这一格的参数声明：model / size / prompt / 文件… 一张表，不再分两张 */ ],
+  "requestParams": [ /* 这一格的参数声明：model / size / prompt / 文件… 就一张表 */ ],
   "body": { "model": "${model}", "input": { "text": "${text}" } },
   "form": { "file": "${voiceData}", "name": "${voiceName}" },   // 发 multipart 的那格用（判据：multipartSlotOf）
   "outputs": { "taskId": "output.task_id", "error": "message" },  // 固定项 + 自定义变量，见下
@@ -94,8 +94,9 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   - **固定项**（`requiredOutputsOf(tpl, slot)`）—— 名字由引擎写死，只能填路径：`content`（文案）、`artifact`（产物，
     或上传回来的文件地址 / 文件号）、`taskId`（任务号）、`status`（任务状态）、`voiceId`、`error` / `errorCode`。
     产物与上传引用**共用一个名字** `artifact`（`ARTIFACT_KEY`）：两者说的是同一件事 —— 这一步拿到的那个文件 / 地址，
-    下一步 `${artifact}` 也只有一种写法。早先代码里那串 `values.audio ?? values.image ?? values.url ?? values.resultUrl ?? values.fileUrl`
-    是同一条事实的五份真相，填对了五个之一才碰巧能用 —— 现在没有「碰巧」这回事，`validateTemplate` 会要求必填的固定项必须填路径。
+    下一步 `${artifact}` 也只有一种写法。**这些名字代码里写死，界面上只能填路径**（`validateTemplate` 要求必填项不许留空）：
+    让调用处自己想起名字，同一条事实就散成五份（`audio` / `image` / `url` / `resultUrl` / `fileUrl` 猜中哪个算哪个），
+    而 `status` 填错更糟 —— 一路当中间态，查到次数上限才失败。
     **`error` / `errorCode` 取到值不等于报错**：`0` / `ok` / `success` 这三种写法按「没有错误」算（MiniMax 一类的成功响应就是
     `base_resp:{status_code:0,status_msg:'success'}`，HTTP 照样回 200 —— 按「取到值就算错」会把每一次成功读成失败）。
     **`voiceId` 可以不填路径**：判据是这一格自己有没有写 `${voiceId}` —— 上游不回音色 id 的那种（MiniMax 的 `voice_clone`
@@ -107,7 +108,9 @@ CREATE INDEX IF NOT EXISTS ix_tpl_category ON provider_template(category, ord, n
   参数自己还可以勾 `voiceTable`：这一条候选值就是**音色表**，界面因此长成分组选择器 + 克隆音色那一段（`VoiceField`，⚙ 与字幕生成共用）。**代码里没有音色表**：千问 38 条与 ElevenLabs 21 条是 seed 里那份模板的候选值，铺进库后可在模板页改；`lib/voices.ts` 只剩随包发布的克隆样本清单。
   另有一条自检：**有候选值的参数，默认值必须在候选值里**（界面选不到、真发却照它发的那个值是最难查的错）。
 - **产物形式是逐格的一件事**（`RequestDef.artifactForm`：这一格没产物 / 响应体即字节 / base64 / hex / 链接当场下），
-  与固定项「产物」并排配在界面「从响应里取」那一节。它以前住在 `caps` 里（整份模板一份），于是「同步回链接、异步回 base64」配不出来，还和固定项撞过一次名；改成逐格后一个词只管一件事。
+  与固定项「产物」并排配在界面「从响应里取」那一节。
+  **它逐格一份，不在模板头问**：同一家的同步与异步端点交回的东西本来就不一样（一边直接回链接、一边回 base64），
+  整份模板共用一份就配不出这种接法。
   **上游那个「你要 hex 还是 url」的字段（MiniMax 叫 `output_format`）seed 里没有声明** —— 它必须与这一格的产物形式配套，
   摆一个能单独改的格子等于造一个静默错（改了字段没改档位，就把一串十六进制当音频用）。
 - **两个枚举而不是三个**：`successValues` / `failureValues`，都没命中 = 中间态继续查。省掉 `pendingValues` 是因为它没法穷举（`PENDING`/`RUNNING`/`QUEUING`/…），漏一个就把在途任务判成失败。
@@ -142,7 +145,7 @@ CREATE INDEX IF NOT EXISTS ix_provider_tpl ON provider(tpl_id);
 ## 五、参数声明与取值优先级
 
 **声明只有两处**：整份模板共用的实例级参数，和每一格自己的一张参数表（`requestParams`）。
-同一格里的参数，填了值的走实例、没填的由调用点现场给 —— 谁在什么时候给由取值优先级决定，不再靠「声明在哪张表」表达。
+同一格里的参数，填了值的走实例、没填的由调用点现场给 —— 谁在什么时候给由取值优先级决定，与「声明在哪张表」无关。
 
 | 声明在哪 | 取值 | 界面上在哪填 |
 |---|---|---|
@@ -1760,48 +1763,31 @@ null
 null
 ```
 <!-- END generated:seed-templates -->
-## 十、内置模板清单（seed）
+## 十、内置模板与实测状态
 
-| `tpl_id` | category | 接口槽 | 真实上游实测 |
+六份内置模板的具体参数与逐列 JSON 在第九节（由 seed 生成）；这一节只记**跑过真发之后的事实**。
+
+| `tpl_id` | category | 接口槽 | 真发 |
 |---|---|---|---|
-| `deepseek-chat` | llm | `sync.submit` | ✅ 2026-09-26 重跑取到文本（1.9s） |
-| `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条都过：同步 50.8s · 1650KB；异步 46.9s（第 9 次查询命中）· 1465KB |
-| `qwen-tts` | tts | `sync.submit` + `clone` | ✅ 合成 176KB；**复刻 → 立刻用那个音色合成** 270KB（5.1s） |
-| `elevenlabs-voice` | tts | `sync.submit` + `clone` | 合成 ✅ 88KB 裸字节 · 错误形状 ✅；克隆的 multipart 发对了（`name` + `files` 分片），卡在**套餐不含即时复刻**（`paid_plan_required` → 报成跳过） |
-| `minimax-voice` | tts | `upload` + `clone` + `sync.submit` | 上传 ✅ **真发通**（HTTP 200 · `file.file_id` = 整数 445802206159195 · `base_resp:{status_code:0,status_msg:'success'}`）· 复刻与合成 ⬜ 卡在账号余额（`1008`），没跑到成功响应 |
-| `minimax-image` | image | `sync.submit` | ⬜ **未实测**（同样卡 `1008`；这家没有异步任务端点，链接 24 小时过期所以是 `url` 档）|
+| `deepseek-chat` | llm | `sync.submit` | ✅ 取到文本 |
+| `qwen-image` | image | `sync.submit` + `async.submit` + `async.query` | ✅ 两条都过 |
+| `qwen-tts` | tts | `sync.submit` + `clone` | ✅ 合成过；**复刻 → 立刻用那个音色合成**也过 |
+| `elevenlabs-voice` | tts | `sync.submit` + `clone` | 合成 ✅（响应体裸字节）；克隆 ⬜ 账号套餐不含即时复刻（`paid_plan_required`） |
+| `minimax-voice` | tts | `upload` + `clone` + `sync.submit` | 上传 ✅（`file.file_id` 是整数）；复刻与合成 ⬜ 卡账号余额 `1008` |
+| `minimax-image` | image | `sync.submit` | ⬜ 未实测（同样卡 `1008`） |
 
-**MiniMax 这两份为什么配得出来，靠的是两条新规则**（都不按厂商名分支）：
-① 它的 `/v1/voice_clone` 成功响应里**没有音色 id**（官网说名字就是请求里自己传的 `voice_id`）—— 固定项「音色 ID」现在看这一格自己有没有写 `${voiceId}`：写了就允许路径留空，`runClone` 拿本轮发出去的那个名字当结果；
-② 它家成功 = HTTP 200 + `base_resp:{status_code:0,status_msg:'success'}`，三个值全是真值 —— `errorOf` 现在认 `0` / `ok` / `success` 为「没有错误」，否则**每一次成功都会被读成失败**（这条是接它家时才发现的，此前所有上游的错误项都是「取不到值 = 没事」那种形状）。
+**MiniMax 这两份为什么配得出来 —— 两条不按厂商名分支的判据**：
+① 它的 `/v1/voice_clone` 成功响应里**没有音色 id**（名字就是请求里自己传的 `voice_id`）：固定项「音色 ID」看这一格自己有没有写 `${voiceId}` —— 写了就允许路径留空，`runClone` 拿本轮发出去的那个名字当结果；
+② 它的成功是 HTTP 200 + `base_resp:{status_code:0,status_msg:'success'}`，三个值全是真值：`errorOf` 认 `0` / `ok` / `success` 为「没有错误」，否则**每一次成功都会被读成失败**。
 
-**实测（2026-09-23）**：异步查询回的产物路径与同步**同一条**（`output.choices[0].message.content[0].image`），文档写的 `output.results[].url` 是这个模型不再用的旧形状；一次 1024×1024 出图排队 52 秒～9 分钟不等，所以查询节奏是实例级参数、默认给到 30 分钟预算。
+**实测到的上游形状**（这几条官网没写或写错，别再从文档推）：
+- **千问出图的产物路径同步异步是同一条**（`output.choices[0].message.content[0].image`）；文档写的 `output.results[].url` 是这个模型不再用的旧形状。一次 1024×1024 排队 52 秒 ~ 9 分钟不等，所以查询节奏是**实例级参数**、默认给到 30 分钟预算。
+- **「产物形式」逐格作用在最后一步**（2026-09-26：同一份 `SUCCEEDED` 响应只改档位，四种回显各不相同）：没选档位 → `outcome=success` 但零字节；选 url 而「产物」路径空 → 抛「产物取不到」并把这一步实际取到的槽位列出来；url + 正确路径 → 1522580 字节、头四字节 `89 50 4e 47`（真 PNG 签名）；同一份响应改 base64 档 → 把 `https://…` 当 base64 解，抛 `Invalid character`。
+- **ElevenLabs 的错误体是 `{detail:{type,code,message,status}}`**，人话在 `detail.message`（填成 `detail.status` 不报错，界面只剩一条「HTTP 401」）。它的配音链路在桌面端 UI 里整条走过：⚙ 选这条实例 → 字幕生成 → 音色区「男声 13 / 女声 7 / 中性 1」→ 生成配音 → 行上落时长徽标，产物进 `asset`。那 21 条音色逐字取自 `/v1/voices` 的真响应（官方 labels 里确有 `gender: neutral` 这一档，不是从名字猜的）。
+- **DashScope 的合成响应是 JSON、音频在 `output.audio.url`**（时效链接，必须当场下载入库），复刻完立刻拿那个音色合成是通的。
+- **「试调用」的三档产物回显都真看过**：JSON 美化后给、`<audio controls>` 吃 blob 地址出播控条、图片 `naturalWidth` 报回 2048×1152（真解码，不是坏链接）。
 
-**「产物形式」确实作用在最后那一步（2026-09-26 实测）**：真查一次千问异步生图（`SUCCEEDED`，当场下载 **1522580 字节**、`image/png`），
-再拿**同一份响应**只改「这一格的产物形式」与「产物」路径两格，四档回显各不相同 ——
-① 这一格没选产物形式：`outcome=success` 但**零字节**（引擎不去响应找产物）；
-② 选了 url、产物路径空着：抛「产物取不到（产物形式=url，但固定项「产物」没取到值；这一步取到的是 taskId、status）」—— 把实际取到的槽位列出来，不用瞎猜；
-③ url + 路径按实测：1522580 字节、头四字节 `89 50 4e 47`（真 PNG 的签名）；
-④ 同一份响应改成 base64 档、路径不动：把那条 `https://…` 链接当 base64 解，抛 `Invalid character`。
-② 与 ④ 的区别只在档位，取的是同一个字段 —— 这一格既决定**去哪个字段取**之后的**怎么变成字节**，也证明它是逐格一份而不是整份模板一份。
-
-按用户要求内置这六份（两份 MiniMax 里，**只有「上传」那一格真发通过**，其余卡在账号余额 `1008` —— 见第十节那张表）。接别家 = 界面「＋ 模板」自己填（引擎里没有任何按厂商名写的分支）；`blankTemplate(category)` 给一份只有地址与密钥的壳。
-
-**SpeechSynthesizer 那一条（`input.volume` 0–100 默认 50、`input.hot_fix`）曾作为第七份内置模板接进来并真发跑通，2026-09-27 按要求删掉**：它的复刻只认一个可访问地址（实测塞 base64 回 `provide url, or provide both voice_prompt and preview_text`，而 Qwen-TTS 那族的 `qwen-voice-enrollment` 对它的 target_model 回 `PipelineNotFound`），要走「挑文件」就得先问凭证再传中转存储 —— 为此加过的 `cloneVia:'url'/'tempurl'`、`RequestDef.pre`、「产物路径可以是模板串」三样都随之撤掉（没有消费者的形状不留）。要接回来照这段实测记录写模板即可。
-
-**两份语音上游的实测状态（2026-09-26）**：千问的合成与复刻**都真发过并取到产物**（复刻完立刻用它合成一句，300KB wav）。
-
-**ElevenLabs 的整条配音链路也走了一遍（桌面端 UI 里真发）**：⚙ 选这条实例 → 字幕生成 → 音色区出「男声 13 / 女声 7 / 中性 1」→ 点 `Roger` → 加一行 → 生成本句配音 → 行上徽标 `5.7s`，`narration.entries[0].audioId` 指向 `asset` 表里一条 `audio/mpeg`。
-**ElevenLabs 的合成也在应用里的「试调用」跑通了** —— 音色 id 在地址里、响应体就是裸字节（200 · 40KB），`artifactForm='binary'` 这一档第一次真跑到；
-错误体形状同时实测到 `{detail:{type,code,message,status}}`，所以固定项的 `error` 从猜的 `detail.status` 改成 `detail.message`
-（填错不报错，只是界面只剩一条「HTTP 401」，看不出为什么）。
-建音色那一步：multipart 请求本身发对了（`name` + `files` 两个字段都被受理），上游回的是
-`paid_plan_required · Your subscription does not include instant voice cloning` —— **这是账号套餐，不是形状错**；
-所以 `files` 这个分片名目前只有「上游受理了它」这一层证据，没有成功响应可对照。
-它家的默认音色表（21 条，含官方 labels 里 `gender: neutral` 那一档）逐字取自 `/v1/voices` 的真响应，现在是 seed 里那份模板的候选值（`elevenLabsVoices`），不再是 `lib/voices.ts` 的常量。
-
-**「试调用」的回显在应用里逐类看过（2026-09-26）**：文案生成 → 响应原文那一栏就是美化过的 JSON；语音（千问配音 · 提交）→ 播控条长出来了（`<audio controls>` 吃一个 blob 地址）；图片（千问出图 · 提交）→ 图直接显示，`naturalWidth` 报回 **2048×1152**，也就是真解码出来了、不是个坏链接。
-DeepSeek 那条实例这次在应用里回的是 `HTTP 404` —— 不是引擎：他那行 `deepseek-chat` 模板被改名成 `openai`，且「提交」的地址栏里贴着一串千问异步生图的任务号（`260a1ade-…`），地址就成了那样；CLI 走 seed 是同一条链路，正常出文本。
+接别家 = 界面「＋ 模板」自己填（`blankTemplate(category)` 给一份只有地址与密钥的壳）；引擎里没有任何按厂商名写的分支。真实上游验证在 `tools/try-real-calls.mjs`（会花配额、会在账号下留音色资源，只在明确要求时跑）。
 
 ## 十一、实现落点
 
