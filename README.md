@@ -62,7 +62,7 @@ npm run dist:win       # 打 Windows 安装包/portable exe → release/
 ```
 
 - **数据位置**：`%APPDATA%/map-video/mapvideo.db`（项目 + AI 配置含 Key 都在本机），素材文件在 `userData/media/`
-- **AI 配置只有一个入口**：顶栏 ⚙「设置 · AI」——右侧「实例设置」（几套账号 = 几条实例，含试调用）与左侧「接口模板」（怎么发请求）两处；**代码里没有厂商名分支**，端点、参数、产物路径全是模板数据（`docs/provider-engine.md`）
+- **AI 配置只有一个入口**：顶栏 ⚙「设置 · AI」（右侧实例设置 / 左侧接口模板），**代码里没有厂商名分支**（`docs/provider-engine.md`）
 - **AI 功能只在桌面端**：网页版隐藏 ⚙ 与配音入口
 - **导出 MP4 带声音**：字幕逐条生成配音（或导入音频）→ 导出即混流（WebCodecs + AAC）
 
@@ -73,40 +73,25 @@ npm run dist:win       # 打 Windows 安装包/portable exe → release/
 
 ## 数据库设计
 
-> 唯一事实源是 `docs/db-schema-v2.sql`（可直接 `node --experimental-sqlite` 执行验证）；
-> 逐表职责与逐列字典见 `docs/db-tables.md`，设计依据见 `docs/db-redesign.md`。本节只给个形状。
+> 这一节只讲「数据放在哪、谁能碰它」；结构本身不在 README 里复述，免得漂 ——
+> DDL 事实源 = `docs/db-schema-v2.sql`（可直接 `node --experimental-sqlite` 执行验证）·
+> 表与逐列字典 = `docs/db-tables.md`（生成，**规模数字以它顶部那一行为准**）·
+> 为什么这么设计 = `docs/db-redesign.md` · 配置层四层 = `docs/provider-engine.md` ·
+> 改字段时的同步清单 = `AGENTS.md` §10。
 
 ### 桌面端（SQLite）
 
 - **引擎**：Electron 内置 `node:sqlite`（`DatabaseSync`），零原生模块、零安装；外键默认开启
-- **文件**：`%APPDATA%/map-video/mapvideo.db` —— 单文件库，**拷走即备份**，换机恢复放回同路径即可
-- **建表**：`ensureV2Schema()`（幂等 `CREATE TABLE IF NOT EXISTS` + 缺列自动补 + 旧形状启动让位）
-- **规模**：27 张表 · 4 个视图 · **0 个触发器** · 704 列
-
-三条贯穿全库的约定：
-
-| 约定 | 意思 |
-|---|---|
-| **时间一律存秒（REAL）** | 存用户在界面上输入的原值，帧是渲染时按 `default_fps` 派生的量，不入库 |
-| **只存输入原值** | 凡能从别处算出来的都不入库（片长、字幕时长…），改帧率时时长语义才不会失真 |
-| **不用触发器** | 网页端（IndexedDB）没有触发器，同一条规则两套真相；规则要么在表定义里（外键 / CHECK），要么在应用层 + 自检视图 |
-
-内容侧的归属链是 **项目 ▸ 图层 ▸ 元素**：`project` → 单类型 `layer`（标记 / 路线 / 形状 / 疆域 / 图片）→ 五张按工具聚合的类别宽表（`element_marker` / `_route` / `_shape` / `_territory` / `_image`，表内 `type` 判别子类型）。素材（图片 / GIF / 模型 / 图标 / 音频）统一登记在 `asset` 一张表，桌面端文件落 `userData/media/<类>/`。
-
-AI 配置层四张表，**接一家新供应商不改表、不加代码分支**（模板行就是数据）：
-
-| 表 | 一行是什么 |
-|---|---|
-| `provider_template` | 一份完整接口模板：六个接口槽（同步 / 异步提交 / 异步查询 / 下载 / 上传 / 克隆）+ 三层参数声明 |
-| `provider` | 一条实例：引用哪份模板 + 名字 + 同步异步 + `values_json{instance,requests}`（一份模板可挂多条 = 几套账号） |
-| `voice` | 一个克隆音色：唯一键 `(实例, 参考音频哈希, 目标模型)`，参考音频原件存 `asset` |
-| `task` | 一条在途异步任务：关窗口、刷新页面、换进程都不丢，重启续跑 |
-
-**访问边界**：SQLite 只在主进程读写（SQL 全在 `electron/db-v2.mjs`，因此可离线用 `node --experimental-sqlite` 回归）；渲染进程经 `window.mapvideo.*` IPC，contextIsolation 开启，摸不到库文件。
+- **文件**：`%APPDATA%/map-video/mapvideo.db` —— 单文件库，**拷走即备份**，换机恢复放回同路径即可；素材文件在 `userData/media/<类>/`
+- **建表**：`ensureV2Schema()`（幂等建表 + 缺列补 + 旧形状启动时让位）
+- **访问边界**：SQL 只在主进程读写（全在 `electron/db-v2.mjs`，因此能离线回归）；渲染进程经 `window.mapvideo.*` IPC，contextIsolation 开启，摸不到库文件
+- **两条贯穿全库的取舍**（细则见 AGENTS §10）：**时间存秒、帧是派生量**；**不使用触发器**（网页端 IndexedDB 没有触发器，同一条规则不能有两套真相）
+- **内容侧归属链是 项目 ▸ 图层 ▸ 元素**：单类型图层（标记 / 路线 / 形状 / 疆域 / 图片）之下是五张按工具聚合的类别宽表，素材统一登记在 `asset` 一张表
+- **AI 配置四张表**：模板（怎么发请求）· 实例（哪套账号）· 克隆音色账本 · 在途任务。**接一家新供应商不改表、不加代码分支** —— 端点、参数、该有哪几格接口、产物怎么取回，全是模板里的数据
 
 ### 网页端（GH Pages Lite）
 
-整项目 JSON 存 Dexie（IndexedDB），**没有 V2 的多表与秒约定**，也不含任何 AI 功能（⚙ 设置与配音入口按 `IS_DESKTOP` 隐藏）。
+整项目 JSON 存 Dexie（IndexedDB），**没有 V2 的多表与秒约定**，也不含任何 AI 功能（⚙ 与配音入口按 `IS_DESKTOP` 隐藏）。
 
 **跨端迁移**：桌面 ⇄ 网页统一走「导出配置 JSON / 导入」（`ProjectExport` 格式，素材以 base64 内嵌，文件自包含）。
 

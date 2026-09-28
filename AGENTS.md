@@ -239,7 +239,8 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
   2. `tools/db-field-notes.mjs` 补字段中文说明（**漏补直接报错**）
   3. 新增表还要改 `gen-db-field-dict.mjs` 的 `GROUPS` / `TABLE_FRONTEND` / `TOOL_ENTRY`（不归组就报错）
   4. `node --experimental-sqlite tools/gen-db-field-dict.mjs` 注入 `docs/db-tables.md`；`node tools/comment-ddl.mjs` 写 DDL 行尾注释（SQLite 不存注释，靠自文档，幂等）
-  5. 手工同步**生成标记外**的部分：表数列数、`db-tables.md` 第二节归属表、`db-redesign.md` 实体清单、`db-er-diagram.mmd`
+  5. 手工同步**生成标记外**的部分：`db-tables.md` 第一二节的归属表与逐表速查、`docs/db-er-diagram.mmd`（E-R 图源）。
+     **规模数字（几张表几列）不手抄** —— 只有生成器写出的那一行是准的，README / AGENTS 都指向它
   6. 六条全绿才算完：`gen-db-field-dict --check` · `audit-fk-indexes` · `verify-project-roundtrip` · `verify-public-layers` · `verify-provider-templates` · `verify-request-engine`（配置层四张表那批另有 `gen-template-json-doc --check` 与 `gen-template-init-sql --check`）
   - 判据口诀：**「用户能改」的值就必须能存**；凡是「XX 不入库」这类取舍，都要确认它的前提仍成立（底图/高程曾经不入库是因为它是常量，现在它可编辑了）。
 - **网页端（Dexie）仍是简化实现**：整对象存帧值，没有 V2 的多表与秒约定；帧↔秒换算只在 `electron/db-v2.mjs` 这一层（`f2s` / `s2f`，fps 取 `globalConfig.defaultFPS`），运行时与 Remotion 都以帧为准，不要在 store 里再换算一次。
