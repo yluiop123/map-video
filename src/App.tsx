@@ -15,6 +15,7 @@ import { FxPreviewLayer } from './components/fx/FxRender';
 import { screenFxCombinedAt } from './lib/screenfx';
 import { mountPreviewAudio } from './lib/preview-audio';
 import { useProviderStore } from './stores/providerStore';
+import { useMapCatalogStore } from './stores/mapCatalogStore';
 import { useVoiceStore } from './stores/voiceStore';
 import { useTaskStore } from './stores/taskStore';
 import { ConfirmHost } from './components/ui/ConfirmHost';
@@ -113,6 +114,8 @@ export default function App() {
   // 桌面端：启动时从 SQLite 加载 AI/配音配置
   useEffect(() => {
     useProviderStore.getState().hydrate();
+    // 底图 / 高程目录（全库一份）：面板与地图都读它，库里为空时按内置常量铺
+    void useMapCatalogStore.getState().hydrate();
     void useVoiceStore.getState().hydrate();
     void useTaskStore.getState().hydrate();
   }, []);

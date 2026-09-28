@@ -15,7 +15,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { saveProjectV2, getProjectV2 } from '../electron/db-v2.mjs';
+import { saveProjectV2, getProjectV2, ensureV2Schema, saveBaseMapV2, listBaseMapsV2, saveElevationMapV2, listElevationMapsV2, removeBaseMapV2 } from '../electron/db-v2.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DDL = fs.readFileSync(path.join(HERE, '..', 'docs', 'db-schema-v2.sql'), 'utf8');
@@ -35,16 +35,10 @@ function project(id, fps) {
     globalConfig: { defaultFPS: fps, defaultDuration: s2f(12), projection: 'globe', defaultEasing: 'linear', defaultResolution: { width: 1280, height: 720, label: '720p' } },
     startFrame: 0, endFrame: s2f(60), layers: [], elements: [], camera: [], fx: [], overlays: [],
     narration: { entries: [], style: {} }, music: [],
-    baseMaps: [
-      { id: 'osm', name: 'OSM', style: 'https://a/b.json' },
-      { id: 'sat', name: '卫星', style: { version: 8, sources: {}, layers: [] } },
-    ],
+    // 目录是全局一份的数据（见 [7] 节）；项目只记选了哪一行 + 夸张系数
     activeBaseMapId: 'sat',
-    elevationMaps: [
-      { id: 'none', name: '无高程（平面）', url: '' },
-      { id: 'aws', name: 'AWS', url: 'https://s/{z}/{x}/{y}.png', encoding: 'terrarium', exaggeration: 0, style: 'https://s/y.json' },
-    ],
     activeElevationMapId: 'aws',
+    terrainExaggeration: 0,
   };
 }
 
@@ -64,13 +58,13 @@ console.log('\n[1] 输入原值逐字往返');
 const gcKeys = ['defaultDuration', 'defaultFPS', 'projection', 'defaultEasing'];
 check('1.1 globalConfig 无漂移', diffKeys(src.globalConfig, got.globalConfig, gcKeys).length === 0,
   `差异: ${JSON.stringify(diffKeys(src.globalConfig, got.globalConfig, gcKeys))} · 存 ${JSON.stringify(src.globalConfig)} → 取 ${JSON.stringify(got.globalConfig)}`);
-check('1.2 底图目录完整（URL 与内联样式对象并存）', JSON.stringify(got.baseMaps) === JSON.stringify(src.baseMaps),
-  JSON.stringify(got.baseMaps));
-check('1.3 高程目录完整，exaggeration=0 未被吞成默认值', JSON.stringify(got.elevationMaps) === JSON.stringify(src.elevationMaps),
-  JSON.stringify(got.elevationMaps));
-check('1.4 生效指针回读正确', got.activeBaseMapId === 'sat' && got.activeElevationMapId === 'aws',
+check('1.2 生效指针回读正确（指向全局目录的两行）', got.activeBaseMapId === 'sat' && got.activeElevationMapId === 'aws',
   `${got.activeBaseMapId} / ${got.activeElevationMapId}`);
-check('1.5 空串 url（无高程占位项）没有变成 undefined', got.elevationMaps[0]?.url === '', JSON.stringify(got.elevationMaps[0]));
+check('1.3 地形夸张 0（完全平坦）没被吞成默认值 1.5', got.terrainExaggeration === 0,
+  `存 0 → 取 ${JSON.stringify(got.terrainExaggeration)}`);
+check('1.4 目录不在项目数据里了（项目不再自带一套底图）',
+  got.baseMaps === undefined && got.elevationMaps === undefined,
+  JSON.stringify(Object.keys(got).filter((k) => /maps?/i.test(k))));
 check('1.6 帧率换算后 defaultDuration 回到原帧值', got.globalConfig.defaultDuration === src.globalConfig.defaultDuration,
   `${src.globalConfig.defaultDuration} → ${got.globalConfig.defaultDuration}`);
 
@@ -81,22 +75,30 @@ console.log('\n[2] 重复保存幂等（存 → 读 → 再存 → 再读 不变
   const once = getProjectV2(db2, 'idem');
   saveProjectV2(db2, once);
   const twice = getProjectV2(db2, 'idem');
-  const keys = ['baseMaps', 'elevationMaps', 'activeBaseMapId', 'activeElevationMapId', 'layers', 'music', 'overlays', 'fx'];
+  const keys = ['activeBaseMapId', 'activeElevationMapId', 'terrainExaggeration', 'layers', 'music', 'overlays', 'fx'];
   check('2.1 二次往返无字段漂移', diffKeys(once, twice, keys).length === 0,
     `差异: ${JSON.stringify(diffKeys(once, twice, keys))}`);
   check('2.2 帧 ↔ 秒互逆：endFrame 稳定', twice.endFrame === once.endFrame, `${once.endFrame} → ${twice.endFrame}`);
-  check('2.3 二次往返不产生重复行', getProjectV2(db2, 'idem').baseMaps.length === 2,
-    JSON.stringify(getProjectV2(db2, 'idem').baseMaps.map((m) => m.id)));
+  check('2.3 二次往返夸张系数仍是 0（没被默认值冲掉）', twice.terrainExaggeration === 0,
+    JSON.stringify(twice.terrainExaggeration));
 }
 
-console.log('\n[3] 同名内置 id 可跨项目共存（复合主键）');
+console.log('\n[3] 两个项目共用同一套全局目录');
 {
+  // 目录行由渲染端启动时按常量铺（saveProjectV2 从此不管目录）：这里做同一件事
+  saveBaseMapV2(db, { id: 'osm', name: 'OSM', style: 'https://a/b.json' }, 0);
+  saveBaseMapV2(db, { id: 'sat', name: '卫星', style: { version: 8, sources: {}, layers: [] } }, 1);
   saveProjectV2(db, project('rt-b', FPS));
   const a = getProjectV2(db, 'rt');
   const b = getProjectV2(db, 'rt-b');
-  check('3.1 两个项目各自持有整套底图', a.baseMaps.length === 2 && b.baseMaps.length === 2,
-    `${a.baseMaps.length} / ${b.baseMaps.length}`);
-  check('3.2 互不覆盖', a.baseMaps[0].name === 'OSM' && b.activeBaseMapId === 'sat');
+  check('3.1 目录只有一份（不再是每个项目复制一套）', listBaseMapsV2(db).length === 2,
+    JSON.stringify(listBaseMapsV2(db).map((m) => m.id)));
+  check('3.2 两个项目各指各的行', a.activeBaseMapId === 'sat' && b.activeBaseMapId === 'sat');
+  check('3.3 删掉一行只是少一个可选项：引用它的项目照样读得回来', (() => {
+    removeBaseMapV2(db, 'sat');
+    const g = getProjectV2(db, 'rt');
+    return g.activeBaseMapId === 'sat' && listBaseMapsV2(db).length === 1;
+  })());
 }
 
 console.log('\n[4] globalConfig 缺字段也得存得下去（写入端不得把「没配」写成 0）');
@@ -200,6 +202,53 @@ console.log('\n[6] 音频只存 assetId（字节不进项目数据）');
   check('6.4 删素材 → 引用被 FK 置空，不留悬空 id', after.narration?.entries[0]?.audioId === undefined
     && after.overlays[0]?.content?.custom?.audio?.audioId === undefined, JSON.stringify(after.narration?.entries[0]));
   db6.close();
+}
+
+console.log('\n[7] 全局目录：样式只一格，两种形状都认');
+{
+  const db7 = open();
+  saveBaseMapV2(db7, { id: 'osm', name: 'OSM', style: 'https://a/b.json' }, 0);
+  saveBaseMapV2(db7, { id: 'sat', name: '卫星', style: { version: 8, sources: {}, layers: [] } }, 1);
+  const rows = listBaseMapsV2(db7);
+  check('7.1 样式 URL 存成 JSON 字符串、取回来还是字符串', rows[0].style === 'https://a/b.json', JSON.stringify(rows[0]));
+  check('7.2 内联样式对象存进同一格、取回来还是对象（不再拆两列）',
+    JSON.stringify(rows[1].style) === JSON.stringify({ version: 8, sources: {}, layers: [] }), JSON.stringify(rows[1]));
+  check('7.3 顺序按 ord，不靠 id 蒙', rows.map((r) => r.id).join(',') === 'osm,sat', rows.map((r) => r.id).join(','));
+  saveBaseMapV2(db7, { id: 'osm', name: 'OSM 改名', style: 'https://c/d.json' }, 0);
+  check('7.4 同一 id 再存是覆盖不是插行',
+    listBaseMapsV2(db7).length === 2 && listBaseMapsV2(db7)[0].name === 'OSM 改名', JSON.stringify(listBaseMapsV2(db7)));
+  saveElevationMapV2(db7, { id: 'none', name: '无高程（平面）', url: '' }, 0);
+  saveElevationMapV2(db7, { id: 'aws', name: 'AWS', url: 'https://s/{z}/{x}/{y}.png', encoding: 'terrarium' }, 1);
+  const elev = listElevationMapsV2(db7);
+  check('7.5 空串 url（占位项）没变成 undefined，也没有假造的缺省 encoding',
+    elev[0].url === '' && elev[0].encoding === undefined && elev[1].encoding === 'terrarium', JSON.stringify(elev));
+  check('7.6 高程行不带夸张系数（它在 project 上）', !('exaggeration' in elev[1]), JSON.stringify(elev[1]));
+}
+
+console.log('\n[8] 旧库的「每项目一套目录」启动让位');
+{
+  const legacy = new DatabaseSync(':memory:');
+  legacy.exec(`CREATE TABLE project (project_id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE base_map (base_map_id TEXT NOT NULL, project_id TEXT NOT NULL, name TEXT, style_url TEXT, style_json TEXT, ord INTEGER, PRIMARY KEY (project_id, base_map_id));
+    CREATE TABLE elevation_map (elevation_map_id TEXT NOT NULL, project_id TEXT NOT NULL, name TEXT, url TEXT, encoding TEXT, exaggeration REAL, style_url TEXT, ord INTEGER, PRIMARY KEY (project_id, elevation_map_id));`);
+  legacy.prepare(`INSERT INTO project (project_id,name,created_at,updated_at) VALUES ('lp','旧项目',1,1)`).run();
+  legacy.prepare(`INSERT INTO base_map (base_map_id,project_id,name,style_url,style_json,ord) VALUES (?,?,?,?,?,?)`)
+    .run('osm', 'lp', 'OSM', 'https://a/b.json', null, 0);
+  legacy.prepare(`INSERT INTO elevation_map (elevation_map_id,project_id,name,url,exaggeration,ord) VALUES (?,?,?,?,?,?)`)
+    .run('aws', 'lp', 'AWS', 'https://s', 1.5, 0);
+  const ok = ensureV2Schema(legacy);
+  const colsOf = (t) => legacy.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+  check('8.1 让位后新表是全局形状（没有 project_id 了）',
+    ok === true && !colsOf('base_map').includes('project_id') && !colsOf('elevation_map').includes('project_id'),
+    `${colsOf('base_map')} / ${colsOf('elevation_map')}`);
+  check('8.2 样式只留一格（style_url 不再成列）',
+    !colsOf('base_map').includes('style_url') && colsOf('base_map').includes('style_json'), colsOf('base_map').join(','));
+  check('8.3 夸张系数换了主人（project 上有这一列）', colsOf('project').includes('terrain_exaggeration'),
+    colsOf('project').join(','));
+  check('8.4 旧表改名归档、不是直接删（里面可能有用户手改过的行）',
+    !!legacy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='base_map__scoped_stale'").get());
+  check('8.5 旧行没被搬进新表（那是每项目一套的复制品，由渲染端按常量重铺）',
+    legacy.prepare('SELECT COUNT(*) c FROM base_map').get().c === 0);
 }
 
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);

@@ -14,6 +14,17 @@ contextBridge.exposeInMainWorld('mapvideo', {
     save: (c) => ipcRenderer.invoke('db:collections:save', c),
     remove: (id) => ipcRenderer.invoke('db:collections:remove', id),
   },
+  // 底图 / 高程目录：全库一份，所有项目共用（内置行由渲染端按 lib/map-catalog.ts 铺）
+  baseMaps: {
+    list: () => ipcRenderer.invoke('db:baseMaps:list'),
+    save: (row, ord) => ipcRenderer.invoke('db:baseMaps:save', row, ord),
+    remove: (id) => ipcRenderer.invoke('db:baseMaps:remove', id),
+  },
+  elevationMaps: {
+    list: () => ipcRenderer.invoke('db:elevationMaps:list'),
+    save: (row, ord) => ipcRenderer.invoke('db:elevationMaps:save', row, ord),
+    remove: (id) => ipcRenderer.invoke('db:elevationMaps:remove', id),
+  },
   /** 公共图层库（跨项目）：把项目图层连元素复制过去 / 导入回项目 */
   publicLayers: {
     list: () => ipcRenderer.invoke('db:publicLayers:list'),
@@ -28,6 +39,17 @@ contextBridge.exposeInMainWorld('mapvideo', {
     list: () => ipcRenderer.invoke('db:templates:list'),
     save: (g) => ipcRenderer.invoke('db:templates:save', g),
     remove: (tplGroup) => ipcRenderer.invoke('db:templates:remove', tplGroup),
+  },
+  // 底图 / 高程目录（全库一份，所有项目共用）
+  baseMaps: {
+    list: () => ipcRenderer.invoke('db:baseMaps:list'),
+    save: (row, ord) => ipcRenderer.invoke('db:baseMaps:save', row, ord),
+    remove: (id) => ipcRenderer.invoke('db:baseMaps:remove', id),
+  },
+  elevationMaps: {
+    list: () => ipcRenderer.invoke('db:elevationMaps:list'),
+    save: (row, ord) => ipcRenderer.invoke('db:elevationMaps:save', row, ord),
+    remove: (id) => ipcRenderer.invoke('db:elevationMaps:remove', id),
   },
   voices: {
     list: (providerId) => ipcRenderer.invoke('db:voices:list', providerId),

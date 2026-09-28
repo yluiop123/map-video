@@ -61,6 +61,10 @@ export function ensureV2Schema(db) {
     // 接口配置三代的形状漂移都在这一步让位（**早于 ensureAllColumns**，否则新列名先塞进旧表就把漂移盖住了）：
     // 否则补列那一步会把新列名塞进旧表，形状漂移就检不出来了（实测踩过）
     retireProviderIfStale(db);
+    // 底图 / 高程目录从「每项目一份」改成「全库一份」：旧表的主键是 (project_id, id)，
+    // 补列补不出这种变化 → 认「还带 project_id 列」这个正标志，改名让位后由 DDL 建新表。
+    // 旧行不搬：那是内置常量在每个项目里的复制品，渲染端启动时会按常量重新铺一遍。
+    rebuildCatalogIfProjectScoped(db);
     // task 的 FK 条款换代也在这一步（**早于 ensureAllColumns**：改名让位后建新表，最后把行搬回）
     const taskCols = rebuildTaskIfFkBound(db);
     const narCols = rebuildNarrationIfOldVolumeCheck(db);
@@ -244,6 +248,29 @@ function restoreTaskRows(db, cols) {
 }
 
 /**
+ * 底图 / 高程目录改成全库一份（旧的是 `(project_id, base_map_id)` 复合主键，每个项目一套复制品）。
+ * 认**「还带 project_id 列」**这个正标志：补列补不出主键形状的变化，只能让位重建。
+ * 旧行**不搬**：那是内置常量在每个项目里的 N 份复制品（样式还被拆在两列里），
+ * 渲染端启动时会按代码常量重新铺一遍 —— 搬它等于把重复带进新表。
+ */
+function rebuildCatalogIfProjectScoped(db) {
+  const stale = [];
+  for (const t of ['base_map', 'elevation_map']) {
+    if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='${t}'`).get()) continue;
+    if (!columnsOf(db, t).includes('project_id')) continue;
+    stale.push(t);
+  }
+  if (!stale.length) return;
+  try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }
+  for (const t of stale) {
+    try { db.exec(`DROP INDEX IF EXISTS ix_${t}_project`); } catch { /* 忽略 */ }
+    try { db.exec(`ALTER TABLE ${t} RENAME TO ${t}__scoped_stale`); } catch { /* 忽略 */ }
+  }
+  try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
+  console.log(`[db-v2] 底图/高程目录旧形状（按项目各存一份：${stale.join(' / ')}）已让位，建新表后由渲染端按常量铺`);
+}
+
+/**
  * `narration.volume` 的上限从 1 放宽到 3（>100% 走本地增益，见 lib/audio-gain.ts），
  * 但 CHECK 是**烧在表定义里**的 —— 补列不会改它，旧库写 1.5 会被 `CHECK constraint failed` 顶回来。
  * 所以认这个正标志让位重建。`narration_entry.project_id` 指向的是 `project` 而不是 `narration`，
@@ -424,33 +451,24 @@ export function saveProjectV2(db, project) {
 
     db.prepare(`INSERT INTO project (
       project_id, name, description, collection_id, created_at, updated_at, projection,
-      active_base_map_id, active_elevation_map_id, default_duration_sec, default_fps,
+      active_base_map_id, active_elevation_map_id, terrain_exaggeration, default_duration_sec, default_fps,
       resolution_w, resolution_h, default_easing
     ) VALUES (@project_id,@name,@description,@collection_id,@created_at,@updated_at,@projection,
-      @active_base_map_id,@active_elevation_map_id,@default_duration_sec,@default_fps,
+      @active_base_map_id,@active_elevation_map_id,@terrain_exaggeration,@default_duration_sec,@default_fps,
       @resolution_w,@resolution_h,@default_easing)`).run({
       project_id: project.id, name: project.name || '未命名', description: n(project.description),
       collection_id: project.collectionId || 'default',
       created_at: new Date(project.createdAt || now).getTime(), updated_at: now,
       projection: project.globalConfig?.projection || 'mercator',
+      // 目录是全局的一份，项目只存「选了哪一行」；夸张系数是这一片片子的创作选择，也在项目上
       active_base_map_id: n(project.activeBaseMapId), active_elevation_map_id: n(project.activeElevationMapId),
+      terrain_exaggeration: n(project.terrainExaggeration),
       // 帧 → 秒：defaultDuration 运行时是帧，列是秒（§10「时间一律存秒」）。
       // **不能走 f2s 的「没给值算 0」分支** —— 这一列有 CHECK (>0)，0 会让整笔保存崩掉，
       // 而「没配过时长」的正确落法是列默认值 5 秒。
       default_duration_sec: typeof gc.defaultDuration === 'number' ? f2s(gc.defaultDuration) : 5, default_fps: fps,
       resolution_w: n(gc.defaultResolution?.width) ?? 1920, resolution_h: n(gc.defaultResolution?.height) ?? 1080,
       default_easing: gc.defaultEasing || 'easeInOut',
-    });
-
-    // 底图 / 高程图目录：内置项在创建项目时就是普通行，之后每个项目各改各的
-    const insBaseMap = db.prepare(`INSERT INTO base_map (base_map_id, project_id, name, style_url, style_json, ord) VALUES (?,?,?,?,?,?)`);
-    (project.baseMaps || []).forEach((b, i) => {
-      const asUrl = typeof b.style === 'string';
-      insBaseMap.run(b.id, project.id, b.name || '', asUrl ? b.style : null, asUrl ? null : JSON.stringify(b.style || {}), i);
-    });
-    const insElevMap = db.prepare(`INSERT INTO elevation_map (elevation_map_id, project_id, name, url, encoding, exaggeration, style_url, ord) VALUES (?,?,?,?,?,?,?,?)`);
-    (project.elevationMaps || []).forEach((e, i) => {
-      insElevMap.run(e.id, project.id, e.name || '', e.url || '', n(e.encoding), n(e.exaggeration), n(e.style), i);
     });
 
     const insKf = db.prepare(`INSERT INTO camera_keyframe (
@@ -796,15 +814,8 @@ export function getProjectV2(db, id) {
         startFrame: s2f(L.start_sec), endFrame: s2f(L.end_sec), elements: byLayer.get(L.layer_id) || [],
       }))
     : [{ id: `${pid}:layer`, type: 'marker', name: '标记 1', visible: true, startFrame: 0, endFrame, elements }];
-  const baseMaps = db.prepare('SELECT * FROM base_map WHERE project_id = ? ORDER BY ord').all(pid)
-    .map((b) => ({ id: b.base_map_id, name: b.name, style: b.style_url ?? J(b.style_json, {}) }));
-  const elevationMaps = db.prepare('SELECT * FROM elevation_map WHERE project_id = ? ORDER BY ord').all(pid)
-    .map((e) => ({
-      id: e.elevation_map_id, name: e.name, url: e.url,
-      ...(e.encoding ? { encoding: e.encoding } : {}),
-      ...(e.exaggeration == null ? {} : { exaggeration: e.exaggeration }),
-      ...(e.style_url ? { style: e.style_url } : {}),
-    }));
+  // 底图 / 高程目录不在项目里了（全库一份，读写走 listBaseMapsV2 / listElevationMapsV2）：
+  // 项目只带「选了哪一行」与夸张系数
   return {
     id: pid, name: p.name, description: p.description ?? undefined,
     collectionId: p.collection_id, createdAt: new Date(p.created_at), updatedAt: new Date(p.updated_at),
@@ -819,9 +830,53 @@ export function getProjectV2(db, id) {
     layers, elements, camera, fx, overlays,
     narration: { entries, style: st ? { fontSize: st.font_size, fontFamily: st.font_family ?? undefined, color: st.color, strokeColor: st.stroke_color, strokeWidth: st.stroke_width, bg: st.bg, bgColor: st.bg_color, posY: st.pos_y, maxPct: st.max_pct } : undefined, hotFix: J(st?.hot_fix_json, undefined), gapSec: st?.gap_sec ?? 0, volume: st?.volume ?? 1 },
     music,
-    baseMaps, elevationMaps,
-    activeBaseMapId: p.active_base_map_id ?? 'osm', activeElevationMapId: p.active_elevation_map_id ?? 'none',
+    // 选了目录里哪一行（NULL 交给读取端回落，不在这里替用户决定「第一条」是哪个 id）
+    activeBaseMapId: p.active_base_map_id ?? undefined,
+    activeElevationMapId: p.active_elevation_map_id ?? undefined,
+    // 夸张系数跟项目走；**0 是有效值**，这里用 ?? 不用 ||，读取端同样
+    terrainExaggeration: p.terrain_exaggeration ?? undefined,
   };
+}
+
+// ---------- 底图 / 高程目录：全库一份，所有项目共用 ----------
+// 内置清单只有一份，在渲染端 `src/lib/map-catalog.ts`（主进程不再复制一份 = 第二处真相）；
+// 这里只负责存与取，行由渲染端在启动时铺进库。
+const styleOfCell = (raw, fallback) => { try { return JSON.parse(raw); } catch { return fallback; } };
+
+export function listBaseMapsV2(db) {
+  return db.prepare('SELECT base_map_id, name, style_json, ord FROM base_map ORDER BY ord, name')
+    .all().map((r) => ({ id: r.base_map_id, name: r.name, style: styleOfCell(r.style_json, '') }));
+}
+/** 样式只有一格：字符串就是 URL，对象就是内联样式 —— 与运行时 BaseMapConfig.style 同形 */
+export function saveBaseMapV2(db, b, ord = 0) {
+  db.prepare(`INSERT INTO base_map (base_map_id, name, style_json, ord) VALUES (?,?,?,?)
+    ON CONFLICT(base_map_id) DO UPDATE SET name=excluded.name, style_json=excluded.style_json, ord=excluded.ord`)
+    .run(b.id, b.name ?? '', JSON.stringify(b.style ?? ''), ord);
+  return { id: b.id };
+}
+export function removeBaseMapV2(db, id) {
+  db.prepare('DELETE FROM base_map WHERE base_map_id = ?').run(id);
+  // 项目侧那两列是弱引用（目录行由渲染端铺，挂成真外键会让「目录还没铺好时的一次保存」直接崩）：
+  // 引用悬空不损坏画面，读取端回落到目录第一条，v_check_dangling 把它照出来
+  return { ok: true };
+}
+
+export function listElevationMapsV2(db) {
+  return db.prepare('SELECT elevation_map_id, name, url, encoding, ord FROM elevation_map ORDER BY ord, name')
+    .all().map((r) => ({
+      id: r.elevation_map_id, name: r.name, url: r.url,
+      ...(r.encoding ? { encoding: r.encoding } : {}),
+    }));
+}
+export function saveElevationMapV2(db, e, ord = 0) {
+  db.prepare(`INSERT INTO elevation_map (elevation_map_id, name, url, encoding, ord) VALUES (?,?,?,?,?)
+    ON CONFLICT(elevation_map_id) DO UPDATE SET name=excluded.name, url=excluded.url, encoding=excluded.encoding, ord=excluded.ord`)
+    .run(e.id, e.name ?? '', e.url ?? '', e.encoding ?? null, ord);
+  return { id: e.id };
+}
+export function removeElevationMapV2(db, id) {
+  db.prepare('DELETE FROM elevation_map WHERE elevation_map_id = ?').run(id);
+  return { ok: true };
 }
 
 function readElementsV2(db, chapterId, s2f) {

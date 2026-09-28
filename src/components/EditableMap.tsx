@@ -17,6 +17,7 @@ import { findRegionsAt, loadRegionData, regionHitsToShapes } from '../lib/region
 import { useProjectStore, setHistoryMuted, snapshotHistory } from '../stores/projectStore';
 import { useInteractionStore } from '../stores/interactionStore';
 import { useEditorStore } from '../stores/editorStore';
+import { useMapCatalogStore } from '../stores/mapCatalogStore';
 import { generateId } from '../types';
 import { defaultVisualFor } from '../lib/pin-visual';
 import { defaultTerritoryDisplay, coordKey, distToRingBoundary, insertRingVertex, moveSharedVertices, removeSharedVertex, ringOpen, traceRingPath, trimPlotOverlap, splitPlotByLine } from '../lib/territory';
@@ -71,19 +72,22 @@ export function EditableMap({ project }: EditableMapProps) {
     setRenderFps(project.globalConfig?.defaultFPS ?? 30);
   }, [project.globalConfig?.defaultFPS]);
 
+  // 目录是全局一份的数据（不在项目里）：selector 只取数组本身，别在这儿拼新对象（§6.16）
+  const catalogBaseMaps = useMapCatalogStore((s) => s.baseMaps);
+  const catalogElevationMaps = useMapCatalogStore((s) => s.elevationMaps);
   // 稳定 styleUrl 引用：对象样式+高程合并时 getStyleUrl 每次渲染都返回新对象，
   // 若直接作 effect 依赖，地图 move → setCurrentCamera → 重渲染 → 重建地图，无限循环狂闪。
   // 以底图/高程配置的内容签名做 memo，仅在真正切换/修改底图或高程时重建地图。
   const baseMapStyleKey = JSON.stringify(
-    project.baseMaps.find((b) => b.id === project.activeBaseMapId)?.style ?? null
+    catalogBaseMaps.find((b) => b.id === project.activeBaseMapId)?.style ?? null
   );
   const elevationKey = JSON.stringify(
-    project.elevationMaps.find((e) => e.id === project.activeElevationMapId && e.url) ?? null
+    catalogElevationMaps.find((e) => e.id === project.activeElevationMapId && e.url) ?? null
   );
   const styleUrl = useMemo(
-    () => getStyleUrl(project),
+    () => getStyleUrl(project, { baseMaps: catalogBaseMaps, elevationMaps: catalogElevationMaps }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseMapStyleKey, elevationKey, project.activeBaseMapId, project.activeElevationMapId]
+    [baseMapStyleKey, elevationKey, project.activeBaseMapId, project.activeElevationMapId, project.terrainExaggeration]
   );
 
   // ===== 初始化地图 =====

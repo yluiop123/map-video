@@ -2,7 +2,7 @@
  * 项目存储抽象：网页（IndexedDB/Dexie）⇄ 桌面（Electron SQLite via IPC）。
  * 接口对齐 db.ts 现有形状，projectStore 无感切换。
  */
-import type { MapVideoProject, Collection } from '../types';
+import type { MapVideoProject, Collection, BaseMapConfig, ElevationMapConfig } from '../types';
 import { DEFAULT_COLLECTION_ID, DEFAULT_COLLECTION_NAME } from '../types';
 import { IS_DESKTOP } from './backend';
 import * as dexie from '../stores/db';
@@ -130,5 +130,49 @@ export const storage = {
       return;
     }
     await dexie.deleteCollection(id);
+  },
+
+  // ---------- 底图 / 高程目录：全库一份，所有项目共用 ----------
+
+  async listBaseMaps(): Promise<BaseMapConfig[]> {
+    if (IS_DESKTOP) return await window.mapvideo!.baseMaps.list();
+    return await dexie.listBaseMaps();
+  },
+
+  async saveBaseMap(row: BaseMapConfig, ord = 0): Promise<void> {
+    if (IS_DESKTOP) {
+      await window.mapvideo!.baseMaps.save(row, ord);
+      return;
+    }
+    await dexie.saveBaseMap(row, ord);
+  },
+
+  async removeBaseMap(id: string): Promise<void> {
+    if (IS_DESKTOP) {
+      await window.mapvideo!.baseMaps.remove(id);
+      return;
+    }
+    await dexie.deleteBaseMap(id);
+  },
+
+  async listElevationMaps(): Promise<ElevationMapConfig[]> {
+    if (IS_DESKTOP) return await window.mapvideo!.elevationMaps.list();
+    return await dexie.listElevationMaps();
+  },
+
+  async saveElevationMap(row: ElevationMapConfig, ord = 0): Promise<void> {
+    if (IS_DESKTOP) {
+      await window.mapvideo!.elevationMaps.save(row, ord);
+      return;
+    }
+    await dexie.saveElevationMap(row, ord);
+  },
+
+  async removeElevationMap(id: string): Promise<void> {
+    if (IS_DESKTOP) {
+      await window.mapvideo!.elevationMaps.remove(id);
+      return;
+    }
+    await dexie.deleteElevationMap(id);
   },
 };

@@ -6,6 +6,7 @@ import { renderElements, restackByLayerOrder, setRenderFps, resolveFollowCam, re
 import { interpolateCamera, resolveKfIndex } from '../lib/keyframe-interpolation';
 import { getAssetUrl, getAssetBytes } from '../lib/assets';
 import { getStyleUrl } from '../lib/map-style';
+import { useMapCatalogStore } from '../stores/mapCatalogStore';
 import type { MapVideoProject, MapElement } from '../types';
 
 interface MapSceneProps {
@@ -24,7 +25,11 @@ export const MapScene: React.FC<MapSceneProps> = ({ chapter, project, realtimeKe
   const frame = frameOverride ?? useCurrentFrame();
   const [handle] = useState(() => delayRender('Loading map...'));
 
-  const styleUrl = getStyleUrl(project);
+  // 底图 / 高程目录是**全局一份**的数据（不在项目里）：导出端与编辑端读同一个 store，
+  // 否则「编辑器里看到的底图」与「成片里的底图」会分叉（§6.7 双端一致）
+  const catalogBaseMaps = useMapCatalogStore((s) => s.baseMaps);
+  const catalogElevationMaps = useMapCatalogStore((s) => s.elevationMaps);
+  const styleUrl = getStyleUrl(project, { baseMaps: catalogBaseMaps, elevationMaps: catalogElevationMaps });
 
   // 初始化地图（只执行一次）
   useEffect(() => {

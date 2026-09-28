@@ -39,6 +39,18 @@ declare global {
         save: (t: import('./request-engine').TemplateDef) => Promise<{ ok: boolean }>;
         remove: (tplId: string) => Promise<{ ok: boolean }>;
       };
+      /** 底图目录（全库一份，所有项目共用；行由渲染端按 lib/map-catalog.ts 的常量铺） */
+      baseMaps: {
+        list: () => Promise<import('../types').BaseMapConfig[]>;
+        save: (row: import('../types').BaseMapConfig, ord?: number) => Promise<{ id: string }>;
+        remove: (id: string) => Promise<{ ok: boolean }>;
+      };
+      /** 高程目录（同上；夸张系数不在这里，它在项目上） */
+      elevationMaps: {
+        list: () => Promise<import('../types').ElevationMapConfig[]>;
+        save: (row: import('../types').ElevationMapConfig, ord?: number) => Promise<{ id: string }>;
+        remove: (id: string) => Promise<{ ok: boolean }>;
+      };
       providers: {
         /** 已配置的实例（一个能力可以多条，调用处选一条用） */
         list: () => Promise<import('./request-engine').InstanceDef[]>;

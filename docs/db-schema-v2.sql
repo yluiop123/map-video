@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS collection (  -- 合集：项目之上的一层分组
   updated_at    INTEGER NOT NULL  -- 最后修改时间（毫秒时间戳）
 );
 
-CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程指针 / GlobalConfig 配置列
+CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计 / 投影 / 选了全局目录里哪一行 / 地形夸张 / GlobalConfig 配置列
   project_id            TEXT PRIMARY KEY,  -- 项目 id
   name                  TEXT    NOT NULL,  -- 项目名
   description           TEXT,  -- 项目描述
@@ -58,10 +58,15 @@ CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计
   projection            TEXT    NOT NULL DEFAULT 'mercator'  -- 地图投影：mercator 平面 / globe 3D 球体（渲染方式，随项目走）
                         CHECK (projection IN ('mercator','globe')),
 
-  -- 当前生效的底图 / 高程图：指向 base_map / elevation_map 的行
-  -- 不建外键：项目行须先于子行写入（子行反过来引用 project），建 FK 就要「插项目 → 插子行 → 回写项目」三步
-  active_base_map_id      TEXT,  -- 当前生效底图 id（弱引用 base_map.base_map_id，只引用本项目内的行）
-  active_elevation_map_id TEXT,  -- 当前生效高程图 id（弱引用 elevation_map.elevation_map_id；NULL = 无高程）
+  -- 当前生效的底图 / 高程图：指向全局目录的行。**保持弱引用**（互引没了，原因换成了时序）：
+  -- 目录那几行由渲染端启动时按代码常量铺（seed 只有一份，在 src 里），项目行的写入不保证排在它之后 ——
+  -- 挂成真外键会让「目录还没铺好时的一次保存」直接崩。悬空不损坏画面：读取端回落到目录第一条，
+  -- 由 v_check_dangling 把「引用了已经不存在的底图 / 高程」照出来。
+  active_base_map_id      TEXT,  -- 当前生效底图 id（弱引用全局目录 base_map.base_map_id；NULL 或已失效 = 用目录第一条）
+  active_elevation_map_id TEXT,  -- 当前生效高程图 id（弱引用全局目录 elevation_map.elevation_map_id；NULL = 无高程）
+  -- 地形夸张是**这一片片子**的创作选择（同一份高程，纪录片想平一点、地形演示想陡一点），
+  -- 因此不跟全局目录行走，跟项目走。0 是合法值（完全平坦），读取端一律 ?? 判定
+  terrain_exaggeration    REAL    CHECK (terrain_exaggeration IS NULL OR terrain_exaggeration BETWEEN 0 AND 50),  -- 地形夸张系数（0=平坦、1=真实比例；NULL = 渲染端默认 1.5）—— 创作选择，跟项目走不跟全局目录走
 
   -- 项目级配置（GlobalConfig；原 project_config 1:1 表已合并进来）
   default_duration_sec      REAL NOT NULL DEFAULT 5 CHECK (default_duration_sec > 0),  -- 默认时长（秒，仅作新建项目的初始容器长度）
@@ -76,37 +81,29 @@ CREATE TABLE IF NOT EXISTS project (  -- 项目本体：身份 / 归属 / 审计
 -- 2. 资源与素材
 -- -----------------------------------------------------------------------------
 
--- 【底图 / 高程图：项目自带一份】
--- 早期假设「底图是代码内置常量、不入库」，但面板早已能 addBaseMap / removeBaseMap /
--- updateElevationMap（含地形夸张系数）—— 「用户能改的值就必须能存」的前提被推翻了，
--- 于是这两张表补上：内置目录在**创建项目时**作为普通行复制进来，之后每个项目各改各的。
--- active_* 两列仍不建外键：项目行必须先于子行写（子行引用 project），
--- 建 FK 就得「插项目 → 插子行 → 回写项目」三步；改由写入端保证只引用本项目内的行。
+-- 【底图 / 高程图：全库一份目录，所有项目共用】
+-- 目录是「有哪些图可选」，不是项目内容：面板只能选哪一张、拖夸张系数，
+-- 没有加 / 删 / 改名 / 排序的入口，所以它没有任何按项目不同的值 —— 存成一份全局目录，
+-- 项目侧只留两个「选哪一行」的引用（见第 1 节）与夸张系数。
+-- 内置那几份（osm / satellite / none / aws-terrain …）由首次建库铺成普通行，之后是数据：
+-- 改一行所有项目跟着变，删一行所有项目同时失去它（引用列 SET NULL，读取端回落第一条）。
 
-CREATE TABLE IF NOT EXISTS base_map (  -- 底图目录：项目自带一份（内置项在创建项目时复制进来），存底图名与样式（URL 或内联对象）
-  base_map_id  TEXT NOT NULL,  -- 底图 id（同项目内唯一：内置项如 osm / satellite 在各项目里同名）
-  project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+CREATE TABLE IF NOT EXISTS base_map (  -- 底图目录：全库一份、所有项目共用；内置行由渲染端按 lib/map-catalog.ts 的常量铺，样式只一格（字符串=URL、对象=内联样式）
+  base_map_id  TEXT PRIMARY KEY,  -- 底图 id（全库唯一：目录是全局一份，所有项目共用）
   name         TEXT NOT NULL DEFAULT '',  -- 显示名（底图面板里的名字）
-  style_url    TEXT,  -- 底图样式 URL（与 style_json 二选一；可为相对路径如 geo/x.json）
-  style_json   TEXT CHECK (style_json IS NULL OR json_valid(style_json)),  -- 内联 MapLibre 样式对象（卫星底图走这条；与 style_url 二选一）
-  ord          INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序（面板顺序）
-  CHECK (style_url IS NOT NULL OR style_json IS NOT NULL),
-  PRIMARY KEY (project_id, base_map_id)
+  -- 样式只有一格：URL 就是 JSON 字符串、内联样式就是 JSON 对象 —— 与运行时
+  -- BaseMapConfig.style: string | StyleSpecification 同形（拆两列时写入端还得按 typeof 决定填哪列）
+  style_json   TEXT NOT NULL CHECK (json_valid(style_json)),  -- 底图样式，只这一格：URL 就是 JSON 字符串、内联样式就是 JSON 对象（与运行时 style: string | StyleSpecification 同形）
+  ord          INTEGER NOT NULL DEFAULT 0  -- 面板顺序
 );
-CREATE INDEX IF NOT EXISTS ix_base_map_project ON base_map(project_id, ord);
 
-CREATE TABLE IF NOT EXISTS elevation_map (  -- 高程图目录：项目自带一份，地形夸张系数直接落在本行
-  elevation_map_id TEXT NOT NULL,  -- 高程图 id（同项目内唯一：内置项如 none / aws-terrain 在各项目里同名）
-  project_id   TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
+CREATE TABLE IF NOT EXISTS elevation_map (  -- 高程图目录：全库一份、所有项目共用；夸张系数不在这里（它是项目的创作选择，落在 project.terrain_exaggeration）
+  elevation_map_id TEXT PRIMARY KEY,  -- 高程图 id（全库唯一：none / maplibre-terrain / aws-terrain…）
   name         TEXT NOT NULL DEFAULT '',  -- 显示名（高程面板里的名字）
   url          TEXT NOT NULL DEFAULT '',  -- 高程栅格瓦片 URL；空串 = 「无高程（平面）」占位项
   encoding     TEXT CHECK (encoding IS NULL OR encoding IN ('mapbox','terrarium')),  -- 高程编码：mapbox / terrarium（缺省按 terrarium）
-  exaggeration REAL CHECK (exaggeration IS NULL OR exaggeration BETWEEN 0 AND 50),  -- 地形夸张系数（0=平坦、1=真实比例；空=用渲染端默认 1.5）
-  style_url    TEXT,  -- 可选：选用该高程时一并换用的底图样式 URL
-  ord          INTEGER NOT NULL DEFAULT 0,  -- 同项目内排序（面板顺序）
-  PRIMARY KEY (project_id, elevation_map_id)
+  ord          INTEGER NOT NULL DEFAULT 0  -- 面板顺序
 );
-CREATE INDEX IF NOT EXISTS ix_elevation_map_project ON elevation_map(project_id, ord);
 
 -- 素材表（**唯一**的素材存储，合并了原 custom_symbol / custom_image）：
 -- 把 base64 dataURL 从项目 JSON 中剥离出来，是本次改造收益最大的一项。
@@ -1199,10 +1196,11 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 -- 因此把规则前移到唯一的写入路径（应用层），两端行为一致：
 --   · 删除元素无需连带清理：动画关键帧已内联在类别表的 keyframes_json，随行生灭；
 --     asset_id / follow_route_element_id 是真外键，SET NULL 由数据库负责
---   · 剩余弱引用只有四处，全部由写入端保证：
+--   · 剩余弱引用只有三处，全部由写入端保证：
 --       element_image.asset_id（贴图本体）、public_element_*.asset_id（公共库副本）、
---       element_territory 的 countries/plots/events JSON 内部引用、
---       project.active_base_map_id / active_elevation_map_id（父子互引，见第 2 节）
+--       element_territory 的 countries/plots/events JSON 内部引用
+--     （project.active_base_map_id / active_elevation_map_id 曾是「父子互引」的弱引用：
+--       目录行引用 project、项目行又引用目录行。目录改成全局一份后互引不存在，改挂真外键）
 --   · camera_keyframe.follow_route_element_id 另需「同一项目」约束（复合外键做不到，见 2.4）
 --
 -- 数据库侧只保留 v_check_dangling / v_check_territory_ref 两个**自检视图**用于体检，
@@ -1256,7 +1254,19 @@ UNION ALL
 SELECT 'public_image.asset', t.element_id, t.asset_id
   FROM public_element_image t
   WHERE t.asset_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM asset a WHERE a.asset_id = t.asset_id);
+    AND NOT EXISTS (SELECT 1 FROM asset a WHERE a.asset_id = t.asset_id)
+UNION ALL
+-- 底图 / 高程目录是全局表，项目侧两列是弱引用（见第 1 节）：删掉一行不会级联，
+-- 但「所有项目都选着一个已经不存在的底图」必须是可查出来的，不能靠肉眼
+SELECT 'project.active_base_map', p.project_id, p.active_base_map_id
+  FROM project p
+  WHERE p.active_base_map_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM base_map b WHERE b.base_map_id = p.active_base_map_id)
+UNION ALL
+SELECT 'project.active_elevation_map', p.project_id, p.active_elevation_map_id
+  FROM project p
+  WHERE p.active_elevation_map_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM elevation_map e WHERE e.elevation_map_id = p.active_elevation_map_id);
 
 -- 12.3 疆域 JSON 内部一致性（复合外键被 JSON 化后，用 json_each 恢复部分校验）
 CREATE VIEW IF NOT EXISTS v_check_territory_ref AS

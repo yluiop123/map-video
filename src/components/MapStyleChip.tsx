@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { Layers, Mountain, Globe, Grid2x2, Check } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
 import { useEditorStore } from '../stores/editorStore';
+import { useMapCatalogStore, resolveCatalog } from '../stores/mapCatalogStore';
+import { DEFAULT_TERRAIN_EXAGGERATION } from '../lib/map-style';
+import { FLAT_ELEVATION_ID } from '../lib/map-catalog';
 
 /**
  * 地图左下角底图芯片（对齐 Mapimator SATELLITE 样式）：
@@ -13,20 +16,26 @@ export function MapStyleChip() {
   const setActiveBaseMap = useProjectStore((s) => s.setActiveBaseMap);
   const setActiveElevationMap = useProjectStore((s) => s.setActiveElevationMap);
   const updateGlobalConfig = useProjectStore((s) => s.updateGlobalConfig);
-  const updateElevationMap = useProjectStore((s) => s.updateElevationMap);
+  const setTerrainExaggeration = useProjectStore((s) => s.setTerrainExaggeration);
+  // 目录是全局一份的数据（不在项目里）：这里只读数组本身，不在 selector 里拼新对象（§6.16）
+  const catalogBaseMaps = useMapCatalogStore((s) => s.baseMaps);
+  const catalogElevationMaps = useMapCatalogStore((s) => s.elevationMaps);
   const [open, setOpen] = useState(false);
   // 弹出面板限高：按「芯片顶部到地图舞台顶部」的可用高度算，避免被舞台 overflow-hidden 从顶部裁切
   const [panelMaxH, setPanelMaxH] = useState(0);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  // 底图 / 高程 / 投影为**项目固定**（不再按时间线）
-  // 当前生效的高程源（'none' 或没有 url 视为平面）与其夸张系数草稿
-  const activeElevationId = project?.activeElevationMapId ?? 'none';
-  const activeElevation = project?.elevationMaps.find((e) => e.id === activeElevationId && e.url);
-  const [exagDraft, setExagDraft] = useState(activeElevation?.exaggeration ?? 1.5);
+  // 底图 / 高程 / 投影为**项目固定**（不再按时间线）；可选清单来自全局目录，项目只记选了哪一行
+  const { base: activeBaseMap, elev: activeElevation } = resolveCatalog(
+    catalogBaseMaps, catalogElevationMaps,
+    { activeBaseMapId: project?.activeBaseMapId, activeElevationMapId: project?.activeElevationMapId ?? FLAT_ELEVATION_ID },
+  );
+  const activeElevationId = project?.activeElevationMapId ?? FLAT_ELEVATION_ID;
+  // 夸张系数在项目上（不在目录行上）；0 是有效值，所以判「没填过」用 ??，不用 ||
+  const [exagDraft, setExagDraft] = useState(project?.terrainExaggeration ?? DEFAULT_TERRAIN_EXAGGERATION);
   useEffect(() => {
-    setExagDraft(activeElevation?.exaggeration ?? 1.5);
-  }, [activeElevationId, activeElevation?.exaggeration]);
+    setExagDraft(project?.terrainExaggeration ?? DEFAULT_TERRAIN_EXAGGERATION);
+  }, [project?.terrainExaggeration]);
 
   /**
    * 拖动中只更新草稿，松手 / 失焦才写 store。
@@ -35,7 +44,7 @@ export function MapStyleChip() {
    */
   const commitExag = () => {
     if (!activeElevation) return;
-    updateElevationMap(activeElevation.id, { exaggeration: exagDraft });
+    setTerrainExaggeration(exagDraft);
   };
 
   // 点击外部关闭
@@ -51,8 +60,7 @@ export function MapStyleChip() {
 
   if (!project || isPlaying) return null;
 
-  const activeBaseMapId = project.activeBaseMapId;
-  const activeBaseMap = project.baseMaps.find((b) => b.id === activeBaseMapId);
+  const activeBaseMapId = activeBaseMap?.id;
   const isGlobe = (project.globalConfig.projection ?? 'mercator') === 'globe';
 
   return (
@@ -92,7 +100,7 @@ export function MapStyleChip() {
         >
           {/* 底图 */}
           <p className="px-2 pt-1 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">底图</p>
-          {project.baseMaps.map((bm) => {
+          {catalogBaseMaps.map((bm) => {
             const active = bm.id === activeBaseMapId;
             return (
               <button
@@ -113,7 +121,7 @@ export function MapStyleChip() {
 
           {/* 高程（store 默认自带 id='none' 的无高程项） */}
           <p className="px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">高程</p>
-          {project.elevationMaps.map((em) => {
+          {catalogElevationMaps.map((em) => {
             const active = em.id === activeElevationId;
             return (
               <button

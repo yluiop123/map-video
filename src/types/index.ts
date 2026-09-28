@@ -46,12 +46,19 @@ export interface MapVideoProject {
   narration: NarrationTrack;
   /** 项目级背景音乐：单轨多段（绝对帧，段内循环） */
   music: MusicTrack[];
-  baseMaps: BaseMapConfig[];
-  /** 生效底图（项目固定） */
-  activeBaseMapId: string;
-  elevationMaps: ElevationMapConfig[];
-  /** 生效高程（项目固定） */
+  /**
+   * 生效底图：指向**全局目录**（`lib/map-catalog.ts` → 库里的 base_map 行）里的一行。
+   * 目录不是项目内容（所有项目共用一套），所以不在这里；这一列是弱引用 ——
+   * 指向已删除的行时读取端回落到目录第一条，不崩。
+   */
+  activeBaseMapId?: string;
+  /** 生效高程（同上）：null = 无高程（平面） */
   activeElevationMapId: string | null;
+  /**
+   * 地形夸张系数：同一份高程，纪录片想平一点、地形演示想陡一点 —— 这是本片的创作选择，
+   * 所以跟项目走，不跟全局目录行走。**0 是有效值（完全平坦），读取端一律用 ?? 判定**
+   */
+  terrainExaggeration?: number;
 }
 
 export interface GlobalConfig {
@@ -74,17 +81,18 @@ export interface Resolution {
 export interface BaseMapConfig {
   id: string;
   name: string;
-  /** MapLibre style URL 或内联样式对象 */
+  /** 样式只有一格：字符串 = style URL（可为站内相对路径），对象 = 内联 MapLibre 样式 */
   style: string | import('maplibre-gl').StyleSpecification;
 }
 
 export interface ElevationMapConfig {
   id: string;
   name: string;
-  url: string;                   // 高程栅格瓦片 URL (terrain-rgb / terrarium)
+  /** 高程栅格瓦片 URL；空串 = 「无高程（平面）」那个占位项 */
+  url: string;
   encoding?: 'mapbox' | 'terrarium';
-  exaggeration?: number;         // 地形夸张系数
-  style?: string;                // 可选的关联底图样式
+  // 夸张系数不在这里（它是项目的创作选择，见 MapVideoProject.terrainExaggeration）；
+  // 「选了这张高程就顺带换底图样式」也没有这一格 —— 全项目没有任何读取点
 }
 
 // ========== 元素类型 ==========

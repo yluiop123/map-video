@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { ensureV2Schema, migrateLegacyProjects, saveProjectV2, getProjectV2, listProjectsV2, removeProjectV2, listPublicLayersV2, saveLayerToPublicV2, importPublicLayerV2, removePublicLayerV2,
   listTemplatesV2, upsertTemplateV2, removeTemplateV2, migrateProvidersFromStale,
+  listBaseMapsV2, saveBaseMapV2, removeBaseMapV2, listElevationMapsV2, saveElevationMapV2, removeElevationMapV2,
   listProvidersV2, upsertProviderV2, removeProviderV2, listVoicesV2, saveVoiceV2, removeVoiceV2,
   saveTaskV2, dueTasksV2, batchTasksV2, openTasksV2, pruneFinishedTasksV2 } from './db-v2.mjs';
 
@@ -154,6 +155,14 @@ function registerIpc() {
   ipcMain.handle('db:templates:list', () => listTemplatesV2(db));
   ipcMain.handle('db:templates:save', (_e, t) => upsertTemplateV2(db, t));
   ipcMain.handle('db:templates:remove', (_e, tplId) => removeTemplateV2(db, tplId));
+
+  // 底图 / 高程目录：全库一份，所有项目共用（内置行由渲染端按代码常量铺，这里只存与取）
+  ipcMain.handle('db:baseMaps:list', () => listBaseMapsV2(db));
+  ipcMain.handle('db:baseMaps:save', (_e, row, ord) => saveBaseMapV2(db, row, ord));
+  ipcMain.handle('db:baseMaps:remove', (_e, id) => removeBaseMapV2(db, id));
+  ipcMain.handle('db:elevationMaps:list', () => listElevationMapsV2(db));
+  ipcMain.handle('db:elevationMaps:save', (_e, row, ord) => saveElevationMapV2(db, row, ord));
+  ipcMain.handle('db:elevationMaps:remove', (_e, id) => removeElevationMapV2(db, id));
 
   // 能力实例（一个模板可配多条；Key 存在本机的 values 里，「怎么发请求」在模板里）
   // SQL 全在 db-v2.mjs —— 与项目/素材同一层，才能离线跑迁移回归

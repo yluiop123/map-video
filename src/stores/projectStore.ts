@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { storage } from '../lib/storage';
 import type {
-  MapVideoProject, MapElement, GlobalConfig, BaseMapConfig,
-  ElevationMapConfig, OverlayItem, CameraKeyframe,
+  MapVideoProject, MapElement, GlobalConfig,
+  OverlayItem, CameraKeyframe,
   ProjectExport, ScreenFxItem, ExportedAsset,
   NarrationEntry, NarrationStyle, MusicTrack, HotFix,
   Layer, LayerType,
@@ -11,6 +11,8 @@ import { generateId, DEFAULT_COLLECTION_ID, DEFAULT_NARRATION_GAP_SEC, DEFAULT_N
 import { normalizeTerritoryDisplay } from '../lib/territory';
 import { deriveElements, layerTypeOf, insertLayerSorted, LAYER_TYPE_LABEL, resolveTargetLayerId } from '../lib/layers';
 import { useEditorStore } from './editorStore';
+import { DEFAULT_BASE_MAP_ID, FLAT_ELEVATION_ID } from '../lib/map-catalog';
+import { DEFAULT_TERRAIN_EXAGGERATION } from '../lib/map-style';
 import { readAsset, releaseAssetUrls, putAssetBytes, type AssetKind } from '../lib/assets';
 import { projectAssetIds, remapProjectAssetIds } from '../lib/asset-refs';
 import { base64ToBytes, bytesToBase64 } from '../lib/providers';
@@ -87,11 +89,10 @@ function normalizeProject(project: MapVideoProject): MapVideoProject {
   return {
     ...project,
     startFrame: 0,
-    // 底图 / 高程兜底：旧数据或缺失时补默认，避免「高程图不见了」
-    baseMaps: project.baseMaps?.length ? project.baseMaps : [...DEFAULT_BASE_MAPS],
-    elevationMaps: project.elevationMaps?.length ? project.elevationMaps : [...DEFAULT_ELEVATION_MAPS],
-    activeBaseMapId: project.activeBaseMapId || 'satellite',
-    activeElevationMapId: project.activeElevationMapId ?? 'none',
+    // 目录是全局一份的数据，项目只记「选了哪一行」与夸张系数（读不到就在渲染端回落第一条）
+    activeBaseMapId: project.activeBaseMapId,
+    activeElevationMapId: project.activeElevationMapId ?? FLAT_ELEVATION_ID,
+    terrainExaggeration: project.terrainExaggeration,
     layers: rawLayers,
     elements,
     camera: project.camera?.length ? project.camera : [{ frame: 0, center: [104.0, 35.0], zoom: 4 }],
@@ -122,20 +123,6 @@ export function isProjectNameTaken(name: string, existing: string[]): boolean {
   return existing.some((x) => x.trim().toLowerCase() === n);
 }
 
-/** 已下线的底图 id：MapLibre 示例（Natural Earth，中国边界不符合国标） */
-const REMOVED_BASE_MAP_IDS = new Set(['demotiles']);
-
-/** 底图归一化（load/import 时调用）：只清掉已下线的底图 id */
-function stripRemovedBaseMaps(project: MapVideoProject): MapVideoProject {
-  const source = project.baseMaps || [];
-  const baseMaps = source.filter((b) => !REMOVED_BASE_MAP_IDS.has(b.id));
-  if (baseMaps.length === source.length) return project;
-  const activeBaseMapId = baseMaps.some((b) => b.id === project.activeBaseMapId)
-    ? project.activeBaseMapId
-    : (baseMaps[0]?.id || 'osm');
-  return { ...project, baseMaps, activeBaseMapId };
-}
-
 // ========== 默认配置 ==========
 
 const DEFAULT_GLOBAL_CONFIG: GlobalConfig = {
@@ -145,51 +132,6 @@ const DEFAULT_GLOBAL_CONFIG: GlobalConfig = {
   defaultEasing: 'easeInOut',
   projection: 'mercator',
 };
-
-const DEFAULT_BASE_MAPS: BaseMapConfig[] = [
-  {
-    id: 'osm',
-    name: 'OpenStreetMap',
-    style: {
-      version: 8,
-      sources: {
-        osm: {
-          type: 'raster',
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-          tileSize: 256,
-          attribution: '© OpenStreetMap contributors',
-        },
-      },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-    } as unknown as string,
-  },
-  { id: 'dark', name: '暗色地图', style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json' },
-  { id: 'light', name: '亮色地图', style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json' },
-  { id: 'voyager', name: '探索者地图', style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json' },
-  {
-    id: 'satellite', name: '卫星影像',
-    style: {
-      version: 8,
-      sources: {
-        sat: {
-          type: 'raster',
-          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-          tileSize: 256,
-          attribution: '© Esri World Imagery',
-        },
-      },
-      layers: [{ id: 'sat', type: 'raster', source: 'sat' }],
-    } as unknown as string,
-  },
-  { id: 'openfreemap', name: 'OpenFreeMap', style: 'https://tiles.openfreemap.org/styles/liberty' },
-  { id: 'maplibre-demo', name: 'MapLibre 示例（国标）', style: 'geo/maplibre-demo.json' },
-];
-
-const DEFAULT_ELEVATION_MAPS: ElevationMapConfig[] = [
-  { id: 'none', name: '无高程（平面）', url: '' },
-  { id: 'maplibre-terrain', name: '地形高程 (MapLibre)', url: 'https://demotiles.maplibre.org/terrain-tiles/tiles.json', encoding: 'terrarium', exaggeration: 1.5 },
-  { id: 'aws-terrain', name: '地形高程 (AWS Terrarium)', url: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png', encoding: 'terrarium', exaggeration: 1.5 },
-];
 
 // ========== 历史栈控制 ==========
 
@@ -273,13 +215,10 @@ interface ProjectState {
   // 相机
   setProjectCamera: (camera: CameraKeyframe[]) => void;
 
-  // 底图 / 高程 / 全局
+  // 底图 / 高程：项目只记「选了全局目录里哪一行」与夸张系数（加删改在 stores/mapCatalogStore）
   setActiveBaseMap: (id: string) => void;
-  addBaseMap: (baseMap: BaseMapConfig) => void;
-  removeBaseMap: (id: string) => void;
   setActiveElevationMap: (id: string | null) => void;
-  addElevationMap: (e: ElevationMapConfig) => void;
-  updateElevationMap: (id: string, patch: Partial<ElevationMapConfig>) => void;
+  setTerrainExaggeration: (v: number) => void;
   updateGlobalConfig: (changes: Partial<GlobalConfig>) => void;
 
   // 导入导出
@@ -356,10 +295,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         // 新建项目给 0.5 秒字幕间隔（读起来像人讲话）；老项目没这个值按 0 处理，不动已排好的字幕
         narration: { entries: [], style: defaultNarrationStyle(), gapSec: DEFAULT_NARRATION_GAP_SEC, volume: DEFAULT_NARRATION_VOLUME },
         music: [],
-        baseMaps: [...DEFAULT_BASE_MAPS],
-        activeBaseMapId: 'satellite',
-        elevationMaps: [...DEFAULT_ELEVATION_MAPS],
-        activeElevationMapId: 'none',
+        activeBaseMapId: DEFAULT_BASE_MAP_ID,
+        activeElevationMapId: FLAT_ELEVATION_ID,
+        terrainExaggeration: DEFAULT_TERRAIN_EXAGGERATION,
       };
       useEditorStore.getState().resetSelection();
       set({ project, history: [], future: [] });
@@ -375,7 +313,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
       (await import('../lib/model-renderer')).clearModelCaches();
       const project = await storage.getProject(id);
       if (project) {
-        const normalized = stripRemovedBaseMaps(normalizeProject(project));
+        const normalized = normalizeProject(project);
         set({ project: normalized, history: [], future: [] });
         markProjectSaved(normalized);
       }
@@ -584,16 +522,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
 
     // ----- 底图 / 高程 / 全局 -----
     setActiveBaseMap: (id: string) => patch((p) => ({ ...p, activeBaseMapId: id })),
-    addBaseMap: (baseMap: BaseMapConfig) => patch((p) => ({ ...p, baseMaps: [...p.baseMaps, baseMap] })),
-    removeBaseMap: (id: string) => patch((p) => ({
-      ...p,
-      baseMaps: p.baseMaps.filter((b) => b.id !== id),
-      activeBaseMapId: p.activeBaseMapId === id ? 'osm' : p.activeBaseMapId,
-    })),
     setActiveElevationMap: (id: string | null) => patch((p) => ({ ...p, activeElevationMapId: id })),
-    addElevationMap: (e: ElevationMapConfig) => patch((p) => ({ ...p, elevationMaps: [...p.elevationMaps, e] })),
-    updateElevationMap: (id: string, ePatch: Partial<ElevationMapConfig>) =>
-      patch((p) => ({ ...p, elevationMaps: p.elevationMaps.map((e) => (e.id === id ? { ...e, ...ePatch } : e)) })),
+    /**
+     * 地形夸张：**0 是有效值（完全平坦）**，所以这里不做「空当默认」的合并 ——
+     * 落库走 terrain_exaggeration 列（NULL = 渲染端默认 1.5），读取端一律 ?? 判定。
+     */
+    setTerrainExaggeration: (v: number) => patch((p) => ({ ...p, terrainExaggeration: v })),
     updateGlobalConfig: (changes: Partial<GlobalConfig>) => patch((p) => ({ ...p, globalConfig: { ...p.globalConfig, ...changes } })),
 
     importProjectConfig: async (data: ProjectExport, collectionId?: string) => {
@@ -609,13 +543,13 @@ export const useProjectStore = create<ProjectState>()((set, get) => {
         imported = { ...data, project: remapProjectAssetIds(data.project, idMap) };
       }
       const existing = await storage.listProjects();
-      const project = stripRemovedBaseMaps(normalizeProject({
+      const project = normalizeProject({
         ...imported.project,
         name: uniqueProjectName(imported.project.name || '未命名项目', existing.map((p) => p.name)),
         id: generateId(),
         collectionId: collectionId || DEFAULT_COLLECTION_ID,
         updatedAt: new Date(),
-      }));
+      });
       useEditorStore.getState().resetSelection();
       set({ project, history: [], future: [] });
       await storage.saveProject(project);
