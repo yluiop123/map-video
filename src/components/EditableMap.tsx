@@ -208,7 +208,7 @@ export function EditableMap({ project }: EditableMapProps) {
     if (kind === 'pin') {
       const s = pendingPlace.pinStyle ?? 'pin';
       const base = {
-        id: generateId(), visible: true, locked: false,
+        id: generateId(), locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: lngLat,
       };
@@ -242,7 +242,7 @@ export function EditableMap({ project }: EditableMapProps) {
       }
     } else if (kind === 'territory') {
       el = {
-        id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
+        id: generateId(), type: 'territory', name: '疆域', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         countries: [{ id: generateId(), name: '势力1', color: '#E23B3B' }],
         plots: [], events: [], display: defaultTerritoryDisplay(),
@@ -574,7 +574,7 @@ export function EditableMap({ project }: EditableMapProps) {
     // —— 点类元素：一次点击完成 ——
     if (mode === 'add_point') {
       createElementAndSelect({
-        id: generateId(), type: 'point', name: '标记点', visible: true, locked: false,
+        id: generateId(), type: 'point', name: '标记点', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: lngLat, color: '#FF4444', iconSize: 10,
       } as PointElement);
@@ -582,7 +582,7 @@ export function EditableMap({ project }: EditableMapProps) {
     }
     if (mode === 'add_text') {
       createElementAndSelect({
-        id: generateId(), type: 'point', name: '文字', visible: true, locked: false,
+        id: generateId(), type: 'point', name: '文字', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: lngLat, shape: 'text', iconSize: 0,
         label: { text: '文字', fontSize: 14, color: '#FFFFFF', position: 'center', bgColor: 'rgba(0,0,0,0)', bgPadding: 3, bgRadius: 3, fontWeight: 'bold' },
@@ -591,7 +591,7 @@ export function EditableMap({ project }: EditableMapProps) {
     }
     if (mode === 'add_flag') {
       createElementAndSelect({
-        id: generateId(), type: 'flag', name: '旗帜', visible: true, locked: false,
+        id: generateId(), type: 'flag', name: '旗帜', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: lngLat, text: '旗帜', flagColor: '#E23B3B', textColor: '#FFFFFF',
         fontSize: 14, flagWidth: 72,
@@ -626,7 +626,7 @@ export function EditableMap({ project }: EditableMapProps) {
         updatePreview();
       } else {
         createElementAndSelect({
-          id: generateId(), type: 'arrow', name: '箭头', visible: true, locked: false,
+          id: generateId(), type: 'arrow', name: '箭头', locked: false,
           startFrame: 0, endFrame: project.endFrame, style: {},
           from: d.points[0], to: lngLat, arrowType: 'swallowtail', width: 15, color: '#E23B3B',
           progress: [{ frame: 0, value: 1 }], drawZoom: map.getZoom(),
@@ -653,7 +653,7 @@ export function EditableMap({ project }: EditableMapProps) {
         const [x2, y2] = lngLat;
         const ring: [number, number][] = [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]];
         createElementAndSelect({
-          id: generateId(), type: 'polygon', name: '矩形', visible: true, locked: false,
+          id: generateId(), type: 'polygon', name: '矩形', locked: false,
           startFrame: 0, endFrame: project.endFrame, style: {},
           coordinates: [ring],
           fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
@@ -673,7 +673,7 @@ export function EditableMap({ project }: EditableMapProps) {
       if (d.points.length >= 4) {
         const pts = dedupePoints(d.points);
         createElementAndSelect({
-          id: generateId(), type: 'double_arrow', name: '钳形攻势', visible: true, locked: false,
+          id: generateId(), type: 'double_arrow', name: '钳形攻势', locked: false,
           startFrame: 0, endFrame: project.endFrame, style: {},
           points: pts.slice(0, 4) as [number, number][],
           color: '#E23B3B',
@@ -701,20 +701,20 @@ export function EditableMap({ project }: EditableMapProps) {
         const radius = Math.max(0.5, turf.distance(d.points[0], lngLat, { units: 'kilometers' }));
         if (mode === 'add_encirclement') {
           createElementAndSelect({
-            id: generateId(), type: 'encirclement', name: '包围圈', visible: true, locked: false,
+            id: generateId(), type: 'encirclement', name: '包围圈', locked: false,
             startFrame: 0, endFrame: project.endFrame, style: {},
             center: d.points[0], radius, fillColor: '#D33030', strokeColor: '#D33030',
           } as EncirclementElement);
         } else if (mode === 'add_gathering') {
           createElementAndSelect({
-            id: generateId(), type: 'gathering', name: '集结点', visible: true, locked: false,
+            id: generateId(), type: 'gathering', name: '集结点', locked: false,
             startFrame: 0, endFrame: project.endFrame, style: {},
             center: d.points[0], radius, color: '#FF6600', pulseAnimation: true,
             shapeCategory: 'two',
           } as GatheringElement);
         } else if (mode === 'add_shape_circle') {
           createElementAndSelect({
-            id: generateId(), type: 'polygon', name: '圆', visible: true, locked: false,
+            id: generateId(), type: 'polygon', name: '圆', locked: false,
             startFrame: 0, endFrame: project.endFrame, style: {},
             coordinates: [circleCoords(d.points[0], radius)],
             fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
@@ -724,7 +724,7 @@ export function EditableMap({ project }: EditableMapProps) {
           } as PolygonElement);
         } else {
           createElementAndSelect({
-            id: generateId(), type: 'polygon', name: '五角星', visible: true, locked: false,
+            id: generateId(), type: 'polygon', name: '五角星', locked: false,
             startFrame: 0, endFrame: project.endFrame, style: {},
             coordinates: [polyStarCoords(d.points[0], radius)],
             fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
@@ -863,7 +863,7 @@ export function EditableMap({ project }: EditableMapProps) {
       // 钳形攻势：4 控制点 → DoubleArrow
       if (pts.length < 3) return;
       createElementAndSelect({
-        id: generateId(), type: 'double_arrow', name: '钳形攻势', visible: true, locked: false,
+        id: generateId(), type: 'double_arrow', name: '钳形攻势', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         points: pts as [number, number][],
         color: '#E23B3B',
@@ -873,7 +873,7 @@ export function EditableMap({ project }: EditableMapProps) {
     } else if (mode === 'add_attack') {
       if (pts.length < 2) return;
       createElementAndSelect({
-        id: generateId(), type: 'arrow', name: '自定义箭头', visible: true, locked: false,
+        id: generateId(), type: 'arrow', name: '自定义箭头', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
@@ -883,7 +883,7 @@ export function EditableMap({ project }: EditableMapProps) {
     } else if (mode === 'add_moving_line') {
       if (pts.length < 2) return;
       createElementAndSelect({
-        id: generateId(), type: 'moving_point', name: '移动点(直线)', visible: true, locked: false,
+        id: generateId(), type: 'moving_point', name: '移动点(直线)', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         path: pts,
         pathProgress: [{ frame: 0, value: 0 }, { frame: project.endFrame, value: 1 }],
@@ -894,7 +894,7 @@ export function EditableMap({ project }: EditableMapProps) {
       // 贝塞尔平滑后作为路径
       const smooth = approxBezier(pts);
       createElementAndSelect({
-        id: generateId(), type: 'moving_point', name: '移动点(曲线)', visible: true, locked: false,
+        id: generateId(), type: 'moving_point', name: '移动点(曲线)', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         path: smooth,
         pathProgress: [{ frame: 0, value: 0 }, { frame: project.endFrame, value: 1 }],
@@ -903,7 +903,7 @@ export function EditableMap({ project }: EditableMapProps) {
     } else if (mode === 'add_line_arc') {
       if (pts.length < 2) return;
       createElementAndSelect({
-        id: generateId(), type: 'line', name: '大圆弧航线', visible: true, locked: false,
+        id: generateId(), type: 'line', name: '大圆弧航线', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: pts,
         drawProgress: [{ frame: 0, value: 1 }],
@@ -923,7 +923,7 @@ export function EditableMap({ project }: EditableMapProps) {
       createElementAndSelect({
         id: generateId(), type: 'line',
         name: isPlain ? (bez ? '无样式曲线' : '无样式直线') : arrow ? (bez ? '带箭头曲线' : '带箭头直线') : bez ? '曲线' : (shape ? '直线' : '路线'),
-        visible: true, locked: false,
+        locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: pts,
         drawProgress: [{ frame: 0, value: 1 }],
@@ -943,7 +943,7 @@ export function EditableMap({ project }: EditableMapProps) {
       const asRoute = rr?.mode === mode;
       if (asRoute) useInteractionStore.getState().clearPendingRouteStyle();
       createElementAndSelect({
-        id: generateId(), type: 'arrow', name: '行军箭头', visible: true, locked: false,
+        id: generateId(), type: 'arrow', name: '行军箭头', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved-simple', path: pts,
         width: 15, color: '#E23B3B',
@@ -956,7 +956,7 @@ export function EditableMap({ project }: EditableMapProps) {
     } else if (mode === 'add_shape_swallowtail') {
       if (pts.length < 2) return;
       createElementAndSelect({
-        id: generateId(), type: 'arrow', name: '燕尾箭头', visible: true, locked: false,
+        id: generateId(), type: 'arrow', name: '燕尾箭头', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
         width: 15, color: '#E23B3B',
@@ -968,7 +968,7 @@ export function EditableMap({ project }: EditableMapProps) {
     } else if (mode === 'add_special_swallow') {
       if (pts.length < 2) return;
       createElementAndSelect({
-        id: generateId(), type: 'arrow', name: '自定义燕尾箭头', visible: true, locked: false,
+        id: generateId(), type: 'arrow', name: '自定义燕尾箭头', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
@@ -983,7 +983,7 @@ export function EditableMap({ project }: EditableMapProps) {
       createElementAndSelect({
         id: generateId(), type: 'line',
         name: curved ? '弯曲战线' : '直线战线',
-        visible: true, locked: false,
+        locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: pts,
         drawProgress: [{ frame: 0, value: 1 }],
@@ -1020,7 +1020,7 @@ export function EditableMap({ project }: EditableMapProps) {
       const newCountry = { id: generateId(), name: '势力1', color: '#E23B3B' };
       if (!target) {
         target = {
-          id: generateId(), type: 'territory', name: '疆域', visible: true, locked: false,
+          id: generateId(), type: 'territory', name: '疆域', locked: false,
           startFrame: 0, endFrame: project.endFrame, style: {},
           countries: [newCountry], plots: [], events: [], display: defaultTerritoryDisplay(),
         } as TerritoryElement;
@@ -1080,7 +1080,7 @@ export function EditableMap({ project }: EditableMapProps) {
       createElementAndSelect({
         id: generateId(), type: 'polygon',
         name: curve ? (defend ? '曲线防御圈' : '曲线多边') : (defend ? '直线防御圈' : '多边形'),
-        visible: true, locked: false,
+        locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: [pts],
         fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: defend ? 8 : 2,
@@ -1095,7 +1095,7 @@ export function EditableMap({ project }: EditableMapProps) {
       const asRoute = rr?.mode === mode;
       if (asRoute) useInteractionStore.getState().clearPendingRouteStyle();
       createElementAndSelect({
-        id: generateId(), type: 'arrow', name: asRoute ? '燕尾箭头' : '弯曲箭头', visible: true, locked: false,
+        id: generateId(), type: 'arrow', name: asRoute ? '燕尾箭头' : '弯曲箭头', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
         width: 15, color: '#E23B3B',
@@ -2367,7 +2367,7 @@ function applyProjection(map: maplibregl.Map, globe: boolean) {
 
 function makeRegionPolygon(name: string, rings: [number, number][][], project: MapVideoProject): PolygonElement {
   return {
-    id: generateId(), type: 'polygon', name, visible: true, locked: false,
+    id: generateId(), type: 'polygon', name, locked: false,
     startFrame: 0, endFrame: project.endFrame, style: {},
     coordinates: rings,
     fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#FF6666', strokeWidth: 2,

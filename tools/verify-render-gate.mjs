@@ -31,7 +31,7 @@ const built = await page.evaluate(async (name) => {
   const p = window.__projectStore.getState().project;
   const end = p.endFrame;
   const base = (id, extra) => ({
-    id, name: id, visible: true, locked: false, startFrame: 0, endFrame: end, style: {}, ...extra,
+    id, name: id, locked: false, startFrame: 0, endFrame: end, style: {}, ...extra,
   });
   const els = [
     base('gc-static', { type: 'point', coordinates: [100.0, 34.0], shape: 'circle', color: '#FF3B30' }),

@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld('mapvideo', {
   publicLayers: {
     list: () => ipcRenderer.invoke('db:publicLayers:list'),
     save: (p) => ipcRenderer.invoke('db:publicLayers:save', p),          // p: { layerId }
-    import: (p) => ipcRenderer.invoke('db:publicLayers:import', p),      // p: { publicLayerId, projectId }
+    import: (p) => ipcRenderer.invoke('db:publicLayers:import', p),      // p: { publicLayerId, projectId, atFrame }
     remove: (id) => ipcRenderer.invoke('db:publicLayers:remove', id),
   },
   /** 清空项目数据（项目 + 合集 + 素材），保留应用配置 providers */

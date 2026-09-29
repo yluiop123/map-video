@@ -81,7 +81,7 @@ export function RegionPickerDialog({ onClose }: RegionPickerDialogProps) {
       if (!hit) { alert('未找到该区域边界'); return; }
       const shapes = regionHitsToShapes([hit]);
       const els: PolygonElement[] = shapes.map((s) => ({
-        id: generateId(), type: 'polygon', name: s.name, visible: true, locked: false,
+        id: generateId(), type: 'polygon', name: s.name, locked: false,
         startFrame: 0, endFrame: chapter.endFrame, style: {},
         coordinates: s.rings as [number, number][][],
         fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#FF6666', strokeWidth: 2,

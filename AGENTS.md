@@ -98,6 +98,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 - **项目 = 单条连续时间线**：`startFrame` 恒 0、`endFrame` 是派生量（不入库，见 §10）；`elements/camera/overlays/fx/narration/music` 全用**项目绝对帧**；投影、「选了全局目录里哪张底图 / 高程」与地形夸张是项目属性，**目录本身不是项目数据**（§10）。
 - **★ 图层（Layer）是元素的唯一归属：项目 ▸ 图层 ▸ 元素**。图层单类型（marker / route / shape / territory / 图片），带自己的显隐与区间；`project.elements` 是 `deriveElements(layers)` 算出的**派生镜像**（store 的 patch 自动重算），**不要直接写它** —— 改元素一律经 `updateElement` / 图层 API，否则丢归属。`layerTypeOf(element.type)` 决定它进哪个图层。删图层连带删其元素。
+- **★ 显隐只有图层一档，元素没有自己的 visible**（10 张元素表的 `visible` 列已删）：「这个元素此刻在不在画面上」只由 `deriveElements` 解析出的区间回答 —— 图层隐藏、或区间为空（自定义时间与图层区间不相交）都落成 `end < start` 的空区间，渲染端 `isVisible` 只有 `start <= frame <= end` 一句。图层面板里元素行也没有眼睛了，要藏一组元素就藏它所在的图层。
 - **★ 图层顺序 = 地图叠放顺序**（列表靠前在上层）：新建图层一律经 `insertLayerSorted()` 按 `LAYER_RANK`（标记 0 → 路线 1 → 形状 2 → 疆域 3 → 图片 4）插入；用户拖动后以拖动结果为准。MapLibre 只认 `addLayer` 先后，所以 `renderElements` 之后要调 **`restackByLayerOrder(map, ids)`**（**编辑端与导出端都要调**）：它按倒序自底向上排，同图层元素保持组内序，故「移动标记在其线之上」「疆域标签在其面之上」不会被打破；签名未变时直接返回。
 - **★ 选中图层 = 地图上的「可编辑层」**：`editorStore.selectedLayerId` 非空时只有该层可编辑，为 null 时全部可编辑。门禁由 **`editableIdSet(project, selectedLayerId)`** 一处给出，插在 `pickElement`（命中不可编辑者要继续往下找，否则上层会吃掉点击）、`hitRouteVertex`、顶点 feats、`routeEdit` 失效判定。
   - `selectElement` **不清** `selectedLayerId`（清了门禁自毁）；代价是 Del 优先级 = 有选中元素先删元素，否则删整层。
@@ -233,6 +234,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **三处弱引用清单**：`element_image.asset_id`、`public_element_*.asset_id`、`element_territory` 的 JSON 内部引用（另有 `project.active_*_map_id` 两列指向全局目录，也是弱引用，但原因不同 —— 见上面那条）。
 - **★ 素材登记只有 `asset` 表这一本账**：`assets:save/read/remove/list/exists` 全读写 `asset`（`storage='file'` + `rel_path`）。删素材时项目侧靠 FK SET NULL，**公共库副本的引用要手工清** + 启动 `repairAssetRefs` 兜底（引用了已删素材就清空引用、**不补占位行**）。配置 JSON 导入走 `putAssetBytes`，**任一素材失败就中止整笔导入**。
 - **★ 公共图层副本必须自洽**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 是弱引用。副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`）—— `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归 `verify-public-layers`。
+  - **公共元素只存几何与样式**：`visible` 与 `start_sec/end_sec` 两组列都不在公共侧（显隐是图层的事；时间不进图库）。导入时元素时间**现场给**：当前播放头起 `IMPORTED_ELEMENT_SEC = 2` 秒（`importPublicLayerV2`，秒↔帧换算在 db-v2；网页端同一规则在 `lib/layers.ts`）。两侧列不再对称，所以整表搬运走 `copyElementRows`（**以目标表的列为准**逐列配源 + overrides），不要写死列名。
 - **底图 / 高程目录是全库一份**（`base_map` / `elevation_map`，主键就是 id）：面板只能选哪一行，目录不是项目内容 —— 每个项目复制一套等于同一件事存 N 遍。内置那几份由渲染端按 `lib/map-catalog.ts` 的常量铺进表（**主进程不复制一份清单**）。
   - 项目侧只有三列：`activeBaseMapId` / `activeElevationMapId`（**弱引用**目录行 —— 目录行由渲染端铺，挂成真外键会让「目录还没铺好时的一次保存」直接崩；悬空由 `v_check_dangling` 照，读取端回落到目录第一条）与 `terrainExaggeration`。
   - **夸张系数跟项目走、不跟目录走**：同一份高程，纪录片想平一点、地形演示想陡一点。**0 是合法值（完全平坦），读取端一律 `??` 不用 `||`**。

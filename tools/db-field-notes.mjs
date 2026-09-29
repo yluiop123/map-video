@@ -36,11 +36,11 @@ export const TABLE_DESC = {
   voice: '克隆音色账本：同一份参考音频在同一实例 + 同一目标模型下只建一次',
   task: '异步任务：唯一价值是跨重启续跑（关窗口、刷新页面都不丢在途任务）',
   public_layer: '公共图层：跨项目图库（把项目图层连元素整体复制过来，导入到任意项目）',
-  public_element_marker: '公共标记元素：public_layer 内的标记副本（与 element_marker 同构）',
-  public_element_route: '公共路线元素：public_layer 内的路线副本（与 element_route 同构）',
-  public_element_shape: '公共形状元素：public_layer 内的形状副本（与 element_shape 同构）',
-  public_element_territory: '公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构）',
-  public_element_image: '公共贴图元素：public_layer 内的贴图副本（与 element_image 同构）',
+  public_element_marker: '公共标记元素：public_layer 内的标记副本（与 element_marker 同构，但不带显隐与时间）',
+  public_element_route: '公共路线元素：public_layer 内的路线副本（与 element_route 同构，但不带显隐与时间）',
+  public_element_shape: '公共形状元素：public_layer 内的形状副本（与 element_shape 同构，但不带显隐与时间）',
+  public_element_territory: '公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构，但不带显隐与时间）',
+  public_element_image: '公共贴图元素：public_layer 内的贴图副本（与 element_image 同构，但不带显隐与时间）',
 };
 
 const NOTES = {
@@ -179,7 +179,6 @@ const NOTES = {
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
-    "visible": "是否显示（0/1）",
     "start_sec": "出现时间（秒）",
     "end_sec": "消失时间（秒）",
     "anim_effect": "动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进",
@@ -239,7 +238,6 @@ const NOTES = {
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：line 线 / moving_point 移动点（Route 工具）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
-    "visible": "是否显示（0/1）",
     "start_sec": "出现时间（秒）",
     "end_sec": "消失时间（秒）",
     "anim_effect": "动画效果：grow / move / fill / march / marchplain",
@@ -311,7 +309,6 @@ const NOTES = {
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
-    "visible": "是否显示（0/1）",
     "start_sec": "出现时间（秒）",
     "end_sec": "消失时间（秒）",
     "anim_effect": "动画效果：grow / move / fill / march / marchplain",
@@ -394,7 +391,6 @@ const NOTES = {
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列（固定 territory）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
-    "visible": "是否显示（0/1）",
     "start_sec": "出现时间（秒）",
     "end_sec": "消失时间（秒）",
     "anim_effect": "动画效果：grow / move / fill / march / marchplain",
@@ -428,7 +424,6 @@ const NOTES = {
     "layer_id": "所属图层（删图层连带删元素；元素可换图层）",
     "type": "子类型判别列（固定 geo_image）",
     "name": "元素名（与属性面板首字段 LABEL 同步）",
-    "visible": "是否显示（0/1）",
     "start_sec": "出现时间（秒）",
     "end_sec": "消失时间（秒）",
     "asset_id": "图片素材 id（全局素材库，弱引用、无外键）",
@@ -523,6 +518,8 @@ const NOTES = {
 };
 
 // ---- 公共图层表：与对应项目元素表同构（去 project_id/layer_id，改 public_layer_id） ----
+// 公共元素还少两样：visible（显隐是图层的事）与 start_sec/end_sec（图库是几何与样式的
+// 集合，时间不进图库 —— 导入时按「当前帧起 2 秒」现场补，见 db-v2.importPublicLayerV2）。
 for (const [pub, src] of [
   ['public_element_marker', 'element_marker'],
   ['public_element_route', 'element_route'],
@@ -531,7 +528,7 @@ for (const [pub, src] of [
   ['public_element_image', 'element_image'],
 ]) {
   const m = { ...NOTES[src] };
-  delete m.project_id; delete m.layer_id;
+  delete m.project_id; delete m.layer_id; delete m.start_sec; delete m.end_sec;
   NOTES[pub] = { public_layer_id: '所属公共图层（删公共图层连带删元素）', ...m };
 }
 NOTES.public_layer = {

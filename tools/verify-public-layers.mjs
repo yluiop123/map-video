@@ -108,7 +108,7 @@ const check = (name, pass, detail) => {
   saveProjectV2(db, baseProject('src'));
   saveProjectV2(db, baseProject('dst'));
   const pub = saveLayerToPublicV2(db, 'src:Lr').id;
-  const imp = importPublicLayerV2(db, pub, 'dst');
+  const imp = importPublicLayerV2(db, pub, 'dst', Date.now(), 4 * FPS);
   const proj = getProjectV2(db, 'dst');
   const layer = proj.layers.find((L) => L.id === imp.id);
   check('2.1 导入图层可被读取端还原', !!layer && layer.type === 'route' && layer.elements.length === 2,
@@ -134,6 +134,12 @@ const check = (name, pass, detail) => {
   const dangling = db.prepare('SELECT edge, ref_id, target FROM v_check_dangling').all();
   check('2.7 v_check_dangling 能抓出悬空跟随机位', dangling.length === 1 && dangling[0].edge === 'camera.follow_route',
     JSON.stringify(dangling));
+  // 元素的时间不进图库：导入时一律落在「导入瞬间的播放头起 2 秒」
+  const pubCols = db.prepare('PRAGMA table_info(public_element_route)').all().map((c) => c.name);
+  check('2.8 公共元素表不存 start_sec/end_sec', !pubCols.includes('start_sec') && !pubCols.includes('end_sec'), pubCols.join(','));
+  const elTimes = (layer?.elements || []).map((e) => `${e.startFrame}..${e.endFrame}`);
+  check('2.9 导入元素时间 = 播放头起 2 秒（图库不带时间）',
+    elTimes.length === 2 && elTimes.every((t) => t === `${4 * FPS}..${6 * FPS}`), elTimes.join(' / '));
 }
 
 // ---------- 3. 素材引用失效：启动体检清空引用，绝不造假素材行 ----------
@@ -143,8 +149,8 @@ const check = (name, pass, detail) => {
   saveProjectV2(db, baseProject('p3'));
   const pub = saveLayerToPublicV2(db, 'p3:Lm').id;
   blankRow(db, 'public_element_marker', {
-    element_id: 'ghost:host', public_layer_id: pub, type: 'point', name: '幽灵', visible: 1,
-    start_sec: 0, end_sec: 5, asset_id: 'asset-not-exists', fly_mode: 0, show_icon: 0,
+    element_id: 'ghost:host', public_layer_id: pub, type: 'point', name: '幽灵',
+    asset_id: 'asset-not-exists', fly_mode: 0, show_icon: 0,
   });
   // 旧版占位行造出来的空壳素材（storage=file 却没有 rel_path）
   blankRow(db, 'asset', { asset_id: 'shell:empty', kind: 'image', name: '', mime: 'application/octet-stream', storage: 'file', rel_path: '', created_at: 1 });

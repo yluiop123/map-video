@@ -72,25 +72,27 @@ export function movableLayersFor(layers: Layer[] | undefined, el: MapElement): L
 /**
  * 从图层派生扁平元素数组（供渲染/面板读取）：
  * · 回填 layerId；
- * · 元素可见性 = 元素自身可见 && 图层可见；
  * · 时间：customTime 关 → 用图层显示区间；开 → 与图层区间取交集。
+ *
+ * 显隐只有图层一档，元素没有自己的 visible —— 「这个元素此刻在不在画面上」
+ * 完全由解析后的区间回答：图层隐藏、或区间为空（自定义时间与图层区间不相交），
+ * 都落成 end < start 的空区间，渲染端那句 `start <= frame <= end` 恒不成立。
  */
 export function deriveElements(layers: Layer[] | undefined): MapElement[] {
   const out: MapElement[] = [];
   for (const L of layers || []) {
     const ls = L.startFrame;
     const le = Math.max(L.startFrame, L.endFrame);
-    const layerVisible = L.visible !== false;
     for (const el of L.elements || []) {
       const custom = el.customTime === true;
       const s = custom ? Math.max(el.startFrame, ls) : ls;
       const e = custom ? Math.min(el.endFrame, le) : le;
+      const onScreen = L.visible !== false && e > s;
       out.push({
         ...el,
         layerId: L.id,
-        visible: (el.visible !== false) && layerVisible && e > s,
         startFrame: s,
-        endFrame: Math.max(s + 1, e),
+        endFrame: onScreen ? e : s - 1,
       });
     }
   }
@@ -109,6 +111,8 @@ export function findElementInLayers(layers: Layer[], elementId: string): { layer
 // ========== 公共图层库（全局，跨项目） ==========
 // 桌面端：入库（public_layer + 5 张 public_element_* 表，见 electron/db-v2.mjs）；
 // 网页端：Lite 无 SQLite，退回 localStorage（仅几何 JSON）。
+// 两侧同一条规矩：**元素的时间不进图库** —— 导入时才给「播放头所在帧起 2 秒」
+// （秒↔帧的换算在 db-v2 那一层做，见 IMPORTED_ELEMENT_SEC；这里是网页端的帧版）。
 
 export interface PublicLayerInfo {
   id: string;
@@ -129,6 +133,9 @@ export interface PublicLayer {
 }
 
 const LIB_KEY = 'mapvideo.publicLayers';
+
+/** 导入时元素落在项目里的时长（秒）。桌面端同一份规则在 electron/db-v2.mjs 的 IMPORTED_ELEMENT_SEC */
+const IMPORTED_ELEMENT_SEC = 2;
 
 function listLocal(): PublicLayer[] {
   try {
@@ -166,10 +173,14 @@ export async function saveLayerToPublic(layer: Layer): Promise<void> {
   writeLocal([item, ...listLocal().filter((x) => x.name !== layer.name)]);
 }
 
-/** 导入公共图层到项目：返回可直接并入项目的新图层（时间沿用源图层，不做自动归零） */
-export async function importPublicLayer(publicId: string, projectId: string): Promise<Layer | null> {
+/**
+ * 导入公共图层到项目：返回可直接并入项目的新图层。
+ * 图层区间沿用公共图层那一行（不做自动归零）；**元素的时间现场给**：
+ * atFrame（导入瞬间的播放头）起 IMPORTED_ELEMENT_SEC 秒 —— 图库里没存元素时间。
+ */
+export async function importPublicLayer(publicId: string, projectId: string, atFrame: number, fps: number): Promise<Layer | null> {
   if (IS_DESKTOP && window.mapvideo?.publicLayers) {
-    const r = await window.mapvideo.publicLayers.import({ publicLayerId: publicId, projectId });
+    const r = await window.mapvideo.publicLayers.import({ publicLayerId: publicId, projectId, atFrame });
     return r.layer || null;
   }
   const local = listLocal().find((x) => x.id === publicId);
@@ -178,10 +189,14 @@ export async function importPublicLayer(publicId: string, projectId: string): Pr
   // （deleteElement 按 id 过滤会一次删两条、updateElement 只命中第一条）。
   const layerId = generateId();
   const suf = `:im${layerId}`;
+  const start = Math.max(0, Math.round(atFrame || 0));
   return {
     id: layerId, type: local.type || 'marker', name: local.name, visible: true,
     startFrame: local.startFrame, endFrame: local.endFrame,
-    elements: local.elements.map((el) => ({ ...el, id: el.id + suf })),
+    elements: local.elements.map((el) => ({
+      ...el, id: el.id + suf,
+      startFrame: start, endFrame: start + Math.max(1, Math.round(IMPORTED_ELEMENT_SEC * (fps || 30))),
+    })),
   };
 }
 

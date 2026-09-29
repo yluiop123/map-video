@@ -115,7 +115,6 @@ export interface MapElementBase {
   id: string;
   type: ElementType;
   name: string;
-  visible: boolean;
   locked: boolean;
   startFrame: number;
   endFrame: number;

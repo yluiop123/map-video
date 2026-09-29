@@ -42,11 +42,11 @@ function MenuPopover({ rect, onClose, children, width = 176 }: {
 /**
  * 左侧浮动「图层」面板：图层列表（新增 / 删除 / 显隐 / 展开元素 / 拖动排序）+ 搜索
  * + 每图层 GeoJSON 导入导出 / 加入公共图层；公共图层库走 PublicLayerDialog。
+ * 显隐只有图层一档（元素行没有眼睛）：要藏一组元素就藏它所在的图层。
  */
 export function ElementsPanel() {
   const project = useProjectStore((s) => s.project);
   const addElements = useProjectStore((s) => s.addElements);
-  const updateElement = useProjectStore((s) => s.updateElement);
   const deleteElement = useProjectStore((s) => s.deleteElement);
   const moveElementsToLayer = useProjectStore((s) => s.moveElementsToLayer);
   const addLayer = useProjectStore((s) => s.addLayer);
@@ -278,7 +278,7 @@ export function ElementsPanel() {
                           className={`group flex items-center gap-1.5 px-2 py-1 mb-0.5 text-sm cursor-pointer rounded-md border transition-colors ${active ? 'bg-brand/15 border-brand/50' : 'bg-white/[0.02] border-white/[0.05] hover:bg-white/[0.06]'}`}
                         >
                           <span className="text-xs w-4 text-center shrink-0">{getElementIcon(el.type)}</span>
-                          <span className={`flex-1 truncate text-[11px] ${el.visible === false ? 'text-muted-foreground line-through' : ''}`}>{el.name}</span>
+                          <span className="flex-1 truncate text-[11px]">{el.name}</span>
                           <button
                             onClick={(e) => { e.stopPropagation(); setMenuEl(menuEl?.id === el.id ? null : { id: el.id, rect: (e.currentTarget as HTMLElement).getBoundingClientRect() }); }}
                             className={`p-0.5 rounded shrink-0 text-muted-foreground group-hover:opacity-100 hover:text-foreground hover:bg-white/10 ${menuEl?.id === el.id ? 'opacity-100 text-foreground' : 'opacity-0'}`}
@@ -286,9 +286,6 @@ export function ElementsPanel() {
                             disabled={!dst.length}
                           >
                             <FolderInput size={12} />
-                          </button>
-                          <button onClick={(e) => { e.stopPropagation(); updateElement(el.id, { visible: el.visible === false }); }} className={`p-0.5 rounded shrink-0 ${el.visible === false ? 'text-muted-foreground' : 'text-foreground/70'} hover:text-foreground hover:bg-white/10`} title={el.visible === false ? t('显示', 'Show') : t('隐藏', 'Hide')}>
-                            {el.visible === false ? <EyeOff size={12} /> : <Eye size={12} />}
                           </button>
                           <button onClick={(e) => { e.stopPropagation(); deleteElement(el.id); }} className="p-0.5 rounded shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-white/10" title={t('删除', 'Delete')}>
                             <Trash2 size={12} />

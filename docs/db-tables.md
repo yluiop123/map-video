@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 694 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，694 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 674 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，674 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -212,7 +212,7 @@
 
 ### 组 1 · 合集 / 项目 / 图层（含配置）
 
-#### collection — 合集：项目之上的一层分组（合集 ▸ 项目 ▸ 元素）；默认合集恒为 default，不可改名/删除
+#### collection
 
 **职责**：合集：项目之上的一层分组（合集 ▸ 项目 ▸ 章节 ▸ 元素）　**前端**：项目列表页左栏合集列表（ProjectManager.tsx）
 
@@ -226,7 +226,7 @@
 | `created_at` | INTEGER | `NOT NULL` | 创建时间（毫秒时间戳） |
 | `updated_at` | INTEGER | `NOT NULL` | 最后修改时间（毫秒时间戳） |
 
-#### project — 项目本体：身份 / 归属 / 审计 / 投影 / 选了全局目录里哪一行 / 地形夸张 / GlobalConfig 配置列
+#### project
 
 **职责**：项目本体：身份 / 归属 / 审计 / 投影 / 生效底图与高程指针　**前端**：项目列表页项目卡片（ProjectManager.tsx）；运行时即 projectStore.project
 
@@ -250,7 +250,7 @@
 | `resolution_h` | INTEGER | `NOT NULL` | 默认导出高度（px） · 默认 `1080` · `CHECK (resolution_h > 0)` |
 | `default_easing` | TEXT | `NOT NULL` | 默认缓动类型 · 默认 `'easeInOut'` |
 
-#### layer — 图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层（标记/路线/形状/疆域/图片），带自己的显隐与显示区间
+#### layer
 
 **职责**：图层：元素的分组（项目 ▸ 图层 ▸ 元素），单类型图层，带显隐与显示区间　**前端**：左侧「图层」浮层（ElementsPanel.tsx）+ 时间线图层轨道
 
@@ -273,7 +273,7 @@
 
 ### 组 2 · 底图 / 高程图 / 素材
 
-#### base_map — 底图目录：全库一份、所有项目共用；内置行由渲染端按 lib/map-catalog.ts 的常量铺，样式只一格（字符串=URL、对象=内联样式）
+#### base_map
 
 **职责**：底图目录：全库一份、所有项目共用（内置行由渲染端按 lib/map-catalog.ts 的常量铺）　**前端**：地图左下角「底图」芯片面板（MapStyleChip.tsx）+ projectStore.addBaseMap / removeBaseMap
 
@@ -286,7 +286,7 @@
 | `style_json` | TEXT | `NOT NULL` | 底图样式，只这一格：URL 就是 JSON 字符串、内联样式就是 JSON 对象（与运行时 style: string \| StyleSpecification 同形） · `CHECK (json_valid(style_json))` |
 | `ord` | INTEGER | `NOT NULL` | 面板顺序 · 默认 `0` |
 
-#### elevation_map — 高程图目录：全库一份、所有项目共用；夸张系数不在这里（它是项目的创作选择，落在 project.terrain_exaggeration）
+#### elevation_map
 
 **职责**：高程图目录：全库一份、所有项目共用；夸张系数在 project.terrain_exaggeration，不在这一行　**前端**：底图芯片面板的「高程」区（MapStyleChip.tsx 选择 + 夸张系数滑动条）
 
@@ -300,7 +300,7 @@
 | `encoding` | TEXT | — | 高程编码：mapbox / terrarium（缺省按 terrarium） · `CHECK (encoding IS NULL OR encoding IN ('mapbox','terrarium'))` |
 | `ord` | INTEGER | `NOT NULL` | 面板顺序 · 默认 `0` |
 
-#### asset — 素材仓库：图片 / GIF / 模型 / 音频 / 视频 / 图标 / 字体统一存此表，业务表只留 asset_id
+#### asset
 
 **职责**：素材仓库（**唯一**素材存储，合并原 custom_symbol / custom_image）：按项目 / 类型 / 时间戳落盘　**前端**：属性面板上传行（PropertiesPanel ResourceUploadRow）、标记面板自定义图片网格（CustomImageGrid）、字幕配音 / 配乐音频上传、导出配置内嵌还原（lib/assets.ts）
 
@@ -323,7 +323,7 @@
 
 ### 组 3 · 时间轴
 
-#### camera_keyframe — 视角关键帧：停留 → 飞行 → 落位；含 follow 跟随 / orbit 环绕视角
+#### camera_keyframe
 
 **职责**：视角关键帧（停留 → 飞行 → 落位；follow / orbit 视角）　**前端**：「视角」面板（KeyframePanel.tsx / CameraEditor.tsx）
 
@@ -348,7 +348,7 @@
 | `orbit_duration_sec` | REAL | — | 环绕时长（秒） |
 | `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
-#### screen_fx — 屏幕空间特效窗口：天气 / 画面叠加（非地图元素），两分支字段并存
+#### screen_fx
 
 **职责**：屏幕空间特效窗口（天气 / 画面叠加，非地图元素）　**前端**：右侧「特效」面板（FxPanelBody.tsx）+ 时间轴特效轨道
 
@@ -375,7 +375,7 @@
 - `CHECK (end_sec >= start_sec)`（同项目内排序）
 - `CHECK ((kind = 'weather' AND weather_type IS NOT NULL) OR (kind = 'screen' AND effect_type IS NOT NULL))`
 
-#### narration — 字幕 / 配音档：样式部分，与项目 1:1
+#### narration
 
 **职责**：字幕 / 配音档（样式部分，1:1）　**前端**：顶栏「字幕生成」弹窗的字幕样式区（GenerateDialog.tsx）
 
@@ -397,7 +397,7 @@
 | `volume` | REAL | `NOT NULL` | 整片配音音量（0–3）：≤1 走混音，>1 由本地增益烘进字节（播放器两端都吃不下 >1） · 默认 `1` · `CHECK (volume BETWEEN 0 AND 3)` |
 | `hot_fix_json` | TEXT | — | 发音修正（{pronunciation:[{词:音}],replace:[{原:换}]}，随每次配音带下去） · `CHECK (hot_fix_json IS NULL OR json_valid(hot_fix_json))` |
 
-#### narration_entry — 字幕条：文本 + 配音音频 + 显示时长
+#### narration_entry
 
 **职责**：字幕条：文本 + 配音音频 + 显示时长 + 读完停顿　**前端**：顶栏「字幕生成」弹窗逐条编辑 / TTS（GenerateDialog.tsx）+ 时间轴「🎙 配音」轨道（TimelineEditor.tsx）
 
@@ -415,7 +415,7 @@
 | `gap_sec` | REAL | — | 这一行的字幕间隔（秒）：空=跟整片 narration.gap_sec，0=这一行明确不间隔 · `CHECK (gap_sec IS NULL OR gap_sec >= 0)` |
 | `ord` | INTEGER | `NOT NULL` | 同项目内排序 · 默认 `0` |
 
-#### music_track — 项目级背景音乐：单轨多段（项目绝对时间、段内循环、淡入淡出）
+#### music_track
 
 **职责**：项目级背景音乐：单轨多段（绝对时间、循环、淡入淡出）　**前端**：时间轴「音乐」轨道（TimelineEditor.tsx）+ 音乐面板（内置/导入）
 
@@ -441,11 +441,11 @@
 
 ### 组 4 · 标记类元素（Pin 工具）
 
-#### element_marker — 标记类元素（Pin 工具）：point / flag / military_symbol 一张宽表，type 判别
+#### element_marker
 
 **职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，10 种视觉形态）
 
-58 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
+57 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -454,7 +454,6 @@
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具） · `CHECK (type IN ('point','flag','military_symbol'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进 · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
@@ -521,11 +520,11 @@
 
 ### 组 5 · 路线类元素（Route 工具）
 
-#### element_route — 路线类元素（Route 工具）：line / moving_point 一张宽表，type 判别
+#### element_route
 
 **职责**：路线类元素：line / moving_point　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-70 列 · 主键 `element_id` · 工具入口：Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表
+69 列 · 主键 `element_id` · 工具入口：Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -534,7 +533,6 @@
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
@@ -609,11 +607,11 @@
 
 ### 组 6 · 形状类元素（Shape 工具）
 
-#### element_shape — 形状类元素（Shape 工具）：polygon / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表
+#### element_shape
 
 **职责**：形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-81 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+80 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -622,7 +620,6 @@
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
@@ -716,11 +713,11 @@
 
 ### 组 7 · 疆域类元素（Terr 工具）
 
-#### element_territory — 疆域类元素（Terr 工具）：势力 / 地块 / 兼并事件 JSON 内联，自包含
+#### element_territory
 
 **职责**：疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含　**前端**：工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）
 
-32 列 · 主键 `element_id` · 工具入口：Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）
+31 列 · 主键 `element_id` · 工具入口：Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -729,7 +726,6 @@
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 territory） · 默认 `'territory'` · `CHECK (type = 'territory')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
@@ -763,11 +759,11 @@
 
 ### 组 8 · 贴图类元素（Image 工具）
 
-#### element_image — 贴图类元素（Image 工具）：地理配准图片的控制点网格；图片本体走全局素材库，本表只存配准参数
+#### element_image
 
 **职责**：贴图元素：地理配准图片（控制点网格），图片存全局素材库、本表只存配准参数　**前端**：工具条「图片」（导入/素材库插入）+ 贴图属性面板（PropertiesPanel GeoImageSettings）
 
-15 列 · 主键 `element_id` · 工具入口：Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库
+14 列 · 主键 `element_id` · 工具入口：Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -776,7 +772,6 @@
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 geo_image） · 默认 `'geo_image'` · `CHECK (type = 'geo_image')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `asset_id` | TEXT | — | 图片素材 id（全局素材库，弱引用、无外键） |
@@ -793,7 +788,7 @@
 
 ### 组 9 · 叠加层（弹窗）
 
-#### overlay — 叠加层（弹窗）：本体一张，custom / person 内容块内联在 payload_json
+#### overlay
 
 **职责**：弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）　**前端**：右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView
 
@@ -830,7 +825,7 @@
 
 ### 组 10 · 应用配置（接口模板 / 实例 / 音色 / 任务）
 
-#### provider_template — 接口模板：一行 = 一个完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这一行的 JSON 列里）
+#### provider_template
 
 **职责**：接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）
 
@@ -851,7 +846,7 @@
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
 
-#### provider — 实例：一个模板可以配几套账号，调用处选实例（取值全在 values_json，密钥不占具名列）
+#### provider
 
 **职责**：实例：用哪份模板 + 全部取值（密钥是声明成 secret 的普通参数，不占具名列）　**前端**：⚙ 设置 · AI → 左侧文案 / 语音 / 图片（ProviderPanel.tsx，实例芯片 + 表单）
 
@@ -867,7 +862,7 @@
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
 
-#### voice — 克隆音色账本：同一份参考音频在同一实例 + 同一目标模型下只建一次
+#### voice
 
 **职责**：克隆音色账本：同实例 + 同参考音频 + 同目标模型只建一次（幂等键）　**前端**：字幕生成弹窗内的「配音音色」区（VoiceField.tsx）
 
@@ -889,7 +884,7 @@
 | `created_at` | INTEGER | — | 创建时间（epoch ms，审计用） |
 | `updated_at` | INTEGER | — | 最后修改时间（epoch ms，审计用） |
 
-#### task — 异步任务：唯一价值是跨重启续跑（关窗口、刷新页面都不丢在途任务）
+#### task
 
 **职责**：异步任务：跨重启续跑（提交 / 查询 / 当场落素材 / 回填字幕）　**前端**：字幕生成的逐条状态 + 顶栏在途任务浮层；调度在主进程扫库
 
@@ -917,7 +912,7 @@
 
 ### 组 11 · 公共图层与公共元素（跨项目图库）
 
-#### public_layer — 公共图层：跨项目图库（把项目图层连元素整体复制过来，导入到任意项目）
+#### public_layer
 
 **职责**：公共图层：跨项目图库的图层（把项目图层连元素整体复制过来）　**前端**：左侧「图层」浮层「加入公共图层 / 导入公共图层」
 
@@ -939,11 +934,11 @@
 
 - `CHECK (end_sec >= start_sec)`（更新时间（毫秒时间戳））
 
-#### public_element_marker — 公共标记元素：public_layer 内的标记副本（与 element_marker 同构）
+#### public_element_marker
 
 **职责**：公共标记元素（public_layer 内副本，与 element_marker 同构）　**前端**：同上
 
-57 列 · 主键 `element_id`
+54 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -951,9 +946,6 @@
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具） · `CHECK (type IN ('point','flag','military_symbol'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
-| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
-| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进 · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式：按高度剖面离地显示 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
 | `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
@@ -1007,8 +999,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（军标旁附加文字）
-- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
+- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`（军标旁附加文字）
 - `CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)`
 - `CHECK (type <> 'point' OR shape IS NULL OR shape IN ('circle','text','pin','bubble','emoji') OR asset_id IS NOT NULL OR builtin_id IS NOT NULL)`（媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin）
 - `CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL)`
@@ -1016,11 +1007,11 @@
 - `CHECK (type <> 'flag' OR flag_text IS NOT NULL)`（模型不能贴地）
 - `CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)`
 
-#### public_element_route — 公共路线元素：public_layer 内的路线副本（与 element_route 同构）
+#### public_element_route
 
 **职责**：公共路线元素（public_layer 内副本，与 element_route 同构）　**前端**：同上
 
-69 列 · 主键 `element_id`
+66 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -1028,9 +1019,6 @@
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
-| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
-| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式：路线与图标按高度剖面离地显示 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
 | `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
@@ -1096,16 +1084,15 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（拖尾长度（帧））
-- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
+- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`（拖尾长度（帧））
 - `CHECK (type <> 'line' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)`
 
-#### public_element_shape — 公共形状元素：public_layer 内的形状副本（与 element_shape 同构）
+#### public_element_shape
 
 **职责**：公共形状元素（public_layer 内副本，与 element_shape 同构）　**前端**：同上
 
-80 列 · 主键 `element_id`
+77 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -1113,9 +1100,6 @@
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
-| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
-| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
 | `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
@@ -1192,8 +1176,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（绕中心旋转角（度））
-- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
+- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`（绕中心旋转角（度））
 - `CHECK (radius IS NULL OR radius > 0)`
 - `CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly' OR rings_json IS NOT NULL)`
 - `CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
@@ -1205,11 +1188,11 @@
 - `CHECK (type <> 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 - `CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 
-#### public_element_territory — 公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构）
+#### public_element_territory
 
 **职责**：公共疆域元素（public_layer 内副本，与 element_territory 同构）　**前端**：同上
 
-31 列 · 主键 `element_id`
+28 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -1217,9 +1200,6 @@
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 territory） · 默认 `'territory'` · `CHECK (type = 'territory')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
-| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
-| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
 | `label_font_size` | REAL | — | 标签字号 |
@@ -1245,15 +1225,11 @@
 | `plots_json` | TEXT | — | 地块数组：[{plotId,name,rings,ownerId,ord}]；ownerId 须能在 countries_json 中命中（由 v_check_territory_ref 校验） · `CHECK (plots_json IS NULL OR json_valid(plots_json))` |
 | `events_json` | TEXT | — | 兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上 · `CHECK (events_json IS NULL OR json_valid(events_json))` |
 
-**表级约束**
-
-- `CHECK (end_sec >= start_sec)`（兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上）
-
-#### public_element_image — 公共贴图元素：public_layer 内的贴图副本（与 element_image 同构）
+#### public_element_image
 
 **职责**：公共贴图元素（public_layer 内副本，与 element_image 同构）　**前端**：同上
 
-14 列 · 主键 `element_id`
+11 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -1261,9 +1237,6 @@
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 geo_image） · 默认 `'geo_image'` · `CHECK (type = 'geo_image')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `visible` | INTEGER | `NOT NULL` | 是否显示（0/1） · 默认 `1` · `CHECK (visible IN (0,1))` |
-| `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
-| `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `asset_id` | TEXT | — | 图片素材 id（全局素材库，弱引用、无外键） |
 | `aspect` | REAL | — | 图片宽高比（宽/高），切片渲染用 · `CHECK (aspect IS NULL OR aspect > 0)` |
 | `cols` | INTEGER | `NOT NULL` | 配准网格列数（1=四角投影，≥2=网格变形） · 默认 `1` · `CHECK (cols >= 1)` |
@@ -1271,10 +1244,6 @@
 | `grid_json` | TEXT | — | 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]） · `CHECK (grid_json IS NULL OR json_valid(grid_json))` |
 | `opacity` | REAL | — | 不透明度（0–1） · `CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1)` |
 | `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
-
-**表级约束**
-
-- `CHECK (end_sec >= start_sec)`（同图层内排序）
 
 <!-- FIELD-DICT:END -->
 

@@ -121,10 +121,11 @@ function registerIpc() {
   });
 
   // 公共图层库（跨项目）：把项目图层连元素复制过去 / 导入回项目
+  // 导入时把渲染进程当前的播放头带过去：元素时间不进图库，落到「此刻起 2 秒」（db-v2 换算成秒）
   ipcMain.handle('db:publicLayers:list', () => listPublicLayersV2(db));
   ipcMain.handle('db:publicLayers:save', (_e, { layerId }) => saveLayerToPublicV2(db, layerId) || { id: null });
-  ipcMain.handle('db:publicLayers:import', (_e, { publicLayerId, projectId }) => {
-    const r = importPublicLayerV2(db, publicLayerId, projectId);
+  ipcMain.handle('db:publicLayers:import', (_e, { publicLayerId, projectId, atFrame }) => {
+    const r = importPublicLayerV2(db, publicLayerId, projectId, Date.now(), atFrame);
     if (!r) return { layerId: null };
     // 把导入后的图层原样回传：渲染进程据此并入内存项目，避免整项目 reload 冲掉未保存修改与撤销栈
     const proj = getProjectV2(db, projectId);

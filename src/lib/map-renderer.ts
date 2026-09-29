@@ -342,8 +342,9 @@ export function renderElements(
 
 // ========== 可见性判断 ==========
 
+/** 元素没有自己的显隐：在不在画面上只由 deriveElements 解析出的区间回答（空区间 = 永不显示） */
 function isVisible(element: MapElement, frame: number): boolean {
-  return element.visible && frame >= element.startFrame && frame <= element.endFrame;
+  return frame >= element.startFrame && frame <= element.endFrame;
 }
 
 function getOpacity(el: MapElement, frame: number): number {

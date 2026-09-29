@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Search, Star, Upload, Trash2 } from 'lucide-react';
 import { useProjectStore } from '../stores/projectStore';
+import { useEditorStore } from '../stores/editorStore';
 import { listPublicLayers, importPublicLayer, removePublicLayer, LAYER_TYPE_LABEL, type PublicLayerInfo } from '../lib/layers';
 import { useT, OptionBlocks } from './ui/primitives';
 import type { LayerType } from '../types';
@@ -25,12 +26,12 @@ export function PublicLayerDialog({ onClose }: { onClose: () => void }) {
   const kw = q.trim().toLowerCase();
   const shown = list.filter((x) => (type === 'all' || x.type === type) && (!kw || x.name.toLowerCase().includes(kw) || LAYER_TYPE_LABEL[x.type].includes(kw)));
 
-  /** 导入即并入一张新图层（时间沿用源图层）；不 reload 项目，避免冲掉未保存修改与撤销栈 */
+  /** 导入即并入一张新图层（图层区间沿用源图层，元素时间落在当前播放头起 2 秒）；不 reload 项目 */
   const doImport = async (pl: PublicLayerInfo) => {
     if (!project) return;
     setBusy(true);
     try {
-      const layer = await importPublicLayer(pl.id, project.id);
+      const layer = await importPublicLayer(pl.id, project.id, useEditorStore.getState().currentFrame, project.globalConfig.defaultFPS);
       if (layer) addLayerFull(layer);
       onClose();
     } catch (e) {

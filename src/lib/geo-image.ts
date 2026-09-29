@@ -82,7 +82,7 @@ export function createGeoImageElement(
   name = '贴图',
 ): GeoImageElement {
   return {
-    id: generateId(), type: 'geo_image', name, visible: true, locked: false,
+    id: generateId(), type: 'geo_image', name, locked: false,
     startFrame: 0, endFrame: Math.max(1, project.endFrame), style: {},
     assetId, aspect, cols: 1, rows: 1, grid: defaultGridForBounds(bounds, aspect, 1, 1), opacity: 1,
   };

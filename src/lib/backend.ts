@@ -28,7 +28,7 @@ declare global {
       publicLayers: {
         list: () => Promise<{ id: string; type: string; name: string; count: number; updatedAt?: number }[]>;
         save: (p: { layerId: string }) => Promise<{ id: string | null }>;
-        import: (p: { publicLayerId: string; projectId: string }) => Promise<{
+        import: (p: { publicLayerId: string; projectId: string; atFrame: number }) => Promise<{
           layerId: string | null; layer?: import('../types').Layer;
         }>;
         remove: (id: string) => Promise<{ ok: boolean }>;

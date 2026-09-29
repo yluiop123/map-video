@@ -65,6 +65,8 @@ export function ensureV2Schema(db) {
     // 补列补不出这种变化 → 认「还带 project_id 列」这个正标志，改名让位后由 DDL 建新表。
     // 旧行不搬：那是内置常量在每个项目里的复制品，渲染端启动时会按常量重新铺一遍。
     rebuildCatalogIfProjectScoped(db);
+    // 时间不进图库：公共元素表要去掉 start_sec/end_sec（表级 CHECK 挡着 DROP COLUMN，只能让位）
+    const pubCols = rebuildPublicElementsIfTimed(db);
     // task 的 FK 条款换代也在这一步（**早于 ensureAllColumns**：改名让位后建新表，最后把行搬回）
     const taskCols = rebuildTaskIfFkBound(db);
     const narCols = rebuildNarrationIfOldVolumeCheck(db);
@@ -74,6 +76,8 @@ export function ensureV2Schema(db) {
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
     db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref; DROP VIEW IF EXISTS v_check_async_pairing;');
     db.exec(ddl);
+    // 让位的行先搬回来（新表已由 DDL 建好），后面的删列/体检才看得到完整的公共库
+    restorePublicElementRows(db, pubCols);
     // 删作废列**必须在建表之后**：ALTER TABLE DROP COLUMN 会重校验依赖该表的视图，
     // 而让位那一刻 provider_template 已被改名成 __stale、还没重建回来，视图于是指着一张不存在的表 → 删列直接失败（实测踩过）。
     foldTemplateHeadersIntoSlots(db);
@@ -206,6 +210,19 @@ const RETIRED_COLUMNS = [
   ['provider_template', 'download_json'],
   // 参考音频采样率不再是一个概念：转码固定输出 24000（providers.ts 的 REF_SAMPLE_RATE_HZ）。
   ['provider_template', 'ref_sample_rate'],
+  // 元素的显隐收进图层一档：元素不再有自己的 visible（10 张元素表 + 公共副本）。
+  ['element_marker', 'visible'],
+  ['element_route', 'visible'],
+  ['element_shape', 'visible'],
+  ['element_territory', 'visible'],
+  ['element_image', 'visible'],
+  ['public_element_marker', 'visible'],
+  ['public_element_route', 'visible'],
+  ['public_element_shape', 'visible'],
+  ['public_element_territory', 'visible'],
+  ['public_element_image', 'visible'],
+  // 公共元素表的时间（start_sec/end_sec）不在这张表里：表级 CHECK (end_sec >= start_sec)
+  // 烧在旧表定义上，DROP COLUMN 会被它挡回来 → 走 rebuildPublicElementsIfTimed 让位重建。
 ];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
@@ -268,6 +285,49 @@ function rebuildCatalogIfProjectScoped(db) {
   }
   try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
   console.log(`[db-v2] 底图/高程目录旧形状（按项目各存一份：${stale.join(' / ')}）已让位，建新表后由渲染端按常量铺`);
+}
+
+/**
+ * 公共元素表去掉 start_sec/end_sec（时间不进图库）。这两列**不能**用 DROP COLUMN：
+ * 旧表定义里烧着表级 `CHECK (end_sec >= start_sec)`，SQLite 重校验时会拿这条约束
+ * 回看被删的列 → 直接报 no such column（实测）。所以走让位重建：改名 → DDL 建新表
+ * → 按共同列把行搬回 → 删旧表。行必须留：公共图层是用户攒下来的资产。
+ * 命名索引要先摘 —— 改名会把索引一起带走且名字不变，新表的 CREATE INDEX IF NOT EXISTS
+ * 会被静默跳过（§6.24 同款坑）。
+ */
+function rebuildPublicElementsIfTimed(db) {
+  const moved = [];
+  try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }
+  for (const [, pub] of ELEMENT_TABLE_PAIRS) {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(pub)) continue;
+    const cols = columnsOf(db, pub);
+    if (!cols.includes('start_sec') && !cols.includes('end_sec')) continue;
+    try {
+      for (const r of db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ? AND sql IS NOT NULL").all(pub)) {
+        db.exec(`DROP INDEX IF EXISTS ${r.name}`);
+      }
+      db.exec(`ALTER TABLE ${pub} RENAME TO ${pub}__time_stale`);
+      moved.push(pub);
+    } catch (e) {
+      console.warn(`[db-v2] 公共元素表让位失败 ${pub}:`, e?.message || e);
+    }
+  }
+  try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
+  if (moved.length) console.log(`[db-v2] 公共元素表还存着时间（${moved.join(' / ')}）已让位重建`);
+  return moved;
+}
+
+function restorePublicElementRows(db, moved) {
+  for (const pub of moved || []) {
+    const stale = `${pub}__time_stale`;
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(stale)) continue;
+    const keep = new Set(columnsOf(db, pub));
+    const list = columnsOf(db, stale).filter((c) => keep.has(c));
+    if (list.length) {
+      db.prepare(`INSERT OR IGNORE INTO ${pub} (${list.join(',')}) SELECT ${list.join(',')} FROM ${stale}`).run();
+    }
+    db.exec(`DROP TABLE ${stale}`);
+  }
 }
 
 /**
@@ -573,13 +633,13 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   const cat = ELEMENT_CATEGORY[el.type] || 'marker';
   const common = {
     element_id: el.id, project_id: chapterId, layer_id: n(layerId), type: el.type, name: el.name || '',
-    visible: b(el.visible !== false), start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
+    start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
     anim_effect: n(el.animEffect), keyframes_json: kfsToJson(el, f2s), ord: 0,
     ...labelCols(el.label),
   };
   if (cat === 'marker') {
     db.prepare(`INSERT INTO element_marker (
-      element_id, project_id, layer_id, type, name, visible, start_sec, end_sec, anim_effect,
+      element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
       label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
       keyframes_json, ord, lng, lat, rotation, shape, emoji, scale, orientation, color,
@@ -587,7 +647,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       visual_fit,visual_tintable,visual_fps,visual_loop,visual_altitude,visual_auto_rotate,visual_spin,visual_pitch_align,visual_animation,visual_stroke_width,
       flag_text, flag_color, flag_text_color, flag_font_size, flag_width, sidc, symbol_size, echelon, symbol_label
     ) VALUES (
-      @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
+      @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
       @keyframes_json,@ord,@lng,@lat,@rotation,@shape,@emoji,@scale,@orientation,@color,
@@ -612,7 +672,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   }
   if (cat === 'route') {
     db.prepare(`INSERT INTO element_route (
-      element_id, project_id, layer_id, type, name, visible, start_sec, end_sec, anim_effect,
+      element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
       label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
       keyframes_json, ord, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_type, line_arrow,
@@ -621,7 +681,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       trail_color, trail_width, trail_length,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
-      @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
+      @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
       @keyframes_json,@ord,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_type,@line_arrow,
@@ -653,7 +713,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   if (cat === 'shape') {
     const cMeta = el.circleMeta || el.starMeta;
     db.prepare(`INSERT INTO element_shape (
-      element_id, project_id, layer_id, type, name, visible, start_sec, end_sec, anim_effect,
+      element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
       label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
       keyframes_json, ord, rings_json, fill_color, fill_opacity, stroke_color, stroke_width, shape_kind,
@@ -664,7 +724,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       points_json, center_lng, center_lat, radius, pulse_animation, rotation,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
-      @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
+      @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
       @keyframes_json,@ord,@rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,@shape_kind,
@@ -703,12 +763,12 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   if (cat === 'image') {
     const grid = Array.isArray(el.grid) ? el.grid : [];
     db.prepare(`INSERT INTO element_image (
-      element_id, project_id, layer_id, type, name, visible, start_sec, end_sec,
+      element_id, project_id, layer_id, type, name, start_sec, end_sec,
       asset_id, aspect, cols, rows, grid_json, opacity, ord
-    ) VALUES (@element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,
+    ) VALUES (@element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,
       @asset_id,@aspect,@cols,@rows,@grid_json,@opacity,@ord)`).run({
       element_id: el.id, project_id: chapterId, layer_id: n(layerId), type: el.type, name: el.name || '',
-      visible: b(el.visible !== false), start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
+      start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
       asset_id: n(el.assetId), aspect: n(el.aspect),
       cols: Math.max(1, Math.round(el.cols || 1)), rows: Math.max(1, Math.round(el.rows || 1)),
       grid_json: grid.length ? JSON.stringify(grid) : null,
@@ -719,14 +779,14 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   // territory
   const d = el.display || {};
   db.prepare(`INSERT INTO element_territory (
-    element_id, project_id, layer_id, type, name, visible, start_sec, end_sec, anim_effect,
+    element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
     label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
     keyframes_json, ord,
     display_country_borders, display_plot_borders, display_border_width, display_fill_opacity,
     display_country_names, display_plot_names, display_label_align, display_label_scale,
     countries_json, plots_json, events_json
   ) VALUES (
-    @element_id,@project_id,@layer_id,@type,@name,@visible,@start_sec,@end_sec,@anim_effect,
+    @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
     @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
     @keyframes_json,@ord,
     @display_country_borders,@display_plot_borders,@display_border_width,@display_fill_opacity,
@@ -885,7 +945,7 @@ function readElementsV2(db, chapterId, s2f) {
   const base = (r) => {
     const k = kfOf(r);
     return {
-      id: r.element_id, type: r.type, name: r.name, visible: r.visible !== 0,
+      id: r.element_id, type: r.type, name: r.name,
       layerId: r.layer_id ?? undefined,
       startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec),
       style: k.style, label: colsToLabel(r),
@@ -970,7 +1030,7 @@ function readElementsV2(db, chapterId, s2f) {
   }
   for (const r of db.prepare('SELECT * FROM element_image WHERE project_id = ?').all(chapterId)) {
     out.push({
-      id: r.element_id, type: 'geo_image', name: r.name, visible: r.visible !== 0,
+      id: r.element_id, type: 'geo_image', name: r.name,
       layerId: r.layer_id ?? undefined,
       startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec), style: {},
       assetId: r.asset_id ?? undefined, aspect: r.aspect ?? 1,
@@ -1393,6 +1453,26 @@ export function repairAssetRefs(db) {
   return cleared;
 }
 
+/**
+ * 元素整表搬运（项目 ⇄ 公共库）。两边列**不再一一对应**：
+ * 公共侧不存 visible（显隐是图层的事）与 start_sec/end_sec（时间不进图库）。
+ * 所以以**目标表**的列为准逐列配源 —— 源表有的按同名取，源表没有的走 overrides
+ * （要落字面量或绑定的列）。绑定参数按占位在 SELECT 里出现的顺序收集。
+ */
+function copyElementRows(db, { src, dst, where, whereArgs, overrides }) {
+  const srcCols = new Set(columnsOf(db, src));
+  const cols = [];
+  const sel = [];
+  const args = [];
+  for (const c of columnsOf(db, dst)) {
+    const over = overrides[c];
+    if (over !== undefined) { cols.push(c); sel.push(over.sql); args.push(over.value); }
+    else if (srcCols.has(c)) { cols.push(c); sel.push(c); }
+  }
+  db.prepare(`INSERT INTO ${dst} (${cols.join(',')}) SELECT ${sel.join(',')} FROM ${src} WHERE ${where}`)
+    .run(...args, ...whereArgs);
+}
+
 /** 项目图层 → 公共图层（复制图层行 + 全部元素；元素 id 加后缀，避免跨公共图层冲突） */
 export function saveLayerToPublicV2(db, layerId, now = Date.now()) {
   const layer = db.prepare('SELECT * FROM layer WHERE layer_id = ?').get(layerId);
@@ -1404,9 +1484,10 @@ export function saveLayerToPublicV2(db, layerId, now = Date.now()) {
     db.prepare(`INSERT INTO public_layer (public_layer_id, type, name, visible, start_sec, end_sec, ord, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?)`).run(pid, layer.type, layer.name, layer.visible, layer.start_sec, layer.end_sec, layer.ord || 0, now, now);
     for (const [proj, pub] of ELEMENT_TABLE_PAIRS) {
-      const cols = columnsOf(db, proj).filter((c) => c !== 'project_id' && c !== 'layer_id');
-      const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');
-      db.prepare(`INSERT INTO ${pub} (public_layer_id, ${cols.join(',')}) SELECT ?, ${sel} FROM ${proj} WHERE layer_id = ?`).run(pid, suf, layerId);
+      copyElementRows(db, {
+        src: proj, dst: pub, where: 'layer_id = ?', whereArgs: [layerId],
+        overrides: { public_layer_id: { sql: '?', value: pid }, element_id: { sql: 'element_id || ?', value: suf } },
+      });
     }
     db.exec('COMMIT');
     return { id: pid };
@@ -1416,13 +1497,21 @@ export function saveLayerToPublicV2(db, layerId, now = Date.now()) {
   }
 }
 
-/** 公共图层 → 项目（复制回一张新图层 + 全部元素；元素 id 加后缀避免碰撞） */
-export function importPublicLayerV2(db, publicLayerId, projectId, now = Date.now()) {
+/** 导入公共图层时元素落在项目里的时长：时间不进图库，落到「当前播放头起这么长」 */
+const IMPORTED_ELEMENT_SEC = 2;
+
+/**
+ * 公共图层 → 项目（复制回一张新图层 + 全部元素；元素 id 加后缀避免碰撞）。
+ * 元素的时间不进图库，导入时现场给：start = 导入瞬间的播放头（atFrame，项目绝对帧），
+ * end = start + IMPORTED_ELEMENT_SEC 秒。图层区间仍沿用公共图层那一行。
+ */
+export function importPublicLayerV2(db, publicLayerId, projectId, now = Date.now(), atFrame = 0) {
   const pl = db.prepare('SELECT * FROM public_layer WHERE public_layer_id = ?').get(publicLayerId);
   if (!pl) return null;
   const newLayerId = `${projectId}:L${Math.random().toString(36).slice(2, 8)}${now.toString(36)}`;
   const suf = `:im${newLayerId}`;
-  const pubTables = ELEMENT_TABLE_PAIRS.map((p) => p[1]);
+  const fps = db.prepare('SELECT default_fps FROM project WHERE project_id = ?').get(projectId)?.default_fps || 30;
+  const startSec = Math.max(0, (Number(atFrame) || 0) / (fps || 30));
   db.exec('BEGIN');
   try {
     const layerOrd = (db.prepare('SELECT COALESCE(MAX(ord), -1) + 1 AS o FROM layer WHERE project_id = ?').get(projectId) || {}).o || 0;
@@ -1431,9 +1520,16 @@ export function importPublicLayerV2(db, publicLayerId, projectId, now = Date.now
     // 副本的 asset_id 直接照搬：素材是全局资源，上传时就登记进 asset 表了；
     // 删素材会一并清空副本里的引用（main.mjs assets:remove），所以这里不该再造占位行。
     for (const [proj, pub] of ELEMENT_TABLE_PAIRS) {
-      const cols = columnsOf(db, pub).filter((c) => c !== 'public_layer_id');
-      const sel = cols.map((c) => (c === 'element_id' ? `${c} || ?` : c)).join(',');
-      db.prepare(`INSERT INTO ${proj} (project_id, layer_id, ${cols.join(',')}) SELECT ?, ?, ${sel} FROM ${pub} WHERE public_layer_id = ?`).run(projectId, newLayerId, suf, publicLayerId);
+      copyElementRows(db, {
+        src: pub, dst: proj, where: 'public_layer_id = ?', whereArgs: [publicLayerId],
+        overrides: {
+          project_id: { sql: '?', value: projectId },
+          layer_id: { sql: '?', value: newLayerId },
+          element_id: { sql: 'element_id || ?', value: suf },
+          start_sec: { sql: '?', value: startSec },
+          end_sec: { sql: '?', value: startSec + IMPORTED_ELEMENT_SEC },
+        },
+      });
     }
     db.exec('COMMIT');
     return { id: newLayerId };

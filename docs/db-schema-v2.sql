@@ -183,8 +183,9 @@ CREATE INDEX IF NOT EXISTS ix_layer_project ON layer(project_id, ord);
 
 -- -----------------------------------------------------------------------------
 -- 4. 元素表（5 张类别宽表）
---    公共列（每张表都有）：element_id / project_id / layer_id / type / name / visible /
+--    公共列（每张表都有）：element_id / project_id / layer_id / type / name /
 --    start_sec / end_sec / anim_effect / keyframes_json / ord，以及平铺后的标签列 label_*。
+--    元素没有自己的显隐（显隐只在图层那一档）；时间存项目绝对秒，渲染时与图层区间取交集。
 -- -----------------------------------------------------------------------------
 
 -- 5.1 标记类元素（Pin 工具）：point（点/文字/图标）· flag（旗标）· military_symbol（APP-6 军标）
@@ -195,7 +196,6 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进
@@ -288,7 +288,6 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point')),  -- 子类型判别列：line 线 / moving_point 移动点（Route 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
@@ -383,7 +382,6 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
@@ -504,7 +502,6 @@ CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
@@ -552,7 +549,6 @@ CREATE TABLE IF NOT EXISTS element_image (  -- 贴图类元素（Image 工具）
   type           TEXT NOT NULL DEFAULT 'geo_image' CHECK (type = 'geo_image'),  -- 子类型判别列（固定 geo_image）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
   start_sec      REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec        REAL NOT NULL,  -- 消失时间（秒）
 
@@ -571,6 +567,8 @@ CREATE INDEX IF NOT EXISTS ix_image_layer   ON element_image(layer_id);
 -- -----------------------------------------------------------------------------
 -- 4c. 公共图层 / 公共元素表（跨项目图库：把项目图层连元素整体复制过来）
 --     与项目元素表同构，但：无 project_id/layer_id，改 public_layer_id 外键；
+--     不存 visible（显隐是图层的事）与 start_sec/end_sec（图库是几何与样式的集合，
+--     时间不进图库：导入时按「当前帧起 2 秒」现场补）；
 --     其余引用（asset_id）一律改弱引用（无 FK）。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public_layer (  -- 公共图层：跨项目图库（把项目图层连元素整体复制过来，导入到任意项目）
@@ -587,16 +585,13 @@ CREATE TABLE IF NOT EXISTS public_layer (  -- 公共图层：跨项目图库（�
 );
 CREATE INDEX IF NOT EXISTS ix_public_layer ON public_layer(ord, name);
 
-CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：public_layer 内的标记副本（与 element_marker 同构）
+CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：public_layer 内的标记副本（与 element_marker 同构，但不带显隐与时间）
 
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
-  end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式：按高度剖面离地显示
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
@@ -661,7 +656,6 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   echelon        TEXT,  -- 军标梯队 / 规模标注
   symbol_label   TEXT,  -- 军标旁附加文字
 
-  CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL),
   -- 媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin
@@ -676,16 +670,13 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_marker_layer ON public_element_marker(public_layer_id);
 
-CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：public_layer 内的路线副本（与 element_route 同构）
+CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：public_layer 内的路线副本（与 element_route 同构，但不带显隐与时间）
 
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point')),  -- 子类型判别列：line 线 / moving_point 移动点（Route 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
-  end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式：路线与图标按高度剖面离地显示
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
@@ -760,23 +751,19 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   trail_length      INTEGER,  -- 拖尾长度（帧）
 
 
-  CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'line'         OR coords_json IS NOT NULL),
   CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_route_layer ON public_element_route(public_layer_id);
 
-CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：public_layer 内的形状副本（与 element_shape 同构）
+CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：public_layer 内的形状副本（与 element_shape 同构，但不带显隐与时间）
 
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
-  end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
   fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
@@ -866,7 +853,6 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   pulse_animation INTEGER CHECK (pulse_animation IS NULL OR pulse_animation IN (0,1)),  -- 是否脉冲动画（集结地，0/1）
   rotation       REAL,  -- 绕中心旋转角（度）
 
-  CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (radius IS NULL OR radius > 0),
   CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly'   OR rings_json IS NOT NULL),
@@ -882,16 +868,13 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_shape_layer ON public_element_shape(public_layer_id);
 
-CREATE TABLE IF NOT EXISTS public_element_territory (  -- 公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构）
+CREATE TABLE IF NOT EXISTS public_element_territory (  -- 公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构，但不带显隐与时间）
 
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
-  start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
-  end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
   -- 标签（原 label_json 平铺）
   label_text        TEXT,  -- 标签文字（与元素名同步）
@@ -918,22 +901,17 @@ CREATE TABLE IF NOT EXISTS public_element_territory (  -- 公共疆域元素：p
   display_label_scale     REAL NOT NULL DEFAULT 1 CHECK (display_label_scale > 0),  -- 标签缩放倍数
   countries_json TEXT CHECK (countries_json IS NULL OR json_valid(countries_json)),  -- 势力数组：[{countryId,name,color,ord}]
   plots_json     TEXT CHECK (plots_json     IS NULL OR json_valid(plots_json)),  -- 地块数组：[{plotId,name,rings,ownerId,ord}]；ownerId 须能在 countries_json 中命中（由 v_check_territory_ref 校验）
-  events_json    TEXT CHECK (events_json    IS NULL OR json_valid(events_json)),  -- 兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上
-
-  CHECK (end_sec >= start_sec)
+  events_json    TEXT CHECK (events_json    IS NULL OR json_valid(events_json))  -- 兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_territory_layer ON public_element_territory(public_layer_id);
 
-CREATE TABLE IF NOT EXISTS public_element_image (  -- 公共贴图元素：public_layer 内的贴图副本（与 element_image 同构）
+CREATE TABLE IF NOT EXISTS public_element_image (  -- 公共贴图元素：public_layer 内的贴图副本（与 element_image 同构，但不带显隐与时间）
 
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL DEFAULT 'geo_image' CHECK (type = 'geo_image'),  -- 子类型判别列（固定 geo_image）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  visible        INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0,1)),  -- 是否显示（0/1）
-  start_sec      REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
-  end_sec        REAL NOT NULL,  -- 消失时间（秒）
 
   asset_id       TEXT,  -- 图片素材 id（全局素材库，弱引用、无外键）
   aspect         REAL CHECK (aspect IS NULL OR aspect > 0),  -- 图片宽高比（宽/高），切片渲染用
@@ -941,9 +919,7 @@ CREATE TABLE IF NOT EXISTS public_element_image (  -- 公共贴图元素：publi
   rows           INTEGER NOT NULL DEFAULT 1 CHECK (rows >= 1),  -- 配准网格行数
   grid_json      TEXT CHECK (grid_json IS NULL OR json_valid(grid_json)),  -- 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]）
   opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1),  -- 不透明度（0–1）
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
-
-  CHECK (end_sec >= start_sec)
+  ord            INTEGER NOT NULL DEFAULT 0  -- 同图层内排序
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_image_layer ON public_element_image(public_layer_id);
 
@@ -1212,23 +1188,23 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 
 -- 12.1 跨类别元素索引：取消基表后，轨道 / 列表 / 计数查这里，不必手写 4 表 UNION
 CREATE VIEW IF NOT EXISTS v_element_index AS
-SELECT 'marker' AS category, element_id, project_id, layer_id, type, name, visible,
+SELECT 'marker' AS category, element_id, project_id, layer_id, type, name,
        start_sec, end_sec, ord
   FROM element_marker
 UNION ALL
-SELECT 'route', element_id, project_id, layer_id, type, name, visible,
+SELECT 'route', element_id, project_id, layer_id, type, name,
        start_sec, end_sec, ord
   FROM element_route
 UNION ALL
-SELECT 'shape', element_id, project_id, layer_id, type, name, visible,
+SELECT 'shape', element_id, project_id, layer_id, type, name,
        start_sec, end_sec, ord
   FROM element_shape
 UNION ALL
-SELECT 'territory', element_id, project_id, layer_id, type, name, visible,
+SELECT 'territory', element_id, project_id, layer_id, type, name,
        start_sec, end_sec, ord
   FROM element_territory
 UNION ALL
-SELECT 'image', element_id, project_id, layer_id, type, name, visible,
+SELECT 'image', element_id, project_id, layer_id, type, name,
        start_sec, end_sec, ord
   FROM element_image;
 
