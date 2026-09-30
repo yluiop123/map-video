@@ -255,7 +255,6 @@ export interface MovingPointElement extends MapElementBase {
   type: 'moving_point';
   path: [number, number][];
   pathProgress: Keyframe<number>[];
-  trail?: TrailConfig;
   color?: string;
 }
 
@@ -306,7 +305,6 @@ export interface PolygonElement extends MapElementBase {
   morphKeyframes?: MorphKeyframe[];
   /** 战线/占领区推进动画：从一侧到另一侧 */
   fillProgress?: Keyframe<number>[];
-  fillGradient?: { enabled: boolean; fromColor: string; toColor: string };
   /** 形状种类（Shape Settings 切换用）：普通多边形 / 矩形 / 圆 / 五角星 */
   shapeKind?: 'poly' | 'rect' | 'circle' | 'star';
   /** shapeKind==='circle' 时的可编辑参数 */
@@ -518,13 +516,6 @@ export interface LabelConfig {
   bgColor?: string;
   bgPadding?: number;
   bgRadius?: number;
-  fontWeight?: 'normal' | 'bold';
-}
-
-export interface TrailConfig {
-  color?: string;
-  width?: number;
-  length?: number;       // 长度（帧）
 }
 
 // ========== 关键帧类型 ==========

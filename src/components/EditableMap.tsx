@@ -220,7 +220,7 @@ export function EditableMap({ project }: EditableMapProps) {
       } else if (s === 'text') {
         el = {
           ...base, type: 'point', name: '文字标记', shape: 'text', iconSize: 0, color: '#FF4444',
-          label: { text: '文字', fontSize: 14, color: '#000000', position: 'center', bgColor: '#FFFFFF', bgPadding: 3, bgRadius: 3, fontWeight: 'bold' },
+          label: { text: '文字', fontSize: 14, color: '#000000', position: 'center', bgColor: '#FFFFFF', bgPadding: 3, bgRadius: 3 },
         } as PointElement;
       } else if (s === 'bubble' || s === 'emoji') {
         el = {
@@ -585,7 +585,7 @@ export function EditableMap({ project }: EditableMapProps) {
         id: generateId(), type: 'point', name: '文字', locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: lngLat, shape: 'text', iconSize: 0,
-        label: { text: '文字', fontSize: 14, color: '#FFFFFF', position: 'center', bgColor: 'rgba(0,0,0,0)', bgPadding: 3, bgRadius: 3, fontWeight: 'bold' },
+        label: { text: '文字', fontSize: 14, color: '#FFFFFF', position: 'center', bgColor: 'rgba(0,0,0,0)', bgPadding: 3, bgRadius: 3 },
       } as PointElement);
       return;
     }

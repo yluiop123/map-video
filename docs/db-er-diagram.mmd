@@ -46,11 +46,11 @@ erDiagram
   ELEMENT_MARKER {
     text element_id PK
     text project_id FK
-    text type "point|flag|military_symbol"
-    text shape "9 种形态"
+    text type "point|flag"
+    text shape "10 种形态（军标是 shape，不是 type）"
     text label_text
     text asset_id FK "上传的图片/GIF/模型"
-    text builtin_id "内置资源 id"
+    text builtin_id "内置资源 id；军标 SIDC 也在里（milsym:<SIDC>）"
     text icon_lib "图标库"
     real lng
     real lat
@@ -173,7 +173,7 @@ erDiagram
   PUBLIC_ELEMENT_MARKER {
     text element_id PK
     text public_layer_id FK
-    text type "point|flag|military_symbol"
+    text type "point|flag"
     text asset_id "弱引用：公共库不属任何项目"
   }
   PUBLIC_ELEMENT_ROUTE {

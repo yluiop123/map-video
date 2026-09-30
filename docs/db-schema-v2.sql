@@ -184,8 +184,13 @@ CREATE INDEX IF NOT EXISTS ix_layer_project ON layer(project_id, ord);
 -- -----------------------------------------------------------------------------
 -- 4. 元素表（5 张类别宽表）
 --    公共列（每张表都有）：element_id / project_id / layer_id / type / name /
---    start_sec / end_sec / anim_effect / keyframes_json / ord，以及平铺后的标签列 label_*。
+--    start_sec / end_sec / ord，以及平铺后的标签列 label_*。
 --    元素没有自己的显隐（显隐只在图层那一档）；时间存项目绝对秒，渲染时与图层区间取交集。
+--    动画类列（anim_effect / fly_mode / show_icon / move_* / point_times_json）
+--    **只在有路径的类别里有**：route 与 shape（箭头沿线走）。marker / territory /
+--    image 没有路径，这些列一律不留 —— 留了就是「写进去、读不回来」的死列。
+--    军标是 point 的一种 shape（shape='military_symbol'，SIDC 存在 builtin_id 里），
+--    不是元素类型，所以 type 白名单里没有它。
 -- -----------------------------------------------------------------------------
 
 -- 5.1 标记类元素（Pin 工具）：point（点/文字/图标）· flag（旗标）· military_symbol（APP-6 军标）
@@ -193,18 +198,11 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
-  type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
+  type           TEXT NOT NULL CHECK (type IN ('point','flag')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进
-  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式：按高度剖面离地显示
-  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
-  move_start_sec REAL,  -- 移动图标出发时间（秒）
-  move_end_sec   REAL,  -- 移动图标到达时间（秒）
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒，非匀速时使用）
   -- 标签（原 label_json 平铺：面板上每个小项 = 一列）
   label_text        TEXT,  -- 标签文字（与元素名同步）
   label_font_size   REAL,  -- 标签字号
@@ -215,7 +213,6 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
   ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
@@ -256,14 +253,7 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   flag_font_size REAL,  -- 旗面字号
   flag_width     REAL,  -- 旗面宽度（px）
 
-  -- military_symbol 专属
-  sidc           TEXT,  -- APP-6 军标符号编码（type=military_symbol 时必填）
-  symbol_size    REAL,  -- 军标尺寸
-  echelon        TEXT,  -- 军标梯队 / 规模标注
-  symbol_label   TEXT,  -- 军标旁附加文字
-
   CHECK (end_sec >= start_sec),
-  CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL),
   -- 媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin
   CHECK (type <> 'point' OR shape IS NULL
@@ -272,8 +262,7 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL),
   -- 能力矩阵（与属性面板「隐藏不可用控件」一一对应）
   CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam'),  -- 模型不能贴地
-  CHECK (type <> 'flag'  OR flag_text IS NOT NULL),
-  CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)
+  CHECK (type <> 'flag'  OR flag_text IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS ix_marker_chapter ON element_marker(project_id, ord);
 CREATE INDEX IF NOT EXISTS ix_marker_type    ON element_marker(project_id, type);
@@ -330,7 +319,6 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
   ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
@@ -359,10 +347,6 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),  -- 梳齿朝向侧：1 右 / -1 左
 
   -- moving_point 专属（轨迹拖尾）
-  trail_color       TEXT,  -- 拖尾颜色（type=moving_point）
-  trail_width       REAL,  -- 拖尾宽度（px）
-  trail_length      INTEGER,  -- 拖尾长度（帧）
-
 
   CHECK (end_sec >= start_sec),
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
@@ -424,7 +408,6 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
   ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
@@ -447,10 +430,6 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   defense_tooth_gap    REAL,  -- 防御圈锯齿间距（px）
   defense_tooth_angle  REAL,  -- 防御圈锯齿偏角（度）
   defense_side         INTEGER CHECK (defense_side IS NULL OR defense_side IN (-1,1)),  -- 防御圈锯齿朝向侧：1 右 / -1 左
-  -- 填充渐变（原 fill_gradient_json 平铺）
-  gradient_enabled   INTEGER CHECK (gradient_enabled IS NULL OR gradient_enabled IN (0,1)),  -- 填充渐变是否开启（0/1）
-  gradient_from      TEXT,  -- 渐变起始色
-  gradient_to        TEXT,  -- 渐变结束色
 
   -- arrow 专属
   from_lng       REAL,  -- 箭头起点经度（type=arrow 时必填）
@@ -504,7 +483,6 @@ CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
   -- 标签（原 label_json 平铺）
   label_text        TEXT,  -- 标签文字（与元素名同步）
   label_font_size   REAL,  -- 标签字号
@@ -515,7 +493,6 @@ CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复
   ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
@@ -589,16 +566,9 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
 
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
-  type           TEXT NOT NULL CHECK (type IN ('point','flag','military_symbol')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
+  type           TEXT NOT NULL CHECK (type IN ('point','flag')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow 增长 / move 移动 / fill 填充 / march 填充行进 / marchplain 行进
-  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式：按高度剖面离地显示
-  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
-  move_start_sec REAL,  -- 移动图标出发时间（秒）
-  move_end_sec   REAL,  -- 移动图标到达时间（秒）
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒，非匀速时使用）
   -- 标签（原 label_json 平铺：面板上每个小项 = 一列）
   label_text        TEXT,  -- 标签文字（与元素名同步）
   label_font_size   REAL,  -- 标签字号
@@ -609,7 +579,6 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
   ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
@@ -650,13 +619,6 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   flag_font_size REAL,  -- 旗面字号
   flag_width     REAL,  -- 旗面宽度（px）
 
-  -- military_symbol 专属
-  sidc           TEXT,  -- APP-6 军标符号编码（type=military_symbol 时必填）
-  symbol_size    REAL,  -- 军标尺寸
-  echelon        TEXT,  -- 军标梯队 / 规模标注
-  symbol_label   TEXT,  -- 军标旁附加文字
-
-  CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL),
   -- 媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin
   CHECK (type <> 'point' OR shape IS NULL
@@ -665,8 +627,7 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL),
   -- 能力矩阵（与属性面板「隐藏不可用控件」一一对应）
   CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam'),  -- 模型不能贴地
-  CHECK (type <> 'flag'  OR flag_text IS NOT NULL),
-  CHECK (type <> 'military_symbol' OR sidc IS NOT NULL)
+  CHECK (type <> 'flag'  OR flag_text IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_marker_layer ON public_element_marker(public_layer_id);
 
@@ -717,7 +678,6 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
   ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
@@ -746,10 +706,6 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),  -- 梳齿朝向侧：1 右 / -1 左
 
   -- moving_point 专属（轨迹拖尾）
-  trail_color       TEXT,  -- 拖尾颜色（type=moving_point）
-  trail_width       REAL,  -- 拖尾宽度（px）
-  trail_length      INTEGER,  -- 拖尾长度（帧）
-
 
   CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (type <> 'line'         OR coords_json IS NOT NULL),
@@ -804,7 +760,6 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
   ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
@@ -827,10 +782,6 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   defense_tooth_gap    REAL,  -- 防御圈锯齿间距（px）
   defense_tooth_angle  REAL,  -- 防御圈锯齿偏角（度）
   defense_side         INTEGER CHECK (defense_side IS NULL OR defense_side IN (-1,1)),  -- 防御圈锯齿朝向侧：1 右 / -1 左
-  -- 填充渐变（原 fill_gradient_json 平铺）
-  gradient_enabled   INTEGER CHECK (gradient_enabled IS NULL OR gradient_enabled IN (0,1)),  -- 填充渐变是否开启（0/1）
-  gradient_from      TEXT,  -- 渐变起始色
-  gradient_to        TEXT,  -- 渐变结束色
 
   -- arrow 专属
   from_lng       REAL,  -- 箭头起点经度（type=arrow 时必填）
@@ -875,7 +826,6 @@ CREATE TABLE IF NOT EXISTS public_element_territory (  -- 公共疆域元素：p
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
   -- 标签（原 label_json 平铺）
   label_text        TEXT,  -- 标签文字（与元素名同步）
   label_font_size   REAL,  -- 标签字号
@@ -886,7 +836,6 @@ CREATE TABLE IF NOT EXISTS public_element_territory (  -- 公共疆域元素：p
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  label_font_weight TEXT CHECK (label_font_weight IS NULL OR label_font_weight IN ('normal','bold')),  -- 标签字重：normal / bold
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复
   ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 

@@ -65,8 +65,8 @@ export function ensureV2Schema(db) {
     // 补列补不出这种变化 → 认「还带 project_id 列」这个正标志，改名让位后由 DDL 建新表。
     // 旧行不搬：那是内置常量在每个项目里的复制品，渲染端启动时会按常量重新铺一遍。
     rebuildCatalogIfProjectScoped(db);
-    // 时间不进图库：公共元素表要去掉 start_sec/end_sec（表级 CHECK 挡着 DROP COLUMN，只能让位）
-    const pubCols = rebuildPublicElementsIfTimed(db);
+    // 时间不进图库 / marker 删死列：表级 CHECK 挡着 DROP COLUMN，只能让位重建
+    const rebuilt = rebuildTables(db);
     // task 的 FK 条款换代也在这一步（**早于 ensureAllColumns**：改名让位后建新表，最后把行搬回）
     const taskCols = rebuildTaskIfFkBound(db);
     const narCols = rebuildNarrationIfOldVolumeCheck(db);
@@ -76,8 +76,8 @@ export function ensureV2Schema(db) {
     // 视图每次重建（引用列可能变化；IF NOT EXISTS 不会更新旧定义）
     db.exec('DROP VIEW IF EXISTS v_element_index; DROP VIEW IF EXISTS v_check_dangling; DROP VIEW IF EXISTS v_check_territory_ref; DROP VIEW IF EXISTS v_check_async_pairing;');
     db.exec(ddl);
-    // 让位的行先搬回来（新表已由 DDL 建好），后面的删列/体检才看得到完整的公共库
-    restorePublicElementRows(db, pubCols);
+    // 让位的行先搬回来（新表已由 DDL 建好），后面的删列/体检才看得到完整的数据
+    restoreRebuiltRows(db, rebuilt);
     // 目录让位的归档表在这之后才有资格删：新表已在，删了不留缺口
     dropCatalogArchives(db);
     // 删作废列**必须在建表之后**：ALTER TABLE DROP COLUMN 会重校验依赖该表的视图，
@@ -224,7 +224,31 @@ const RETIRED_COLUMNS = [
   ['public_element_territory', 'visible'],
   ['public_element_image', 'visible'],
   // 公共元素表的时间（start_sec/end_sec）不在这张表里：表级 CHECK (end_sec >= start_sec)
-  // 烧在旧表定义上，DROP COLUMN 会被它挡回来 → 走 rebuildPublicElementsIfTimed 让位重建。
+  // 烧在旧表定义上，DROP COLUMN 会被它挡回来 → 走 rebuildTables 让位重建。
+  // ---- 无消费者的列（§6.29「每一格都要有消费者」）。marker 两张表同样被表级 CHECK
+  // 引用（move_end_sec/move_start_sec、military_symbol/sidc），也走让位重建 ----
+  ['element_route', 'trail_color'],
+  ['element_route', 'trail_width'],
+  ['element_route', 'trail_length'],
+  ['public_element_route', 'trail_color'],
+  ['public_element_route', 'trail_width'],
+  ['public_element_route', 'trail_length'],
+  ['element_shape', 'gradient_enabled'],
+  ['element_shape', 'gradient_from'],
+  ['element_shape', 'gradient_to'],
+  ['public_element_shape', 'gradient_enabled'],
+  ['public_element_shape', 'gradient_from'],
+  ['public_element_shape', 'gradient_to'],
+  ['element_territory', 'anim_effect'],
+  ['public_element_territory', 'anim_effect'],
+  // 标签字重：渲染走 canvas 气泡位图，makeBubbleImageData 不接这个参数 → 写了也不显示。
+  // 运行时字段 LabelConfig.fontWeight 一并删了，所以 8 张表（marker 那两张走让位）全清。
+  ['element_route', 'label_font_weight'],
+  ['public_element_route', 'label_font_weight'],
+  ['element_shape', 'label_font_weight'],
+  ['public_element_shape', 'label_font_weight'],
+  ['element_territory', 'label_font_weight'],
+  ['public_element_territory', 'label_font_weight'],
 ];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
@@ -310,43 +334,59 @@ function dropCatalogArchives(db) {
 }
 
 /**
- * 公共元素表去掉 start_sec/end_sec（时间不进图库）。这两列**不能**用 DROP COLUMN：
- * 旧表定义里烧着表级 `CHECK (end_sec >= start_sec)`，SQLite 重校验时会拿这条约束
- * 回看被删的列 → 直接报 no such column（实测）。所以走让位重建：改名 → DDL 建新表
- * → 按共同列把行搬回 → 删旧表。行必须留：公共图层是用户攒下来的资产。
+ * 让位重建：当某张表**删列删不掉**时走这条路。删不掉的两种原因：
+ *   ① 旧表定义里烧着**表级 CHECK** 引用了那一列（SQLite 重校验会拿它回看被删列 → no such column）；
+ *   ② 主键 / 唯一索引。
+ * 做法：摘命名索引 → 改名 → DDL 建新表 → 按共同列把行搬回 → 删旧表。
+ * 行必须留：这些表里装的是用户的项目内容。
  * 命名索引要先摘 —— 改名会把索引一起带走且名字不变，新表的 CREATE INDEX IF NOT EXISTS
  * 会被静默跳过（§6.24 同款坑）。
  */
-function rebuildPublicElementsIfTimed(db) {
+const MARKER_RETIRED = ['anim_effect', 'fly_mode', 'show_icon', 'move_start_sec', 'move_end_sec',
+  'uniform_move', 'point_times_json', 'sidc', 'symbol_size', 'echelon', 'symbol_label', 'label_font_weight'];
+
+/** 要让位重建的表：[表名, 判据列]（判据列 = 命中任意一个就说明还是旧形状） */
+function rebuildTargets() {
+  return [
+    // 公共元素表不存时间（导入时现场给「当前帧起 2 秒」）
+    ...ELEMENT_TABLE_PAIRS.map(([, pub]) => [pub, ['start_sec', 'end_sec']]),
+    // marker 表的动画族与军标四列被旧表的两条表级 CHECK 引用着
+    ['element_marker', MARKER_RETIRED],
+    ['public_element_marker', MARKER_RETIRED],
+  ];
+}
+
+function rebuildTables(db) {
   const moved = [];
   try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }
-  for (const [, pub] of ELEMENT_TABLE_PAIRS) {
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(pub)) continue;
-    const cols = columnsOf(db, pub);
-    if (!cols.includes('start_sec') && !cols.includes('end_sec')) continue;
+  for (const [table, probe] of rebuildTargets()) {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(table)) continue;
+    const cols = columnsOf(db, table);
+    if (!probe.some((c) => cols.includes(c))) continue;   // 已经是新形状
     try {
-      for (const r of db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ? AND sql IS NOT NULL").all(pub)) {
+      for (const r of db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ? AND sql IS NOT NULL").all(table)) {
         db.exec(`DROP INDEX IF EXISTS ${r.name}`);
       }
-      db.exec(`ALTER TABLE ${pub} RENAME TO ${pub}__time_stale`);
-      moved.push(pub);
+      db.exec(`ALTER TABLE ${table} RENAME TO ${table}__stale`);
+      moved.push(table);
     } catch (e) {
-      console.warn(`[db-v2] 公共元素表让位失败 ${pub}:`, e?.message || e);
+      console.warn(`[db-v2] ${table} 让位失败:`, e?.message || e);
     }
   }
   try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
-  if (moved.length) console.log(`[db-v2] 公共元素表还存着时间（${moved.join(' / ')}）已让位重建`);
+  if (moved.length) console.log(`[db-v2] 旧形状已让位重建（表级 CHECK 挡着删列）：${moved.join(' / ')}`);
   return moved;
 }
 
-function restorePublicElementRows(db, moved) {
-  for (const pub of moved || []) {
-    const stale = `${pub}__time_stale`;
+/** 新表由 DDL 建好后，把让位表的行按共同列搬回来（共同列之外的那些就是被淘汰的列） */
+function restoreRebuiltRows(db, moved) {
+  for (const table of moved || []) {
+    const stale = `${table}__stale`;
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(stale)) continue;
-    const keep = new Set(columnsOf(db, pub));
+    const keep = new Set(columnsOf(db, table));
     const list = columnsOf(db, stale).filter((c) => keep.has(c));
     if (list.length) {
-      db.prepare(`INSERT OR IGNORE INTO ${pub} (${list.join(',')}) SELECT ${list.join(',')} FROM ${stale}`).run();
+      db.prepare(`INSERT OR IGNORE INTO ${table} (${list.join(',')}) SELECT ${list.join(',')} FROM ${stale}`).run();
     }
     db.exec(`DROP TABLE ${stale}`);
   }
@@ -384,21 +424,22 @@ const bit = (v) => v === 1 || v === true;
 const J = (s, dflt) => { try { return s == null ? dflt : JSON.parse(s); } catch { return dflt; } };
 
 const ELEMENT_CATEGORY = {
-  point: 'marker', flag: 'marker', military_symbol: 'marker',
+  // 军标不是元素类型：它是 point 的一种 shape（SIDC 存在 builtin_id 里），见 pin-visual.ts
+  point: 'marker', flag: 'marker',
   line: 'route', moving_point: 'route',
   polygon: 'shape', arrow: 'shape', double_arrow: 'shape', gathering: 'shape', encirclement: 'shape',
   territory: 'territory',
   geo_image: 'image',
 };
 
-/** 标签 → 列（label_*） */
+/** 标签 → 列（label_*）。**没有 fontWeight**：标签走 canvas 气泡位图，
+ * makeBubbleImageData 不接字重，写进去也不会渲染（§6.29「每一格都要有消费者」）。 */
 function labelCols(l) {
   if (!l) return {};
   return {
     label_text: n(l.text), label_font_size: n(l.fontSize), label_color: n(l.color),
     label_position: n(l.position), label_offset_x: n(l.offsetX), label_offset_y: n(l.offsetY),
     label_bg_color: n(l.bgColor), label_bg_padding: n(l.bgPadding), label_bg_radius: n(l.bgRadius),
-    label_font_weight: n(l.fontWeight),
   };
 }
 function colsToLabel(r) {
@@ -407,7 +448,7 @@ function colsToLabel(r) {
     text: r.label_text ?? '', fontSize: r.label_font_size ?? undefined, color: r.label_color ?? undefined,
     position: r.label_position ?? undefined, offsetX: r.label_offset_x ?? undefined, offsetY: r.label_offset_y ?? undefined,
     bgColor: r.label_bg_color ?? undefined, bgPadding: r.label_bg_padding ?? undefined,
-    bgRadius: r.label_bg_radius ?? undefined, fontWeight: r.label_font_weight ?? undefined,
+    bgRadius: r.label_bg_radius ?? undefined,
   };
 }
 
@@ -653,65 +694,60 @@ export function saveProjectV2(db, project) {
 
 function saveElementV2(db, chapterId, layerId, el, f2s) {
   const cat = ELEMENT_CATEGORY[el.type] || 'marker';
+  // 公共块只放**所有类别都用得上**的列。动画族（anim_effect / fly_mode / show_icon /
+  // move_* / point_times_json）只属于有路径的 route 与 shape，由那两条分支各自带上 ——
+  // 放进公共块就是「marker 也写、marker 读不回来」的死列。
   const common = {
     element_id: el.id, project_id: chapterId, layer_id: n(layerId), type: el.type, name: el.name || '',
     start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
-    anim_effect: n(el.animEffect), keyframes_json: kfsToJson(el, f2s), ord: 0,
+    keyframes_json: kfsToJson(el, f2s), ord: 0,
     ...labelCols(el.label),
   };
   if (cat === 'marker') {
     db.prepare(`INSERT INTO element_marker (
-      element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
-      fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
-      label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
+      element_id, project_id, layer_id, type, name, start_sec, end_sec,
+      label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,
       keyframes_json, ord, lng, lat, rotation, shape, emoji, scale, orientation, color,
       asset_id, builtin_id, icon_lib, icon_name,
       visual_fit,visual_tintable,visual_fps,visual_loop,visual_altitude,visual_auto_rotate,visual_spin,visual_pitch_align,visual_animation,visual_stroke_width,
-      flag_text, flag_color, flag_text_color, flag_font_size, flag_width, sidc, symbol_size, echelon, symbol_label
+      flag_text, flag_color, flag_text_color, flag_font_size, flag_width
     ) VALUES (
-      @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
-      @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
-      @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
+      @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,
+      @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,
       @keyframes_json,@ord,@lng,@lat,@rotation,@shape,@emoji,@scale,@orientation,@color,
       @asset_id,@builtin_id,@icon_lib,@icon_name,
       @visual_fit,@visual_tintable,@visual_fps,@visual_loop,@visual_altitude,@visual_auto_rotate,@visual_spin,@visual_pitch_align,@visual_animation,@visual_stroke_width,
-      @flag_text,@flag_color,@flag_text_color,@flag_font_size,@flag_width,@sidc,@symbol_size,@echelon,@symbol_label)`).run({
+      @flag_text,@flag_color,@flag_text_color,@flag_font_size,@flag_width)`).run({
       ...common,
-      fly_mode: el.flyMode ? 1 : 0, show_icon: el.showIcon ? 1 : 0,
-      move_start_sec: el.moveStartFrame == null ? null : f2s(el.moveStartFrame),
-      move_end_sec: el.moveEndFrame == null ? null : f2s(el.moveEndFrame),
-      uniform_move: n(el.uniformMove) == null ? null : b(el.uniformMove),
-      point_times_json: el.pointTimes ? JSON.stringify(el.pointTimes.map(f2s)) : null,
       lng: el.coordinates?.[0] ?? 0, lat: el.coordinates?.[1] ?? 0, rotation: n(el.rotation),
       shape: n(el.shape), emoji: n(el.emoji), scale: n(el.scale), orientation: n(el.orientation), color: n(el.color),
       asset_id: n(el.assetId), builtin_id: n(el.builtinId), icon_lib: n(el.iconLib), icon_name: n(el.iconName),
       ...visualCols(el.visualMeta),
       flag_text: n(el.text), flag_color: n(el.flagColor), flag_text_color: n(el.textColor),
       flag_font_size: n(el.fontSize), flag_width: n(el.flagWidth),
-      sidc: n(el.sidc), symbol_size: n(el.symbolSize), echelon: n(el.echelon), symbol_label: n(el.symbolLabel),
     });
     return;
   }
   if (cat === 'route') {
+    // 动画族列在这里显式带上：只有 route / shape 有路径可走
     db.prepare(`INSERT INTO element_route (
       element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
-      label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
+      label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,
       keyframes_json, ord, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_type, line_arrow,
       route_dot_enabled, route_dot_count, route_dot_width, route_dot_color, route_dot_frame_step,
       flow_speed, plain_path, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
-      trail_color, trail_width, trail_length,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
-      @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
+      @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,
       @keyframes_json,@ord,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_type,@line_arrow,
       @route_dot_enabled,@route_dot_count,@route_dot_width,@route_dot_color,@route_dot_frame_step,
       @flow_speed,@plain_path,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
-      @trail_color,@trail_width,@trail_length,
       @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_size,@move_icon_label_padding,@move_icon_label_radius,@move_icon_label_pos,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
       ...common,
+      anim_effect: n(el.animEffect),
       fly_mode: el.flyMode ? 1 : 0, show_icon: el.showIcon ? 1 : 0,
       move_start_sec: el.moveStartFrame == null ? null : f2s(el.moveStartFrame),
       move_end_sec: el.moveEndFrame == null ? null : f2s(el.moveEndFrame),
@@ -727,7 +763,6 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       flow_speed: n(el.flowSpeed), plain_path: b(el.plainPath),
       front_tooth_length: n(el.frontStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap),
       front_tooth_angle: n(el.frontStyle?.toothAngle), front_side: n(el.frontStyle?.side),
-      trail_color: n(el.trail?.color), trail_width: n(el.trail?.width), trail_length: n(el.trail?.length),
       ...moveIconCols(el.moveIcon),
     });
     return;
@@ -737,22 +772,20 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
     db.prepare(`INSERT INTO element_shape (
       element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
-      label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
+      label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,
       keyframes_json, ord, rings_json, fill_color, fill_opacity, stroke_color, stroke_width, shape_kind,
       rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
       poly_curve, defense_tooth_length, defense_tooth_gap, defense_tooth_angle, defense_side,
-      gradient_enabled, gradient_from, gradient_to,
       from_lng, from_lat, to_lng, to_lat, path_json, arrow_type, width, color,
       points_json, center_lng, center_lat, radius, pulse_animation, rotation,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
-      @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
+      @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,
       @keyframes_json,@ord,@rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,@shape_kind,
       @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
       @poly_curve,@defense_tooth_length,@defense_tooth_gap,@defense_tooth_angle,@defense_side,
-      @gradient_enabled,@gradient_from,@gradient_to,
       @from_lng,@from_lat,@to_lng,@to_lat,@path_json,@arrow_type,@width,@color,
       @points_json,@center_lng,@center_lat,@radius,@pulse_animation,@rotation,
       @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_size,@move_icon_label_padding,@move_icon_label_radius,@move_icon_label_pos,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
@@ -769,8 +802,6 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       poly_curve: b(el.polyCurve),
       defense_tooth_length: n(el.defenseStyle?.toothLength), defense_tooth_gap: n(el.defenseStyle?.toothGap),
       defense_tooth_angle: n(el.defenseStyle?.toothAngle), defense_side: n(el.defenseStyle?.side),
-      gradient_enabled: el.fillGradient ? b(el.fillGradient.enabled) : null,
-      gradient_from: n(el.fillGradient?.fromColor), gradient_to: n(el.fillGradient?.toColor),
       from_lng: n(el.from?.[0]), from_lat: n(el.from?.[1]), to_lng: n(el.to?.[0]), to_lat: n(el.to?.[1]),
       path_json: j(el.path), arrow_type: n(el.arrowType), width: n(el.width), color: n(el.color),
       points_json: j(el.points),
@@ -801,15 +832,15 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   // territory
   const d = el.display || {};
   db.prepare(`INSERT INTO element_territory (
-    element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
-    label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,label_font_weight,
+    element_id, project_id, layer_id, type, name, start_sec, end_sec,
+    label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,
     keyframes_json, ord,
     display_country_borders, display_plot_borders, display_border_width, display_fill_opacity,
     display_country_names, display_plot_names, display_label_align, display_label_scale,
     countries_json, plots_json, events_json
   ) VALUES (
-    @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
-    @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,@label_font_weight,
+    @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,
+    @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,
     @keyframes_json,@ord,
     @display_country_borders,@display_plot_borders,@display_border_width,@display_fill_opacity,
     @display_country_names,@display_plot_names,@display_label_align,@display_label_scale,
@@ -964,6 +995,9 @@ export function removeElevationMapV2(db, id) {
 function readElementsV2(db, chapterId, s2f) {
   const out = [];
   const kfOf = (r) => jsonToKfs(r.keyframes_json, s2f);
+  // base 只给**所有类别共用**的字段。动画族（animEffect / flyMode / showIcon /
+  // moveStart·End / uniformMove / pointTimes / moveIcon）只在 route 与 shape 的表里有列，
+  // 由那两条分支经 anim() 显式带上 —— 不在这里「按 type 猜有没有列」。
   const base = (r) => {
     const k = kfOf(r);
     return {
@@ -971,28 +1005,29 @@ function readElementsV2(db, chapterId, s2f) {
       layerId: r.layer_id ?? undefined,
       startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec),
       style: k.style, label: colsToLabel(r),
-      ...(r.anim_effect ? { animEffect: r.anim_effect } : {}),
-      ...(r.point_times_json ? { pointTimes: J(r.point_times_json, []).map(s2f) } : {}),
-      ...(r.type !== 'point' && r.type !== 'flag' && r.type !== 'military_symbol' && r.type !== 'territory' ? {
-        flyMode: r.fly_mode === 1, showIcon: r.show_icon === 1,
-        moveStartFrame: r.move_start_sec == null ? undefined : s2f(r.move_start_sec),
-        moveEndFrame: r.move_end_sec == null ? undefined : s2f(r.move_end_sec),
-        uniformMove: r.uniform_move == null ? undefined : bit(r.uniform_move),
-        moveIcon: colsToMoveIcon(r),
-      } : {}),
     };
   };
+  /** 有路径可走的类别才有的动画族字段 */
+  const anim = (r) => ({
+    ...(r.anim_effect ? { animEffect: r.anim_effect } : {}),
+    ...(r.point_times_json ? { pointTimes: J(r.point_times_json, []).map(s2f) } : {}),
+    flyMode: r.fly_mode === 1, showIcon: r.show_icon === 1,
+    moveStartFrame: r.move_start_sec == null ? undefined : s2f(r.move_start_sec),
+    moveEndFrame: r.move_end_sec == null ? undefined : s2f(r.move_end_sec),
+    uniformMove: r.uniform_move == null ? undefined : bit(r.uniform_move),
+    moveIcon: colsToMoveIcon(r),
+  });
   for (const r of db.prepare('SELECT * FROM element_marker WHERE project_id = ?').all(chapterId)) {
     if (r.type === 'flag') {
       out.push({ ...base(r), type: 'flag', coordinates: [r.lng, r.lat], text: r.flag_text ?? '', flagColor: r.flag_color ?? '#E23B3B', textColor: r.flag_text_color ?? '#FFFFFF', fontSize: r.flag_font_size ?? 28, flagWidth: r.flag_width ?? 216, scale: r.scale ?? 1 });
     } else {
+      // 军标走 shape='military_symbol' + builtin_id='milsym:<SIDC>'，SIDC 不单独存列
       out.push({
         ...base(r), type: 'point', coordinates: [r.lng, r.lat],
-        iconSize: r.icon_size ?? undefined, color: r.color ?? undefined, shape: r.shape ?? undefined, emoji: r.emoji ?? undefined,
+        color: r.color ?? undefined, shape: r.shape ?? undefined, emoji: r.emoji ?? undefined,
         scale: r.scale ?? undefined, orientation: r.orientation ?? undefined, rotation: r.rotation ?? undefined,
         builtinId: r.builtin_id ?? undefined, assetId: r.asset_id ?? undefined, iconLib: r.icon_lib ?? undefined, iconName: r.icon_name ?? undefined,
         visualMeta: colsToVisual(r),
-        ...(r.sidc ? { sidc: r.sidc, symbolSize: r.symbol_size ?? undefined, echelon: r.echelon ?? undefined, symbolLabel: r.symbol_label ?? undefined } : {}),
       });
     }
   }
@@ -1001,10 +1036,10 @@ function readElementsV2(db, chapterId, s2f) {
     if (r.type !== 'line' && r.type !== 'moving_point') continue;
     const k = kfOf(r);
     if (r.type === 'moving_point') {
-      out.push({ ...base(r), type: 'moving_point', path: J(r.coords_json, []), pathProgress: k.progress, color: r.line_color ?? undefined, trail: r.trail_color || r.trail_width != null || r.trail_length != null ? { color: r.trail_color ?? undefined, width: r.trail_width ?? undefined, length: r.trail_length ?? undefined } : undefined });
+      out.push({ ...base(r), ...anim(r), type: 'moving_point', path: J(r.coords_json, []), pathProgress: k.progress, color: r.line_color ?? undefined });
     } else {
       out.push({
-        ...base(r), type: 'line', coordinates: J(r.coords_json, []), drawProgress: k.drawProgress,
+        ...base(r), ...anim(r), type: 'line', coordinates: J(r.coords_json, []), drawProgress: k.drawProgress,
         lineWidth: r.line_width ?? 8, lineColor: r.line_color ?? '#FF0000',
         lineDashArray: r.line_dash_on != null ? [r.line_dash_on, r.line_dash_off ?? 0] : undefined,
         lineType: r.line_type ?? undefined, lineArrow: r.line_arrow == null ? undefined : bit(r.line_arrow),
@@ -1016,22 +1051,21 @@ function readElementsV2(db, chapterId, s2f) {
   }
   for (const r of db.prepare('SELECT * FROM element_shape WHERE project_id = ?').all(chapterId)) {
     const k = kfOf(r);
-    const mi = colsToMoveIcon(r);
+    // shape 表带动画族列（箭头沿线走 + 沿线图标），所以这里整表都读
     if (r.type === 'arrow') {
       const from = [r.from_lng, r.from_lat]; const to = [r.to_lng, r.to_lat];
       const path = J(r.path_json, null);
-      out.push({ ...base(r), type: 'arrow', from, to, path: path ?? undefined, arrowType: r.arrow_type, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: k.progress, drawZoom: undefined });
+      out.push({ ...base(r), ...anim(r), type: 'arrow', from, to, path: path ?? undefined, arrowType: r.arrow_type, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: k.progress, drawZoom: undefined });
     } else if (r.type === 'double_arrow') {
-      out.push({ ...base(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: k.progress });
+      out.push({ ...base(r), ...anim(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: k.progress });
     } else if (r.type === 'gathering' || r.type === 'encirclement') {
-      out.push({ ...base(r), type: r.type, center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, pulseAnimation: r.pulse_animation == null ? undefined : bit(r.pulse_animation), rotation: r.rotation ?? undefined });
+      out.push({ ...base(r), ...anim(r), type: r.type, center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, pulseAnimation: r.pulse_animation == null ? undefined : bit(r.pulse_animation), rotation: r.rotation ?? undefined });
     } else {
       const poly = {
-        ...base(r), type: 'polygon', coordinates: J(r.rings_json, []), fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
+        ...base(r), ...anim(r), type: 'polygon', coordinates: J(r.rings_json, []), fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
         strokeColor: r.stroke_color ?? '#E23B3B', strokeWidth: r.stroke_width ?? 2, shapeKind: r.shape_kind ?? undefined,
         polyCurve: r.poly_curve == null ? undefined : bit(r.poly_curve), rotation: r.rotation ?? undefined,
         defenseStyle: r.defense_tooth_length == null && r.defense_side == null ? undefined : { toothLength: r.defense_tooth_length ?? undefined, toothGap: r.defense_tooth_gap ?? undefined, toothAngle: r.defense_tooth_angle ?? undefined, side: r.defense_side ?? undefined },
-        fillGradient: r.gradient_enabled == null && r.gradient_from == null ? undefined : { enabled: bit(r.gradient_enabled), fromColor: r.gradient_from ?? '#E23B3B', toColor: r.gradient_to ?? '#FFFFFF' },
         fillProgress: k.fillProgress, morphKeyframes: k.morphKeyframes,
       };
       if (r.shape_kind === 'rect') poly.rectMeta = { c1: [r.rect_c1_lng, r.rect_c1_lat], c2: [r.rect_c2_lng, r.rect_c2_lat] };

@@ -210,7 +210,7 @@ function Appearance({ color, onChange }: { color: string; onChange: (c: string) 
 
 /** 文案样式字段（文本输入在面板顶部 LABEL；此处只管样式） */
 function LabelStyleFields({ label, onChange, fixedCenter }: {
-  label: { text: string; fontSize?: number; color?: string; position?: string; offsetX?: number; offsetY?: number; bgColor?: string; bgPadding?: number; bgRadius?: number; fontWeight?: string };
+  label: { text: string; fontSize?: number; color?: string; position?: string; offsetX?: number; offsetY?: number; bgColor?: string; bgPadding?: number; bgRadius?: number };
   onChange: (l: any) => void;
   fixedCenter?: boolean;
 }) {

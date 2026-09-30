@@ -67,11 +67,12 @@ const allElementIds = (db, tables) => {
   for (const t of tables) out.push(...db.prepare(`SELECT element_id FROM ${t}`).all().map((r) => r.element_id));
   return out;
 };
-/** 按表的列定义造一行（notnull 列给类型零值，其余 null） */
+/** 按表的列定义造一行（notnull 列给类型零值，其余 null）。`over` 里给了表上没有的列就忽略，
+ * 免得表一改列，这个夹具先炸在一个看不懂的 "Unknown named parameter" 上。 */
 function blankRow(db, table, over) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all();
   const vals = Object.fromEntries(cols.map((c) => [c.name, c.notnull ? (/INT|REAL|NUMERIC/.test(c.type) ? 0 : '') : null]));
-  Object.assign(vals, over);
+  for (const [k, v] of Object.entries(over || {})) if (k in vals) vals[k] = v;
   db.prepare(`INSERT INTO ${table} (${cols.map((c) => c.name).join(',')}) VALUES (${cols.map((c) => '@' + c.name).join(',')})`).run(vals);
 }
 
@@ -150,7 +151,7 @@ const check = (name, pass, detail) => {
   const pub = saveLayerToPublicV2(db, 'p3:Lm').id;
   blankRow(db, 'public_element_marker', {
     element_id: 'ghost:host', public_layer_id: pub, type: 'point', name: '幽灵',
-    asset_id: 'asset-not-exists', fly_mode: 0, show_icon: 0,
+    asset_id: 'asset-not-exists',
   });
   // 旧版占位行造出来的空壳素材（storage=file 却没有 rel_path）
   blankRow(db, 'asset', { asset_id: 'shell:empty', kind: 'image', name: '', mime: 'application/octet-stream', storage: 'file', rel_path: '', created_at: 1 });
