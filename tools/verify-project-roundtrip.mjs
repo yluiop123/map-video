@@ -245,10 +245,21 @@ console.log('\n[8] 旧库的「每项目一套目录」启动让位');
     !colsOf('base_map').includes('style_url') && colsOf('base_map').includes('style_json'), colsOf('base_map').join(','));
   check('8.3 夸张系数换了主人（project 上有这一列）', colsOf('project').includes('terrain_exaggeration'),
     colsOf('project').join(','));
-  check('8.4 旧表改名归档、不是直接删（里面可能有用户手改过的行）',
-    !!legacy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='base_map__scoped_stale'").get());
+  check('8.4 新表建好后归档表被删掉（不留「读它的人已不存在」的表）',
+    ok === true
+    && !legacy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='base_map__scoped_stale'").get()
+    && !legacy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='elevation_map__scoped_stale'").get(),
+    legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name GLOB '*__scoped_stale'").all().map((r) => r.name).join(',') || '无');
   check('8.5 旧行没被搬进新表（那是每项目一套的复制品，由渲染端按常量重铺）',
     legacy.prepare('SELECT COUNT(*) c FROM base_map').get().c === 0);
+  check('8.6 新表真的建出来了（删归档不等于把目录删了）',
+    !!legacy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='base_map'").get()
+    && !!legacy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='elevation_map'").get());
+  // 早几轮让位留下的旧归档：那次没删干净，这次启动要顺手清掉
+  legacy.exec('CREATE TABLE base_map__scoped_stale (base_map_id TEXT, project_id TEXT)');
+  ensureV2Schema(legacy);
+  check('8.7 上一轮遗留的归档表也会被清掉',
+    !legacy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='base_map__scoped_stale'").get());
 }
 
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);

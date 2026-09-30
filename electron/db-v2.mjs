@@ -78,6 +78,8 @@ export function ensureV2Schema(db) {
     db.exec(ddl);
     // 让位的行先搬回来（新表已由 DDL 建好），后面的删列/体检才看得到完整的公共库
     restorePublicElementRows(db, pubCols);
+    // 目录让位的归档表在这之后才有资格删：新表已在，删了不留缺口
+    dropCatalogArchives(db);
     // 删作废列**必须在建表之后**：ALTER TABLE DROP COLUMN 会重校验依赖该表的视图，
     // 而让位那一刻 provider_template 已被改名成 __stale、还没重建回来，视图于是指着一张不存在的表 → 删列直接失败（实测踩过）。
     foldTemplateHeadersIntoSlots(db);
@@ -267,8 +269,11 @@ function restoreTaskRows(db, cols) {
 /**
  * 底图 / 高程目录改成全库一份（旧的是 `(project_id, base_map_id)` 复合主键，每个项目一套复制品）。
  * 认**「还带 project_id 列」**这个正标志：补列补不出主键形状的变化，只能让位重建。
- * 旧行**不搬**：那是内置常量在每个项目里的 N 份复制品（样式还被拆在两列里），
- * 渲染端启动时会按代码常量重新铺一遍 —— 搬它等于把重复带进新表。
+ * 旧行**不搬也不留**：那是内置常量在每个项目里的 N 份复制品（样式还被拆在两列里），
+ * 渲染端启动时会按代码常量重新铺一遍 —— 搬它等于把重复带进新表，留着只是白占地方。
+ * 所以这里只做「摘索引 + 改名」，归档表由 `dropCatalogArchives` 在 **DDL 建好新表之后**删：
+ * 万一新表没建出来，归档还在，用户的底图不会凭空消失（这与 provider 那套「改名不删」不同，
+ * 因为那批行确实还要往回搬，这批行是常量复制品、没人会读）。
  */
 function rebuildCatalogIfProjectScoped(db) {
   const stale = [];
@@ -285,6 +290,23 @@ function rebuildCatalogIfProjectScoped(db) {
   }
   try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
   console.log(`[db-v2] 底图/高程目录旧形状（按项目各存一份：${stale.join(' / ')}）已让位，建新表后由渲染端按常量铺`);
+}
+
+/**
+ * 删掉目录让位留下的 `*__scoped_stale` 归档表（新表已建好才轮到它）。
+ * 每次启动都扫一遍：早几轮让位、当时按「改名不删」留下的旧归档也一起清掉。
+ */
+function dropCatalogArchives(db) {
+  for (const t of ['base_map', 'elevation_map']) {
+    const name = `${t}__scoped_stale`;
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name)) continue;
+    try {
+      db.exec(`DROP TABLE ${name}`);
+      console.log(`[db-v2] 删掉目录归档表 ${name}（旧行是每项目一套的复制品，渲染端按常量重铺）`);
+    } catch (e) {
+      console.warn(`[db-v2] 删归档表失败 ${name}:`, e?.message || e);
+    }
+  }
 }
 
 /**
