@@ -26,14 +26,14 @@
 |---|---|---|---|
 | **P1** 必列化 | 身份、时间轴、以及构成引用图的字段 —— 约束与查询都依赖它们 | 独立列 + 主键 / 外键 / CHECK | `id`、`start_sec`、`end_sec`、`project_id`、`from_element_id` |
 | **P2** 独立成表 | 子结构自身有 id 或顺序语义，需被单独约束或寻址 | 1:N 子表 | `narration_entry` |
-| **P3** 保留 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` 约束 | `display_json`、`front_style_json`、`route_effect_json`、`label_json`、`countries_json` / `plots_json` / `events_json` |
+| **P3** 保留 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` 约束 | `countries_json` / `plots_json` / `events_json`（疆域自包含三件套）、`payload_json`（弹窗类型专属载荷）。**曾经按 P3 判定的 `display_*` / `front_tooth_*` / `route_dot_*` / `label_*` 后来都改判成「平铺为列」** —— 面板上每个小项都要单独存取与约束，JSON 里改一个键就得整块读写 |
 | **P4** 外置存储 | 大体积二进制内容 | 独立 `asset` 表，业务表只留 `asset_id` | 图片、音频、视频、模型、字体 |
 
 注：`chart.data` / `timeline.items` / `dialogue.items` 虽是数组，但不被单独寻址、无逐项约束，按 P3 留在 `payload_json`；而关键帧虽也是数组，却带 `(element_id, property, sec)` 唯一性与时间轴语义，按 P2 建表。
 
 ### 1.2 元素建模：按工具栏聚合的 5 张类别宽表
 
-元素共 12 个子类型（point / flag / military_symbol / line / moving_point / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、项目与图层归属、时间轴、可见性、层级、动画与移动配置），但**专有字段差异极大**（从 3 个到 47 个）。
+元素共 11 个子类型（point / flag / line / moving_point / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、项目与图层归属、时间轴、层级），**有路径的类别再共享动画与移动配置**（route / shape 两张表独有 —— marker/territory/image 没有路径可走），**专有字段差异极大**（从 3 个到 47 个）。
 
 三种映射方案的取舍：
 
@@ -41,7 +41,7 @@
 |---|---|---|
 | 单表继承（STI） | 一张 `element` 承载全部子类列 | 13 类字段合计 60+ 列，多数行大面积 NULL；**子类必填规则无法表达**（如「`shape = 'emoji'` 时 `emoji` 必填」），约束退化回应用层 |
 | 按类型拆表（1 基表 + 13 子表） | 主键共享的 CTI | 字段可各自约束，但 **`type` 判别列与子表行的一致性需要额外维护**；跨实体级联会留下孤儿基类行；表数量最多 |
-| **按工具栏聚合（采用）** | **5 张类别宽表**，表内 `type` 判别子类型 | 表数量少；同类别内共享列；子类型必填规则由 `type` + CHECK 表达 |
+| **按工具栏聚合（采用）** | **5 张类别宽表**，表内 `type` 判别子类型 | 表数量少；同类别内共享列；子类型必填规则由 `type` + CHECK 表达。**注意：聚合的是「这一类里真有消费者」的列，不是全类别列的并集** |
 
 **为什么按工具栏聚合**
 
@@ -126,9 +126,9 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 | 设计决策 | 依据 |
 |---|---|
-| 元素按工具栏聚合为 4 张类别宽表 | 12 个子类型专有字段 3–47 个、离散度极大：单表继承会产出 60+ 可空列并丧失子类必填约束；按类型逐张拆表则表数最多且需额外维护判别列与具化行的一致性 |
+| 元素按工具栏聚合为类别宽表（现 5 张） | 12 个子类型专有字段 3–47 个、离散度极大：单表继承会产出 60+ 可空列并丧失子类必填约束；按类型逐张拆表则表数最多且需额外维护判别列与具化行的一致性。**但宽表只聚合「这一类里真的有消费者」的列** —— 动画族（`anim_effect`/`fly_mode`/`show_icon`/`move_*`/`point_times_json`）只属于有路径的 route 与 shape，不进 marker/territory/image（否则就是写进去读不回来的死列） |
 | 动画关键帧内联为 `keyframes_json` | 运行时元素对象本就内联关键帧数组，独立成表需要弱引用维护；P3 内联跟随元素整体读写（原独立表已取消） |
-| 元素标签内联为 `label_json` | 标签是可选 1:1 值对象；元素已分表，独立成表会失去统一的外键目标 |
+| 元素标签从 `label_json` 改判为**平铺 `label_*` 十列** | 原判据是「可选 1:1 值对象、不参与检索」；实际面板上每个小项都要单独存取、单独校验（CHECK 白名单），塞在 JSON 里改一个键就得整块读写 |
 | GlobalConfig 独立成 `project` | 配置与项目本体职责分离：`project` 只留身份 / 归属 / 审计字段，配置面板只读写配置表；将来新增配置项不改动 `project` 结构 |
 | `asset` 表承担 P4 外置 | base64 内嵌是当前最大的性能问题；assetId 与文件名解耦，随机 id + 时间戳命名（不做内容寻址去重，代价是同文件传两次会存两份） |
 | 同域约束按删除行为二分 | 能配合 CASCADE 的用复合外键；必须 SET NULL 的（跟随机位）退回单列外键，「同章节」由应用层校验 —— SQLite 复合外键 SET NULL 会连带清空 NOT NULL 的 `project_id` |
