@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 /**
- * audit-fk-indexes.mjs — 外键索引覆盖审计
+ * audit-fk-indexes.mjs — 结构审计：外键索引覆盖 + 项目表 / 公共副本列对称
  *
+ * ── 一、外键索引覆盖 ─────────────────────────────────────────────────────────
  * 为什么需要：SQLite 的外键强制检查本身几乎不花钱（实测 31k 行插入，FK 开/关差 ~1µs/行），
  * 真正的成本在于「父行被删除/更新时，若子表外键列没有索引，SQLite 必须全表扫描子表」。
  * 实测 5000 行子表、删除 200 个被引用父行：无索引 3592ms → 有索引 129ms（28×）。
  * 所以结论是「不要删外键，补齐子表列索引」——本脚本用来保证这一点持续成立。
- *
  * 做法：对每张表读 PRAGMA foreign_key_list 拿到各 FK 的子列，
  * 再用 PRAGMA index_list / index_info 检查是否存在某个索引以这些子列作为前缀。
+ *
+ * ── 二、公共副本列对称 ───────────────────────────────────────────────────────
+ * `public_element_X` 是 `element_X` 的跨项目副本，关系**逐字固定**：
+ *     公共侧 = 项目侧 − {project_id, layer_id, start_sec, end_sec} + {public_layer_id}
+ * （显隐是图层的事、时间不进图库；导入时时间现场给）。所以**给项目表加/删列必须成对改公共侧** ——
+ * 漏改的症状很隐蔽：写入端按目标表的列逐列配源，多出来的列永远 NULL、少掉的列当场报错或静默丢值。
+ * 这里把这条不变量变成审计项（而不是靠改的人记得）。
  *
  * 用法：
  *   node --experimental-sqlite tools/audit-fk-indexes.mjs [ddl路径]   # 默认 docs/db-schema-v2.sql
@@ -68,8 +75,30 @@ for (const table of tables) {
   }
 }
 
+// 列清单在关库前一次性读好（公共副本对称审计要用）
+const colsByName = new Map(tables.map((t) => [t, db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name)]));
+
 db.close();
 for (const s of ['', '-wal', '-shm']) fs.rmSync(tmp + s, { force: true });
+
+// ── 公共副本列对称 ──
+// 公共侧 = 项目侧 − {project_id, layer_id, start_sec, end_sec} + {public_layer_id}
+const PUBLIC_ONLY = ['public_layer_id'];
+const PROJECT_ONLY = ['project_id', 'layer_id', 'start_sec', 'end_sec'];
+const pairOf = (t) => (/^public_element_/.test(t) ? t.replace(/^public_element_/, 'element_') : null);
+const symmetry = [];
+const byName = new Set(tables);
+for (const pub of tables) {
+  const proj = pairOf(pub);
+  if (!proj) continue;
+  if (!byName.has(proj)) { symmetry.push({ pub, proj, missing: ['(项目表不存在)'], extra: [] }); continue; }
+  const expect = colsByName.get(proj).filter((c) => !PROJECT_ONLY.includes(c));
+  const actual = colsByName.get(pub);
+  const missing = expect.filter((c) => !actual.includes(c));                                  // 项目侧有、公共侧没跟上
+  const extra = actual.filter((c) => !expect.includes(c) && !PUBLIC_ONLY.includes(c));        // 公共侧多出来的
+  const noPubCol = actual.includes('public_layer_id') ? [] : ['(缺 public_layer_id)'];
+  if (missing.length || extra.length || noPubCol.length) symmetry.push({ pub, proj, missing: [...missing, ...noPubCol], extra });
+}
 
 const unexpected = gaps.filter((g) => !EXPECTED_EXCEPTIONS.some((e) => e.match(g)));
 const expected = gaps.filter((g) => EXPECTED_EXCEPTIONS.some((e) => e.match(g)));
@@ -86,6 +115,14 @@ for (const r of expected) {
 for (const r of unexpected) {
   console.log(`  ✗ 缺口 ${r.table}(${r.childCols.join(',')}) -> ${r.parent}`);
 }
-console.log(unexpected.length === 0 ? '结果：无非预期缺口 ✓' : `结果：${unexpected.length} 个缺口需补索引 ✗`);
+console.log(unexpected.length === 0 ? '外键索引：无非预期缺口 ✓' : `外键索引：${unexpected.length} 个缺口需补索引 ✗`);
 
-process.exit(unexpected.length === 0 ? 0 : 1);
+console.log(`公共副本：${tables.filter(pairOf).length} 对 · 不对称 ${symmetry.length}`);
+for (const s of symmetry) {
+  if (s.missing.length) console.log(`  ✗ ${s.pub} 比 ${s.proj} 少：${s.missing.join(', ')}`);
+  if (s.extra.length) console.log(`  ✗ ${s.pub} 比 ${s.proj} 多：${s.extra.join(', ')}`);
+}
+console.log(symmetry.length === 0 ? '公共副本：5 对列集合逐字对称 ✓' : `公共副本：${symmetry.length} 对需同步 ✗`);
+
+const bad = unexpected.length + symmetry.length;
+process.exit(bad === 0 ? 0 : 1);

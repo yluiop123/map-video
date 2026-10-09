@@ -88,11 +88,11 @@ const TABLE_FRONTEND = {
   voice: { role: '克隆音色账本：同实例 + 同参考音频 + 同目标模型只建一次（幂等键）', fe: '字幕生成弹窗内的「配音音色」区（VoiceField.tsx）' },
   task: { role: '异步任务：跨重启续跑（提交 / 查询 / 当场落素材 / 回填字幕）', fe: '字幕生成的逐条状态 + 顶栏在途任务浮层；调度在主进程扫库' },
   public_layer: { role: '公共图层：跨项目图库的图层（把项目图层连元素整体复制过来）', fe: '左侧「图层」浮层「加入公共图层 / 导入公共图层」' },
-  public_element_marker: { role: '公共标记元素（public_layer 内副本，与 element_marker 同构）', fe: '同上' },
-  public_element_route: { role: '公共路线元素（public_layer 内副本，与 element_route 同构）', fe: '同上' },
-  public_element_shape: { role: '公共形状元素（public_layer 内副本，与 element_shape 同构）', fe: '同上' },
-  public_element_territory: { role: '公共疆域元素（public_layer 内副本，与 element_territory 同构）', fe: '同上' },
-  public_element_image: { role: '公共贴图元素（public_layer 内副本，与 element_image 同构）', fe: '同上' },
+  public_element_marker: { role: '公共标记元素（public_layer 内副本；列 = element_marker − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）', fe: '同上' },
+  public_element_route: { role: '公共路线元素（public_layer 内副本；列 = element_route − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）', fe: '同上' },
+  public_element_shape: { role: '公共形状元素（public_layer 内副本；列 = element_shape − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）', fe: '同上' },
+  public_element_territory: { role: '公共疆域元素（public_layer 内副本；列 = element_territory − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）', fe: '同上' },
+  public_element_image: { role: '公共贴图元素（public_layer 内副本；列 = element_image − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）', fe: '同上' },
 };
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

@@ -44,7 +44,7 @@ const inj = await page.evaluate(async () => {
   s.addOverlay(ch.id, { id: 'ov_text', type: 'text', name: '文字', position: 'top', content: { type: 'text', text: { content: '渡江战役·总攻发起', fontSize: 30, color: '#FFD700', bold: true } }, startFrame: 30, endFrame: 150, animation: 'fadeIn', exitAnimation: 'fadeOut', scale: 1 });
   s.addOverlay(ch.id, { id: 'ov_list', type: 'list', name: '战役进程', position: 'bottomLeft', content: { type: 'list', list: { title: '战役进程', items: ['3月5日 渡江集结', '3月9日 总攻发起'] } }, startFrame: 45, endFrame: 160, animation: 'slideInLeft', exitAnimation: 'fadeOut', widthPct: 30 });
   // 5 个两两时间重叠的标记：0-3000 / 100-200 / 150-240 / 210-400 / 250-350 → 应分 3 道
-  const mk = (i, sf, ef) => ({ id: `el_t${i}`, type: 'point', name: `标记${i}`, locked: false, startFrame: sf, endFrame: ef, coordinates: [104.5 + i * 0.4, 31.5 + i * 0.25], shape: 'circle', color: '#4C9EFF', label: { text: `标记${i}`, color: '#FFFFFF', position: 'top' }, style: {} });
+  const mk = (i, sf, ef) => ({ id: `el_t${i}`, type: 'point', name: `标记${i}`, locked: false, startFrame: sf, endFrame: ef, coordinates: [104.5 + i * 0.4, 31.5 + i * 0.25], shape: 'circle', color: '#4C9EFF', label: { text: `标记${i}`, color: '#FFFFFF', position: 'top' } });
   s.addElements(ch.id, [mk(1, 0, 3000), mk(2, 100, 200), mk(3, 150, 240), mk(4, 210, 400), mk(5, 250, 350)]);
   ed.getState().setCurrentFrame(75);
   return { ok: true, elements: s.project.chapters[0].elements.length };

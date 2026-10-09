@@ -82,7 +82,7 @@ export function RegionPickerDialog({ onClose }: RegionPickerDialogProps) {
       const shapes = regionHitsToShapes([hit]);
       const els: PolygonElement[] = shapes.map((s) => ({
         id: generateId(), type: 'polygon', name: s.name, locked: false,
-        startFrame: 0, endFrame: chapter.endFrame, style: {},
+        startFrame: 0, endFrame: chapter.endFrame,
         coordinates: s.rings as [number, number][][],
         fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#FF6666', strokeWidth: 2,
       } as PolygonElement));

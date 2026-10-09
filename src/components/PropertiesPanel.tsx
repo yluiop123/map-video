@@ -6,7 +6,7 @@ import { useInteractionStore } from '../stores/interactionStore';
 import { generateId } from '../types';
 import { FrameTimeField } from './FrameTimeField';
 import { frameToSeconds, secondsToFrame, round2 } from '../lib/time';
-import { loadImageAspect, withGridDensity } from '../lib/geo-image';
+import { withGridDensity } from '../lib/geo-image';
 import { TERRITORY_PALETTE } from '../lib/territory';
 import { Section, Field, StyleGrid, Toggle, ColorPicker, OptionBlocks, PanelHeader, useT, NumberInput } from './ui/primitives';
 import { useConfirm } from './ui/ConfirmHost';
@@ -102,14 +102,14 @@ export function PropertiesPanel() {
         <Section title={t('标签', 'Label')}>
           <input
             type="text"
-            value={element.type === 'point' || element.type === 'line' || element.type === 'polyline'
+            value={element.type === 'point' || element.type === 'line'
               ? (element.label?.text ?? '')
               : element.type === 'flag'
                 ? (element as FlagElement).text
                 : element.name}
             onChange={(e) => {
               const v = e.target.value;
-              if (element.type === 'point' || element.type === 'line' || element.type === 'polyline') {
+              if (element.type === 'point' || element.type === 'line') {
                 patch({
                   label: { ...(element.label || { fontSize: 13, color: '#FFFFFF' }), text: v },
                   name: v || element.name,
@@ -806,8 +806,8 @@ function GeoImageSettings({ element, patch }: { element: GeoImageElement; patch:
     setBusy(true);
     try {
       const ref = await uploadAsset(file, 'image');
-      const aspect = await loadImageAspect(ref.assetId);
-      patch({ assetId: ref.assetId, aspect } as Partial<MapElement>);
+      // 只换图：控制点网格保持不动（宽高比不入库，配准靠拖控制点）
+      patch({ assetId: ref.assetId } as Partial<MapElement>);
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
     } finally {

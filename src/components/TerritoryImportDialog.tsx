@@ -50,7 +50,7 @@ export function TerritoryImportDialog({ onClose }: TerritoryImportDialogProps) {
     if (sel?.type === 'territory') return { chapterId: chapter.id, el: sel as TerritoryElement };
     const el: TerritoryElement = {
       id: generateId(), type: 'territory', name: '疆域', locked: false,
-      startFrame: 0, endFrame: chapter.endFrame, style: {},
+      startFrame: 0, endFrame: chapter.endFrame,
       countries: [], plots: [], events: [], display: defaultTerritoryDisplay(),
     };
     addElement(el);

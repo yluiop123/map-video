@@ -67,7 +67,7 @@ export function ensureV2Schema(db) {
     rebuildCatalogIfProjectScoped(db);
     // 时间不进图库 / marker 删死列：表级 CHECK 挡着 DROP COLUMN，只能让位重建
     const rebuilt = rebuildTables(db);
-    // 形状表 type 白名单加 polyline：同样烧在表级 CHECK 里（与上面同套，判据是表定义 SQL 文本）
+    // 形状表 type 白名单加 'polyline' 也烧在表级 CHECK 里（补列补不出）→ 认表定义 SQL 文本这个正标志
     const rebuiltShape = rebuildShapeIfOldCheck(db);
     // task 的 FK 条款换代也在这一步（**早于 ensureAllColumns**：改名让位后建新表，最后把行搬回）
     const taskCols = rebuildTaskIfFkBound(db);
@@ -80,6 +80,8 @@ export function ensureV2Schema(db) {
     db.exec(ddl);
     // 让位的行先搬回来（新表已由 DDL 建好），后面的删列/体检才看得到完整的数据
     restoreRebuiltRows(db, [...rebuilt, ...rebuiltShape]);
+    // 历史版本的让位把子表外键也改名带跑了（见 renameTableForRebuild）：建表之后就地自愈
+    repairStaleFkTargets(db, ddl);
     // 目录让位的归档表在这之后才有资格删：新表已在，删了不留缺口
     dropCatalogArchives(db);
     // 删作废列**必须在建表之后**：ALTER TABLE DROP COLUMN 会重校验依赖该表的视图，
@@ -251,32 +253,6 @@ const RETIRED_COLUMNS = [
   ['public_element_shape', 'label_font_weight'],
   ['element_territory', 'label_font_weight'],
   ['public_element_territory', 'label_font_weight'],
-  // 形状表无消费者的列（§6.29）：fly_mode（飞行渲染只认 line，箭头明确不支持；面板开关只在 line 面板）；
-  // 标签位置三列（线/折线中点文案只读字号颜色背景，偏移只有 point 渲染认；形状面板不提供这组控件）。
-  ['element_shape', 'fly_mode'],
-  ['element_shape', 'label_position'],
-  ['element_shape', 'label_offset_x'],
-  ['element_shape', 'label_offset_y'],
-  ['public_element_shape', 'fly_mode'],
-  ['public_element_shape', 'label_position'],
-  ['public_element_shape', 'label_offset_x'],
-  ['public_element_shape', 'label_offset_y'],
-  // 无消费者的 visual 形态参数（§6.29；渲染端与面板只用 auto_rotate/spin/stroke_width，
-  // 其余 7 个没有生产者也没有消费者）。marker 两张表无表级 CHECK 引用这些列，直删即可。
-  ['element_marker', 'visual_fit'],
-  ['element_marker', 'visual_tintable'],
-  ['element_marker', 'visual_fps'],
-  ['element_marker', 'visual_loop'],
-  ['element_marker', 'visual_altitude'],
-  ['element_marker', 'visual_pitch_align'],
-  ['element_marker', 'visual_animation'],
-  ['public_element_marker', 'visual_fit'],
-  ['public_element_marker', 'visual_tintable'],
-  ['public_element_marker', 'visual_fps'],
-  ['public_element_marker', 'visual_loop'],
-  ['public_element_marker', 'visual_altitude'],
-  ['public_element_marker', 'visual_pitch_align'],
-  ['public_element_marker', 'visual_animation'],
 ];
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
@@ -304,7 +280,7 @@ function rebuildTaskIfFkBound(db) {
   const bound = db.prepare('PRAGMA foreign_key_list(task)').all()
     .some((r) => r.table === 'project' || r.table === 'narration_entry');
   if (!bound) return null;
-  db.exec('ALTER TABLE task RENAME TO task__fk_stale');
+  renameTableForRebuild(db, 'task', 'task__fk_stale');
   console.log('[db-v2] task 表旧形状（指向项目/字幕是真外键）已让位，建新表后把行搬回');
   return columnsOf(db, 'task__fk_stale');
 }
@@ -335,12 +311,10 @@ function rebuildCatalogIfProjectScoped(db) {
     stale.push(t);
   }
   if (!stale.length) return;
-  try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }
   for (const t of stale) {
     try { db.exec(`DROP INDEX IF EXISTS ix_${t}_project`); } catch { /* 忽略 */ }
-    try { db.exec(`ALTER TABLE ${t} RENAME TO ${t}__scoped_stale`); } catch { /* 忽略 */ }
+    try { renameTableForRebuild(db, t, `${t}__scoped_stale`); } catch { /* 忽略 */ }
   }
-  try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
   console.log(`[db-v2] 底图/高程目录旧形状（按项目各存一份：${stale.join(' / ')}）已让位，建新表后由渲染端按常量铺`);
 }
 
@@ -373,20 +347,83 @@ function dropCatalogArchives(db) {
 const MARKER_RETIRED = ['anim_effect', 'fly_mode', 'show_icon', 'move_start_sec', 'move_end_sec',
   'uniform_move', 'point_times_json', 'sidc', 'symbol_size', 'echelon', 'symbol_label', 'label_font_weight'];
 
+/**
+ * marker 表**已删的列**（§6.29：面板没有入口、渲染端也不读）。老库里它们还在，
+ * 而 `ord` 被命名索引 `ix_marker_chapter` 引用着 —— `ALTER TABLE … DROP COLUMN` 会被
+ * 「被索引引用的列不能删」挡回来，所以这批也走让位重建（重建会先摘命名索引，
+ * 新表的索引定义已经不带 ord）。
+ */
+const MARKER_DEAD = ['visual_fit', 'visual_tintable', 'visual_fps', 'visual_loop', 'visual_altitude',
+  'visual_pitch_align', 'visual_animation', 'label_font_size', 'keyframes_json', 'ord'];
+
+/**
+ * shape 表**已删的列**（§6.29，同一套判据：面板写不了 + 渲染不读）：
+ *   · label_* 九列 —— 形状三套面板没有标签入口，运行时类型（PolygonElement / ArrowElement）
+ *     里也没有 label 字段；渲染端读 element.label 只在 renderPoint / renderLine。
+ *   · 移动图标标签四格（size/padding/radius/pos）—— MoveResourcePicker 只写 text/color/bg/offset。
+ *   · ord —— 写死 0、读端无 ORDER BY（被命名索引引用，所以只能让位重建）。
+ *   · fly_mode —— 飞行只在 renderLine 实现，面板的飞行开关也只对 type='line' 显示。
+ * 这份表同时驱动两处：写入端的 omit()（run() 多给一个 SQL 里没有的键会直接报错）与让位重建的判据列。
+ */
+const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_position', 'label_offset_x',
+  'label_offset_y', 'label_bg_color', 'label_bg_padding', 'label_bg_radius',
+  'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos',
+  'fly_mode', 'ord'];
+
+/** route 表已删的列：标签的位置/偏移（renderLine 不读、面板只写 text）、
+ *  移动图标标签那四格（同上，渲染只回退默认值）、ord。 */
+const ROUTE_DEAD = ['label_position', 'label_offset_x', 'label_offset_y',
+  'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos', 'ord'];
+
+/** territory 表已删的列：label_* 九列（面板只写 name、渲染用 display_* 与势力/地块名）、
+ *  keyframes_json（没有关键帧编辑器）、ord。 */
+const TERRITORY_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_position', 'label_offset_x',
+  'label_offset_y', 'label_bg_color', 'label_bg_padding', 'label_bg_radius', 'keyframes_json', 'ord'];
+
+/** image 表已删的列：aspect（只在创建时用来算默认网格）、ord。 */
+const IMAGE_DEAD = ['aspect', 'ord'];
+
 /** 要让位重建的表：[表名, 判据列]（判据列 = 命中任意一个就说明还是旧形状） */
 function rebuildTargets() {
   return [
     // 公共元素表不存时间（导入时现场给「当前帧起 2 秒」）
     ...ELEMENT_TABLE_PAIRS.map(([, pub]) => [pub, ['start_sec', 'end_sec']]),
-    // marker 表的动画族与军标四列被旧表的两条表级 CHECK 引用着
-    ['element_marker', MARKER_RETIRED],
-    ['public_element_marker', MARKER_RETIRED],
+    // marker 表的动画族与军标四列被旧表的两条表级 CHECK 引用着；死列那批被命名索引引用着
+    ['element_marker', [...MARKER_RETIRED, ...MARKER_DEAD]],
+    ['public_element_marker', [...MARKER_RETIRED, ...MARKER_DEAD]],
+    // 其余三张类别表的死列同理（其中 ord 被各自的命名索引引用）
+    ['element_shape', SHAPE_DEAD],
+    ['public_element_shape', SHAPE_DEAD],
+    ['element_route', ROUTE_DEAD],
+    ['public_element_route', ROUTE_DEAD],
+    ['element_territory', TERRITORY_DEAD],
+    ['public_element_territory', TERRITORY_DEAD],
+    ['element_image', IMAGE_DEAD],
+    ['public_element_image', IMAGE_DEAD],
   ];
+}
+
+/**
+ * 改表名（让位重建用）。**必须同时关 foreign_keys 与 legacy_alter_table**：
+ * SQLite 3.49 实测——只关 `foreign_keys` 或只开 `legacy_alter_table` 都**照样**会把别的表里
+ * 指向它的 `REFERENCES` 改写成新名字（`camera_keyframe.follow_route_element_id` 就被
+ * `element_route → element_route__stale` 带跑，让位表一删，保存项目直接报
+ * `no such table: main.element_route__stale`）。两者一起才不改写。
+ * 两个 pragma 都是**事务内设无效**，所以调用方必须保证此刻不在事务里。
+ */
+function renameTableForRebuild(db, from, to) {
+  try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }
+  try { db.exec('PRAGMA legacy_alter_table = ON'); } catch { /* 忽略 */ }
+  try {
+    db.exec(`ALTER TABLE ${from} RENAME TO ${to}`);
+  } finally {
+    try { db.exec('PRAGMA legacy_alter_table = OFF'); } catch { /* 忽略 */ }
+    try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
+  }
 }
 
 function rebuildTables(db) {
   const moved = [];
-  try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }
   for (const [table, probe] of rebuildTargets()) {
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(table)) continue;
     const cols = columnsOf(db, table);
@@ -395,26 +432,24 @@ function rebuildTables(db) {
       for (const r of db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ? AND sql IS NOT NULL").all(table)) {
         db.exec(`DROP INDEX IF EXISTS ${r.name}`);
       }
-      db.exec(`ALTER TABLE ${table} RENAME TO ${table}__stale`);
+      renameTableForRebuild(db, table, `${table}__stale`);
       moved.push(table);
     } catch (e) {
       console.warn(`[db-v2] ${table} 让位失败:`, e?.message || e);
     }
   }
-  try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
   if (moved.length) console.log(`[db-v2] 旧形状已让位重建（表级 CHECK 挡着删列）：${moved.join(' / ')}`);
   return moved;
 }
 
 /**
  * 形状表 type 白名单加了 'polyline'：白名单烧在表级 CHECK 里，补列补不出这种变化。
- * 认**表定义 SQL 文本**这个正标志（不含 'polyline' 即旧形状）：摘命名索引 → 改名 →
+ * 认**表定义 SQL 文本**这个正标志（不含 'polyline' 即旧形状）：摘命名索引 → 改名让位 →
  * DDL 建新表 → 按共同列搬回（旧行不可能是 polyline，CHECK 当年就拦住了）。
- * 与 rebuildTables 同一套，单独成函数是因为判据不是列名而是 SQL 文本。
+ * 改名走 renameTableForRebuild（SQLite 3.49 的子表外键改写坑）。
  */
 function rebuildShapeIfOldCheck(db) {
   const moved = [];
-  try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }
   for (const table of ['element_shape', 'public_element_shape']) {
     let row = null;
     try { row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?").get(table); } catch { continue; }
@@ -424,18 +459,42 @@ function rebuildShapeIfOldCheck(db) {
       for (const r of db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ? AND sql IS NOT NULL").all(table)) {
         db.exec(`DROP INDEX IF EXISTS ${r.name}`);
       }
-      db.exec(`ALTER TABLE ${table} RENAME TO ${table}__stale`);
+      renameTableForRebuild(db, table, `${table}__stale`);
       moved.push(table);
     } catch (e) {
       console.warn(`[db-v2] ${table} 让位失败:`, e?.message || e);
     }
   }
-  try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
   if (moved.length) console.log(`[db-v2] 形状表旧 CHECK（type 白名单无 polyline）已让位重建：${moved.join(' / ')}`);
   return moved;
 }
 
-/** 新表由 DDL 建好后，把让位表的行按共同列搬回来（共同列之外的那些就是被淘汰的列） */function restoreRebuiltRows(db, moved) {
+/**
+ * 自愈：修「子表外键被让位改名带跑」的库。判据是**子表自己的建表 SQL 里还留着 `__stale`**——
+ * 那说明它指向的父表早被删了（历史版本只关 `foreign_keys` 就改名，见 renameTableForRebuild）。
+ * 做法：把坏表改名让开 → 重跑 DDL 建回正确形状 → 按共同列搬行 → 删临时表。
+ */
+function repairStaleFkTargets(db, ddl) {
+  // 判据限定「**不是归档表自己**、但建表 SQL 里还留着 __stale」——即子表的 REFERENCES 指向已删的
+  // `X__stale`。漏掉 name NOT LIKE 会把 provider__stale 这类归档自己当成坏表消费掉（改名不删的承诺就废了，
+  // 而 migrateProvidersFromStale 还等着那份归档搬行）。
+  const bad = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '%__stale%' AND name NOT LIKE '%__fkfix%' AND sql LIKE '%__stale%'").all().map((r) => r.name);
+  if (!bad.length) return;
+  for (const t of bad) renameTableForRebuild(db, t, `${t}__fkfix`);
+  db.exec(ddl);                                    // 这些表已让开，IF NOT EXISTS 会按新 DDL 建回（外键指向正名）
+  try { db.exec('PRAGMA foreign_keys = OFF'); } catch { /* 忽略 */ }   // DDL 末尾会把 FK 打开，搬行前再关一次
+  for (const t of bad) {
+    const keep = new Set(columnsOf(db, t));
+    const list = columnsOf(db, `${t}__fkfix`).filter((c) => keep.has(c));
+    if (list.length) db.prepare(`INSERT OR IGNORE INTO ${t} (${list.join(',')}) SELECT ${list.join(',')} FROM ${t}__fkfix`).run();
+    db.exec(`DROP TABLE ${t}__fkfix`);
+  }
+  try { db.exec('PRAGMA foreign_keys = ON'); } catch { /* 忽略 */ }
+  console.log(`[db-v2] 修复被让位改写的子表外键：${bad.join(' / ')}`);
+}
+
+/** 新表由 DDL 建好后，把让位表的行按共同列搬回来（共同列之外的那些就是被淘汰的列） */
+function restoreRebuiltRows(db, moved) {
   for (const table of moved || []) {
     const stale = `${table}__stale`;
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(stale)) continue;
@@ -458,7 +517,7 @@ function rebuildNarrationIfOldVolumeCheck(db) {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='narration'").get()) return null;
   const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='narration'").get()?.sql ?? '';
   if (!/volume\s+REAL[^,]*BETWEEN 0 AND 1\b/i.test(sql)) return null;
-  db.exec('ALTER TABLE narration RENAME TO narration__vol_stale');
+  renameTableForRebuild(db, 'narration', 'narration__vol_stale');
   console.log('[db-v2] narration.volume 的旧上限（≤1）已让位，建新表后把行搬回');
   return columnsOf(db, 'narration__vol_stale');
 }
@@ -477,6 +536,8 @@ const n = (v) => (v === undefined ? null : v);
 const j = (v) => (v === undefined || v === null ? null : JSON.stringify(v));
 const b = (v) => (v === undefined || v === null ? null : (v ? 1 : 0));
 const bit = (v) => v === 1 || v === true;
+/** 去掉若干键：`common` 是五张类别表共用的模板，而 marker 表没有 keyframes_json/ord/label_font_size 三列 */
+const omit = (obj, keys) => { const out = { ...obj }; for (const k of keys) delete out[k]; return out; };
 const J = (s, dflt) => { try { return s == null ? dflt : JSON.parse(s); } catch { return dflt; } };
 
 const ELEMENT_CATEGORY = {
@@ -508,14 +569,14 @@ function colsToLabel(r) {
   };
 }
 
-/** 移动标记 → 列（move_icon_*） */
+/** 移动标记 → 列（move_icon_*）。没有 labelSize/Padding/Radius/Pos：面板从来不写这四格，
+ *  渲染端只回退默认值，已随 route / shape 两张表一并删除（§6.29）。 */
 function moveIconCols(mi) {
   if (!mi) return {};
   return {
     move_icon_shape: n(mi.shape), move_icon_color: n(mi.color), move_icon_emoji: n(mi.emoji), move_icon_scale: n(mi.scale),
     move_icon_label_text: n(mi.labelText), move_icon_label_color: n(mi.labelColor), move_icon_label_bg: n(mi.labelBg),
-    move_icon_label_size: n(mi.labelSize), move_icon_label_padding: n(mi.labelPadding), move_icon_label_radius: n(mi.labelRadius),
-    move_icon_label_pos: n(mi.labelPos), move_icon_label_offset_x: n(mi.labelOffsetX), move_icon_label_offset_y: n(mi.labelOffsetY),
+    move_icon_label_offset_x: n(mi.labelOffsetX), move_icon_label_offset_y: n(mi.labelOffsetY),
     move_icon_flag_text: n(mi.flagText), move_icon_flag_color: n(mi.flagColor),
     move_icon_builtin_id: n(mi.builtinId), move_icon_asset_id: n(mi.assetId),
     move_icon_icon_lib: n(mi.iconLib), move_icon_icon_name: n(mi.iconName),
@@ -527,9 +588,8 @@ function colsToMoveIcon(r) {
   const mi = {
     shape: r.move_icon_shape ?? undefined, color: r.move_icon_color ?? undefined, emoji: r.move_icon_emoji ?? undefined,
     scale: r.move_icon_scale ?? undefined, labelText: r.move_icon_label_text ?? undefined, labelColor: r.move_icon_label_color ?? undefined,
-    labelBg: r.move_icon_label_bg ?? undefined, labelSize: r.move_icon_label_size ?? undefined,
-    labelPadding: r.move_icon_label_padding ?? undefined, labelRadius: r.move_icon_label_radius ?? undefined,
-    labelPos: r.move_icon_label_pos ?? undefined, labelOffsetX: r.move_icon_label_offset_x ?? undefined,
+    labelBg: r.move_icon_label_bg ?? undefined,
+    labelOffsetX: r.move_icon_label_offset_x ?? undefined,
     labelOffsetY: r.move_icon_label_offset_y ?? undefined, flagText: r.move_icon_flag_text ?? undefined,
     flagColor: r.move_icon_flag_color ?? undefined, builtinId: r.move_icon_builtin_id ?? undefined,
     assetId: r.move_icon_asset_id ?? undefined, iconLib: r.move_icon_icon_lib ?? undefined,
@@ -539,53 +599,52 @@ function colsToMoveIcon(r) {
   return mi;
 }
 
+/** marker 表只留**面板有格子、渲染端真读**的三个表现参数（§6.29；fit/tintable/fps/loop/altitude/pitchAlign/animation 已随列删除） */
 const VISUAL_COLS = ['auto_rotate', 'spin', 'stroke_width'];
 function visualCols(vm) {
   if (!vm) return {};
   return {
-    visual_auto_rotate: n(vm.autoRotate), visual_spin: n(vm.spin),
-    visual_stroke_width: n(vm.strokeWidth),
+    visual_auto_rotate: n(vm.autoRotate), visual_spin: n(vm.spin), visual_stroke_width: n(vm.strokeWidth),
   };
 }
 function colsToVisual(r) {
   if (VISUAL_COLS.every((k) => r[`visual_${k}`] == null)) return undefined;
   return {
-    autoRotate: r.visual_auto_rotate ?? undefined,
-    spin: r.visual_spin ?? undefined,
+    autoRotate: r.visual_auto_rotate ?? undefined, spin: r.visual_spin ?? undefined,
     strokeWidth: r.visual_stroke_width ?? undefined,
   };
 }
 
-/** 元素动画关键帧 → keyframes_json（帧→秒；标量走 value_json，morph 存坐标数组） */
+/**
+ * 元素动画关键帧 → keyframes_json（帧→秒；标量走 value_json，morph 存坐标数组）。
+ * 只有**有生产者也有消费者**的几族：draw_progress（线增长）/ progress（箭头推进）/
+ * path_progress（移动点）/ morph（形状变形，渲染端在 renderPolygon 消费）。
+ * 曾经还有 opacity / scale / rotation（`ElementStyle`）与 fill_progress 四族 ——
+ * 全库既没有面板写它们（`style: {}` 从创建到删除都没人填过），渲染端也不读，
+ * 属于「写进去、读不回来」的死分支，已随 `ElementStyle` 一起删掉。
+ */
 function kfsToJson(el, f2s) {
   const out = [];
   const push = (property, arr) => { for (const k of arr || []) out.push({ property, sec: f2s(k.frame), easing: k.easing, value_json: k.value }); };
-  push('opacity', el.style?.opacity);
-  push('scale', el.style?.scale);
-  push('rotation', el.style?.rotation);
   push('draw_progress', el.drawProgress);
   push('progress', el.progress);
   push('path_progress', el.pathProgress);
-  push('fill_progress', el.fillProgress);
   for (const m of el.morphKeyframes || []) out.push({ property: 'morph', sec: f2s(m.frame), easing: m.easing, value_json: m.coordinates });
   return out.length ? JSON.stringify(out) : null;
 }
 function jsonToKfs(json, s2f) {
-  const style = {};
-  const drawProgress = []; const progress = []; const pathProgress = []; const fillProgress = []; const morphKeyframes = [];
+  const drawProgress = []; const progress = []; const pathProgress = []; const morphKeyframes = [];
   for (const k of J(json, [])) {
     const frame = s2f(k.sec);
     const kf = { frame, value: k.value_json, easing: k.easing };
     switch (k.property) {
-      case 'opacity': case 'scale': case 'rotation': (style[k.property] ||= []).push(kf); break;
       case 'draw_progress': drawProgress.push(kf); break;
       case 'progress': progress.push(kf); break;
       case 'path_progress': pathProgress.push(kf); break;
-      case 'fill_progress': fillProgress.push(kf); break;
       case 'morph': morphKeyframes.push({ frame, coordinates: k.value_json, easing: k.easing }); break;
     }
   }
-  return { style, drawProgress, progress, pathProgress, fillProgress, morphKeyframes };
+  return { drawProgress, progress, pathProgress, morphKeyframes };
 }
 
 // ---------- 弹窗语音：id 单独成列（真外键），payload 里只留标题 ----------
@@ -750,6 +809,9 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   // 公共块只放**所有类别都用得上**的列。动画族（anim_effect / fly_mode / show_icon /
   // move_* / point_times_json）只属于有路径的 route 与 shape，由那两条分支各自带上 ——
   // 放进公共块就是「marker 也写、marker 读不回来」的死列。
+  // keyframes_json / ord / label_font_size 是 marker 表**没有**的列（marker 没有关键帧编辑器、
+  // 顺序由 layer.elements 决定、点位标签字号由 scale 算），所以 marker 分支用 omit() 摘掉。
+  // 注意 run() 多给一个 SQL 里没有的 @name 会直接报 Unknown named parameter —— 不能只靠「多写没事」。
   const common = {
     element_id: el.id, project_id: chapterId, layer_id: n(layerId), type: el.type, name: el.name || '',
     start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
@@ -759,19 +821,19 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   if (cat === 'marker') {
     db.prepare(`INSERT INTO element_marker (
       element_id, project_id, layer_id, type, name, start_sec, end_sec,
-      label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,
-      keyframes_json, ord, lng, lat, rotation, shape, emoji, scale, orientation, color,
+      label_text,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,
+      lng, lat, rotation, shape, emoji, scale, orientation, color,
       asset_id, builtin_id, icon_lib, icon_name,
       visual_auto_rotate,visual_spin,visual_stroke_width,
       flag_text, flag_color, flag_text_color, flag_font_size, flag_width
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,
-      @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,
-      @keyframes_json,@ord,@lng,@lat,@rotation,@shape,@emoji,@scale,@orientation,@color,
+      @label_text,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,
+      @lng,@lat,@rotation,@shape,@emoji,@scale,@orientation,@color,
       @asset_id,@builtin_id,@icon_lib,@icon_name,
       @visual_auto_rotate,@visual_spin,@visual_stroke_width,
       @flag_text,@flag_color,@flag_text_color,@flag_font_size,@flag_width)`).run({
-      ...common,
+      ...omit(common, ['keyframes_json', 'ord', 'label_font_size']),
       lng: el.coordinates?.[0] ?? 0, lat: el.coordinates?.[1] ?? 0, rotation: n(el.rotation),
       shape: n(el.shape), emoji: n(el.emoji), scale: n(el.scale), orientation: n(el.orientation), color: n(el.color),
       asset_id: n(el.assetId), builtin_id: n(el.builtinId), icon_lib: n(el.iconLib), icon_name: n(el.iconName),
@@ -786,20 +848,20 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
     db.prepare(`INSERT INTO element_route (
       element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
-      label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,
-      keyframes_json, ord, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_type, line_arrow,
+      label_text,label_font_size,label_color,label_bg_color,label_bg_padding,label_bg_radius,
+      keyframes_json, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_type, line_arrow,
       route_dot_enabled, route_dot_count, route_dot_width, route_dot_color, route_dot_frame_step,
       flow_speed, plain_path, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
-      move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
+      move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
-      @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,
-      @keyframes_json,@ord,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_type,@line_arrow,
+      @label_text,@label_font_size,@label_color,@label_bg_color,@label_bg_padding,@label_bg_radius,
+      @keyframes_json,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_type,@line_arrow,
       @route_dot_enabled,@route_dot_count,@route_dot_width,@route_dot_color,@route_dot_frame_step,
       @flow_speed,@plain_path,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
-      @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_size,@move_icon_label_padding,@move_icon_label_radius,@move_icon_label_pos,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
-      ...common,
+      @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
+      ...omit(common, ROUTE_DEAD),
       anim_effect: n(el.animEffect),
       fly_mode: el.flyMode ? 1 : 0, show_icon: el.showIcon ? 1 : 0,
       move_start_sec: el.moveStartFrame == null ? null : f2s(el.moveStartFrame),
@@ -816,38 +878,34 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       flow_speed: n(el.flowSpeed), plain_path: b(el.plainPath),
       front_tooth_length: n(el.frontStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap),
       front_tooth_angle: n(el.frontStyle?.toothAngle), front_side: n(el.frontStyle?.side),
-      ...moveIconCols(el.moveIcon),
+      ...omit(moveIconCols(el.moveIcon), ROUTE_DEAD),
     });
     return;
   }
   if (cat === 'shape') {
     const cMeta = el.circleMeta || el.starMeta;
-    // 形状表不收标签位置/偏移（线中点文案只认字号颜色背景）与 fly_mode（飞行只认 line）：
-    // 从公共块里摘掉这几个键，免得绑定时带上 INSERT 里没有的具名参数。
-    const { label_position: _lpos, label_offset_x: _lox, label_offset_y: _loy, ...commonNoPos } = common;
     db.prepare(`INSERT INTO element_shape (
       element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
       show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
-      label_text,label_font_size,label_color,label_bg_color,label_bg_padding,label_bg_radius,
-      keyframes_json, ord, rings_json, fill_color, fill_opacity, stroke_color, stroke_width, shape_kind,
+      keyframes_json, rings_json, fill_color, fill_opacity, stroke_color, stroke_width, shape_kind,
       rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
       poly_curve, defense_tooth_length, defense_tooth_gap, defense_tooth_angle, defense_side,
       from_lng, from_lat, to_lng, to_lat, path_json, arrow_type, width, color,
       points_json, center_lng, center_lat, radius, pulse_animation, rotation,
       coords_json, line_type, line_arrow, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
-      move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_size,move_icon_label_padding,move_icon_label_radius,move_icon_label_pos,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
+      move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
       @show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
-      @label_text,@label_font_size,@label_color,@label_bg_color,@label_bg_padding,@label_bg_radius,
-      @keyframes_json,@ord,@rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,@shape_kind,
+      @keyframes_json,@rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,@shape_kind,
       @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
       @poly_curve,@defense_tooth_length,@defense_tooth_gap,@defense_tooth_angle,@defense_side,
       @from_lng,@from_lat,@to_lng,@to_lat,@path_json,@arrow_type,@width,@color,
       @points_json,@center_lng,@center_lat,@radius,@pulse_animation,@rotation,
       @coords_json,@line_type,@line_arrow,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
-      @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_size,@move_icon_label_padding,@move_icon_label_radius,@move_icon_label_pos,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
-      ...commonNoPos,
+      @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
+      ...omit(common, SHAPE_DEAD),
+      // 动画效果：面板（RouteSettings 的「动画效果」）会写、renderArrow 也读，之前这里漏传 → 永远 NULL
       anim_effect: n(el.animEffect),
       show_icon: el.showIcon ? 1 : 0,
       move_start_sec: el.moveStartFrame == null ? null : f2s(el.moveStartFrame),
@@ -871,7 +929,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       center_lat: cMeta ? n(cMeta.center[1]) : n(el.center?.[1]),
       radius: cMeta ? n(cMeta.radius) : n(el.radius),
       pulse_animation: n(el.pulseAnimation) == null ? null : b(el.pulseAnimation), rotation: n(el.rotation),
-      ...moveIconCols(el.moveIcon),
+      ...omit(moveIconCols(el.moveIcon), SHAPE_DEAD),
     });
     return;
   }
@@ -879,15 +937,15 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
     const grid = Array.isArray(el.grid) ? el.grid : [];
     db.prepare(`INSERT INTO element_image (
       element_id, project_id, layer_id, type, name, start_sec, end_sec,
-      asset_id, aspect, cols, rows, grid_json, opacity, ord
+      asset_id, cols, rows, grid_json, opacity
     ) VALUES (@element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,
-      @asset_id,@aspect,@cols,@rows,@grid_json,@opacity,@ord)`).run({
+      @asset_id,@cols,@rows,@grid_json,@opacity)`).run({
       element_id: el.id, project_id: chapterId, layer_id: n(layerId), type: el.type, name: el.name || '',
       start_sec: f2s(el.startFrame), end_sec: f2s(el.endFrame),
-      asset_id: n(el.assetId), aspect: n(el.aspect),
+      asset_id: n(el.assetId),
       cols: Math.max(1, Math.round(el.cols || 1)), rows: Math.max(1, Math.round(el.rows || 1)),
       grid_json: grid.length ? JSON.stringify(grid) : null,
-      opacity: n(el.opacity), ord: 0,
+      opacity: n(el.opacity),
     });
     return;
   }
@@ -895,19 +953,15 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   const d = el.display || {};
   db.prepare(`INSERT INTO element_territory (
     element_id, project_id, layer_id, type, name, start_sec, end_sec,
-    label_text,label_font_size,label_color,label_position,label_offset_x,label_offset_y,label_bg_color,label_bg_padding,label_bg_radius,
-    keyframes_json, ord,
     display_country_borders, display_plot_borders, display_border_width, display_fill_opacity,
     display_country_names, display_plot_names, display_label_align, display_label_scale,
     countries_json, plots_json, events_json
   ) VALUES (
     @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,
-    @label_text,@label_font_size,@label_color,@label_position,@label_offset_x,@label_offset_y,@label_bg_color,@label_bg_padding,@label_bg_radius,
-    @keyframes_json,@ord,
     @display_country_borders,@display_plot_borders,@display_border_width,@display_fill_opacity,
     @display_country_names,@display_plot_names,@display_label_align,@display_label_scale,
     @countries_json,@plots_json,@events_json)`).run({
-    ...common,
+    ...omit(common, TERRITORY_DEAD),
     display_country_borders: b(d.countryBorders !== false),
     display_plot_borders: b(d.plotBorders !== false),
     display_border_width: d.borderWidth ?? 3,
@@ -1060,20 +1114,19 @@ function readElementsV2(db, chapterId, s2f) {
   // base 只给**所有类别共用**的字段。动画族（animEffect / flyMode / showIcon /
   // moveStart·End / uniformMove / pointTimes / moveIcon）只在 route 与 shape 的表里有列，
   // 由那两条分支经 anim() 显式带上 —— 不在这里「按 type 猜有没有列」。
-  const base = (r) => {
-    const k = kfOf(r);
-    return {
-      id: r.element_id, type: r.type, name: r.name,
-      layerId: r.layer_id ?? undefined,
-      startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec),
-      style: k.style, label: colsToLabel(r),
-    };
-  };
+  const base = (r) => ({
+    id: r.element_id, type: r.type, name: r.name,
+    layerId: r.layer_id ?? undefined,
+    startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec),
+    label: colsToLabel(r),
+  });
   /** 有路径可走的类别才有的动画族字段 */
   const anim = (r) => ({
     ...(r.anim_effect ? { animEffect: r.anim_effect } : {}),
     ...(r.point_times_json ? { pointTimes: J(r.point_times_json, []).map(s2f) } : {}),
-    flyMode: r.fly_mode === 1, showIcon: r.show_icon === 1,
+    // fly_mode 只有 element_route 有列（飞行的渲染实现只在 renderLine）；形状行不该凭空长出个 false
+    ...(r.fly_mode == null ? {} : { flyMode: r.fly_mode === 1 }),
+    showIcon: r.show_icon === 1,
     moveStartFrame: r.move_start_sec == null ? undefined : s2f(r.move_start_sec),
     moveEndFrame: r.move_end_sec == null ? undefined : s2f(r.move_end_sec),
     uniformMove: r.uniform_move == null ? undefined : bit(r.uniform_move),
@@ -1135,7 +1188,7 @@ function readElementsV2(db, chapterId, s2f) {
         strokeColor: r.stroke_color ?? '#E23B3B', strokeWidth: r.stroke_width ?? 2, shapeKind: r.shape_kind ?? undefined,
         polyCurve: r.poly_curve == null ? undefined : bit(r.poly_curve), rotation: r.rotation ?? undefined,
         defenseStyle: r.defense_tooth_length == null && r.defense_side == null ? undefined : { toothLength: r.defense_tooth_length ?? undefined, toothGap: r.defense_tooth_gap ?? undefined, toothAngle: r.defense_tooth_angle ?? undefined, side: r.defense_side ?? undefined },
-        fillProgress: k.fillProgress, morphKeyframes: k.morphKeyframes,
+        morphKeyframes: k.morphKeyframes,
       };
       if (r.shape_kind === 'rect') poly.rectMeta = { c1: [r.rect_c1_lng, r.rect_c1_lat], c2: [r.rect_c2_lng, r.rect_c2_lat] };
       if (r.shape_kind === 'circle') poly.circleMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
@@ -1157,8 +1210,8 @@ function readElementsV2(db, chapterId, s2f) {
     out.push({
       id: r.element_id, type: 'geo_image', name: r.name,
       layerId: r.layer_id ?? undefined,
-      startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec), style: {},
-      assetId: r.asset_id ?? undefined, aspect: r.aspect ?? 1,
+      startFrame: s2f(r.start_sec), endFrame: s2f(r.end_sec),
+      assetId: r.asset_id ?? undefined,
       cols: r.cols ?? 1, rows: r.rows ?? 1, grid: J(r.grid_json, []),
       opacity: r.opacity ?? undefined,
     });

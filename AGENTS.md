@@ -28,13 +28,13 @@ npm run dist:win       # 打 Windows 包 → release/
 
 - **`release/`**：`MapVideo Setup <v>.exe`（NSIS 安装版）与 `MapVideo <v>.exe`（Portable）功能相同，留一份即可；`latest.yml` / `*.blockmap` 供 electron-updater 差分更新；`win-unpacked/` 是中间产物，可删。
 - **5173 不一定属于本项目**：本机别的项目（如 `D:\frontend\cs101` 的 vitepress）也可能占它，而 `scripts/dev-desktop.mjs` 把 5173 写死两处（探活 + `ELECTRON_RENDERER_URL`）—— 撞车时它会「探活成功」却把窗口指到别的项目。别去 kill 别人的进程，改手动两步：`npx vite --port 5178 --strictPort` + `ELECTRON_RENDERER_URL=http://localhost:5178/map-video/ ELECTRON_ENABLE_LOGGING=1 node_modules/electron/dist/electron.exe . --remote-debugging-port=9223`。
-- 无测试框架。回归验证靠 `npx tsc -b` + `npm run build` + `tools/*.mjs`（浏览器自动化需本机 Chrome 带 `--remote-debugging-port`，桌面端用 `MV_CDP=9223`）。
+- 无测试框架。回归验证靠 `npx tsc -b` + `npm run build` + `tools/*.mjs`（浏览器自动化需本机 Chrome 带 `--remote-debugging-port`；桌面端给 **完整的 CDP 地址** `MV_CDP=http://127.0.0.1:9223` —— 脚本里的默认值就是它，只给端口号会 `connectOverCDP: Invalid URL`）。
 - `tools/` 只留**跑得动、还会再跑**的东西，读文件头注释即可用，四类：
   ① **文档生成链**（改了源头就必须重跑，`--check` 只校验不写入）：
      `db-field-notes.mjs`（字段中文说明词表，漏一条直接报错）→ `gen-db-field-dict.mjs`（注入 `docs/db-tables.md`）→ `comment-ddl.mjs`（把说明写成 DDL 行尾注释）；
      `gen-template-json-doc.mjs`（把 `src/lib/template-seed.ts` 展开成 `docs/provider-engine.md` §九）；
      `gen-template-init-sql.mjs`（同一份 seed 导出成 `docs/provider-template-init.sql`：全新库的初始化脚本，也是「界面里改乱了想退回内置那一版」的一条命令）。**seed 仍是运行时唯一来源**，那份 SQL 是它的导出。
-  ② **离线回归**（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `audit-fk-indexes` / `verify-path-interpolation`（逐帧路径插值与 `turf.along` 逐字同值）。
+  ② **离线回归**（不联网、秒级）：`verify-project-roundtrip` / `verify-public-layers` / `verify-provider-templates` / `verify-request-engine` / `audit-fk-indexes`（结构审计：外键索引覆盖 + **项目表与公共副本的列对称**）/ `verify-path-interpolation`（逐帧路径插值与 `turf.along` 逐字同值）。
   ③ **浏览器自动化**：`smoke-desktop` / `smoke-backend` / `test-fx` / `test-overlays` / `test-timeline` / `test-import` / `verify-render-gate`（逐帧门禁：该跳的还在显示、该动的还在动）；公共助手 `pw-page.mjs`（复用标签页）。
   ④ **会花配额 / 改数据**：`try-real-calls.mjs`（真发上游，也会在账号下留资源）/ `bench-preview.mjs`（性能基线，采样存 `tools/.bench/`）/ `bench-attribution.mjs`（把自耗时归因到我们的函数）/ `stress-project.mjs`（建几百元素的 `__perf-stress` 场景）。
   **一次性验证脚本用完就删**，别留在目录里当考古。
@@ -161,7 +161,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
     - 宿主带 `overflow-y-auto` 时**不能用 `absolute` 浮层**（会被裁掉，表现为「点了没反应」）。共享原子一律用 shadcn/Radix（自带 portal + `position:fixed`）；自己写的浮层要按触发块与视口算位置（下方放不下就翻到上方），面板脱离 `wrapRef` 所以点击外关闭必须同时放过它，滚动/改尺寸要**重新定位**而不是关闭。
     - **舞台内的 `zIndex` 会漏到模态窗之上**：`FxPreviewLayer` 的字幕 z-60 曾盖住 z-50 的字幕生成弹窗。修法是给 `App.tsx` 那个 absolute 舞台加 `isolate`，把地图/字幕/弹窗卡片/屏幕特效压成一个层叠上下文（组内相对顺序不变）。以后新增「舞台内高 z-index 的预览层」不必再单独跟模态窗比大小。
 24. **枚举白名单不要写进 DDL，接口形状也不要写进 switch**：`CHECK (protocol IN (五项))` 是第四份真相，加一家就漏一处（新行插库报 `CHECK constraint failed`）。而 `providerStore.dbSync()` 只 `console.warn`，渲染端读的是内存态 —— 于是**当场全好、重启即丢**。现在的做法：category/role/caps 一律不加 CHECK，取值由 TS 联合类型 + 保存前 `validateTemplate()` 管；接新供应商 = 加一行模板数据，不改表、不加 switch、不改代码。
-    旧库形状漂移靠启动体检让位：**认正标志**（不能认「缺了新列」—— 补列那步会先把新列名塞进旧表，把漂移盖住）；让位是**改名不删**（用户的模板改动与 Key 都是资产）→ 建新表 → 渲染端把旧具名列并进 `values.instance`。**改名前要临时 `PRAGMA foreign_keys = OFF`**（外键条款跟着这个开关走，开着改父表名会让子表永远指向 `…__stale` 死表），且命名索引要先 DROP（否则新表的 `CREATE INDEX IF NOT EXISTS` 被静默跳过，丢唯一约束）。**`dropRetiredColumns` 必须排在 `db.exec(ddl)` 之后**（DROP COLUMN 会重校验依赖该表的视图，让位那一刻视图指着不存在的表）。**删列前先问「这一列有没有别人没有的值」**：`headers_json` 那代把认证头存在模板级，直接删列 = 下次真调用全 401 且不报错。
+    旧库形状漂移靠启动体检让位：**认正标志**（不能认「缺了新列」—— 补列那步会先把新列名塞进旧表，把漂移盖住）；让位是**改名不删**（用户的模板改动与 Key 都是资产）→ 建新表 → 渲染端把旧具名列并进 `values.instance`。**改名前必须同时关 `foreign_keys` 与开 `legacy_alter_table`** —— SQLite 3.49 实测：只关 `foreign_keys`（或只开 `legacy_alter_table`）**照样**会把别的表里指向它的 `REFERENCES` 改写成 `…__stale`，让位表一删就变成「一写那张子表就报 `no such table: main.X__stale`」（踩过：`camera_keyframe.follow_route_element_id` 被 `element_route` 的让位带跑，保存项目当场失败）。两个 pragma **事务内设无效**，所以改名必须在事务外、且统一走 `renameTableForRebuild()`；已被改坏的库由启动时的 `repairStaleFkTargets()` 就地重建修回。命名索引也要先 DROP（否则新表的 `CREATE INDEX IF NOT EXISTS` 被静默跳过，丢唯一约束）。**`dropRetiredColumns` 必须排在 `db.exec(ddl)` 之后**（DROP COLUMN 会重校验依赖该表的视图，让位那一刻视图指着不存在的表）。**删列前先问「这一列有没有别人没有的值」**：`headers_json` 那代把认证头存在模板级，直接删列 = 下次真调用全 401 且不报错。
     推广：**凡是「用户能改、又推不出来」的值才入库；同一条事实只允许一处真相**（宁可多一张表，也不要多处 if）。
 25. **`map.getStyle()` 是整份 style 的深序列化，不是「读个列表」**（实测每次数百图层 ~1ms）：不要在 per-element 循环里读它 —— 一半元素不可见时就是每帧 170 次，帧时从 150ms 顶到 300ms。要么整帧读一次共用（`styleLayerIds(map)`），要么先比签名再干活。拿 `style.layers.length` 当探针同样是白花一次序列化。
 26. **往地图推 GeoJSON 只有一个出口：`putGeoJSON`**，不变量是「签名 == 这个 source 现在装的内容」。任何绕过它直接 `src.setData()` 的写手都会打断它（表现为「拖到一半取消，图形不回位」—— 渲染器以为内容没变，把恢复性写入跳掉了）。**新增写手必须一起走**。
@@ -169,7 +169,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
     - **缓存一律按「数据身份」不按 id**（WeakMap，键 = 折线数组 / 元素对象）。这依赖项目数据不可变：每次编辑都换引用，所以「同一引用」= 「输入没变」。**任何人原地改元素字段都会让缓存读到旧几何** —— 一律经 store 换对象。
     - **`isFrameStatic` 是「整帧跳过渲染器」的唯一判据，默认不跳**：只有确认渲染器对该元素既不读 `frame` 也不读相机才返回 true。**新增任何逐帧或逐相机的分支，必须同时让它判 false**，否则画面停在最后一次真跑的那帧且不报错。让缓存整体失效靠 `renderElements` 的 `renderEpoch` 形参（编辑端传 `styleTick`），导出端恒 0（它的 map 只在 `map.on('load')` 里赋值，不存在样式没就绪时 addImage 静默失败）。
     - **`putGeoJSON` 先比对象引用再比签名**（缓存生效后交回的是同一份，省掉整树 `JSON.stringify`）。
-    回归：`verify-path-interpolation`（缓存版与 `turf.along` **逐字同值**，不是「误差够小」）、`verify-render-gate`（含「被跳过的静态点仍在显示」与「gif/模型/透明度/沿线图标必须继续动」）。
+    回归：`verify-path-interpolation`（缓存版与 `turf.along` **逐字同值**，不是「误差够小」）、`verify-render-gate`（含「被跳过的静态点仍在显示」与「gif/模型/沿线图标必须继续动」）。
 28. **测性能别拿 fps 当有效性护栏**：`fps >= 30` 会让**越重的场景越被判成脏数据**，而那正是要测的场景。看特征不看快慢：中位帧时 ≈1001ms 且 `idleShare` 七八十 = rAF 被钉在 1Hz（窗口最小化 / 没带 `MV_BENCH=1`）；`idleShare` 为 0 = 主线程真忙。同一轮改动**同条件连跑两遍**（本机噪声 ±50ms），归因要用 `bench-attribution`（自耗时 top 全是压缩名，看不出谁在调 turf/maplibre）。
 29. **配置界面的每一个格子都必须有消费者；引擎读哪个键只能有一张表**：
     - **判据是「这一格在这次有没有用」**，不是「这个字段存在」。multipart 表单只在 `multipartSlotOf(tpl, slot)` 为真时出现（判据不是槽名）；一格的两种形状不会同时发出（换接法后留在另一格的旧内容就地失效）。**加新格子前先证明它在每个 category × 每个槽位都有消费者**，证明不了就别加。
@@ -191,7 +191,8 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **属性面板双语**：`editorStore.lang`（zh / en，顶栏最右切换），标签一律走 `useT()` 的 `t('中文', 'English')` —— **新增界面标签必须双语**（控件下方那行提示小字目前是中文单语）。用户自定义的模板名 / 参数 label 是单个字符串，不参与翻译。
 - **shadcn 原子可追加**：配置见根目录 `components.json`，`npx shadcn add <名字>`；`ui/` 里已有 button/input/textarea/label/select/dialog/popover/tooltip/tabs/switch/slider/progress/badge/collapsible/radio-group/card。
 - ⚠ **本机 Vite 文件监听不可靠**（改动不热更、旧进程会吐陈旧模块）：`vite.config.ts` 已开 `server.watch.usePolling`；重启 dev server 要确认旧进程已杀干净（`netstat -ano | grep 5173` —— npm 包装进程被杀后 vite 子进程会残留）。
-- Settings 面板结构：头(✕) → LABEL（同步 element name）→ 类型/样式按钮组 → SIZE(等比%) → ORIENTATION → 颜色 → 时间 → Show Label + LABEL STYLE → 点动画（默认关）→ Delete Layer。Section 无边框、小标题 + 白 5% 分隔线。
+- Settings 面板结构：头(✕) → LABEL（同步 element name）→ 类型/样式按钮组 → SIZE(等比%) → ORIENTATION → 颜色 → 时间 → Show Label + LABEL STYLE → Delete Layer。Section 无边框、小标题 + 白 5% 分隔线。
+  - **元素没有关键帧编辑器**（那一栏早就不存在了）：`keyframes_json` 里只有「绘制/移动进度」几族由绘制动作与动画下拉产生，`element_marker` 连这一列都没有（见 §10 死列那条）。
 - 右侧浮层：element 模式需有选中元素；keyframe 模式始终显示（`panelMode` 三态）。
 - **原子统一从 `components/ui/` 引入**：新界面一律用 shadcn 原子，旧面板沿用 `primitives.tsx`、别为用而用。shadcn 浮层自带 portal，**不要再手写 `createPortal(…, document.body)`**（§6.23 那条的定位交给 Radix）。开关用 Toggle（整行可点，滑块用 left 定位勿改 translate）；颜色一律 ColorPicker（色板 = `lib/tw-colors.ts`，默认只铺每族 500 那一列 + 「展开全色阶」，底部是 `input[type=color]` 与 `#RRGGBB` 文本框；不要再维护第四份色值表）；枚举一律 OptionBlocks，**不写原生 `<select>`**（需要下拉时用 `ui/select`）。
 - **供应商配置只在 ⚙ 一处改**，且**实例设置与接口模板是左侧两个独立入口**（日常项与专家项混在一屏的结果是没人敢动模板也看不清自己改了什么）。**「接口模板」那一页只在开发构建露出来**（`IS_DEV = import.meta.env.DEV`，定义在 `lib/backend.ts`）—— 改错一份模板会让全部调用坏掉。
@@ -214,7 +215,7 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 
 ## 9. 已知待办 / 弱项
 
-- ORIENTATION / 点动画 / 移动点高亮圈等只在编辑端逐项验证过，导出端 `MapScene` 未逐条回归。
+- ORIENTATION / 移动点高亮圈等只在编辑端逐项验证过，导出端 `MapScene` 未逐条回归。
 - **弹窗图片 / 人物照片仍是内联 dataURL**：`OverlayBlock` 的 image/video 与 `person.imageUrl`（含 AI 生成那张 ≈2MB）还在 payload 里；音频那批已收口（§10）。要做的是同一件事搬到图片上。
 - **孤儿素材不清理**：行删掉后 `asset` 行与磁盘文件都留着（没有反向引用可查，也不做引用计数）。要么定期体检删孤儿，要么给 asset 加引用计数。
 - 3D(globe) 下 `pixelsToDegrees` 为墨卡托近似，高纬度箭头宽度略有偏差。
@@ -229,13 +230,13 @@ types/index.ts         # 全部数据模型（改数据结构先看这里）
 - **★ 音频只有 `asset` 一本账**：配音 / BGM / 弹窗语音在项目数据里**只有 assetId**，字节走 `asset`（`kind='audio'`：桌面落 `userData/media/audio/`，网页存 Dexie Blob）。三条硬规矩：① 库里 `audio_asset_id` 是**真外键 SET NULL**，弹窗那条从 `payload_json` 摘出来单独成列；② 运行时地址一律现取 `getAssetUrl(assetId)`（按 id 缓存 objectURL），预览按 id 存、导出前一次水合成 `audioSrc` 交给 Remotion（组件不等异步）；③ 内置 BGM 在**选用的那一刻**复制进素材库，项目里不留站内路径 —— 所以音频只有一种表示，消费点不用判「是 id 还是 URL」。**新增素材引用位时只改 `lib/asset-refs.ts`**（导出带字节 / 导入改 id 都读它；漏在那里 = 素材静默留在文件外面）。
 - **时间的两个例外**：`created_at`/`updated_at` 是 epoch 毫秒（审计）；**离散步长/速率类**参数（`route_dot_frame_step`、`flow_speed`）UI 就按「每 N 帧」输入，保持帧。
 - **元素按工具栏聚合为类别宽表**（`element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`），表内用 `type` 判别子类型，**没有 `element` 基表**；元素经 `layer_id` 归属单类型图层。
-  - **宽表不等于「每张表都背全类别列的并集」**。动画族列（`anim_effect` / `fly_mode` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）只在**有路径**的 `element_route` 与 `element_shape` 里有：marker / territory / image 没有路径可走，留着就是「写进去、读不回来」的死列。写入端 `saveElementV2` 的 `common` 块因此**只放全类别共用的列**，动画族由 route / shape 两条分支各自显式带上；读取端对称（`base()` 给公共字段，`anim()` 给动画族）。**加列前先问「这一列在这一类别里有消费者吗」**（§6.29）。
+  - **宽表不等于「每张表都背全类别列的并集」**。动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）只在**有路径**的 `element_route` 与 `element_shape` 里有：marker / territory / image 没有路径可走，留着就是「写进去、读不回来」的死列（`fly_mode` 更窄，只有 `element_route` —— 飞行的渲染实现只在 `renderLine`）。写入端 `saveElementV2` 的 `common` 块因此**只放全类别共用的列**，动画族由 route / shape 两条分支各自显式带上；读取端对称（`base()` 给公共字段，`anim()` 给动画族）。**加列前先问「这一列在这一类别里有消费者吗」**（§6.29）。两轮清列的结论：五张类别表的 `ord`、shape/territory 的 `label_*`、route 的 label 位置/偏移与 `move_icon_label_*`、marker 的七个 `visual_*` 残列、`element_image.aspect` 都已删（判据与清单见 `docs/db-schema-v2.sql` 各表里的「没有 X：…」注释）。
 - **★ 不使用触发器**：网页端 Dexie 没有触发器，触发器只在桌面端生效 = 同一条规则两套真相，且规则藏在表定义外。跨表一致性由写入端 + 自检视图（`v_check_dangling` / `v_check_territory_ref` / `v_check_async_pairing`，都不拦截写入，只做体检）。**新增跨表引用时重复「应用层清理 + 自检视图」这个模式，不要试图用触发器补。**
 - **弱引用只用在扛不住「整项目重写」的地方**：`saveProjectV2` 是「删掉项目行 + 连子表整批重写」，字幕行每次保存都被删了重建 —— 挂成真外键等于**用户每次自动保存都 CASCADE 掉正在跑的任务**。所以 `task.project_id`/`entry_id` 是弱引用，删项目由 `removeProjectV2` 显式清在途任务。**推广**：凡是「指向 `project` 或某个每次保存都重写的行」的引用，都不能挂 `ON DELETE CASCADE`。其余（`element_marker.asset_id`、`camera_keyframe.follow_route_element_id` 等）能挂真外键就挂（SET NULL）。
 - **三处弱引用清单**：`element_image.asset_id`、`public_element_*.asset_id`、`element_territory` 的 JSON 内部引用（另有 `project.active_*_map_id` 两列指向全局目录，也是弱引用，但原因不同 —— 见上面那条）。
 - **★ 素材登记只有 `asset` 表这一本账**：`assets:save/read/remove/list/exists` 全读写 `asset`（`storage='file'` + `rel_path`）。删素材时项目侧靠 FK SET NULL，**公共库副本的引用要手工清** + 启动 `repairAssetRefs` 兜底（引用了已删素材就清空引用、**不补占位行**）。配置 JSON 导入走 `putAssetBytes`，**任一素材失败就中止整笔导入**。
-- **★ 公共图层副本必须自洽**：`public_layer` + 5 张 `public_element_*` 与项目侧同构，但 `asset_id` 是弱引用。副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`）—— `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归 `verify-public-layers`。
-  - **公共元素只存几何与样式**：`visible` 与 `start_sec/end_sec` 两组列都不在公共侧（显隐是图层的事；时间不进图库）。导入时元素时间**现场给**：当前播放头起 `IMPORTED_ELEMENT_SEC = 2` 秒（`importPublicLayerV2`，秒↔帧换算在 db-v2；网页端同一规则在 `lib/layers.ts`）。两侧列不再对称，所以整表搬运走 `copyElementRows`（**以目标表的列为准**逐列配源 + overrides），不要写死列名。
+- **★ 公共图层副本必须自洽、且与项目侧成对改**：`public_layer` + 5 张 `public_element_*` 是项目侧的跨项目副本，列关系**逐字固定**：`公共侧 = 项目侧 − {project_id, layer_id, start_sec, end_sec} + {public_layer_id}`（显隐是图层的事、时间不进图库）。所以**给 `element_*` 加列/删列必须同时改 `public_element_*`** —— 漏改的症状很隐蔽：`copyElementRows` 按目标表列逐列配源，多出来的列永远 NULL、新增的列在副本里静默丢值。这条不变量由 **`audit-fk-indexes`（结构审计）** 强制，不对称会点名到列。副本的 `asset_id` 是弱引用。副本元素 id 一律加后缀（`:pb<pubId>` / `:im<layerId>`）—— `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车。回归 `verify-public-layers`。
+  - **公共元素只存几何与样式**：`visible` 与 `start_sec/end_sec` 两组列都不在公共侧（显隐是图层的事；时间不进图库）。导入时元素时间**现场给**：当前播放头起 `IMPORTED_ELEMENT_SEC = 2` 秒（`importPublicLayerV2`，秒↔帧换算在 db-v2；网页端同一规则在 `lib/layers.ts`）。两侧列集合本就差那 5 列，所以整表搬运走 `copyElementRows`（**以目标表的列为准**逐列配源 + overrides），不要写死列名。
 - **底图 / 高程目录是全库一份**（`base_map` / `elevation_map`，主键就是 id）：面板只能选哪一行，目录不是项目内容 —— 每个项目复制一套等于同一件事存 N 遍。内置那几份由渲染端按 `lib/map-catalog.ts` 的常量铺进表（**主进程不复制一份清单**）。
   - 项目侧只有三列：`activeBaseMapId` / `activeElevationMapId`（**弱引用**目录行 —— 目录行由渲染端铺，挂成真外键会让「目录还没铺好时的一次保存」直接崩；悬空由 `v_check_dangling` 照，读取端回落到目录第一条）与 `terrainExaggeration`。
   - **夸张系数跟项目走、不跟目录走**：同一份高程，纪录片想平一点、地形演示想陡一点。**0 是合法值（完全平坦），读取端一律 `??` 不用 `||`**。

@@ -56,7 +56,7 @@
 | `layers[]`（`Layer`：type/name/visible/startFrame/endFrame/elements[]） | `layer` + 各元素表的 `layer_id` | P2：**项目 ▸ 图层 ▸ 元素**；单类型图层（marker / route / shape / territory / image）；删图层连带删元素（CASCADE） |
 | （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— `asset_id` 是弱引用，失效引用由启动体检清空（不造假素材行）；`element_id` 是全库主键，副本一律加后缀避免撞车 |
 | `project.elements[]`（`layers[].elements` 的派生镜像） | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`（5 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表）；镜像不入库，只存图层归属 |
-| `elements[].style` / `drawProgress` / `morphKeyframes`（关键帧数组） | 类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
+| `elements[].drawProgress` / `progress` / `pathProgress` / `morphKeyframes`（关键帧数组） | 类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
 | `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：1:1 且可选，跟随元素整体读写 |
 | `camera[]`（项目级） | `camera_keyframe` | P2；`followRoute.routeElementId` 变成外键（删路线 → 退化为固定视角） |
 | `overlays[]`（项目级） | `overlay` | P2：本体一张；custom / person 的内容块内联在 `payload_json`（原两张中间表已删除） |
@@ -178,11 +178,13 @@
 | 表 | 内容 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
 | `public_layer` | 公共图层本体（类型 / 名称 / 显隐 / 显示区间 / 排序 + 审计时间） | `public_layer_id` | 无 `project_id`：库是全局的，导入时才生成项目侧 `layer` 行；`type` 与项目图层同一 CHECK | 「公共图层库」弹窗（`PublicLayerDialog.tsx`） |
-| `public_element_marker` | 标记类副本 | `element_id` | 与 `element_marker` 同构 | 同上 |
-| `public_element_route` | 路线类副本 | `element_id` | 与 `element_route` 同构 | 同上 |
-| `public_element_shape` | 形状类副本 | `element_id` | 与 `element_shape` 同构 | 同上 |
-| `public_element_territory` | 疆域类副本 | `element_id` | 与 `element_territory` 同构（三个 JSON 列整体复制） | 同上 |
-| `public_element_image` | 贴图类副本 | `element_id` | 与 `element_image` 同构；`asset_id` 弱引用，解析不到时由启动体检清空 | 同上 |
+| `public_element_marker` | 标记类副本 | `element_id` | 列 = `element_marker` − `project_id`/`layer_id`/`start_sec`/`end_sec` + `public_layer_id` | 同上 |
+| `public_element_route` | 路线类副本 | `element_id` | 同上（对 `element_route`） | 同上 |
+| `public_element_shape` | 形状类副本 | `element_id` | 同上（对 `element_shape`） | 同上 |
+| `public_element_territory` | 疆域类副本 | `element_id` | 同上（对 `element_territory`；三个 JSON 列整体复制） | 同上 |
+| `public_element_image` | 贴图类副本 | `element_id` | 同上（对 `element_image`）；`asset_id` 弱引用，解析不到时由启动体检清空 | 同上 |
+
+**副本必须与项目侧成对改**（不变量）：给 `element_*` 加列或删列，必须同时改 `public_element_*` —— 少 `project_id`/`layer_id`/`start_sec`/`end_sec`（显隐是图层的事、时间不进图库，导入时现场给「当前帧起 2 秒」）、多 `public_layer_id`，其余列**逐字相同**。漏改的症状很隐蔽：`copyElementRows` 按目标表的列逐列配源，公共侧多出来的列永远 NULL、项目侧新增的列在副本里静默丢值。这条不变量由 **`tools/audit-fk-indexes.mjs`**（结构审计，同时管外键索引覆盖）在六条回归里强制：不对称会点名到列并 exit 1。
 
 **副本必须自洽**（不变量）：`asset_id` 是弱引用，素材被删后副本可能指向不存在的行 —— 由启动体检 `repairAssetRefs` 把这类引用清空（不造假素材行；项目侧 `element_*.asset_id` 是外键，带着悬空引用插入会被整笔事务打回）；副本元素 id 一律加后缀（保存 `:pb<pubId>`、导入 `:im<layerId>`），因为 `element_id` 是全库主键，不换 id 会让「同一图层导入两次」互相撞车（`deleteElement` 按 id 过滤会一次删两条）。数据库侧留 `v_check_dangling` 做体检 —— 兜底，不拦截写入。
 
@@ -190,7 +192,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 622 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，622 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 552 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，552 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -445,7 +447,7 @@
 
 **职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，10 种视觉形态）
 
-38 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
+35 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -457,7 +459,6 @@
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
-| `label_font_size` | REAL | — | 标签字号 |
 | `label_color` | TEXT | — | 标签文字颜色 |
 | `label_position` | TEXT | — | 标签位置：top/bottom/left/right/center · `CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center'))` |
 | `label_offset_x` | REAL | — | 标签水平像素偏移（0=居中，负左正右） |
@@ -465,8 +466,6 @@
 | `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
 | `label_bg_padding` | REAL | — | 标签背景内边距 |
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
-| `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `lng` | REAL | `NOT NULL` | 经度（三类标记都落在单点） |
 | `lat` | REAL | `NOT NULL` | 纬度 |
 | `rotation` | REAL | — | 贴地旋转角（0–360 度） |
@@ -503,7 +502,7 @@
 
 **职责**：路线类元素：line / moving_point　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-65 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
+57 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -524,10 +523,6 @@
 | `move_icon_label_text` | TEXT | — | 移动图标标签文字 |
 | `move_icon_label_color` | TEXT | — | 移动图标标签文字颜色 |
 | `move_icon_label_bg` | TEXT | — | 移动图标标签背景色（默认透明） |
-| `move_icon_label_size` | REAL | — | 移动图标标签字号 |
-| `move_icon_label_padding` | REAL | — | 移动图标标签内边距 |
-| `move_icon_label_radius` | REAL | — | 移动图标标签圆角 |
-| `move_icon_label_pos` | TEXT | — | 移动图标标签位置（旧枚举：top/bottom/left/right） |
 | `move_icon_label_offset_x` | REAL | — | 移动图标标签水平像素偏移（0=居中，负左正右） |
 | `move_icon_label_offset_y` | REAL | — | 移动图标标签垂直像素偏移（0=居中，正值向上） |
 | `move_icon_flag_text` | TEXT | — | 移动图标为旗帜时的旗面文字 |
@@ -546,14 +541,10 @@
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
 | `label_font_size` | REAL | — | 标签字号 |
 | `label_color` | TEXT | — | 标签文字颜色 |
-| `label_position` | TEXT | — | 标签位置：top/bottom/left/right/center · `CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center'))` |
-| `label_offset_x` | REAL | — | 标签水平像素偏移（0=居中，负左正右） |
-| `label_offset_y` | REAL | — | 标签垂直像素偏移（0=居中，正值向上） |
 | `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
 | `label_bg_padding` | REAL | — | 标签背景内边距 |
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_width` | REAL | — | 线宽（px） |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
@@ -586,7 +577,7 @@
 
 **职责**：形状类元素：polygon / polyline / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-79 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+68 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -606,10 +597,6 @@
 | `move_icon_label_text` | TEXT | — | 移动图标标签文字 |
 | `move_icon_label_color` | TEXT | — | 移动图标标签文字颜色 |
 | `move_icon_label_bg` | TEXT | — | 移动图标标签背景色（默认透明） |
-| `move_icon_label_size` | REAL | — | 移动图标标签字号 |
-| `move_icon_label_padding` | REAL | — | 移动图标标签内边距 |
-| `move_icon_label_radius` | REAL | — | 移动图标标签圆角 |
-| `move_icon_label_pos` | TEXT | — | 移动图标标签位置（旧枚举：top/bottom/left/right） |
 | `move_icon_label_offset_x` | REAL | — | 移动图标标签水平像素偏移（0=居中，负左正右） |
 | `move_icon_label_offset_y` | REAL | — | 移动图标标签垂直像素偏移（0=居中，正值向上） |
 | `move_icon_flag_text` | TEXT | — | 移动图标为旗帜时的旗面文字 |
@@ -625,14 +612,7 @@
 | `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
 | `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
 | `point_times_json` | TEXT | — | 各路径点到达时间数组（秒） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
-| `label_text` | TEXT | — | 标签文字（与元素名同步） |
-| `label_font_size` | REAL | — | 标签字号 |
-| `label_color` | TEXT | — | 标签文字颜色 |
-| `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
-| `label_bg_padding` | REAL | — | 标签背景内边距 |
-| `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
 | `fill_color` | TEXT | — | 填充色 |
 | `fill_opacity` | REAL | — | 填充透明度（0–1） · `CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1)` |
@@ -692,7 +672,7 @@
 
 **职责**：疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含　**前端**：工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）
 
-29 列 · 主键 `element_id` · 工具入口：Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）
+18 列 · 主键 `element_id` · 工具入口：Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -703,17 +683,6 @@
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
-| `label_text` | TEXT | — | 标签文字（与元素名同步） |
-| `label_font_size` | REAL | — | 标签字号 |
-| `label_color` | TEXT | — | 标签文字颜色 |
-| `label_position` | TEXT | — | 标签位置：top/bottom/left/right/center · `CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center'))` |
-| `label_offset_x` | REAL | — | 标签水平像素偏移（0=居中，负左正右） |
-| `label_offset_y` | REAL | — | 标签垂直像素偏移（0=居中，正值向上） |
-| `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
-| `label_bg_padding` | REAL | — | 标签背景内边距 |
-| `label_bg_radius` | REAL | — | 标签背景圆角 |
-| `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `display_country_borders` | INTEGER | `NOT NULL` | 是否显示势力边界（0/1） · 默认 `1` · `CHECK (display_country_borders IN (0,1))` |
 | `display_plot_borders` | INTEGER | `NOT NULL` | 是否显示地块边界（0/1） · 默认 `1` · `CHECK (display_plot_borders IN (0,1))` |
 | `display_border_width` | REAL | `NOT NULL` | 势力边界线宽（px） · 默认 `3` · `CHECK (display_border_width >= 0)` |
@@ -736,7 +705,7 @@
 
 **职责**：贴图元素：地理配准图片（控制点网格），图片存全局素材库、本表只存配准参数　**前端**：工具条「图片」（导入/素材库插入）+ 贴图属性面板（PropertiesPanel GeoImageSettings）
 
-14 列 · 主键 `element_id` · 工具入口：Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库
+12 列 · 主键 `element_id` · 工具入口：Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -748,16 +717,14 @@
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `asset_id` | TEXT | — | 图片素材 id（全局素材库，弱引用、无外键） |
-| `aspect` | REAL | — | 图片宽高比（宽/高），切片渲染用 · `CHECK (aspect IS NULL OR aspect > 0)` |
 | `cols` | INTEGER | `NOT NULL` | 配准网格列数（1=四角投影，≥2=网格变形） · 默认 `1` · `CHECK (cols >= 1)` |
 | `rows` | INTEGER | `NOT NULL` | 配准网格行数 · 默认 `1` · `CHECK (rows >= 1)` |
 | `grid_json` | TEXT | — | 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]） · `CHECK (grid_json IS NULL OR json_valid(grid_json))` |
 | `opacity` | REAL | — | 不透明度（0–1） · `CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1)` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（同图层内排序）
+- `CHECK (end_sec >= start_sec)`（不透明度（0–1））
 
 ### 组 9 · 叠加层（弹窗）
 
@@ -909,9 +876,9 @@
 
 #### public_element_marker
 
-**职责**：公共标记元素（public_layer 内副本，与 element_marker 同构）　**前端**：同上
+**职责**：公共标记元素（public_layer 内副本；列 = element_marker − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-35 列 · 主键 `element_id`
+32 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -920,7 +887,6 @@
 | `type` | TEXT | `NOT NULL` | 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具） · `CHECK (type IN ('point','flag'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
-| `label_font_size` | REAL | — | 标签字号 |
 | `label_color` | TEXT | — | 标签文字颜色 |
 | `label_position` | TEXT | — | 标签位置：top/bottom/left/right/center · `CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center'))` |
 | `label_offset_x` | REAL | — | 标签水平像素偏移（0=居中，负左正右） |
@@ -928,8 +894,6 @@
 | `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
 | `label_bg_padding` | REAL | — | 标签背景内边距 |
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
-| `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `lng` | REAL | `NOT NULL` | 经度（三类标记都落在单点） |
 | `lat` | REAL | `NOT NULL` | 纬度 |
 | `rotation` | REAL | — | 贴地旋转角（0–360 度） |
@@ -961,9 +925,9 @@
 
 #### public_element_route
 
-**职责**：公共路线元素（public_layer 内副本，与 element_route 同构）　**前端**：同上
+**职责**：公共路线元素（public_layer 内副本；列 = element_route − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-62 列 · 主键 `element_id`
+54 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -981,10 +945,6 @@
 | `move_icon_label_text` | TEXT | — | 移动图标标签文字 |
 | `move_icon_label_color` | TEXT | — | 移动图标标签文字颜色 |
 | `move_icon_label_bg` | TEXT | — | 移动图标标签背景色（默认透明） |
-| `move_icon_label_size` | REAL | — | 移动图标标签字号 |
-| `move_icon_label_padding` | REAL | — | 移动图标标签内边距 |
-| `move_icon_label_radius` | REAL | — | 移动图标标签圆角 |
-| `move_icon_label_pos` | TEXT | — | 移动图标标签位置（旧枚举：top/bottom/left/right） |
 | `move_icon_label_offset_x` | REAL | — | 移动图标标签水平像素偏移（0=居中，负左正右） |
 | `move_icon_label_offset_y` | REAL | — | 移动图标标签垂直像素偏移（0=居中，正值向上） |
 | `move_icon_flag_text` | TEXT | — | 移动图标为旗帜时的旗面文字 |
@@ -1003,14 +963,10 @@
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
 | `label_font_size` | REAL | — | 标签字号 |
 | `label_color` | TEXT | — | 标签文字颜色 |
-| `label_position` | TEXT | — | 标签位置：top/bottom/left/right/center · `CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center'))` |
-| `label_offset_x` | REAL | — | 标签水平像素偏移（0=居中，负左正右） |
-| `label_offset_y` | REAL | — | 标签垂直像素偏移（0=居中，正值向上） |
 | `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
 | `label_bg_padding` | REAL | — | 标签背景内边距 |
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_width` | REAL | — | 线宽（px） |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
@@ -1038,9 +994,9 @@
 
 #### public_element_shape
 
-**职责**：公共形状元素（public_layer 内副本，与 element_shape 同构）　**前端**：同上
+**职责**：公共形状元素（public_layer 内副本；列 = element_shape − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-76 列 · 主键 `element_id`
+65 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -1057,10 +1013,6 @@
 | `move_icon_label_text` | TEXT | — | 移动图标标签文字 |
 | `move_icon_label_color` | TEXT | — | 移动图标标签文字颜色 |
 | `move_icon_label_bg` | TEXT | — | 移动图标标签背景色（默认透明） |
-| `move_icon_label_size` | REAL | — | 移动图标标签字号 |
-| `move_icon_label_padding` | REAL | — | 移动图标标签内边距 |
-| `move_icon_label_radius` | REAL | — | 移动图标标签圆角 |
-| `move_icon_label_pos` | TEXT | — | 移动图标标签位置（旧枚举：top/bottom/left/right） |
 | `move_icon_label_offset_x` | REAL | — | 移动图标标签水平像素偏移（0=居中，负左正右） |
 | `move_icon_label_offset_y` | REAL | — | 移动图标标签垂直像素偏移（0=居中，正值向上） |
 | `move_icon_flag_text` | TEXT | — | 移动图标为旗帜时的旗面文字 |
@@ -1076,14 +1028,7 @@
 | `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
 | `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
 | `point_times_json` | TEXT | — | 各路径点到达时间数组（秒） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
-| `label_text` | TEXT | — | 标签文字（与元素名同步） |
-| `label_font_size` | REAL | — | 标签字号 |
-| `label_color` | TEXT | — | 标签文字颜色 |
-| `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
-| `label_bg_padding` | REAL | — | 标签背景内边距 |
-| `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
 | `fill_color` | TEXT | — | 填充色 |
 | `fill_opacity` | REAL | — | 填充透明度（0–1） · `CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1)` |
@@ -1138,9 +1083,9 @@
 
 #### public_element_territory
 
-**职责**：公共疆域元素（public_layer 内副本，与 element_territory 同构）　**前端**：同上
+**职责**：公共疆域元素（public_layer 内副本；列 = element_territory − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-26 列 · 主键 `element_id`
+15 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -1148,17 +1093,6 @@
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 territory） · 默认 `'territory'` · `CHECK (type = 'territory')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `label_text` | TEXT | — | 标签文字（与元素名同步） |
-| `label_font_size` | REAL | — | 标签字号 |
-| `label_color` | TEXT | — | 标签文字颜色 |
-| `label_position` | TEXT | — | 标签位置：top/bottom/left/right/center · `CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center'))` |
-| `label_offset_x` | REAL | — | 标签水平像素偏移（0=居中，负左正右） |
-| `label_offset_y` | REAL | — | 标签垂直像素偏移（0=居中，正值向上） |
-| `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
-| `label_bg_padding` | REAL | — | 标签背景内边距 |
-| `label_bg_radius` | REAL | — | 标签背景圆角 |
-| `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 | `display_country_borders` | INTEGER | `NOT NULL` | 是否显示势力边界（0/1） · 默认 `1` · `CHECK (display_country_borders IN (0,1))` |
 | `display_plot_borders` | INTEGER | `NOT NULL` | 是否显示地块边界（0/1） · 默认 `1` · `CHECK (display_plot_borders IN (0,1))` |
 | `display_border_width` | REAL | `NOT NULL` | 势力边界线宽（px） · 默认 `3` · `CHECK (display_border_width >= 0)` |
@@ -1173,9 +1107,9 @@
 
 #### public_element_image
 
-**职责**：公共贴图元素（public_layer 内副本，与 element_image 同构）　**前端**：同上
+**职责**：公共贴图元素（public_layer 内副本；列 = element_image − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-11 列 · 主键 `element_id`
+9 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -1184,12 +1118,10 @@
 | `type` | TEXT | `NOT NULL` | 子类型判别列（固定 geo_image） · 默认 `'geo_image'` · `CHECK (type = 'geo_image')` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `asset_id` | TEXT | — | 图片素材 id（全局素材库，弱引用、无外键） |
-| `aspect` | REAL | — | 图片宽高比（宽/高），切片渲染用 · `CHECK (aspect IS NULL OR aspect > 0)` |
 | `cols` | INTEGER | `NOT NULL` | 配准网格列数（1=四角投影，≥2=网格变形） · 默认 `1` · `CHECK (cols >= 1)` |
 | `rows` | INTEGER | `NOT NULL` | 配准网格行数 · 默认 `1` · `CHECK (rows >= 1)` |
 | `grid_json` | TEXT | — | 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]） · `CHECK (grid_json IS NULL OR json_valid(grid_json))` |
 | `opacity` | REAL | — | 不透明度（0–1） · `CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1)` |
-| `ord` | INTEGER | `NOT NULL` | 同图层内排序 · 默认 `0` |
 
 <!-- FIELD-DICT:END -->
 
@@ -1218,7 +1150,7 @@
 
 | 地图上的东西 | 表 | type 取值 | 专属字段（举例） |
 |---|---|---|---|
-| 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_* 三列 |
+| 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_* 三列（`auto_rotate`/`spin`/`stroke_width`） |
 | 旗帜 | `element_marker` | `flag` | flag_text、flag_color、flag_width |
 | 军标（APP-6） | `element_marker` | `point` + `shape='military_symbol'` | 无专属列：SIDC 存在 `builtin_id`（`milsym:<SIDC>`），渲染端从那里反解 |
 | 路线 / 飞线 | `element_route` | `line` | coords_json、line_type、route_dot_*、flow_speed、plain_path、front_tooth_* |
@@ -1230,7 +1162,9 @@
 | 包围圈 / 集结点 | `element_shape` | `encirclement` / `gathering` | center_lng/lat、radius、pulse_animation |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_* 八列 ＋ countries_json / plots_json / events_json |
 
-动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只在 `element_route` 与 `element_shape` 里有**：它们描述「沿一条路径走」，而 marker / territory / image 没有路径 —— 早先宽表把 union 全给每张表，结果 marker 那张写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode`（悬空飞行）更窄，只在 `element_route`：飞行渲染只认 line，箭头明确不支持。
+动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只在 `element_route` 与 `element_shape` 里有**：它们描述「沿一条路径走」，而 marker / territory / image 没有路径 —— 早先宽表把 union 全给每张表，结果 marker 那张写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode` 更窄，**只有 `element_route`**：飞行（拱形航迹 + 3D 管）只在渲染端 `renderLine` 实现，面板的飞行开关也只对 `type='line'` 显示。
+
+同理，`label_*` 只留在**真正会渲染文字的两类**：marker（点位气泡）与 route（线上文字，只剩 text/fontSize/color/bg_*，位置固定沿线中点）；shape / territory 的面板没有标签入口、运行时类型里也没有 `label` 字段，九列已删。`ord` 是死列（写死 0、读端无 ORDER BY），**五张类别表连同各自的公共副本都已删**；`element_image.aspect`（只在创建时算默认网格）也已删。
 
 ### 点标记的 10 种形态与能力矩阵
 
@@ -1248,6 +1182,8 @@
 | **模型** | `model` | 内置模型 / 上传 glb·gltf | ✓ | **✗**（位图贴片，强制面向镜头） | ✓ | ✓ | `{autoRotate, spin}` |
 | **图标库** | `icon` | lucide / react-icons / 自建库 | ✓ | ✓ | ✓ | ✓ | `{strokeWidth}` |
 | **军标** | `military_symbol` | 内置 milsymbol 按 SIDC 生成 | ✓ | ✓ | ✓ | ✓ | — |
+
+> `visual_*` 只剩**面板有格子、渲染端真读**的三项。曾经的 `fit` / `tintable` / `fps` / `loop` / `altitude` / `pitchAlign` / `animation` 七列已删：既没有面板入口，渲染端也不读（着色看能力矩阵 `canTint`、GIF 按帧号走、`renderProceduralModel` / `renderGltfModel` 不收高度/俯仰/片段名）。
 
 资源两来源：**`asset_id`**（用户上传，进 asset 表外置存储）与 **`builtin_id`**（内置资源，打包进应用、不入库）；图标形态额外用 `icon_lib` + `icon_name` 定位，自建库条目落在 `asset`（`kind='icon'`，`UNIQUE` 由应用层保证）。
 

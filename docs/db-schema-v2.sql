@@ -183,12 +183,15 @@ CREATE INDEX IF NOT EXISTS ix_layer_project ON layer(project_id, ord);
 
 -- -----------------------------------------------------------------------------
 -- 4. 元素表（5 张类别宽表）
---    公共列（每张表都有）：element_id / project_id / layer_id / type / name /
---    start_sec / end_sec / ord，以及平铺后的标签列 label_*。
+--    公共列（每张表都有）：element_id / project_id / layer_id / type / name / start_sec / end_sec。
+--    标签列 label_* 只有 marker / route 有（真正会被渲染的只有这两类：点位气泡与线上文字；
+--    shape / territory 的面板没有标签入口，运行时类型里也没有 label 字段）。
+--    ord 是死列（写死 0、读端无 ORDER BY），**五张类别表都已删**（含各自的公共副本）。
 --    元素没有自己的显隐（显隐只在图层那一档）；时间存项目绝对秒，渲染时与图层区间取交集。
---    动画类列（anim_effect / fly_mode / show_icon / move_* / point_times_json）
+--    动画类列（anim_effect / show_icon / move_* / point_times_json）
 --    **只在有路径的类别里有**：route 与 shape（箭头沿线走）。marker / territory /
 --    image 没有路径，这些列一律不留 —— 留了就是「写进去、读不回来」的死列。
+--    fly_mode 更进一步：飞行只在渲染端 renderLine 实现，所以只有 route 有，shape 没有。
 --    军标是 point 的一种 shape（shape='military_symbol'，SIDC 存在 builtin_id 里），
 --    不是元素类型，所以 type 白名单里没有它。
 -- -----------------------------------------------------------------------------
@@ -204,8 +207,9 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
   -- 标签（原 label_json 平铺：面板上每个小项 = 一列）
+  --   没有 label_font_size：点位标签的字号由渲染端按 scale 算（renderPoint 写死 13*scale），
+  --   面板也没有字号格 —— 留着就是「写进去、没人读」的死列。
   label_text        TEXT,  -- 标签文字（与元素名同步）
-  label_font_size   REAL,  -- 标签字号
   label_color       TEXT,  -- 标签文字颜色
   label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
   label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
@@ -213,8 +217,6 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- 位置（三类标记都落在单点）
   lng            REAL NOT NULL,  -- 经度（三类标记都落在单点）
@@ -234,7 +236,9 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   builtin_id     TEXT,  -- 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin
   icon_lib       TEXT,  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用）
   icon_name      TEXT,  -- 图标名（shape=icon 时必填，可指向内置库或 custom_symbol.name）
-  -- 资源形态表现参数（原 visual_meta_json 平铺；面板上每个小项 = 一列）
+  -- 资源形态表现参数（原 visual_meta_json 平铺）：**只留面板有格子、渲染端真读的三项**
+  --   fit / tintable / fps / loop / altitude / pitch_align / animation 七列已删 ——
+  --   既没有面板入口，渲染端也不读（着色看 canTint、GIF 按帧号、模型渲染函数不收高度/俯仰/片段名）。
   visual_auto_rotate REAL,  -- model 自转角速度（度/秒）
   visual_spin       REAL,  -- model 初始朝向（度）
   visual_stroke_width REAL,  -- icon 描边粗细
@@ -257,7 +261,9 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam'),  -- 模型不能贴地
   CHECK (type <> 'flag'  OR flag_text IS NOT NULL)
 );
-CREATE INDEX IF NOT EXISTS ix_marker_chapter ON element_marker(project_id, ord);
+-- 索引只按 project_id：ord 是死列（写死 0、读端无 ORDER BY），不能留在索引里 ——
+-- 留着还会挡住 DROP COLUMN（SQLite 不允许删被索引引用的列）。
+CREATE INDEX IF NOT EXISTS ix_marker_chapter ON element_marker(project_id);
 CREATE INDEX IF NOT EXISTS ix_marker_type    ON element_marker(project_id, type);
 CREATE INDEX IF NOT EXISTS ix_marker_asset   ON element_marker(asset_id);
 CREATE INDEX IF NOT EXISTS ix_marker_layer   ON element_marker(layer_id);
@@ -283,10 +289,8 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   move_icon_label_text     TEXT,  -- 移动图标标签文字
   move_icon_label_color    TEXT,  -- 移动图标标签文字颜色
   move_icon_label_bg       TEXT,  -- 移动图标标签背景色（默认透明）
-  move_icon_label_size     REAL,  -- 移动图标标签字号
-  move_icon_label_padding  REAL,  -- 移动图标标签内边距
-  move_icon_label_radius   REAL,  -- 移动图标标签圆角
-  move_icon_label_pos      TEXT,  -- 移动图标标签位置（旧枚举：top/bottom/left/right）
+  --   没有 move_icon_label_size / padding / radius / pos：面板（MoveResourcePicker）只写
+  --   text/color/bg/offsetX/offsetY，那四格永远 NULL；渲染端只是回退默认值。
   move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
   move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
   move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
@@ -303,17 +307,15 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
   -- 标签（原 label_json 平铺）
+  --   没有 label_position / offset_x / offset_y：route 的渲染端（renderLine）只读文字的
+  --   字号/颜色/背景，位置固定沿线中点，面板也只写 text —— 这三格既没人写也没人读。
   label_text        TEXT,  -- 标签文字（与元素名同步）
   label_font_size   REAL,  -- 标签字号
   label_color       TEXT,  -- 标签文字颜色
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
-  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
-  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- line / moving_point 路径（line_type=bezier 时为控制点，arc 时为大圆弧端点）
   coords_json       TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填）
@@ -346,7 +348,7 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   CHECK (type <> 'line'         OR coords_json IS NOT NULL),
   CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)
 );
-CREATE INDEX IF NOT EXISTS ix_route_chapter ON element_route(project_id, ord);
+CREATE INDEX IF NOT EXISTS ix_route_chapter ON element_route(project_id);
 CREATE INDEX IF NOT EXISTS ix_route_type    ON element_route(project_id, type);
 CREATE INDEX IF NOT EXISTS ix_route_layer   ON element_route(layer_id);
 
@@ -363,6 +365,8 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
+  -- 没有 fly_mode：飞行（拱形航迹 + 3D 管）只在渲染端 renderLine 里实现，面板的飞行开关也只对
+  --   type='line' 显示 —— 形状类别既没人写、也没人读，留着就是「写进去、读不回来」的死列。
   -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
   move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),  -- 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标
   move_icon_color          TEXT,  -- 移动图标主色
@@ -371,10 +375,8 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   move_icon_label_text     TEXT,  -- 移动图标标签文字
   move_icon_label_color    TEXT,  -- 移动图标标签文字颜色
   move_icon_label_bg       TEXT,  -- 移动图标标签背景色（默认透明）
-  move_icon_label_size     REAL,  -- 移动图标标签字号
-  move_icon_label_padding  REAL,  -- 移动图标标签内边距
-  move_icon_label_radius   REAL,  -- 移动图标标签圆角
-  move_icon_label_pos      TEXT,  -- 移动图标标签位置（旧枚举：top/bottom/left/right）
+  --   没有 move_icon_label_size / padding / radius / pos：面板（MoveResourcePicker）只写
+  --   text/color/bg/offsetX/offsetY，那四格永远 NULL；渲染端只是回退默认值。
   move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
   move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
   move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
@@ -390,15 +392,10 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   move_end_sec   REAL,  -- 移动图标到达时间（秒）
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
-  -- 标签（原 label_json 平铺）
-  label_text        TEXT,  -- 标签文字（与元素名同步）
-  label_font_size   REAL,  -- 标签字号
-  label_color       TEXT,  -- 标签文字颜色
-  label_bg_color    TEXT,  -- 标签背景色（默认透明）
-  label_bg_padding  REAL,  -- 标签背景内边距
-  label_bg_radius   REAL,  -- 标签背景圆角
+  -- 没有 label_* 九列：形状三套面板（Multi/Two/Special）都没有标签入口，顶部 LABEL 栏对形状
+  --   只写 name；运行时类型（PolygonElement / ArrowElement）里也**没有 label 字段**，
+  --   所以写入端拿到的一直是 undefined。渲染端读 element.label 只出现在 renderPoint / renderLine。
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- polygon 专属
   --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
@@ -466,7 +463,9 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   CHECK (type <> 'gathering'    OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
 );
-CREATE INDEX IF NOT EXISTS ix_shape_chapter ON element_shape(project_id, ord);
+-- 索引只按 project_id：ord 是死列（写死 0、读端无 ORDER BY），不能留在索引里 ——
+-- 留着还会挡住 DROP COLUMN。
+CREATE INDEX IF NOT EXISTS ix_shape_chapter ON element_shape(project_id);
 CREATE INDEX IF NOT EXISTS ix_shape_type    ON element_shape(project_id, type);
 CREATE INDEX IF NOT EXISTS ix_shape_layer   ON element_shape(layer_id);
 
@@ -483,18 +482,9 @@ CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
-  -- 标签（原 label_json 平铺）
-  label_text        TEXT,  -- 标签文字（与元素名同步）
-  label_font_size   REAL,  -- 标签字号
-  label_color       TEXT,  -- 标签文字颜色
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
-  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
-  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
-  label_bg_color    TEXT,  -- 标签背景色（默认透明）
-  label_bg_padding  REAL,  -- 标签背景内边距
-  label_bg_radius   REAL,  -- 标签背景圆角
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
+  -- 没有 label_* 九列：疆域面板的顶部 LABEL 栏只写 name，标签一律来自 display_* 与势力/地块名；
+  --   渲染端 renderTerritory 也不读 element.label。也没有 keyframes_json / ord：
+  --   疆域没有关键帧编辑器（写端拿到的 keyframes 恒空），层内序由 layer.elements 决定。
 
   -- 显示配置（原 display_json 平铺）：边界 / 线宽 / 透明度 / 标签
   display_country_borders INTEGER NOT NULL DEFAULT 1 CHECK (display_country_borders IN (0,1)),  -- 是否显示势力边界（0/1）
@@ -511,7 +501,7 @@ CREATE TABLE IF NOT EXISTS element_territory (  -- 疆域类元素（Terr 工具
 
   CHECK (end_sec >= start_sec)
 );
-CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(project_id, ord);
+CREATE INDEX IF NOT EXISTS ix_territory_chapter ON element_territory(project_id);
 CREATE INDEX IF NOT EXISTS ix_territory_layer   ON element_territory(layer_id);
 
 -- -----------------------------------------------------------------------------
@@ -530,16 +520,16 @@ CREATE TABLE IF NOT EXISTS element_image (  -- 贴图类元素（Image 工具）
   end_sec        REAL NOT NULL,  -- 消失时间（秒）
 
   asset_id       TEXT,  -- 图片素材 id（全局素材库，弱引用、无外键）
-  aspect         REAL CHECK (aspect IS NULL OR aspect > 0),  -- 图片宽高比（宽/高），切片渲染用
+  -- 没有 aspect：宽高比只在**创建那一刻**用来算默认控制点网格（defaultGridForBounds），
+  --   渲染端只用 cols/rows/grid/opacity —— 存下来也没人读。
   cols           INTEGER NOT NULL DEFAULT 1 CHECK (cols >= 1),  -- 配准网格列数（1=四角投影，≥2=网格变形）
   rows           INTEGER NOT NULL DEFAULT 1 CHECK (rows >= 1),  -- 配准网格行数
   grid_json      TEXT CHECK (grid_json IS NULL OR json_valid(grid_json)),  -- 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]）
   opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1),  -- 不透明度（0–1）
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   CHECK (end_sec >= start_sec)
 );
-CREATE INDEX IF NOT EXISTS ix_element_image ON element_image(project_id, ord);
+CREATE INDEX IF NOT EXISTS ix_element_image ON element_image(project_id);
 CREATE INDEX IF NOT EXISTS ix_image_layer   ON element_image(layer_id);
 -- -----------------------------------------------------------------------------
 -- 4c. 公共图层 / 公共元素表（跨项目图库：把项目图层连元素整体复制过来）
@@ -569,9 +559,8 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   type           TEXT NOT NULL CHECK (type IN ('point','flag')),  -- 子类型判别列：point 点 / flag 旗标 / military_symbol 军标（Pin 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  -- 标签（原 label_json 平铺：面板上每个小项 = 一列）
+  -- 标签（原 label_json 平铺：面板上每个小项 = 一列）；与 element_marker 同构，同样没有 label_font_size
   label_text        TEXT,  -- 标签文字（与元素名同步）
-  label_font_size   REAL,  -- 标签字号
   label_color       TEXT,  -- 标签文字颜色
   label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
   label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
@@ -579,8 +568,6 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- 位置（三类标记都落在单点）
   lng            REAL NOT NULL,  -- 经度（三类标记都落在单点）
@@ -600,7 +587,9 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   builtin_id     TEXT,  -- 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin
   icon_lib       TEXT,  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用）
   icon_name      TEXT,  -- 图标名（shape=icon 时必填，可指向内置库或 custom_symbol.name）
-  -- 资源形态表现参数（原 visual_meta_json 平铺；面板上每个小项 = 一列）
+  -- 资源形态表现参数（原 visual_meta_json 平铺）：**只留面板有格子、渲染端真读的三项**
+  --   fit / tintable / fps / loop / altitude / pitch_align / animation 七列已删 ——
+  --   既没有面板入口，渲染端也不读（着色看 canTint、GIF 按帧号、模型渲染函数不收高度/俯仰/片段名）。
   visual_auto_rotate REAL,  -- model 自转角速度（度/秒）
   visual_spin       REAL,  -- model 初始朝向（度）
   visual_stroke_width REAL,  -- icon 描边粗细
@@ -642,10 +631,8 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   move_icon_label_text     TEXT,  -- 移动图标标签文字
   move_icon_label_color    TEXT,  -- 移动图标标签文字颜色
   move_icon_label_bg       TEXT,  -- 移动图标标签背景色（默认透明）
-  move_icon_label_size     REAL,  -- 移动图标标签字号
-  move_icon_label_padding  REAL,  -- 移动图标标签内边距
-  move_icon_label_radius   REAL,  -- 移动图标标签圆角
-  move_icon_label_pos      TEXT,  -- 移动图标标签位置（旧枚举：top/bottom/left/right）
+  --   没有 move_icon_label_size / padding / radius / pos：面板（MoveResourcePicker）只写
+  --   text/color/bg/offsetX/offsetY，那四格永远 NULL；渲染端只是回退默认值。
   move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
   move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
   move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
@@ -662,17 +649,15 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
   -- 标签（原 label_json 平铺）
+  --   没有 label_position / offset_x / offset_y：route 的渲染端（renderLine）只读文字的
+  --   字号/颜色/背景，位置固定沿线中点，面板也只写 text —— 这三格既没人写也没人读。
   label_text        TEXT,  -- 标签文字（与元素名同步）
   label_font_size   REAL,  -- 标签字号
   label_color       TEXT,  -- 标签文字颜色
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
-  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
-  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- line / moving_point 路径（line_type=bezier 时为控制点，arc 时为大圆弧端点）
   coords_json       TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填）
@@ -715,6 +700,8 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
+  -- 没有 fly_mode：飞行（拱形航迹 + 3D 管）只在渲染端 renderLine 里实现，面板的飞行开关也只对
+  --   type='line' 显示 —— 形状类别既没人写、也没人读，留着就是「写进去、读不回来」的死列。
   -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
   move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),  -- 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标
   move_icon_color          TEXT,  -- 移动图标主色
@@ -723,10 +710,8 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   move_icon_label_text     TEXT,  -- 移动图标标签文字
   move_icon_label_color    TEXT,  -- 移动图标标签文字颜色
   move_icon_label_bg       TEXT,  -- 移动图标标签背景色（默认透明）
-  move_icon_label_size     REAL,  -- 移动图标标签字号
-  move_icon_label_padding  REAL,  -- 移动图标标签内边距
-  move_icon_label_radius   REAL,  -- 移动图标标签圆角
-  move_icon_label_pos      TEXT,  -- 移动图标标签位置（旧枚举：top/bottom/left/right）
+  --   没有 move_icon_label_size / padding / radius / pos：面板（MoveResourcePicker）只写
+  --   text/color/bg/offsetX/offsetY，那四格永远 NULL；渲染端只是回退默认值。
   move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
   move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
   move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
@@ -742,15 +727,10 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   move_end_sec   REAL,  -- 移动图标到达时间（秒）
   uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
   point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
-  -- 标签（原 label_json 平铺）
-  label_text        TEXT,  -- 标签文字（与元素名同步）
-  label_font_size   REAL,  -- 标签字号
-  label_color       TEXT,  -- 标签文字颜色
-  label_bg_color    TEXT,  -- 标签背景色（默认透明）
-  label_bg_padding  REAL,  -- 标签背景内边距
-  label_bg_radius   REAL,  -- 标签背景圆角
+  -- 没有 label_* 九列：形状三套面板（Multi/Two/Special）都没有标签入口，顶部 LABEL 栏对形状
+  --   只写 name；运行时类型（PolygonElement / ArrowElement）里也**没有 label 字段**，
+  --   所以写入端拿到的一直是 undefined。渲染端读 element.label 只出现在 renderPoint / renderLine。
   keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
 
   -- polygon 专属
   --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
@@ -826,18 +806,7 @@ CREATE TABLE IF NOT EXISTS public_element_territory (  -- 公共疆域元素：p
   type           TEXT NOT NULL DEFAULT 'territory' CHECK (type = 'territory'),  -- 子类型判别列（固定 territory）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  -- 标签（原 label_json 平铺）
-  label_text        TEXT,  -- 标签文字（与元素名同步）
-  label_font_size   REAL,  -- 标签字号
-  label_color       TEXT,  -- 标签文字颜色
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
-  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
-  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
-  label_bg_color    TEXT,  -- 标签背景色（默认透明）
-  label_bg_padding  REAL,  -- 标签背景内边距
-  label_bg_radius   REAL,  -- 标签背景圆角
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；property ∈ opacity/scale/rotation/draw_progress/progress/path_progress/fill_progress/morph；同 property 同 sec 不得重复
-  ord            INTEGER NOT NULL DEFAULT 0,  -- 同图层内排序
+  -- 与 element_territory 同构：没有 label_* 九列，也没有 keyframes_json / ord
 
   -- 显示配置（原 display_json 平铺）：边界 / 线宽 / 透明度 / 标签
   display_country_borders INTEGER NOT NULL DEFAULT 1 CHECK (display_country_borders IN (0,1)),  -- 是否显示势力边界（0/1）
@@ -863,12 +832,11 @@ CREATE TABLE IF NOT EXISTS public_element_image (  -- 公共贴图元素：publi
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
 
   asset_id       TEXT,  -- 图片素材 id（全局素材库，弱引用、无外键）
-  aspect         REAL CHECK (aspect IS NULL OR aspect > 0),  -- 图片宽高比（宽/高），切片渲染用
+  -- 与 element_image 同构：没有 aspect（宽高比只在创建时用来算默认网格）
   cols           INTEGER NOT NULL DEFAULT 1 CHECK (cols >= 1),  -- 配准网格列数（1=四角投影，≥2=网格变形）
   rows           INTEGER NOT NULL DEFAULT 1 CHECK (rows >= 1),  -- 配准网格行数
   grid_json      TEXT CHECK (grid_json IS NULL OR json_valid(grid_json)),  -- 控制点数组（行优先 (rows+1)×(cols+1) 个 [lng,lat]）
-  opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1),  -- 不透明度（0–1）
-  ord            INTEGER NOT NULL DEFAULT 0  -- 同图层内排序
+  opacity        REAL CHECK (opacity IS NULL OR opacity BETWEEN 0 AND 1)  -- 不透明度（0–1）
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_image_layer ON public_element_image(public_layer_id);
 
@@ -1136,25 +1104,28 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 -- =============================================================================
 
 -- 12.1 跨类别元素索引：取消基表后，轨道 / 列表 / 计数查这里，不必手写 4 表 UNION
+--      只 UNION **真正的公共列**：ord 不算 —— 它在五张类别表里都是死列（写死 0、
+--      读端没有 ORDER BY，层内序由 layer.elements 与 restackByLayerOrder 决定），
+--      element_marker 已随删列一并去掉，其余类别待同一口径清理。
 CREATE VIEW IF NOT EXISTS v_element_index AS
 SELECT 'marker' AS category, element_id, project_id, layer_id, type, name,
-       start_sec, end_sec, ord
+       start_sec, end_sec
   FROM element_marker
 UNION ALL
 SELECT 'route', element_id, project_id, layer_id, type, name,
-       start_sec, end_sec, ord
+       start_sec, end_sec
   FROM element_route
 UNION ALL
 SELECT 'shape', element_id, project_id, layer_id, type, name,
-       start_sec, end_sec, ord
+       start_sec, end_sec
   FROM element_shape
 UNION ALL
 SELECT 'territory', element_id, project_id, layer_id, type, name,
-       start_sec, end_sec, ord
+       start_sec, end_sec
   FROM element_territory
 UNION ALL
 SELECT 'image', element_id, project_id, layer_id, type, name,
-       start_sec, end_sec, ord
+       start_sec, end_sec
   FROM element_image;
 
 -- 12.2 悬空引用自检（弱引用 + 外键未开启时应为 0；迁移后与老库体检）
@@ -1247,7 +1218,7 @@ SELECT p.provider_id AS ref_id,
 -- 4) 类别宽表内用 type + CHECK 表达子类型必填项（类别内 STI）；
 --    未选「每子类型一张表」是为了让表与工具栏按钮一一对应。
 -- 5) element_keyframe.value_num 与 value_json 至少一列非空，由 CHECK 保证；
---    标量属性（opacity/scale/rotation/progress）走 value_num，morph 走 value_json。
+--    标量属性（draw_progress / progress / path_progress）走 value_num，morph 走 value_json。
 -- 6) 大体积二进制一律进 asset（file 或 blob），业务表只存 asset_id，
 --    避免项目 JSON base64 膨胀导致的「每次保存全量重写」。
 -- 7) 布尔一律 INTEGER 0/1 + CHECK，不使用 SQLite 无类型的裸字段。

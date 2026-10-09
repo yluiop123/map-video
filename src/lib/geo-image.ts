@@ -73,7 +73,8 @@ export function resampleGrid(grid: XY[], cols: number, rows: number, newCols: nu
   return out;
 }
 
-/** 构造地理配准图片元素（默认四角） */
+/** 构造地理配准图片元素（默认四角）。aspect 只在**这里**用来算默认控制点网格，不入库
+ *  （渲染端只用 cols/rows/grid/opacity，存下来的那份没人读）。 */
 export function createGeoImageElement(
   project: MapVideoProject,
   assetId: string,
@@ -83,8 +84,8 @@ export function createGeoImageElement(
 ): GeoImageElement {
   return {
     id: generateId(), type: 'geo_image', name, locked: false,
-    startFrame: 0, endFrame: Math.max(1, project.endFrame), style: {},
-    assetId, aspect, cols: 1, rows: 1, grid: defaultGridForBounds(bounds, aspect, 1, 1), opacity: 1,
+    startFrame: 0, endFrame: Math.max(1, project.endFrame),
+    assetId, cols: 1, rows: 1, grid: defaultGridForBounds(bounds, aspect, 1, 1), opacity: 1,
   };
 }
 

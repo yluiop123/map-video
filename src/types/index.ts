@@ -126,7 +126,6 @@ export interface MapElementBase {
   customTime?: boolean;
   /** 所属图层 id（派生镜像里由 deriveElements 回填；源数据中元素嵌套在 layer.elements，无需存） */
   layerId?: string;
-  style: ElementStyle;
   zIndex?: number;
   /** 来源分类：区分形状工具绘制（multi=多点/two=两点/special=特殊）与路线工具绘制（route）。
    * 属性面板据此选择对应设置面板；无标记时按语义回退。 */
@@ -147,11 +146,6 @@ export interface MapElementBase {
     labelText?: string;
     labelColor?: string;
     labelBg?: string;
-    labelSize?: number;
-    labelPadding?: number;
-    labelRadius?: number;
-    /** @deprecated 旧位置枚举；新数据用 labelOffsetX / labelOffsetY（未设置偏移时兼容此字段） */
-    labelPos?: string;
     /** 标签水平偏移（像素，0 = 居中；负左正右）——与标记文案位置语义一致 */
     labelOffsetX?: number;
     /** 标签垂直偏移（像素，0 = 居中；**正值向上**，默认 40） */
@@ -196,7 +190,12 @@ export type PointShape =
   | 'icon'     // 图标库（lucide / react-icons / 自建库）
   | 'military_symbol';  // 军标（milsymbol 标准符号，四阵营框架由 SIDC 身份码决定）
 
-/** 形态专属表现参数（只有渲染端与面板真正消费的 3 个：模型自转/朝向、图标描边） */
+/**
+ * 形态专属表现参数（对应 element_marker 的 `visual_*` 列）。
+ * **只有面板有格子、渲染端真读的三项**：模型的自转/初始朝向、图标的描边粗细。
+ * 曾经的 fit / tintable / fps / loop / altitude / pitchAlign / animation 已删 ——
+ * 既没有面板入口，渲染端也不读（着色看能力矩阵 canTint、GIF 按帧号走、模型渲染函数不收高度/俯仰/片段名）。
+ */
 export interface VisualMeta {
   /** model：自转角速度（度/秒） */
   autoRotate?: number;
@@ -303,8 +302,6 @@ export interface PolylineElement extends MapElementBase {
     toothAngle?: number;
     side?: 1 | -1;
   };
-  /** 线中点文案 */
-  label?: LabelConfig;
 }
 
 export interface PolygonElement extends MapElementBase {
@@ -315,8 +312,6 @@ export interface PolygonElement extends MapElementBase {
   strokeColor: string;
   strokeWidth: number;
   morphKeyframes?: MorphKeyframe[];
-  /** 战线/占领区推进动画：从一侧到另一侧 */
-  fillProgress?: Keyframe<number>[];
   /** 形状种类（Shape Settings 切换用）：普通多边形 / 矩形 / 圆 / 五角星 */
   shapeKind?: 'poly' | 'rect' | 'circle' | 'star';
   /** shapeKind==='circle' 时的可编辑参数 */
@@ -459,8 +454,6 @@ export interface GeoImageElement extends MapElementBase {
   type: 'geo_image';
   /** 全局素材库图片 id */
   assetId: string;
-  /** 图片像素宽高比（宽/高），切片渲染用 */
-  aspect: number;
   /** 网格列数/行数（1 = 四角；≥2 = 网格变形） */
   cols: number;
   rows: number;
@@ -499,14 +492,6 @@ export interface Layer {
   endFrame: number;
   /** 图层内的元素（相对图层的显示时间由元素的 customTime/start/end 决定） */
   elements: MapElement[];
-}
-
-// ========== 样式类型 ==========
-
-export interface ElementStyle {
-  opacity?: Keyframe<number>[];
-  scale?: Keyframe<number>[];
-  rotation?: Keyframe<number>[];
 }
 
 // ========== 高亮效果 ==========

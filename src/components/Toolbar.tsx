@@ -525,51 +525,58 @@ export function FloatingTools() {
         </div>
       )}
 
-      {/* 形状分类菜单（展开在工具条下方） */}
+      {/* 形状分类菜单（展开在工具条下方）。
+          舞台是 overflow-hidden，弹窗**高度必须被舞台约束**，否则超出部分直接被裁掉
+          （19 项实测 555px > 可用 459px，底部 84px 连同「图层」行都点不到）：
+          高度封顶 + 中间那三段分组可滚，标题与底部「图层」/提示固定不滚。 */}
       {shapeOpen && (
-        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[460px] max-h-[calc(100%-64px)] overflow-y-auto rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
-          <div className="flex items-center gap-2">
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[460px] max-h-[calc(100%-64px)] flex flex-col rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3">
+          <div className="shrink-0 flex items-center gap-2">
             <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-orange-300/90 bg-orange-500/10 rounded">
               {lang === 'en' ? 'Shape' : '形状'}
             </div>
             <div className="flex-1 h-px bg-white/[0.08]" />
           </div>
-          {SHAPE_GROUPS.map((g) => (
-            <div key={g.zh}>
-              <div className="flex items-center gap-2 mb-1.5">
-                <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-orange-300/90 bg-orange-500/10 rounded">
-                  {lang === 'en' ? g.en : g.zh}
+          <div className="flex-1 min-h-0 overflow-y-auto mt-3 space-y-3 pr-0.5">
+            {SHAPE_GROUPS.map((g) => (
+              <div key={g.zh}>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-orange-300/90 bg-orange-500/10 rounded">
+                    {lang === 'en' ? g.en : g.zh}
+                  </div>
+                  <div className="flex-1 h-px bg-white/[0.08]" />
                 </div>
-                <div className="flex-1 h-px bg-white/[0.08]" />
+                <div className="grid grid-cols-4 gap-1.5">
+                  {g.items.map((s) => (
+                    <button
+                      key={s.mode}
+                      title={s.hint ? `${lang === 'en' ? s.en : s.zh}（${s.hint}）` : (lang === 'en' ? s.en : s.zh)}
+                      onClick={() => { setShapeOpen(false); setMode(s.mode); }}
+                      className={`flex flex-col items-center gap-1 py-2 px-1 rounded-lg border transition-colors ${
+                        mode === s.mode
+                          ? 'bg-brand/25 border-brand/60 text-foreground shadow-inner'
+                          : 'bg-white/[0.04] border-white/[0.09] text-foreground/85 hover:bg-white/10 hover:border-white/25'
+                      }`}
+                    >
+                      <span className="text-lg leading-none drop-shadow-sm">{s.glyph}</span>
+                      <span className="text-[10.5px] leading-tight font-medium text-center">
+                        {lang === 'en' ? s.en : s.zh}
+                      </span>
+                      {s.hint && (
+                        <span className="text-[9px] leading-tight text-muted-foreground/80 text-center">{s.hint}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="grid grid-cols-4 gap-1.5">
-                {g.items.map((s) => (
-                  <button
-                    key={s.mode}
-                    title={s.hint ? `${lang === 'en' ? s.en : s.zh}（${s.hint}）` : (lang === 'en' ? s.en : s.zh)}
-                    onClick={() => { setShapeOpen(false); setMode(s.mode); }}
-                    className={`flex flex-col items-center gap-1 py-2 px-1 rounded-lg border transition-colors ${
-                      mode === s.mode
-                        ? 'bg-brand/25 border-brand/60 text-foreground shadow-inner'
-                        : 'bg-white/[0.04] border-white/[0.09] text-foreground/85 hover:bg-white/10 hover:border-white/25'
-                    }`}
-                  >
-                    <span className="text-lg leading-none drop-shadow-sm">{s.glyph}</span>
-                    <span className="text-[10.5px] leading-tight font-medium text-center">
-                      {lang === 'en' ? s.en : s.zh}
-                    </span>
-                    {s.hint && (
-                      <span className="text-[9px] leading-tight text-muted-foreground/80 text-center">{s.hint}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-          <LayerPickRow type="shape" lang={lang} />
-          <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
-            {lang === 'en' ? 'Click map to draw; multi-point dblclick to finish; right-click/Esc cancel. Shapes: drag vertices, rotate in panel.' : '点击地图绘制；多点图形双击完成，右键/Esc 取消。形状可拖拽顶点编辑，矩形/集结点/五角星可旋转。'}
-          </p>
+            ))}
+          </div>
+          <div className="shrink-0 mt-3 space-y-3">
+            <LayerPickRow type="shape" lang={lang} />
+            <p className="px-1 pt-1 text-[10px] text-muted-foreground/75 border-t border-white/[0.08]">
+              {lang === 'en' ? 'Click map to draw; multi-point dblclick to finish; right-click/Esc cancel. Shapes: drag vertices, rotate in panel.' : '点击地图绘制；多点图形双击完成，右键/Esc 取消。形状可拖拽顶点编辑，矩形/集结点/五角星可旋转。'}
+            </p>
+          </div>
         </div>
       )}
 

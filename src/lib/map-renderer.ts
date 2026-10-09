@@ -215,7 +215,8 @@ export function restackByLayerOrder(map: maplibregl.Map, elementIdsTopToBottom: 
  * 就等价于「渲染器的输入一个都没变」。
  *
  * 新增任何逐帧或逐相机的渲染分支时，**必须让它在这里判 false**，否则画面会停在
- * 最后一次真跑的那一帧（gif 逐帧、模型自转、透明度关键帧就是这么被排除进来的）。
+ * 最后一次真跑的那一帧（gif 逐帧、模型自转就是这么被排除进来的）。
+ * 「元素透明度关键帧」（`ElementStyle`）那一支已删：没有任何面板写它，渲染端也不读。
  */
 function isFrameStatic(el: MapElement): boolean {
   switch (el.type) {
@@ -224,13 +225,11 @@ function isFrameStatic(el: MapElement): boolean {
       // 这两个渲染器压根没有 frame 形参
       return true;
     case 'point': {
-      if (el.style?.opacity?.length) return false;      // getOpacity(el.style.opacity, frame)
       if (el.shape === 'gif') return false;             // ensureGifFrame → elapsedMsOf(frame)
       if (el.shape === 'model' && el.visualMeta?.autoRotate) return false;  // modelAngle
       return true;
     }
     case 'polyline': {
-      if (el.style?.opacity?.length) return false;      // line-opacity 逐帧
       if (el.frontStyle) return false;                  // 梳齿按屏幕像素采样，随 zoom 变
       return true;
     }
@@ -351,10 +350,6 @@ export function renderElements(
 /** 元素没有自己的显隐：在不在画面上只由 deriveElements 解析出的区间回答（空区间 = 永不显示） */
 function isVisible(element: MapElement, frame: number): boolean {
   return frame >= element.startFrame && frame <= element.endFrame;
-}
-
-function getOpacity(el: MapElement, frame: number): number {
-  return el.style?.opacity ? (interpolateKeyframes(el.style.opacity, frame) as number) : 1;
 }
 
 /** 计算进度类关键帧（绘制/路径/箭头） */
@@ -619,7 +614,6 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
   const rotAlign = flat ? 'map' as const : 'viewport' as const;
   const iconRotate = flat ? (element.rotation || 0) : 0;
 
-  const opacity = getOpacity(element, frame);
   const geojson = turf.featureCollection([turf.point(element.coordinates, { name: element.label?.text || element.name, emoji: emojiChar })]);
 
   if (map.getSource(sourceId)) {
@@ -627,7 +621,6 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
     // 更新 circle 可见性
     if (map.getLayer(layerId)) {
       map.setLayoutProperty(layerId, 'visibility', circleVisible ? 'visible' : 'none');
-      map.setPaintProperty(layerId, 'circle-opacity', opacity);
       map.setPaintProperty(layerId, 'circle-color', element.color || '#FF4444');
       map.setPaintProperty(layerId, 'circle-radius', 8 * scale);
     }
@@ -664,7 +657,6 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         map.setLayoutProperty(labelLayerId, 'icon-pitch-alignment', pitchAlign);
         map.setLayoutProperty(labelLayerId, 'icon-rotation-alignment', rotAlign);
         map.setLayoutProperty(labelLayerId, 'icon-rotate', iconRotate);
-        map.setPaintProperty(labelLayerId, 'icon-opacity', opacity);
       }
     }
     // 更新资源视觉层（图片 / GIF 静帧 / 图标 / 旧 iconUrl）
@@ -678,10 +670,9 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         map.setLayoutProperty(`${layerId}-icon`, 'icon-pitch-alignment', pitchAlign);
         map.setLayoutProperty(`${layerId}-icon`, 'icon-rotation-alignment', rotAlign);
         map.setLayoutProperty(`${layerId}-icon`, 'icon-rotate', iconRotate);
-        map.setPaintProperty(`${layerId}-icon`, 'icon-opacity', opacity);
       }
     }
-    // 更新 label（气泡位图：可见性 + 图像/锚点/缩放/透明度同步）
+    // 更新 label（气泡位图：可见性 + 图像/锚点/缩放同步）
     if (map.getLayer(labelLayerId)) {
       map.setLayoutProperty(labelLayerId, 'visibility', hasLabel ? 'visible' : 'none');
       if (hasLabel) {
@@ -690,7 +681,6 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         map.setLayoutProperty(labelLayerId, 'icon-anchor', getIconAnchor(labelPos) as any);
         // 位置/偏移变化需同步（否则拖动位置滑块地图不更新）
         map.setLayoutProperty(labelLayerId, 'icon-offset', labelOffsetPx as any);
-        map.setPaintProperty(labelLayerId, 'icon-opacity', opacity);
       }
     }
   } else {
@@ -704,7 +694,6 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         'circle-color': element.color || '#FF4444',
         'circle-stroke-width': 2,
         'circle-stroke-color': '#FFFFFF',
-        'circle-opacity': opacity,
       },
       layout: { visibility: circleVisible ? 'visible' : 'none' },
     });
@@ -728,7 +717,6 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         'icon-size': scale,
         'visibility': isEmoji ? 'visible' : 'none',
       },
-      paint: { 'icon-opacity': opacity },
     });
 
     // 资源视觉层（图片 / GIF 静帧 / 图标库）：资源异步就绪后由更新分支切到真实图
@@ -744,7 +732,6 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         'icon-rotate': iconRotate,
         'visibility': hasVisual ? 'visible' : 'none',
       },
-      paint: { 'icon-opacity': opacity },
     });
 
     // LABEL：无尾标签位图层（默认透明背景 + 防遮挡偏移）
@@ -761,7 +748,6 @@ function renderPoint(map: maplibregl.Map, element: PointElement, frame: number) 
         'icon-size': 1,
         'visibility': hasLabel ? 'visible' : 'none',
       },
-      paint: { 'icon-opacity': opacity },
     });
   }
 
@@ -1484,9 +1470,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const mImgId = mShape === 'emoji'
     ? 'pt-emoji-' + Array.from(mEmoji).map((c) => (c as string).codePointAt(0)!.toString(16)).join('-')
     : mShape === 'bubble'
-      ? `pt-mbub-${hashStr(mLabelText + mLabelBg + mLabelColor + mScale + (mi?.labelSize ?? 12) + (mi?.labelPadding ?? 8) + (mi?.labelRadius ?? 6) + (mi?.labelPos || 'bottom'))}`
+      ? `pt-mbub-${hashStr(mLabelText + mLabelBg + mLabelColor + mScale + 12 + 8 + 6 + 'bottom')}`
       : mShape === 'text'
-        ? `pt-mtxt-${hashStr(mLabelText + mLabelColor + mScale + (mi?.labelSize ?? 13))}`
+        ? `pt-mtxt-${hashStr(mLabelText + mLabelColor + mScale + 13)}`
         : mShape === 'flag'
           ? `pt-mflag-${hashStr((mi?.labelText || mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
           : (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon' || mShape === 'military_symbol')
@@ -1525,8 +1511,8 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     try {
       if (mShape === 'pin') ensureShapeImage(map, mImgId, getCached(`pin-${mColor}`, () => makePinImageData(mColor)));
       else if (mShape === 'emoji') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeEmojiImageData(mEmoji)));
-      else if (mShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 6, mi?.labelPadding ?? 8, false)));
-      else if (mShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
+      else if (mShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, 12 * mScale, 6, 8, false)));
+      else if (mShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, 13 * mScale, 3, 4, false)));
       else if (mShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.labelText || mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
       else if (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon' || mShape === 'military_symbol') {
         // 资源形态：与标记共用资源管线（内置 / 上传素材 / 图标库）
@@ -1577,13 +1563,13 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       if (mi?.showLabel && mShape !== 'bubble' && mShape !== 'text' && mShape !== 'flag' && mLabelText) {
         const lSrcId = `line-mlabel-src-${element.id}`;
         const lLayerId = `line-mlabel-${element.id}`;
-        const lImgId = `pt-mlbl-${hashStr(mLabelText + mLabelColor + mLabelBg + mScale + (mi?.labelSize ?? 12) + (mi?.labelPadding ?? 4) + (mi?.labelRadius ?? 3))}`;
-        ensureShapeImage(map, lImgId, getCached(lImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
+        const lImgId = `pt-mlbl-${hashStr(mLabelText + mLabelColor + mLabelBg + mScale + 12 + 4 + 3)}`;
+        ensureShapeImage(map, lImgId, getCached(lImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, 12 * mScale, 3, 4, false)));
         // 标签偏移：优先连续偏移（中心锚 + 像素，offsetY 正值向上）；未设置时回退旧位置枚举
         const useLabelOff = typeof mi?.labelOffsetX === 'number' || typeof mi?.labelOffsetY === 'number';
         const off: [number, number] = useLabelOff
           ? [(mi?.labelOffsetX ?? 0) * mScale, -(mi?.labelOffsetY ?? 40) * mScale]
-          : ((mi?.labelPos || 'top') === 'top' ? [0, -28] : (mi?.labelPos || 'top') === 'left' ? [-40, 0] : (mi?.labelPos || 'top') === 'right' ? [40, 0] : [0, 26]);
+          : ([0, -28]);
         try {
           if (map.getSource(lSrcId)) {
             putGeoJSON(map.getSource(lSrcId) as GeoJSONSource, iconData);
@@ -1912,14 +1898,13 @@ function staticPlineData(element: PolylineElement, effective: [number, number][]
   return d;
 }
 
-function renderPolyline(map: maplibregl.Map, element: PolylineElement, frame: number) {
+function renderPolyline(map: maplibregl.Map, element: PolylineElement, _frame: number) {
   const sourceId = `pline-${element.id}`;
   const layerId = `pline-layer-${element.id}`;
   const hitLayerId = `pline-hit-${element.id}`;
   const effective = polylineEffectiveCoordinates(element);
   const color = element.strokeColor || '#FF0000';
   const width = element.strokeWidth || 8;
-  const opacity = getOpacity(element, frame);
   const data = staticPlineData(element, effective);
 
   if (map.getSource(sourceId)) {
@@ -1927,7 +1912,6 @@ function renderPolyline(map: maplibregl.Map, element: PolylineElement, frame: nu
     if (map.getLayer(layerId)) {
       map.setPaintProperty(layerId, 'line-color', color);
       map.setPaintProperty(layerId, 'line-width', width);
-      map.setPaintProperty(layerId, 'line-opacity', opacity);
     }
   } else {
     map.addSource(sourceId, { type: 'geojson', data } as any);
@@ -1947,7 +1931,6 @@ function renderPolyline(map: maplibregl.Map, element: PolylineElement, frame: nu
       paint: {
         'line-color': color,
         'line-width': width,
-        'line-opacity': opacity,
       },
       layout: { 'line-cap': 'round', 'line-join': 'round' },
     });
@@ -2006,66 +1989,27 @@ function renderPolyline(map: maplibregl.Map, element: PolylineElement, frame: nu
     if (map.getLayer(headLayerId)) map.setLayoutProperty(headLayerId, 'visibility', 'none');
   }
 
-  // 线中点文案（与 line 同式样）
+  // 线中点文案：形状表不存 label_*（已被清列），直接用元素名作线上文字
   const labelSourceId = `plinelabel-src-${element.id}`;
-  const labelBgId = `plinelabel-bg-${element.id}`;
   const labelLayerId = `plinelabel-${element.id}`;
-  const hasLabel = !!element.label?.text;
+  const hasLabel = !!element.name;
   if (hasLabel) {
     const midCoord = getLineMidpoint(effective);
-    const labelData = turf.featureCollection([turf.point(midCoord, { text: element.label!.text })]);
+    const labelData = turf.featureCollection([turf.point(midCoord, { text: element.name })]);
     if (map.getSource(labelSourceId)) {
       putGeoJSON(map.getSource(labelSourceId) as GeoJSONSource, labelData);
-      if (map.getLayer(labelBgId)) {
-        const L = element.label!;
-        map.setLayoutProperty(labelBgId, 'text-size', L.fontSize || 12);
-        map.setPaintProperty(labelBgId, 'text-color', L.color || '#FFFFFF');
-        map.setPaintProperty(labelBgId, 'text-halo-color', L.bgColor || 'rgba(0,0,0,0.7)');
-        map.setPaintProperty(labelBgId, 'text-halo-width', L.bgPadding ?? 3);
-        map.setPaintProperty(labelBgId, 'text-halo-blur', L.bgRadius ?? 2);
-      }
-      if (map.getLayer(labelLayerId)) {
-        const L = element.label!;
-        map.setLayoutProperty(labelLayerId, 'text-size', L.fontSize || 12);
-        map.setPaintProperty(labelLayerId, 'text-color', L.color || '#FFFFFF');
-      }
     } else {
       map.addSource(labelSourceId, { type: 'geojson', data: labelData });
-    }
-    if (!map.getLayer(labelBgId)) {
-      map.addLayer({
-        id: labelBgId, type: 'symbol', source: labelSourceId,
-        layout: {
-          'text-field': ['get', 'text'],
-          'text-size': element.label?.fontSize || 12,
-          'text-anchor': 'center',
-          'text-offset': [0, 0],
-        },
-        paint: {
-          'text-color': element.label?.color || '#FFFFFF',
-          'text-halo-color': element.label?.bgColor || 'rgba(0,0,0,0.7)',
-          'text-halo-width': element.label?.bgPadding ?? 3,
-          'text-halo-blur': element.label?.bgRadius ?? 2,
-        },
-      });
     }
     if (!map.getLayer(labelLayerId)) {
       map.addLayer({
         id: labelLayerId, type: 'symbol', source: labelSourceId,
-        layout: {
-          'text-field': ['get', 'text'],
-          'text-size': element.label?.fontSize || 12,
-          'text-anchor': 'center',
-          'text-offset': [0, 0],
-        },
-        paint: {
-          'text-color': element.label?.color || '#FFFFFF',
-        },
+        layout: { 'text-field': ['get', 'text'], 'text-size': 12, 'text-anchor': 'center', 'text-offset': [0, 0] },
+        paint: { 'text-color': '#FFFFFF', 'text-halo-color': 'rgba(0,0,0,0.7)', 'text-halo-width': 2, 'text-halo-blur': 1 },
       });
     }
-  } else {
-    if (map.getLayer(labelBgId)) map.removeLayer(labelBgId);
-    if (map.getLayer(labelLayerId)) map.removeLayer(labelLayerId);
+  } else if (map.getLayer(labelLayerId)) {
+    map.removeLayer(labelLayerId);
     if (map.getSource(labelSourceId)) map.removeSource(labelSourceId);
   }
 }
@@ -3137,9 +3081,9 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     const mImgId = mEffShape === 'emoji'
       ? 'pt-emoji-' + Array.from(String(mi?.emoji || '📍')).map((c) => (c as string).codePointAt(0)!.toString(16)).join('-')
       : mEffShape === 'bubble'
-        ? `pt-abub-${hashStr(mLabelText + mLabelBg + mLabelColor + mScale + (mi?.labelSize ?? 12) + (mi?.labelPadding ?? 8) + (mi?.labelRadius ?? 6))}`
+        ? `pt-abub-${hashStr(mLabelText + mLabelBg + mLabelColor + mScale + 12 + 8 + 6)}`
         : mEffShape === 'text'
-          ? `pt-atxt-${hashStr(mLabelText + mLabelColor + mScale + (mi?.labelSize ?? 13))}`
+          ? `pt-atxt-${hashStr(mLabelText + mLabelColor + mScale + 13)}`
           : mEffShape === 'flag'
             ? `pt-aflag-${hashStr((mi?.labelText || mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
             : (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon' || mEffShape === 'military_symbol')
@@ -3148,8 +3092,8 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     try {
       if (mEffShape === 'pin') ensureShapeImage(map, mImgId, getCached(`pin-${mColor}`, () => makePinImageData(mColor)));
       else if (mEffShape === 'emoji') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeEmojiImageData(mi?.emoji || '📍')));
-      else if (mEffShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, mi?.labelRadius ?? 6, mi?.labelPadding ?? 8, false)));
-      else if (mEffShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, (mi?.labelSize ?? 13) * mScale, mi?.labelRadius ?? 3, mi?.labelPadding ?? 4, false)));
+      else if (mEffShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, 12 * mScale, 6, 8, false)));
+      else if (mEffShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, 13 * mScale, 3, 4, false)));
       else if (mEffShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.labelText || mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
       else if (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon' || mEffShape === 'military_symbol') {
         // 资源形态：与标记/路线共用资源管线
@@ -3193,13 +3137,13 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
       if (mi?.showLabel && mEffShape !== 'bubble' && mEffShape !== 'text' && mEffShape !== 'flag' && mLabelText) {
         const lSrcId = `arrow-mlabel-src-${element.id}`;
         const lLayerId = `arrow-mlabel-${element.id}`;
-        const lImgId = `pt-albl-${hashStr(mLabelText + mLabelColor + mLabelBg + mScale + (mi?.labelSize ?? 12))}`;
-        ensureShapeImage(map, lImgId, getCached(lImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, (mi?.labelSize ?? 12) * mScale, 3, 4, false)));
+        const lImgId = `pt-albl-${hashStr(mLabelText + mLabelColor + mLabelBg + mScale + 12)}`;
+        ensureShapeImage(map, lImgId, getCached(lImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, 12 * mScale, 3, 4, false)));
         // 标签偏移：优先连续偏移（中心锚 + 像素，offsetY 正值向上）；未设置时回退旧位置枚举
         const useLabelOff = typeof mi?.labelOffsetX === 'number' || typeof mi?.labelOffsetY === 'number';
         const off: [number, number] = useLabelOff
           ? [(mi?.labelOffsetX ?? 0) * mScale, -(mi?.labelOffsetY ?? 40) * mScale]
-          : ((mi?.labelPos || 'top') === 'top' ? [0, -28] : (mi?.labelPos || 'top') === 'left' ? [-40, 0] : (mi?.labelPos || 'top') === 'right' ? [40, 0] : [0, 26]);
+          : ([0, -28]);
         try {
           if (map.getSource(lSrcId)) {
             putGeoJSON(map.getSource(lSrcId) as GeoJSONSource, iconData);
