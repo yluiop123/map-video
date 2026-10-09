@@ -101,6 +101,7 @@ export type ElementType =
   | 'point'
   | 'moving_point'
   | 'line'
+  | 'polyline'
   | 'polygon'
   | 'arrow'
   | 'double_arrow'
@@ -195,26 +196,12 @@ export type PointShape =
   | 'icon'     // 图标库（lucide / react-icons / 自建库）
   | 'military_symbol';  // 军标（milsymbol 标准符号，四阵营框架由 SIDC 身份码决定）
 
-/** 形态专属表现参数（对应数据库 element_marker.visual_meta_json） */
+/** 形态专属表现参数（只有渲染端与面板真正消费的 3 个：模型自转/朝向、图标描边） */
 export interface VisualMeta {
-  /** image：适配方式 */
-  fit?: 'contain' | 'cover';
-  /** image：是否允许着色 */
-  tintable?: boolean;
-  /** gif：帧率 */
-  fps?: number;
-  /** gif：是否循环 */
-  loop?: boolean;
-  /** model：离地高度（米） */
-  altitude?: number;
   /** model：自转角速度（度/秒） */
   autoRotate?: number;
   /** model：初始朝向（度） */
   spin?: number;
-  /** model：是否随地图俯仰倾斜 */
-  pitchAlign?: boolean;
-  /** model：播放的动画片段名 */
-  animation?: string;
   /** icon：描边粗细 */
   strokeWidth?: number;
 }
@@ -289,6 +276,31 @@ export interface LineElement extends MapElementBase {
     /** 齿偏角（度，相对主线法向；0=垂直） */
     toothAngle?: number;
     /** 齿朝向哪一侧：1=顺时针侧（右），-1=逆时针侧（左） */
+    side?: 1 | -1;
+  };
+  /** 线中点文案 */
+  label?: LabelConfig;
+}
+
+/** 折线（形状工具的直线 / 曲线 / 战线）：开环路径，静态显示，无动画。
+ *  与路线表的 line 同为折线，但归属形状图层、存 element_shape；
+ *  描边复用形状表的 stroke 色/宽；战线梳齿沿用 open-path 的 frontStyle 语义。 */
+export interface PolylineElement extends MapElementBase {
+  type: 'polyline';
+  /** 路径点（开环，不闭合） */
+  coordinates: [number, number][];
+  /** 直线（折线直连）/ 贝塞尔（控制点拟合曲线） */
+  lineType?: 'straight' | 'bezier';
+  /** 线末端是否带方向小三角 */
+  lineArrow?: boolean;
+  /** 描边色/宽（落库走形状表的 stroke_color / stroke_width） */
+  strokeColor: string;
+  strokeWidth: number;
+  /** 战线梳齿（直线战线 / 弯曲战线）：存在即沿线画齿 */
+  frontStyle?: {
+    toothLength?: number;
+    toothGap?: number;
+    toothAngle?: number;
     side?: 1 | -1;
   };
   /** 线中点文案 */
@@ -462,6 +474,7 @@ export type MapElement =
   | PointElement
   | MovingPointElement
   | LineElement
+  | PolylineElement
   | PolygonElement
   | ArrowElement
   | DoubleArrowElement

@@ -13,7 +13,7 @@ import {
 import type { TerritoryLabelStyle } from './territory';
 import type {
   MapElement, PointElement, MovingPointElement, LineElement,
-  PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
+  PolylineElement, PolygonElement, ArrowElement, DoubleArrowElement, EncirclementElement,
   GatheringElement,
   FlagElement, CameraKeyframe,
   TerritoryElement, GeoImageElement,
@@ -229,6 +229,11 @@ function isFrameStatic(el: MapElement): boolean {
       if (el.shape === 'model' && el.visualMeta?.autoRotate) return false;  // modelAngle
       return true;
     }
+    case 'polyline': {
+      if (el.style?.opacity?.length) return false;      // line-opacity 逐帧
+      if (el.frontStyle) return false;                  // 梳齿按屏幕像素采样，随 zoom 变
+      return true;
+    }
     default:
       return false;
   }
@@ -327,6 +332,7 @@ export function renderElements(
       case 'point': renderPoint(map, element, frame); break;
       case 'moving_point': renderMovingPoint(map, element, frame, interactive); break;
       case 'line': renderLine(map, element, frame); break;
+      case 'polyline': renderPolyline(map, element, frame); break;
       case 'polygon': renderPolygon(map, element, frame); break;
       case 'arrow': renderArrow(map, element, frame); break;
       case 'double_arrow': renderDoubleArrow(map, element, frame); break;
@@ -1153,6 +1159,81 @@ export function nonUniformRatio(element: MapElement, frame: number): number {
   return 1;
 }
 
+// 战线梳齿（钢铁雄心防线风格）：开环主线指向的右手侧/左手侧短齿（屏幕像素级）。
+// line 与 polyline 共用：prefix 区分图层 id（line / pline）；frontStyle 为空时只做清理。
+function renderFrontTeeth(
+  map: maplibregl.Map, prefix: string, elementId: string,
+  effective: [number, number][],
+  frontStyle: { toothLength?: number; toothGap?: number; toothAngle?: number; side?: 1 | -1 } | undefined,
+  color: string, width: number,
+): void {
+  const frontSrcId = `${prefix}-front-src-${elementId}`;
+  const frontLayerId = `${prefix}-front-${elementId}`;
+  if (!frontStyle) {
+    if (map.getLayer(frontLayerId)) {
+      try { map.removeLayer(frontLayerId); } catch { /* */ }
+      try { if (map.getSource(frontSrcId)) map.removeSource(frontSrcId); } catch { /* */ }
+    }
+    return;
+  }
+  const fs = frontStyle;
+  const toothLen = fs.toothLength ?? 14;
+  const toothGap = fs.toothGap ?? 24;
+  const side = fs.side ?? 1;
+  const tilt = ((fs.toothAngle ?? 0) * Math.PI) / 180;
+  // 沿有效线等距采样生成梳齿（屏幕像素级）
+  const proj = effective.map((c) => map.project(c));
+  const lines: [number, number][][] = [];
+  if (proj.length >= 2) {
+    const stepPx = toothGap;
+    let acc = 0;
+    let prev = proj[0] as any;
+    for (let i = 1; i < proj.length; i++) {
+      const cur = proj[i] as any;
+      let seg = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+      if (seg <= 0) continue;
+      while (seg > 0 && acc + seg >= stepPx) {
+        const t = (stepPx - acc) / seg;
+        const bx = prev.x + (cur.x - prev.x) * t;
+        const by = prev.y + (cur.y - prev.y) * t;
+        // 主线切向
+        let tx = cur.x - prev.x, ty = cur.y - prev.y;
+        const tl = Math.hypot(tx, ty) || 1;
+        tx /= tl; ty /= tl;
+        // 法向（右=顺时针）
+        const nx = -ty, ny = tx;
+        const ang = Math.cos(tilt), sine = Math.sin(tilt);
+        const dirX = nx * side * ang - tx * side * sine;
+        const dirY = ny * side * ang - ty * side * sine;
+        const ex = bx + dirX * toothLen;
+        const ey = by + dirY * toothLen;
+        const ll1 = map.unproject([bx, by]);
+        const ll2 = map.unproject([ex, ey]);
+        lines.push([[ll1.lng, ll1.lat], [ll2.lng, ll2.lat]]);
+        // 扣减已走长度，推进到下一个齿位
+        seg -= (stepPx - acc);
+        prev = { x: bx, y: by };
+        acc = 0;
+      }
+      acc += seg;
+      prev = cur;
+    }
+  }
+  const fc = turf.featureCollection(lines.map((l) => turf.lineString(l)));
+  try {
+    if (map.getSource(frontSrcId)) {
+      putGeoJSON(map.getSource(frontSrcId) as GeoJSONSource, fc);
+    } else {
+      map.addSource(frontSrcId, { type: 'geojson', data: fc } as any);
+      map.addLayer({
+        id: frontLayerId, type: 'line', source: frontSrcId,
+        paint: { 'line-color': color, 'line-width': Math.max(2, width * 0.35) },
+        layout: { 'line-cap': 'round' },
+      });
+    }
+  } catch { /* style 未就绪 */ }
+}
+
 function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
   const sourceId = `line-${element.id}`;
   const layerId = `line-layer-${element.id}`;
@@ -1545,71 +1626,9 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     setFlyMarker(map, `${element.id}|icon`, null);
   }
 
-  // 战线梳齿（钢铁雄心防线风格）：主线指向的右手侧/左手侧短齿
-  const frontSrcId = `line-front-src-${element.id}`;
+  // 战线梳齿（钢铁雄心防线风格，屏幕像素级）：主线指向的右手侧/左手侧短齿（line / polyline 共用 helper）
   const frontLayerId = `line-front-${element.id}`;
-  const haveFront = !!element.frontStyle;
-  if (haveFront) {
-    const fs = element.frontStyle!;
-    const toothLen = fs.toothLength ?? 14;
-    const toothGap = fs.toothGap ?? 24;
-    const side = fs.side ?? 1;
-    const tilt = ((fs.toothAngle ?? 0) * Math.PI) / 180;
-    // 沿有效线等距采样生成梳齿（屏幕像素级）
-    const proj = effective.map((c) => map.project(c));
-    const lines: [number, number][][] = [];
-    if (proj.length >= 2) {
-      const stepPx = toothGap;
-      let acc = 0;
-      let prev = proj[0] as any;
-      for (let i = 1; i < proj.length; i++) {
-        const cur = proj[i] as any;
-        let seg = Math.hypot(cur.x - prev.x, cur.y - prev.y);
-        if (seg <= 0) continue;
-        while (seg > 0 && acc + seg >= stepPx) {
-          const t = (stepPx - acc) / seg;
-          const bx = prev.x + (cur.x - prev.x) * t;
-          const by = prev.y + (cur.y - prev.y) * t;
-          // 主线切向
-          let tx = cur.x - prev.x, ty = cur.y - prev.y;
-          const tl = Math.hypot(tx, ty) || 1;
-          tx /= tl; ty /= tl;
-          // 法向（右=顺时针）
-          const nx = -ty, ny = tx;
-          const ang = Math.cos(tilt), sine = Math.sin(tilt);
-          const dirX = nx * side * ang - tx * side * sine;
-          const dirY = ny * side * ang - ty * side * sine;
-          const ex = bx + dirX * toothLen;
-          const ey = by + dirY * toothLen;
-          const ll1 = map.unproject([bx, by]);
-          const ll2 = map.unproject([ex, ey]);
-          lines.push([[ll1.lng, ll1.lat], [ll2.lng, ll2.lat]]);
-          // 扣减已走长度，推进到下一个齿位
-          seg -= (stepPx - acc);
-          prev = { x: bx, y: by };
-          acc = 0;
-        }
-        acc += seg;
-        prev = cur;
-      }
-    }
-    const fc = turf.featureCollection(lines.map((l) => turf.lineString(l)));
-    try {
-      if (map.getSource(frontSrcId)) {
-        putGeoJSON(map.getSource(frontSrcId) as GeoJSONSource, fc);
-      } else {
-        map.addSource(frontSrcId, { type: 'geojson', data: fc } as any);
-        map.addLayer({
-          id: frontLayerId, type: 'line', source: frontSrcId,
-          paint: { 'line-color': element.lineColor || '#FF0000', 'line-width': Math.max(2, (element.lineWidth || 8) * 0.35) },
-          layout: { 'line-cap': 'round' },
-        });
-      }
-    } catch { /* style 未就绪 */ }
-  } else if (map.getLayer(frontLayerId)) {
-    try { map.removeLayer(frontLayerId); } catch { /* */ }
-    try { if (map.getSource(frontSrcId)) map.removeSource(frontSrcId); } catch { /* */ }
-  }
+  renderFrontTeeth(map, 'line', element.id, effective, element.frontStyle, element.lineColor || '#FF0000', element.lineWidth || 8);
 
   // 方向箭头（示意）：线末端小三角，随线色；SVG 图标按像素固定尺寸渲染，与 zoom 无关
   const headSrcId = `line-head-src-${element.id}`;
@@ -1859,6 +1878,196 @@ export function pixelsToDegrees(pixels: number, zoom: number, lat: number): numb
   const latRad = (lat * Math.PI) / 180;
   const metersPerPx = (40075016.686 * Math.cos(latRad)) / (256 * Math.pow(2, zoom));
   return (pixels * metersPerPx) / 111319.49079327358;
+}
+
+// ========== 渲染：折线（形状工具的直线 / 曲线 / 战线，开环静态） ==========
+
+const plineEffectiveByElement = new WeakMap<PolylineElement, [number, number][]>();
+
+/** 折线有效几何（bezier 按控制点拟合采样，其余直连）；静态内容，缓存后逐帧交回同一引用 */
+export function polylineEffectiveCoordinates(element: PolylineElement): [number, number][] {
+  let cached = plineEffectiveByElement.get(element);
+  if (!cached) {
+    cached = element.lineType === 'bezier' && element.coordinates.length >= 2
+      ? (() => {
+        try {
+          const spline = turf.bezierSpline(turf.lineString(element.coordinates), { resolution: 8000, sharpness: 0.6 });
+          return spline.geometry.coordinates as [number, number][];
+        } catch { return element.coordinates; }
+      })()
+      : element.coordinates;
+    plineEffectiveByElement.set(element, cached);
+  }
+  return cached;
+}
+
+const staticPlineDataByElement = new WeakMap<PolylineElement, any>();
+
+function staticPlineData(element: PolylineElement, effective: [number, number][]): any {
+  let d = staticPlineDataByElement.get(element);
+  if (!d) {
+    d = turf.featureCollection([turf.lineString(effective)]);
+    staticPlineDataByElement.set(element, d);
+  }
+  return d;
+}
+
+function renderPolyline(map: maplibregl.Map, element: PolylineElement, frame: number) {
+  const sourceId = `pline-${element.id}`;
+  const layerId = `pline-layer-${element.id}`;
+  const hitLayerId = `pline-hit-${element.id}`;
+  const effective = polylineEffectiveCoordinates(element);
+  const color = element.strokeColor || '#FF0000';
+  const width = element.strokeWidth || 8;
+  const opacity = getOpacity(element, frame);
+  const data = staticPlineData(element, effective);
+
+  if (map.getSource(sourceId)) {
+    putGeoJSON(map.getSource(sourceId) as GeoJSONSource, data);
+    if (map.getLayer(layerId)) {
+      map.setPaintProperty(layerId, 'line-color', color);
+      map.setPaintProperty(layerId, 'line-width', width);
+      map.setPaintProperty(layerId, 'line-opacity', opacity);
+    }
+  } else {
+    map.addSource(sourceId, { type: 'geojson', data } as any);
+    // 点击热区层：宽透明线，提升选中命中率
+    map.addLayer({
+      id: hitLayerId, type: 'line', source: sourceId,
+      paint: {
+        'line-color': color,
+        'line-width': Math.max(12, width + 8),
+        'line-opacity': 0,
+      },
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+    });
+    // 可见线层
+    map.addLayer({
+      id: layerId, type: 'line', source: sourceId,
+      paint: {
+        'line-color': color,
+        'line-width': width,
+        'line-opacity': opacity,
+      },
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+    });
+  }
+
+  // 战线梳齿
+  renderFrontTeeth(map, 'pline', element.id, effective, element.frontStyle, color, width);
+
+  // 线末端小三角（与 line 的头部同式样，静态取完整路径末端）
+  const headSrcId = `pline-head-src-${element.id}`;
+  const headLayerId = `pline-head-${element.id}`;
+  const showHead = !!element.lineArrow && effective.length >= 2;
+  if (showHead) {
+    const tipLL = effective[effective.length - 1];
+    const prevLL = effective[effective.length - 2];
+    const az = turf.bearing(turf.point(prevLL as any), turf.point(tipLL as any));
+    const angleDeg = az - 90;
+    const size = arrowTriSizePx(width);
+    const headImgId = `pline-head-img-${element.id}`;
+    try {
+      const headCache = renderedHeadColorByMap.get(map) || new Map<string, string>();
+      const cacheKey = `${color}|${size}`;
+      if (!map.hasImage(headImgId) || headCache.get(element.id) !== cacheKey) {
+        if (map.hasImage(headImgId)) map.removeImage(headImgId);
+        map.addImage(headImgId, makeTriangleImage(color, size));
+        headCache.set(element.id, cacheKey);
+        renderedHeadColorByMap.set(map, headCache);
+      }
+      const headData = turf.featureCollection([turf.point(tipLL, { rot: angleDeg })]);
+      if (map.getSource(headSrcId)) {
+        putGeoJSON(map.getSource(headSrcId) as GeoJSONSource, headData);
+        if (map.getLayer(headLayerId)) {
+          map.setLayoutProperty(headLayerId, 'icon-rotate', ['get', 'rot'] as any);
+          map.setLayoutProperty(headLayerId, 'icon-rotation-alignment', 'map' as any);
+          map.setLayoutProperty(headLayerId, 'icon-pitch-alignment', 'map' as any);
+          map.setLayoutProperty(headLayerId, 'visibility', 'visible');
+        }
+      } else {
+        map.addSource(headSrcId, { type: 'geojson', data: headData } as any);
+        map.addLayer({
+          id: headLayerId, type: 'symbol', source: headSrcId,
+          layout: {
+            'icon-image': headImgId,
+            'icon-size': 1,
+            'icon-rotate': ['get', 'rot'],
+            'icon-rotation-alignment': 'map',
+            'icon-pitch-alignment': 'map',
+            'icon-anchor': 'center',
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+          },
+        });
+      }
+    } catch { /* style 未就绪或图标未加载 */ }
+  } else {
+    if (map.getLayer(headLayerId)) map.setLayoutProperty(headLayerId, 'visibility', 'none');
+  }
+
+  // 线中点文案（与 line 同式样）
+  const labelSourceId = `plinelabel-src-${element.id}`;
+  const labelBgId = `plinelabel-bg-${element.id}`;
+  const labelLayerId = `plinelabel-${element.id}`;
+  const hasLabel = !!element.label?.text;
+  if (hasLabel) {
+    const midCoord = getLineMidpoint(effective);
+    const labelData = turf.featureCollection([turf.point(midCoord, { text: element.label!.text })]);
+    if (map.getSource(labelSourceId)) {
+      putGeoJSON(map.getSource(labelSourceId) as GeoJSONSource, labelData);
+      if (map.getLayer(labelBgId)) {
+        const L = element.label!;
+        map.setLayoutProperty(labelBgId, 'text-size', L.fontSize || 12);
+        map.setPaintProperty(labelBgId, 'text-color', L.color || '#FFFFFF');
+        map.setPaintProperty(labelBgId, 'text-halo-color', L.bgColor || 'rgba(0,0,0,0.7)');
+        map.setPaintProperty(labelBgId, 'text-halo-width', L.bgPadding ?? 3);
+        map.setPaintProperty(labelBgId, 'text-halo-blur', L.bgRadius ?? 2);
+      }
+      if (map.getLayer(labelLayerId)) {
+        const L = element.label!;
+        map.setLayoutProperty(labelLayerId, 'text-size', L.fontSize || 12);
+        map.setPaintProperty(labelLayerId, 'text-color', L.color || '#FFFFFF');
+      }
+    } else {
+      map.addSource(labelSourceId, { type: 'geojson', data: labelData });
+    }
+    if (!map.getLayer(labelBgId)) {
+      map.addLayer({
+        id: labelBgId, type: 'symbol', source: labelSourceId,
+        layout: {
+          'text-field': ['get', 'text'],
+          'text-size': element.label?.fontSize || 12,
+          'text-anchor': 'center',
+          'text-offset': [0, 0],
+        },
+        paint: {
+          'text-color': element.label?.color || '#FFFFFF',
+          'text-halo-color': element.label?.bgColor || 'rgba(0,0,0,0.7)',
+          'text-halo-width': element.label?.bgPadding ?? 3,
+          'text-halo-blur': element.label?.bgRadius ?? 2,
+        },
+      });
+    }
+    if (!map.getLayer(labelLayerId)) {
+      map.addLayer({
+        id: labelLayerId, type: 'symbol', source: labelSourceId,
+        layout: {
+          'text-field': ['get', 'text'],
+          'text-size': element.label?.fontSize || 12,
+          'text-anchor': 'center',
+          'text-offset': [0, 0],
+        },
+        paint: {
+          'text-color': element.label?.color || '#FFFFFF',
+        },
+      });
+    }
+  } else {
+    if (map.getLayer(labelBgId)) map.removeLayer(labelBgId);
+    if (map.getLayer(labelLayerId)) map.removeLayer(labelLayerId);
+    if (map.getSource(labelSourceId)) map.removeSource(labelSourceId);
+  }
 }
 
 // ========== 渲染：面 ==========
@@ -2743,19 +2952,18 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
 
   const animStart = (element as any).moveStartFrame ?? element.startFrame;
   const animEnd = (element as any).moveEndFrame ?? element.endFrame;
-  const isShapeArrow = element.shapeCategory === 'multi' || element.shapeCategory === 'special';
-  // 路线默认动画 = 路线移动（move）；形状箭头不套用动画
-  const animEff: string | undefined = (element as any).animEffect || (isShapeArrow ? undefined : 'move');
+  // 箭头只认显式存下的 animEffect：shape / route 存储彻底分开，element_shape 的行默认静态；
+  // 路线菜单画的行在创建时已显式存了 'move'。不按 shapeCategory（内存态，不落盘）给默认，
+  // 否则重载后（shapeCategory 丢失）行为会变。
+  const animEff: string | undefined = (element as any).animEffect;
   const isGrowFill = animEff === 'grow' || animEff === 'fill';
-  const isMarchA = (animEff === 'march' || animEff === 'marchplain') && !isShapeArrow;
+  const isMarchA = animEff === 'march' || animEff === 'marchplain';
   // 注：飞行模式仅支持 line 类路线（直线 / 曲线 / 带箭头直线 / 箭头曲线），
   // 箭头元素（燕尾 / 行军）不再有飞行渲染。
   const nonUniform = (element as any).uniformMove === false && (element as any).pointTimes && (element as any).pointTimes.length >= 2;
-  const progress = isShapeArrow
-    ? 1
-    : isGrowFill || isMarchA
-      ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
-      : getProgress(element.progress, frame);
+  const progress = isGrowFill || isMarchA
+    ? (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 1)
+    : getProgress(element.progress, frame);
   // 非均匀移动：箭头增长与标记同步
   const growProgress = nonUniform && isGrowFill
     ? nonUniformRatio(element as any, frame)
@@ -2893,7 +3101,8 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     try { if (map.getSource(flySrcId)) map.removeSource(flySrcId); } catch { /* */ }
   }
 
-  // 移动图标（箭头路径上沿移动点）：三段式（动画前静态/动画中移动/动画后隐藏）
+  // 移动图标（箭头路径上沿移动点）：三段式（动画前静态/动画中移动/动画后停在终点）。
+  // 形状箭头不套用动画（animEff 为空）时不画标记，与箭头本体保持一致。
   const iconSrcId = `arrow-move-src-${element.id}`;
   const iconLayerId = `arrow-move-layer-${element.id}`;
   const inDisplay = frame >= element.startFrame && frame <= element.endFrame;
@@ -2908,7 +3117,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     : duringAnim ? (isGrowFill ? progress : (animEnd > animStart ? Math.max(0, Math.min(1, (frame - animStart) / (animEnd - animStart))) : 0))
     : 0;
   // 动画结束后标记停在终点，与箭头一起在显示结束消失；仅「显示标记」开启才渲染
-  const needIcon = !!element.showIcon && (beforeAnim || duringAnim || afterAnim || inDisplay);
+  const needIcon = !!element.showIcon && !!animEff && (beforeAnim || duringAnim || afterAnim || inDisplay);
   if (needIcon) {
     // 沿**箭头实际轨道**插值：燕尾/行军箭头（curved / curved-simple）的图形走贝塞尔曲线，
     // 用控制点折线插值会让标记偏离箭头本体（标记位置不对）。arrowRailOf 与拱形/几何同源。
@@ -3414,6 +3623,8 @@ export function buildSelectionFeature(element: MapElement): any | null {
       return turf.lineString(element.path);
     case 'line':
       return turf.lineString(lineEffectiveCoordinates(element));
+    case 'polyline':
+      return turf.lineString(polylineEffectiveCoordinates(element));
     case 'polygon':
       return turf.polygon(compileShapeCoordinates(element));
     case 'encirclement':

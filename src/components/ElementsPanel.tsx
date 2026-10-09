@@ -331,7 +331,7 @@ export function ElementsPanel() {
 
 function getElementIcon(type: MapElement['type']): string {
   const icons: Record<string, string> = {
-    point: '📍', moving_point: '🏃', line: '📏', polygon: '⬛',
+    point: '📍', moving_point: '🏃', line: '📏', polyline: '〰️', polygon: '⬛',
     arrow: '➡️', double_arrow: '🩹', encirclement: '⭕', gathering: '⚔️',
     flag: '🚩', territory: '🗺️', geo_image: '🖼️',
   };

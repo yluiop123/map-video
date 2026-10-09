@@ -235,15 +235,8 @@ CREATE TABLE IF NOT EXISTS element_marker (  -- 标记类元素（Pin 工具）�
   icon_lib       TEXT,  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用）
   icon_name      TEXT,  -- 图标名（shape=icon 时必填，可指向内置库或 custom_symbol.name）
   -- 资源形态表现参数（原 visual_meta_json 平铺；面板上每个小项 = 一列）
-  visual_fit        TEXT CHECK (visual_fit IS NULL OR visual_fit IN ('contain','cover')),  -- image 适配方式：contain / cover
-  visual_tintable   INTEGER CHECK (visual_tintable IS NULL OR visual_tintable IN (0,1)),  -- image 是否允许着色（0/1）
-  visual_fps        REAL,  -- gif 帧率
-  visual_loop       INTEGER CHECK (visual_loop IS NULL OR visual_loop IN (0,1)),  -- gif 是否循环（0/1）
-  visual_altitude   REAL,  -- model 离地高度（米）
   visual_auto_rotate REAL,  -- model 自转角速度（度/秒）
   visual_spin       REAL,  -- model 初始朝向（度）
-  visual_pitch_align INTEGER CHECK (visual_pitch_align IS NULL OR visual_pitch_align IN (0,1)),  -- model 是否随地图俯仰倾斜（0/1）
-  visual_animation  TEXT,  -- model 播放的动画片段名
   visual_stroke_width REAL,  -- icon 描边粗细
 
   -- flag 专属
@@ -357,19 +350,18 @@ CREATE INDEX IF NOT EXISTS ix_route_chapter ON element_route(project_id, ord);
 CREATE INDEX IF NOT EXISTS ix_route_type    ON element_route(project_id, type);
 CREATE INDEX IF NOT EXISTS ix_route_layer   ON element_route(layer_id);
 
--- 5.3 形状类元素（Shape 工具，含「区域」行政区高亮）：polygon · arrow · double_arrow ·
+-- 5.3 形状类元素（Shape 工具，含「区域」行政区高亮）：polygon · polyline · arrow · double_arrow ·
 --     gathering（集结地）· encirclement（包围圈）
-CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）：polygon / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表
+CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）：polygon / polyline / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   project_id     TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,  -- 所属项目
   layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
-  type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
+  type           TEXT NOT NULL CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / polyline 折线（形状工具的直线/曲线/战线） / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
-  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
   -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
   move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),  -- 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标
@@ -402,9 +394,6 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   label_text        TEXT,  -- 标签文字（与元素名同步）
   label_font_size   REAL,  -- 标签字号
   label_color       TEXT,  -- 标签文字颜色
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
-  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
-  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
@@ -445,6 +434,16 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   -- double_arrow 专属（钳形攻势）
   points_json    TEXT CHECK (points_json IS NULL OR json_valid(points_json)),  -- 4 个控制点（type=double_arrow 钳形攻势时必填）
 
+  -- polyline 专属（形状工具的直线 / 曲线 / 战线：开环路径，静态显示）
+  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]（type=polyline 时必填）
+  line_type          TEXT CHECK (line_type IS NULL OR line_type IN ('straight','bezier')),  -- 线型：straight 直线 / bezier 贝塞尔（控制点拟合）
+  line_arrow         INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 线末端是否带方向小三角（0/1）
+  -- 战线梳齿（原 front_style_json 平铺，开环路径用这一套；防御圈闭合环用 defense_*）
+  front_tooth_length REAL,  -- 战线梳齿长度（px）
+  front_tooth_gap    REAL,  -- 战线梳齿间距（px）
+  front_tooth_angle  REAL,  -- 梳齿偏角（度）
+  front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),  -- 梳齿朝向侧：1 右 / -1 左
+
   -- gathering / encirclement 专属（circle / star 也复用 center_lng / center_lat / radius）
   center_lng     REAL,  -- 中心经度（gathering / encirclement 必填）
   center_lat     REAL,  -- 中心纬度
@@ -463,6 +462,7 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   CHECK (type <> 'arrow' OR (from_lng IS NOT NULL AND from_lat IS NOT NULL
                              AND to_lng IS NOT NULL AND to_lat IS NOT NULL)),
   CHECK (type <> 'double_arrow' OR points_json IS NOT NULL),
+  CHECK (type <> 'polyline' OR coords_json IS NOT NULL),
   CHECK (type <> 'gathering'    OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
 );
@@ -601,15 +601,8 @@ CREATE TABLE IF NOT EXISTS public_element_marker (  -- 公共标记元素：publ
   icon_lib       TEXT,  -- 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用）
   icon_name      TEXT,  -- 图标名（shape=icon 时必填，可指向内置库或 custom_symbol.name）
   -- 资源形态表现参数（原 visual_meta_json 平铺；面板上每个小项 = 一列）
-  visual_fit        TEXT CHECK (visual_fit IS NULL OR visual_fit IN ('contain','cover')),  -- image 适配方式：contain / cover
-  visual_tintable   INTEGER CHECK (visual_tintable IS NULL OR visual_tintable IN (0,1)),  -- image 是否允许着色（0/1）
-  visual_fps        REAL,  -- gif 帧率
-  visual_loop       INTEGER CHECK (visual_loop IS NULL OR visual_loop IN (0,1)),  -- gif 是否循环（0/1）
-  visual_altitude   REAL,  -- model 离地高度（米）
   visual_auto_rotate REAL,  -- model 自转角速度（度/秒）
   visual_spin       REAL,  -- model 初始朝向（度）
-  visual_pitch_align INTEGER CHECK (visual_pitch_align IS NULL OR visual_pitch_align IN (0,1)),  -- model 是否随地图俯仰倾斜（0/1）
-  visual_animation  TEXT,  -- model 播放的动画片段名
   visual_stroke_width REAL,  -- icon 描边粗细
 
   -- flag 专属
@@ -717,11 +710,10 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
 
   element_id     TEXT PRIMARY KEY,  -- 元素 id（全库唯一，5 张类别表共享同一 id 空间）
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
-  type           TEXT NOT NULL CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
+  type           TEXT NOT NULL CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / polyline 折线（形状工具的直线/曲线/战线） / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
-  fly_mode       INTEGER NOT NULL DEFAULT 0 CHECK (fly_mode IN (0,1)),  -- 悬空飞行模式
   show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
   -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
   move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),  -- 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标
@@ -754,9 +746,6 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   label_text        TEXT,  -- 标签文字（与元素名同步）
   label_font_size   REAL,  -- 标签字号
   label_color       TEXT,  -- 标签文字颜色
-  label_position    TEXT CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center')),  -- 标签位置：top/bottom/left/right/center
-  label_offset_x    REAL,  -- 标签水平像素偏移（0=居中，负左正右）
-  label_offset_y    REAL,  -- 标签垂直像素偏移（0=居中，正值向上）
   label_bg_color    TEXT,  -- 标签背景色（默认透明）
   label_bg_padding  REAL,  -- 标签背景内边距
   label_bg_radius   REAL,  -- 标签背景圆角
@@ -797,6 +786,16 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   -- double_arrow 专属（钳形攻势）
   points_json    TEXT CHECK (points_json IS NULL OR json_valid(points_json)),  -- 4 个控制点（type=double_arrow 钳形攻势时必填）
 
+  -- polyline 专属（形状工具的直线 / 曲线 / 战线：开环路径，静态显示）
+  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]（type=polyline 时必填）
+  line_type          TEXT CHECK (line_type IS NULL OR line_type IN ('straight','bezier')),  -- 线型：straight 直线 / bezier 贝塞尔（控制点拟合）
+  line_arrow         INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 线末端是否带方向小三角（0/1）
+  -- 战线梳齿（原 front_style_json 平铺，开环路径用这一套；防御圈闭合环用 defense_*）
+  front_tooth_length REAL,  -- 战线梳齿长度（px）
+  front_tooth_gap    REAL,  -- 战线梳齿间距（px）
+  front_tooth_angle  REAL,  -- 梳齿偏角（度）
+  front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),  -- 梳齿朝向侧：1 右 / -1 左
+
   -- gathering / encirclement 专属（circle / star 也复用 center_lng / center_lat / radius）
   center_lng     REAL,  -- 中心经度（gathering / encirclement 必填）
   center_lat     REAL,  -- 中心纬度
@@ -814,6 +813,7 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   CHECK (type <> 'arrow' OR (from_lng IS NOT NULL AND from_lat IS NOT NULL
                              AND to_lng IS NOT NULL AND to_lat IS NOT NULL)),
   CHECK (type <> 'double_arrow' OR points_json IS NOT NULL),
+  CHECK (type <> 'polyline' OR coords_json IS NOT NULL),
   CHECK (type <> 'gathering'    OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
 );

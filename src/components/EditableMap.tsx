@@ -23,7 +23,7 @@ import { defaultVisualFor } from '../lib/pin-visual';
 import { defaultTerritoryDisplay, coordKey, distToRingBoundary, insertRingVertex, moveSharedVertices, removeSharedVertex, ringOpen, traceRingPath, trimPlotOverlap, splitPlotByLine } from '../lib/territory';
 import type {
   MapVideoProject, MapElement, PointElement, PointShape,
-  MovingPointElement, LineElement, PolygonElement, ArrowElement, DoubleArrowElement,
+  MovingPointElement, LineElement, PolylineElement, PolygonElement, ArrowElement, DoubleArrowElement,
   EncirclementElement, GatheringElement, FlagElement, CameraKeyframe, TerritoryElement
 } from '../types';
 
@@ -920,6 +920,20 @@ export function EditableMap({ project }: EditableMapProps) {
       if (rstyle) useInteractionStore.getState().clearPendingRouteStyle();
       const isPlain = rstyle === 'plain-straight' || rstyle === 'plain-bezier';
       const asRoute = isPlain || rstyle === 'arrow-line' || rstyle === 'arrow-curve';
+      if (shape && !asRoute) {
+        // 形状工具的直线 / 曲线 / 带箭头线：polyline，进形状图层与形状表（静态，无动画）
+        createElementAndSelect({
+          id: generateId(), type: 'polyline',
+          name: arrow ? (bez ? '带箭头曲线' : '带箭头直线') : bez ? '曲线' : '直线',
+          locked: false,
+          startFrame: 0, endFrame: project.endFrame, style: {},
+          coordinates: pts,
+          lineType: bez ? 'bezier' as const : 'straight' as const,
+          ...(arrow ? { lineArrow: true as const } : {}),
+          strokeColor: '#FF4444', strokeWidth: 8,
+          shapeCategory: 'multi' as const,
+        } as PolylineElement);
+      } else {
       createElementAndSelect({
         id: generateId(), type: 'line',
         name: isPlain ? (bez ? '无样式曲线' : '无样式直线') : arrow ? (bez ? '带箭头曲线' : '带箭头直线') : bez ? '曲线' : (shape ? '直线' : '路线'),
@@ -937,6 +951,7 @@ export function EditableMap({ project }: EditableMapProps) {
         ...(isPlain ? { plainPath: true as const } : {}),
         ...(asRoute ? { shapeCategory: 'route' as const } : shape ? { shapeCategory: 'multi' as const } : {}),
       } as LineElement);
+      }
     } else if (mode === 'add_shape_march') {
       if (pts.length < 2) return;
       const rr = useInteractionStore.getState().pendingRouteStyle;
@@ -948,7 +963,7 @@ export function EditableMap({ project }: EditableMapProps) {
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved-simple', path: pts,
         width: 15, color: '#E23B3B',
         progress: [{ frame: 0, value: 1 }],
-        showIcon: true, uniformMove: true,
+        showIcon: asRoute, uniformMove: true,
         ...(asRoute ? { animEffect: 'move' as const, moveStartFrame: 0, moveEndFrame: project.endFrame } : {}),
         drawZoom: map.getZoom(),
         shapeCategory: asRoute ? 'route' : 'multi',
@@ -961,7 +976,7 @@ export function EditableMap({ project }: EditableMapProps) {
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
         width: 15, color: '#E23B3B',
         progress: [{ frame: 0, value: 1 }],
-        showIcon: true, uniformMove: true,
+        showIcon: false, uniformMove: true,
         drawZoom: map.getZoom(),
         shapeCategory: 'multi',
       } as ArrowElement);
@@ -973,7 +988,7 @@ export function EditableMap({ project }: EditableMapProps) {
         from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
         progress: [{ frame: 0, value: 1 }],
-        showIcon: true, uniformMove: true,
+        showIcon: false, uniformMove: true,
         drawZoom: map.getZoom(),
         shapeCategory: 'special',
       } as ArrowElement);
@@ -981,17 +996,16 @@ export function EditableMap({ project }: EditableMapProps) {
       if (pts.length < 2) return;
       const curved = mode === 'add_shape_front_curve';
       createElementAndSelect({
-        id: generateId(), type: 'line',
+        id: generateId(), type: 'polyline',
         name: curved ? '弯曲战线' : '直线战线',
         locked: false,
         startFrame: 0, endFrame: project.endFrame, style: {},
         coordinates: pts,
-        drawProgress: [{ frame: 0, value: 1 }],
-        lineWidth: 8, lineColor: '#FF6600',
         lineType: curved ? ('bezier' as const) : ('straight' as const),
+        strokeColor: '#FF6600', strokeWidth: 8,
         frontStyle: { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 },
         shapeCategory: 'multi',
-      } as LineElement);
+      } as PolylineElement);
     } else if (mode === 'add_terr_plot') {
       // 绘制地块：闭合环 → 加入选中疆域（无则新建）；完成后保持模式可连续绘制
       const d0 = drawRef.current;
@@ -1196,7 +1210,7 @@ export function EditableMap({ project }: EditableMapProps) {
 
     // 添加点模式：命中已有顶点 → 退出添加模式转顶点拖拽（任意关键点都可编辑）；
     // 命中空白地图 → 在带路径的选中路线末尾追加（可连续追加，仅路线类）。
-    const APPENDABLE = new Set(['line', 'moving_point', 'arrow', 'double_arrow']);
+    const APPENDABLE = new Set(['line', 'polyline', 'moving_point', 'arrow', 'double_arrow']);
     if (rEdit === 'add') {
       const vAdd = hitRouteVertex(map, e.point, ch.elements, selId, ed);
       if (vAdd) {
@@ -1503,8 +1517,8 @@ export function EditableMap({ project }: EditableMapProps) {
 
     const el = project.elements.find((x) => x.id === selectedElementId);
     if (!el) return;
-    // 路线类元素不做线状高亮，顶点标识已足够
-    if (el.type === 'line' || el.type === 'moving_point' || el.type === 'arrow' || el.type === 'double_arrow') return;
+    // 路线类与折线元素不做线状高亮，顶点标识已足够
+    if (el.type === 'line' || el.type === 'polyline' || el.type === 'moving_point' || el.type === 'arrow' || el.type === 'double_arrow') return;
     if (el.type === 'polygon' || el.type === 'encirclement' || el.type === 'gathering') return;
 
     const feature = buildSelectionFeature(el);
@@ -1935,6 +1949,7 @@ function modeHint(mode: string): string {
 /** 路线类元素的可编辑路径点（line/moving_point/arrow/double_arrow/polygon等形状） */
 function routePathOf(el: MapElement): [number, number][] | null {
   if (el.type === 'line') return (el.coordinates?.length ?? 0) >= 2 ? el.coordinates : null;
+  if (el.type === 'polyline') return (el.coordinates?.length ?? 0) >= 2 ? el.coordinates : null;
   if (el.type === 'moving_point') return (el.path?.length ?? 0) >= 2 ? el.path : null;
   if (el.type === 'arrow') {
     if (el.path && el.path.length >= 2) return el.path;
@@ -2015,7 +2030,7 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
     useProjectStore.getState().updateElement(el.id, { points: c } as Partial<MapElement>);
     return true;
   }
-  if (el.type === 'line') {
+  if (el.type === 'line' || el.type === 'polyline') {
     if (idx >= el.coordinates.length) return false;
     const c = el.coordinates.map((p) => [p[0], p[1]] as [number, number]);
     c[idx] = pt;

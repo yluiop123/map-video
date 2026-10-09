@@ -36,11 +36,11 @@ export const PIN_CAPABILITIES: Record<PointShape, PinCapability> = {
   bubble: { label: '气泡', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'none', metaFields: [] },
   text: { label: '文字', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'none', metaFields: [] },
   emoji: { label: '表情', canTint: false, canFlat: true, canRotate: true, canScale: true, source: 'none', metaFields: [] },
-  image: { label: '图片', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'media', metaFields: ['fit', 'tintable'] },
-  gif: { label: '动图', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'media', metaFields: ['fps', 'loop'] },
-  model: { label: '模型', canTint: true, canFlat: false, canRotate: true, canScale: true, source: 'media', metaFields: ['altitude', 'autoRotate', 'spin', 'pitchAlign', 'animation'] },
+  image: { label: '图片', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'media', metaFields: [] },
+  gif: { label: '动图', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'media', metaFields: [] },
+  model: { label: '模型', canTint: true, canFlat: false, canRotate: true, canScale: true, source: 'media', metaFields: ['autoRotate', 'spin'] },
   icon: { label: '图标库', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'icon', metaFields: ['strokeWidth'] },
-  military_symbol: { label: '军标', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'media', metaFields: ['fit', 'tintable'] },
+  military_symbol: { label: '军标', canTint: true, canFlat: true, canRotate: true, canScale: true, source: 'media', metaFields: [] },
 };
 
 export const ALL_POINT_SHAPES = Object.keys(PIN_CAPABILITIES) as PointShape[];
@@ -138,7 +138,7 @@ export function defaultVisualFor(shape: PointShape, el: PointElement): Partial<P
         rotation: 0,
         // 默认浅暖灰：纯白在强光下会过曝
         color: el.color || '#d7d3ce',
-        visualMeta: { altitude: 0, spin: 0, autoRotate: 0, ...base.visualMeta },
+        visualMeta: { spin: 0, autoRotate: 0, ...base.visualMeta },
       };
     case 'icon':
       return {

@@ -457,7 +457,7 @@ export function FloatingTools() {
 
       {/* 标记样式弹窗（标题=类型名称；内容=标记设置的样式） */}
       {pinOpen && (
-        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[340px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[340px] max-h-[calc(100%-64px)] overflow-y-auto rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
           <div className="flex items-center gap-2">
             <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-300/90 bg-red-500/10 rounded">
               {lang === 'en' ? 'Pin' : '标记'}
@@ -492,7 +492,7 @@ export function FloatingTools() {
 
       {/* 路线类型弹窗（标题=类型名称；内容=路线设置的路线类型） */}
       {routeOpen && (
-        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[340px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[340px] max-h-[calc(100%-64px)] overflow-y-auto rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
           <div className="flex items-center gap-2">
             <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-300/90 bg-blue-500/10 rounded">
               {lang === 'en' ? 'Route' : '路线'}
@@ -527,7 +527,7 @@ export function FloatingTools() {
 
       {/* 形状分类菜单（展开在工具条下方） */}
       {shapeOpen && (
-        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[460px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[460px] max-h-[calc(100%-64px)] overflow-y-auto rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
           <div className="flex items-center gap-2">
             <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-orange-300/90 bg-orange-500/10 rounded">
               {lang === 'en' ? 'Shape' : '形状'}
@@ -575,7 +575,7 @@ export function FloatingTools() {
 
       {/* 疆域分类菜单（展开在工具条下方） */}
       {terrOpen && (
-        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[320px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[320px] max-h-[calc(100%-64px)] overflow-y-auto rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
           <div className="flex items-center gap-2">
             <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-violet-300/90 bg-violet-500/10 rounded">
               {lang === 'en' ? 'Territory' : '疆域'}
@@ -611,7 +611,7 @@ export function FloatingTools() {
 
       {/* 图片贴图菜单：导入新图 / 从全局素材库插入 */}
       {imageOpen && (
-        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[380px] rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-30 w-[380px] max-h-[calc(100%-64px)] overflow-y-auto rounded-xl bg-[#171412]/95 backdrop-blur-md border border-white/[0.14] shadow-2xl p-3 space-y-3">
           <div className="flex items-center gap-2">
             <div className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300/90 bg-emerald-500/10 rounded">
               {lang === 'en' ? 'Image' : '图片贴图'}

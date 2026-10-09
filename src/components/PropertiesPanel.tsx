@@ -12,7 +12,7 @@ import { Section, Field, StyleGrid, Toggle, ColorPicker, OptionBlocks, PanelHead
 import { useConfirm } from './ui/ConfirmHost';
 
 import type {
-  MapElement, PointElement, LineElement,
+  MapElement, PointElement, LineElement, PolylineElement,
   PolygonElement, ArrowElement, FlagElement,
   DoubleArrowElement, EncirclementElement, GatheringElement,
   CameraKeyframe, TerritoryElement, GeoImageElement, PointShape,
@@ -42,6 +42,7 @@ function categoryOf(el: MapElement): Category {
   if (t === 'geo_image') return 'image';
   if (t === 'territory') return 'territory';
   const sc = el.shapeCategory;
+  if (t === 'polyline') return 'shape-multi';
   if (sc === 'multi') return 'shape-multi';
   if (sc === 'two') return 'shape-two';
   if (sc === 'special') return 'shape-special';
@@ -101,14 +102,14 @@ export function PropertiesPanel() {
         <Section title={t('标签', 'Label')}>
           <input
             type="text"
-            value={element.type === 'point' || element.type === 'line'
+            value={element.type === 'point' || element.type === 'line' || element.type === 'polyline'
               ? (element.label?.text ?? '')
               : element.type === 'flag'
                 ? (element as FlagElement).text
                 : element.name}
             onChange={(e) => {
               const v = e.target.value;
-              if (element.type === 'point' || element.type === 'line') {
+              if (element.type === 'point' || element.type === 'line' || element.type === 'polyline') {
                 patch({
                   label: { ...(element.label || { fontSize: 13, color: '#FFFFFF' }), text: v },
                   name: v || element.name,
@@ -1579,7 +1580,7 @@ type MultiPointStyle = 'line' | 'bezier' | 'line-arrow' | 'bezier-arrow' | 'swal
 /** 从任意元素提取点串（去闭合点） */
 function shapeCoords(el: MapElement): [number, number][] {
   const t = el.type;
-  if (t === 'line') return (el.coordinates || []).slice();
+  if (t === 'line' || t === 'polyline') return (el.coordinates || []).slice();
   if (t === 'arrow') {
     const ar = el as ArrowElement;
     if (ar.path && ar.path.length >= 2) return ar.path;
@@ -1605,13 +1606,21 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
   const coords = shapeCoords(element);
   const colorOf = element.type === 'line'
     ? element.lineColor
-    : element.type === 'polygon'
-      ? element.fillColor
-      : ((element as ArrowElement).color || '#E23B3B');
-  const widthOf = element.type === 'line' ? element.lineWidth : element.type === 'arrow' ? (element as ArrowElement).width : 3;
+    : element.type === 'polyline'
+      ? (element as PolylineElement).strokeColor
+      : element.type === 'polygon'
+        ? element.fillColor
+        : ((element as ArrowElement).color || '#E23B3B');
+  const widthOf = element.type === 'line' ? element.lineWidth : element.type === 'polyline' ? (element as PolylineElement).strokeWidth : element.type === 'arrow' ? (element as ArrowElement).width : 3;
 
   const current: MultiPointStyle =
-    element.type === 'line'
+    element.type === 'polyline'
+      ? ((element as PolylineElement).frontStyle === undefined
+        ? ((element as PolylineElement).lineArrow
+          ? ((element as PolylineElement).lineType === 'bezier' ? 'bezier-arrow' : 'line-arrow')
+          : ((element as PolylineElement).lineType === 'bezier' ? 'bezier' : 'line'))
+        : ((element as PolylineElement).lineType === 'bezier' ? 'front-curve' : 'front-line'))
+      : element.type === 'line'
       ? ((element as LineElement).frontStyle === undefined
         ? ((element as LineElement).lineArrow
           ? ((element as LineElement).lineType === 'bezier' ? 'bezier-arrow' : 'line-arrow')
@@ -1631,27 +1640,27 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
     const pts = coords.length >= 2 ? coords : [[104, 35], [105, 36]];
     if (s === 'front-line' || s === 'front-curve') {
       patch({
-        type: 'line', coordinates: pts, lineType: s === 'front-curve' ? 'bezier' : 'straight', lineArrow: false,
-        drawProgress: [{ frame: start, value: 1 }], lineWidth: 8, lineColor: colorOf,
+        type: 'polyline', coordinates: pts, lineType: s === 'front-curve' ? 'bezier' : 'straight',
+        strokeWidth: 8, strokeColor: colorOf,
         frontStyle: { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 },
         shapeCategory: 'multi',
       } as Partial<MapElement>);
       return;
     }
     // 其他类型：清除战线梳齿
-    if (element.type === 'line' && (element as LineElement).frontStyle) {
+    if ((element.type === 'line' && (element as LineElement).frontStyle) || (element.type === 'polyline' && (element as PolylineElement).frontStyle)) {
       patch({ frontStyle: undefined } as Partial<MapElement>);
     }
     if (s === 'line' || s === 'bezier') {
       patch({
-        type: 'line', coordinates: pts, lineType: s, lineArrow: false,
-        drawProgress: [{ frame: start, value: 1 }], lineWidth: 8, lineColor: colorOf,
+        type: 'polyline', coordinates: pts, lineType: s,
+        strokeWidth: 8, strokeColor: colorOf,
         shapeCategory: 'multi',
       } as Partial<MapElement>);
     } else if (s === 'line-arrow' || s === 'bezier-arrow') {
       patch({
-        type: 'line', coordinates: pts, lineType: s === 'bezier-arrow' ? 'bezier' : 'straight', lineArrow: true,
-        drawProgress: [{ frame: start, value: 1 }], lineWidth: 8, lineColor: colorOf,
+        type: 'polyline', coordinates: pts, lineType: s === 'bezier-arrow' ? 'bezier' : 'straight', lineArrow: true,
+        strokeWidth: 8, strokeColor: colorOf,
         shapeCategory: 'multi',
       } as Partial<MapElement>);
     } else if (s === 'swallowtail') {
@@ -1714,12 +1723,14 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
           <Field label={t('大小', 'Size')}>
             <SizeSlider base={element.type === 'arrow' ? 15 : 8} value={widthOf} onChange={(v) => {
               if (element.type === 'line') patch({ lineWidth: v });
+              else if (element.type === 'polyline') patch({ strokeWidth: v } as Partial<MapElement>);
               else if (element.type === 'arrow') patch({ width: v } as Partial<MapElement>);
             }} />
           </Field>
           <Field label={t('颜色', 'Color')}>
             <ColorPicker value={colorOf} onChange={(c) => {
               if (element.type === 'line') patch({ lineColor: c });
+              else if (element.type === 'polyline') patch({ strokeColor: c } as Partial<MapElement>);
               else patch({ color: c } as Partial<MapElement>);
             }} />
           </Field>

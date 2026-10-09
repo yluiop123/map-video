@@ -190,7 +190,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 630 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，630 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 622 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，622 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -445,7 +445,7 @@
 
 **职责**：标记类元素：Pin 工具产出，3 种 type 合并一张宽表　**前端**：工具条「标记」按钮 + 标记属性面板（PropertiesPanel，10 种视觉形态）
 
-45 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
+38 列 · 主键 `element_id` · 工具入口：Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -479,15 +479,8 @@
 | `builtin_id` | TEXT | — | 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin |
 | `icon_lib` | TEXT | — | 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用） |
 | `icon_name` | TEXT | — | 图标名（shape=icon 时必填，可指向内置库或 custom_symbol.name） |
-| `visual_fit` | TEXT | — | image 适配方式：contain / cover · `CHECK (visual_fit IS NULL OR visual_fit IN ('contain','cover'))` |
-| `visual_tintable` | INTEGER | — | image 是否允许着色（0/1） · `CHECK (visual_tintable IS NULL OR visual_tintable IN (0,1))` |
-| `visual_fps` | REAL | — | gif 帧率 |
-| `visual_loop` | INTEGER | — | gif 是否循环（0/1） · `CHECK (visual_loop IS NULL OR visual_loop IN (0,1))` |
-| `visual_altitude` | REAL | — | model 离地高度（米） |
 | `visual_auto_rotate` | REAL | — | model 自转角速度（度/秒） |
 | `visual_spin` | REAL | — | model 初始朝向（度） |
-| `visual_pitch_align` | INTEGER | — | model 是否随地图俯仰倾斜（0/1） · `CHECK (visual_pitch_align IS NULL OR visual_pitch_align IN (0,1))` |
-| `visual_animation` | TEXT | — | model 播放的动画片段名 |
 | `visual_stroke_width` | REAL | — | icon 描边粗细 |
 | `flag_text` | TEXT | — | 旗面文字（type=flag 时必填） |
 | `flag_color` | TEXT | — | 旗面颜色 |
@@ -510,7 +503,7 @@
 
 **职责**：路线类元素：line / moving_point　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-65 列 · 主键 `element_id` · 工具入口：Route 工具；Shape 子菜单的直线/曲线/带箭头/战线/行军箭头也写这张表
+65 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -591,21 +584,20 @@
 
 #### element_shape
 
-**职责**：形状类元素：polygon / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
+**职责**：形状类元素：polygon / polyline / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-76 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+79 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
-| `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement'))` |
+| `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / polyline 折线（形状工具的直线/曲线/战线） / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
-| `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
 | `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
 | `move_icon_shape` | TEXT | — | 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标 · `CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol'))` |
 | `move_icon_color` | TEXT | — | 移动图标主色 |
@@ -636,9 +628,6 @@
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
 | `label_font_size` | REAL | — | 标签字号 |
 | `label_color` | TEXT | — | 标签文字颜色 |
-| `label_position` | TEXT | — | 标签位置：top/bottom/left/right/center · `CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center'))` |
-| `label_offset_x` | REAL | — | 标签水平像素偏移（0=居中，负左正右） |
-| `label_offset_y` | REAL | — | 标签垂直像素偏移（0=居中，正值向上） |
 | `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
 | `label_bg_padding` | REAL | — | 标签背景内边距 |
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
@@ -668,6 +657,13 @@
 | `width` | REAL | — | 箭头宽度（px） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
 | `points_json` | TEXT | — | 4 个控制点（type=double_arrow 钳形攻势时必填） · `CHECK (points_json IS NULL OR json_valid(points_json))` |
+| `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]（type=polyline 时必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
+| `line_type` | TEXT | — | 线型：straight 直线 / bezier 贝塞尔（控制点拟合） · `CHECK (line_type IS NULL OR line_type IN ('straight','bezier'))` |
+| `line_arrow` | INTEGER | — | 线末端是否带方向小三角（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
+| `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
+| `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
+| `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
+| `front_side` | INTEGER | — | 梳齿朝向侧：1 右 / -1 左 · `CHECK (front_side IS NULL OR front_side IN (-1,1))` |
 | `center_lng` | REAL | — | 中心经度（gathering / encirclement 必填） |
 | `center_lat` | REAL | — | 中心纬度 |
 | `radius` | REAL | — | 半径（米，gathering / encirclement 必填） |
@@ -686,6 +682,7 @@
 - `CHECK (type <> 'arrow' OR arrow_type IS NOT NULL)`
 - `CHECK (type <> 'arrow' OR (from_lng IS NOT NULL AND from_lat IS NOT NULL AND to_lng IS NOT NULL AND to_lat IS NOT NULL))`
 - `CHECK (type <> 'double_arrow' OR points_json IS NOT NULL)`
+- `CHECK (type <> 'polyline' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 - `CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 
@@ -914,7 +911,7 @@
 
 **职责**：公共标记元素（public_layer 内副本，与 element_marker 同构）　**前端**：同上
 
-42 列 · 主键 `element_id`
+35 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -945,15 +942,8 @@
 | `builtin_id` | TEXT | — | 内置资源 id（打包进应用、不入库）：image:flag-red / gif:radar / model:drone / icon:lucide:MapPin |
 | `icon_lib` | TEXT | — | 图标库命名空间：lucide / react-icons/xxx / 自建库名（shape=icon 时用） |
 | `icon_name` | TEXT | — | 图标名（shape=icon 时必填，可指向内置库或 custom_symbol.name） |
-| `visual_fit` | TEXT | — | image 适配方式：contain / cover · `CHECK (visual_fit IS NULL OR visual_fit IN ('contain','cover'))` |
-| `visual_tintable` | INTEGER | — | image 是否允许着色（0/1） · `CHECK (visual_tintable IS NULL OR visual_tintable IN (0,1))` |
-| `visual_fps` | REAL | — | gif 帧率 |
-| `visual_loop` | INTEGER | — | gif 是否循环（0/1） · `CHECK (visual_loop IS NULL OR visual_loop IN (0,1))` |
-| `visual_altitude` | REAL | — | model 离地高度（米） |
 | `visual_auto_rotate` | REAL | — | model 自转角速度（度/秒） |
 | `visual_spin` | REAL | — | model 初始朝向（度） |
-| `visual_pitch_align` | INTEGER | — | model 是否随地图俯仰倾斜（0/1） · `CHECK (visual_pitch_align IS NULL OR visual_pitch_align IN (0,1))` |
-| `visual_animation` | TEXT | — | model 播放的动画片段名 |
 | `visual_stroke_width` | REAL | — | icon 描边粗细 |
 | `flag_text` | TEXT | — | 旗面文字（type=flag 时必填） |
 | `flag_color` | TEXT | — | 旗面颜色 |
@@ -1050,16 +1040,15 @@
 
 **职责**：公共形状元素（public_layer 内副本，与 element_shape 同构）　**前端**：同上
 
-73 列 · 主键 `element_id`
+76 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
-| `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','arrow','double_arrow','gathering','encirclement'))` |
+| `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / polyline 折线（形状工具的直线/曲线/战线） / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
-| `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
 | `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
 | `move_icon_shape` | TEXT | — | 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标 · `CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol'))` |
 | `move_icon_color` | TEXT | — | 移动图标主色 |
@@ -1090,9 +1079,6 @@
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
 | `label_font_size` | REAL | — | 标签字号 |
 | `label_color` | TEXT | — | 标签文字颜色 |
-| `label_position` | TEXT | — | 标签位置：top/bottom/left/right/center · `CHECK (label_position IS NULL OR label_position IN ('top','bottom','left','right','center'))` |
-| `label_offset_x` | REAL | — | 标签水平像素偏移（0=居中，负左正右） |
-| `label_offset_y` | REAL | — | 标签垂直像素偏移（0=居中，正值向上） |
 | `label_bg_color` | TEXT | — | 标签背景色（默认透明） |
 | `label_bg_padding` | REAL | — | 标签背景内边距 |
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
@@ -1122,6 +1108,13 @@
 | `width` | REAL | — | 箭头宽度（px） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
 | `points_json` | TEXT | — | 4 个控制点（type=double_arrow 钳形攻势时必填） · `CHECK (points_json IS NULL OR json_valid(points_json))` |
+| `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]（type=polyline 时必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
+| `line_type` | TEXT | — | 线型：straight 直线 / bezier 贝塞尔（控制点拟合） · `CHECK (line_type IS NULL OR line_type IN ('straight','bezier'))` |
+| `line_arrow` | INTEGER | — | 线末端是否带方向小三角（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
+| `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
+| `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
+| `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
+| `front_side` | INTEGER | — | 梳齿朝向侧：1 右 / -1 左 · `CHECK (front_side IS NULL OR front_side IN (-1,1))` |
 | `center_lng` | REAL | — | 中心经度（gathering / encirclement 必填） |
 | `center_lat` | REAL | — | 中心纬度 |
 | `radius` | REAL | — | 半径（米，gathering / encirclement 必填） |
@@ -1139,6 +1132,7 @@
 - `CHECK (type <> 'arrow' OR arrow_type IS NOT NULL)`
 - `CHECK (type <> 'arrow' OR (from_lng IS NOT NULL AND from_lat IS NOT NULL AND to_lng IS NOT NULL AND to_lat IS NOT NULL))`
 - `CHECK (type <> 'double_arrow' OR points_json IS NOT NULL)`
+- `CHECK (type <> 'polyline' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 - `CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 
@@ -1207,7 +1201,7 @@
 |---|---|---|
 | **标记** Pin | 一键放到地图中心，之后在面板里改样式/换形态 | `element_marker`：`point`（圆点/水滴针/气泡/Emoji/文字） 切到 Marker → `flag`；军标导入/旧数据 → `military_symbol` |
 | **路线** Route | 进入绘制模式，采点成线 | `element_route`：`line`（线型与路线特效在右侧 Settings 切换） |
-| **形状** Shape | 下拉菜单三组共 19 项：多点绘制 / 两点绘制 / 特殊图形 | `element_shape`：`polygon`（多边形/曲线多边/防御圈/圆/矩形/五角星）、`arrow`（带箭头/行军/燕尾/自定义）、`double_arrow`（钳形）、`gathering`（集结点） 其中带箭头/战线的直线属**路线表** `line` |
+| **形状** Shape | 下拉菜单三组共 19 项：多点绘制 / 两点绘制 / 特殊图形 | `element_shape`：`polygon`（多边形/曲线多边/防御圈/圆/矩形/五角星）、`polyline`（直线/曲线/战线）、`arrow`（带箭头/行军/燕尾/自定义）、`double_arrow`（钳形）、`gathering`（集结点） |
 | **区域** Region（形状下拉内） | 打开行政区选择器，点国家/地区 | `element_shape` 的 `polygon`（按边界自动生成可编辑高亮面，跨海国家拆多个面）——**与形状共用一张表** |
 | **疆域** Terr | 下拉菜单 4 项：新建疆域 / 导入 / 绘制地块 / 兼并 | `element_territory`（势力 / 地块 / 兼并事件 JSON 全部内联在本表） |
 | **图片** Image | 导入图片 / 从全局素材库插入，拖控制点做地理配准 | `element_image`：`geo_image`（控制点网格 `grid_json` 内联，图片本体走全局素材库） |
@@ -1224,10 +1218,11 @@
 
 | 地图上的东西 | 表 | type 取值 | 专属字段（举例） |
 |---|---|---|---|
-| 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_* 十列 |
+| 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_* 三列 |
 | 旗帜 | `element_marker` | `flag` | flag_text、flag_color、flag_width |
 | 军标（APP-6） | `element_marker` | `point` + `shape='military_symbol'` | 无专属列：SIDC 存在 `builtin_id`（`milsym:<SIDC>`），渲染端从那里反解 |
 | 路线 / 飞线 | `element_route` | `line` | coords_json、line_type、route_dot_*、flow_speed、plain_path、front_tooth_* |
+| 折线（直线/曲线/战线） | `element_shape` | `polyline` | coords_json、line_type、line_arrow、front_tooth_*、描边走 stroke_color / stroke_width |
 | 移动点 | `element_route` | `moving_point` | coords_json、path_progress（走 keyframes_json） |
 | 区域（多边形/矩形/圆/五角星） | `element_shape` | `polygon` | shape_kind、rings_json、rect_c1/c2_lng/lat、center_lng/lat、radius、poly_curve |
 | 箭头（多种） | `element_shape` | `arrow` | arrow_type、from/to_lng/lat、path_json、anim_effect |
@@ -1235,24 +1230,24 @@
 | 包围圈 / 集结点 | `element_shape` | `encirclement` / `gathering` | center_lng/lat、radius、pulse_animation |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_* 八列 ＋ countries_json / plots_json / events_json |
 
-动画族列（`anim_effect` / `fly_mode` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只在 `element_route` 与 `element_shape` 里有**：它们描述「沿一条路径走」，而 marker / territory / image 没有路径 —— 早先宽表把 union 全给每张表，结果 marker 那张写进去读不回来（§6.29「每一格都要有消费者」）。
+动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只在 `element_route` 与 `element_shape` 里有**：它们描述「沿一条路径走」，而 marker / territory / image 没有路径 —— 早先宽表把 union 全给每张表，结果 marker 那张写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode`（悬空飞行）更窄，只在 `element_route`：飞行渲染只认 line，箭头明确不支持。
 
 ### 点标记的 10 种形态与能力矩阵
 
 这张矩阵同时驱动三处：**属性面板**（不满足则隐藏控件）、**数据库 CHECK**（不满足则拒绝写入）、**渲染端**（按形态选管线）。
 
-| 形态 | shape | 资源来源 | 缩放 | 贴地 flat | 旋转 | 着色 | 专属参数（`visual_*` 十列） |
+| 形态 | shape | 资源来源 | 缩放 | 贴地 flat | 旋转 | 着色 | 专属参数（`visual_*` 三列） |
 |---|---|---|---|---|---|---|---|
 | 圆点 | `circle` | — | ✓ | ✓ | ✓ | ✓ | — |
 | 水滴针 | `pin` | — | ✓ | ✓ | ✓ | ✓ | — |
 | 气泡 | `bubble` | — | ✓ | ✓ | ✓ | ✓ | — |
 | 文字 | `text` | — | ✓ | ✓ | ✓ | ✓ | — |
 | 表情 | `emoji` | 内置字符 | ✓ | ✓ | ✓ | **✗**（唯一不可着色：表情字符自带颜色） | — |
-| **图片** | `image` | 内置图集 / 上传 png·jpg·webp·**svg** | ✓ | ✓ | ✓ | ✓ | `{fit, tintable}` |
-| **GIF** | `gif` | 内置动图 / 上传 gif·webp | ✓ | ✓ | ✓ | ✓ | `{fps, loop}` |
-| **模型** | `model` | 内置模型 / 上传 glb·gltf | ✓ | **✗**（位图贴片，强制面向镜头） | ✓ | ✓ | `{altitude, autoRotate, spin, pitchAlign, animation}` |
+| **图片** | `image` | 内置图集 / 上传 png·jpg·webp·**svg** | ✓ | ✓ | ✓ | ✓ | — |
+| **GIF** | `gif` | 内置动图 / 上传 gif·webp | ✓ | ✓ | ✓ | ✓ | — |
+| **模型** | `model` | 内置模型 / 上传 glb·gltf | ✓ | **✗**（位图贴片，强制面向镜头） | ✓ | ✓ | `{autoRotate, spin}` |
 | **图标库** | `icon` | lucide / react-icons / 自建库 | ✓ | ✓ | ✓ | ✓ | `{strokeWidth}` |
-| **军标** | `military_symbol` | 内置 milsymbol 按 SIDC 生成 | ✓ | ✓ | ✓ | ✓ | `{fit, tintable}` |
+| **军标** | `military_symbol` | 内置 milsymbol 按 SIDC 生成 | ✓ | ✓ | ✓ | ✓ | — |
 
 资源两来源：**`asset_id`**（用户上传，进 asset 表外置存储）与 **`builtin_id`**（内置资源，打包进应用、不入库）；图标形态额外用 `icon_lib` + `icon_name` 定位，自建库条目落在 `asset`（`kind='icon'`，`UNIQUE` 由应用层保证）。
 

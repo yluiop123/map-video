@@ -13,7 +13,7 @@ export function layerTypeOf(el: MapElement): LayerType {
   switch (el.type) {
     case 'point': case 'flag': return 'marker';
     case 'line': case 'moving_point': return 'route';
-    case 'polygon': case 'arrow': case 'double_arrow': case 'gathering': case 'encirclement': return 'shape';
+    case 'polygon': case 'polyline': case 'arrow': case 'double_arrow': case 'gathering': case 'encirclement': return 'shape';
     case 'territory': return 'territory';
     case 'geo_image': return 'image';
     default: return 'marker';
