@@ -33,7 +33,7 @@
 
 ### 1.2 元素建模：按工具栏聚合的 5 张类别宽表
 
-元素共 11 个子类型（point / flag / line / moving_point / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、项目与图层归属、时间轴、层级），**有路径的类别再共享动画与移动配置**（route / shape 两张表独有 —— marker/territory/image 没有路径可走），**专有字段差异极大**（从 3 个到 47 个）。
+元素共 11 个子类型（point / flag / line / moving_point / polygon / arrow / double_arrow / gathering / encirclement / territory / geo_image）。它们**共享同一套公共字段**（id、项目与图层归属、时间轴、层级），**只有路线再带动画与移动配置**（`element_route` 独有 —— 只有 line / moving_point 会走动），**专有字段差异极大**（从 3 个到 47 个）。
 
 三种映射方案的取舍：
 
@@ -126,7 +126,7 @@ DDL **不定义任何触发器**（原 6 条已于 2026-09-12 全部移除）。
 
 | 设计决策 | 依据 |
 |---|---|
-| 元素按工具栏聚合为类别宽表（现 5 张） | 12 个子类型专有字段 3–47 个、离散度极大：单表继承会产出 60+ 可空列并丧失子类必填约束；按类型逐张拆表则表数最多且需额外维护判别列与具化行的一致性。**但宽表只聚合「这一类里真的有消费者」的列** —— 动画族（`anim_effect`/`fly_mode`/`show_icon`/`move_*`/`point_times_json`）只属于有路径的 route 与 shape，不进 marker/territory/image（否则就是写进去读不回来的死列） |
+| 元素按工具栏聚合为类别宽表（现 5 张） | 12 个子类型专有字段 3–47 个、离散度极大：单表继承会产出 60+ 可空列并丧失子类必填约束；按类型逐张拆表则表数最多且需额外维护判别列与具化行的一致性。**但宽表只聚合「这一类里真的有消费者」的列** —— 动画族（`anim_effect`/`fly_mode`/`show_icon`/`move_*`/`point_times_json`）只属于路线，不进 marker/shape/territory/image（否则就是写进去读不回来的死列；形状是静态的，路线弹窗的燕尾/行军箭头也建成 line） |
 | 动画关键帧内联为 `keyframes_json` | 运行时元素对象本就内联关键帧数组，独立成表需要弱引用维护；P3 内联跟随元素整体读写（原独立表已取消） |
 | 元素标签从 `label_json` 改判为**平铺 `label_*` 十列** | 原判据是「可选 1:1 值对象、不参与检索」；实际面板上每个小项都要单独存取、单独校验（CHECK 白名单），塞在 JSON 里改一个键就得整块读写 |
 | GlobalConfig 独立成 `project` | 配置与项目本体职责分离：`project` 只留身份 / 归属 / 审计字段，配置面板只读写配置表；将来新增配置项不改动 `project` 结构 |

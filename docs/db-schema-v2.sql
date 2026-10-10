@@ -188,10 +188,10 @@ CREATE INDEX IF NOT EXISTS ix_layer_project ON layer(project_id, ord);
 --    shape / territory 的面板没有标签入口，运行时类型里也没有 label 字段）。
 --    ord 是死列（写死 0、读端无 ORDER BY），**五张类别表都已删**（含各自的公共副本）。
 --    元素没有自己的显隐（显隐只在图层那一档）；时间存项目绝对秒，渲染时与图层区间取交集。
---    动画类列（anim_effect / show_icon / move_* / point_times_json）
---    **只在有路径的类别里有**：route 与 shape（箭头沿线走）。marker / territory /
---    image 没有路径，这些列一律不留 —— 留了就是「写进去、读不回来」的死列。
---    fly_mode 更进一步：飞行只在渲染端 renderLine 实现，所以只有 route 有，shape 没有。
+--    动画类列（anim_effect / show_icon / move_* / point_times_json）**只有路线有**：
+--    它们描述「沿路径走 / 显示移动标记」，只有 element_route（line / moving_point）会走动 ——
+--    marker / shape / territory / image 一律不留（留了就是「写进去、读不回来」的死列）。
+--    fly_mode 更进一步：飞行只在渲染端 renderLine 实现，同样只有 route 有。
 --    军标是 point 的一种 shape（shape='military_symbol'，SIDC 存在 builtin_id 里），
 --    不是元素类型，所以 type 白名单里没有它。
 -- -----------------------------------------------------------------------------
@@ -327,6 +327,8 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   line_dash_off     REAL,  -- 虚线空白长（原 line_dash_json[1]）
   line_type         TEXT CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc')),  -- 线型：straight 直线 / bezier 贝塞尔 / arc 大圆弧航线
   line_arrow        INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 线末端是否带方向箭头（0/1）
+  -- 路线箭头：设置后**整条线按楔形箭头渲染**（燕尾 / 行军 …），与 line_arrow 的末端小三角不是一回事
+  arrow_type        TEXT CHECK (arrow_type IS NULL OR arrow_type IN ('swallowtail','simple','block','pincer','curved','curved-simple','attack','straight')),  -- 楔形箭头类型：设置则整条线画成箭头（燕尾/行军…），NULL=普通线
   -- 行军路线动画（原 route_effect_json 平铺）：光点颜色/宽度/步长/同时存在数量
   route_dot_enabled    INTEGER CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1)),  -- 行军光点动画是否开启（0/1）
   route_dot_count      INTEGER,  -- 同时存在的光点数量
@@ -363,35 +365,10 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
   end_sec      REAL NOT NULL,  -- 消失时间（秒）
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
-  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
-  -- 没有 fly_mode：飞行（拱形航迹 + 3D 管）只在渲染端 renderLine 里实现，面板的飞行开关也只对
-  --   type='line' 显示 —— 形状类别既没人写、也没人读，留着就是「写进去、读不回来」的死列。
-  -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
-  move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),  -- 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标
-  move_icon_color          TEXT,  -- 移动图标主色
-  move_icon_emoji          TEXT,  -- 移动图标表情字符（形态=emoji）
-  move_icon_scale          REAL,  -- 移动图标等比缩放
-  move_icon_label_text     TEXT,  -- 移动图标标签文字
-  move_icon_label_color    TEXT,  -- 移动图标标签文字颜色
-  move_icon_label_bg       TEXT,  -- 移动图标标签背景色（默认透明）
-  --   没有 move_icon_label_size / padding / radius / pos：面板（MoveResourcePicker）只写
-  --   text/color/bg/offsetX/offsetY，那四格永远 NULL；渲染端只是回退默认值。
-  move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
-  move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
-  move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
-  move_icon_flag_color     TEXT,  -- 移动图标为旗帜时的旗面颜色
-  move_icon_builtin_id     TEXT,  -- 移动图标内置资源 id（不入库资源）
-  move_icon_asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 移动图标上传素材 id（删素材置空）
-  move_icon_icon_lib       TEXT,  -- 移动图标图标库命名空间
-  move_icon_icon_name      TEXT,  -- 移动图标图标名
-  move_icon_orientation    TEXT CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat')),  -- 移动图标朝向：faceCam 面向镜头 / flat 贴地
-  move_icon_rotation       REAL,  -- 移动图标贴地旋转角（度）
-  move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),  -- 移动图标是否显示标签（0/1）
-  move_start_sec REAL,  -- 移动图标出发时间（秒）
-  move_end_sec   REAL,  -- 移动图标到达时间（秒）
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
+  -- 形状都是**静态**的：动画族与移动图标（anim_effect / show_icon / move_start_sec / move_end_sec /
+  --   uniform_move / point_times_json / move_icon_*）**只在会走动的路线里**（element_route 的
+  --   line / moving_point）—— 形状箭头不沿路径移动标记，这些列在这里既没人写也没人读。
+  --   同样没有 fly_mode：飞行只在渲染端 renderLine 实现，只对 type='line' 显示。
   -- 没有 label_* 九列：形状三套面板（Multi/Two/Special）都没有标签入口，顶部 LABEL 栏对形状
   --   只写 name；运行时类型（PolygonElement / ArrowElement）里也**没有 label 字段**，
   --   所以写入端拿到的一直是 undefined。渲染端读 element.label 只出现在 renderPoint / renderLine。
@@ -449,7 +426,6 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   rotation       REAL,  -- 绕中心旋转角（度）
 
   CHECK (end_sec >= start_sec),
-  CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (radius IS NULL OR radius > 0),
   CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly'   OR rings_json IS NOT NULL),
   CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
@@ -669,6 +645,8 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   line_dash_off     REAL,  -- 虚线空白长（原 line_dash_json[1]）
   line_type         TEXT CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc')),  -- 线型：straight 直线 / bezier 贝塞尔 / arc 大圆弧航线
   line_arrow        INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 线末端是否带方向箭头（0/1）
+  -- 路线箭头：设置后**整条线按楔形箭头渲染**（燕尾 / 行军 …），与 line_arrow 的末端小三角不是一回事
+  arrow_type        TEXT CHECK (arrow_type IS NULL OR arrow_type IN ('swallowtail','simple','block','pincer','curved','curved-simple','attack','straight')),  -- 楔形箭头类型：设置则整条线画成箭头（燕尾/行军…），NULL=普通线
   -- 行军路线动画（原 route_effect_json 平铺）：光点颜色/宽度/步长/同时存在数量
   route_dot_enabled    INTEGER CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1)),  -- 行军光点动画是否开启（0/1）
   route_dot_count      INTEGER,  -- 同时存在的光点数量
@@ -698,35 +676,8 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   type           TEXT NOT NULL CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement')),  -- 子类型判别列：polygon 多边形 / polyline 折线（形状工具的直线/曲线/战线） / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具）
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
-  anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
-  show_icon      INTEGER NOT NULL DEFAULT 0 CHECK (show_icon IN (0,1)),  -- 是否显示移动图标
-  -- 没有 fly_mode：飞行（拱形航迹 + 3D 管）只在渲染端 renderLine 里实现，面板的飞行开关也只对
-  --   type='line' 显示 —— 形状类别既没人写、也没人读，留着就是「写进去、读不回来」的死列。
-  -- 移动图标（原 move_icon_json 平铺：面板「显示标记」每个小项 = 一列）
-  move_icon_shape          TEXT CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol')),  -- 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标
-  move_icon_color          TEXT,  -- 移动图标主色
-  move_icon_emoji          TEXT,  -- 移动图标表情字符（形态=emoji）
-  move_icon_scale          REAL,  -- 移动图标等比缩放
-  move_icon_label_text     TEXT,  -- 移动图标标签文字
-  move_icon_label_color    TEXT,  -- 移动图标标签文字颜色
-  move_icon_label_bg       TEXT,  -- 移动图标标签背景色（默认透明）
-  --   没有 move_icon_label_size / padding / radius / pos：面板（MoveResourcePicker）只写
-  --   text/color/bg/offsetX/offsetY，那四格永远 NULL；渲染端只是回退默认值。
-  move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
-  move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
-  move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
-  move_icon_flag_color     TEXT,  -- 移动图标为旗帜时的旗面颜色
-  move_icon_builtin_id     TEXT,  -- 移动图标内置资源 id（不入库资源）
-  move_icon_asset_id       TEXT,  -- 移动图标上传素材 id（删素材置空）
-  move_icon_icon_lib       TEXT,  -- 移动图标图标库命名空间
-  move_icon_icon_name      TEXT,  -- 移动图标图标名
-  move_icon_orientation    TEXT CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat')),  -- 移动图标朝向：faceCam 面向镜头 / flat 贴地
-  move_icon_rotation       REAL,  -- 移动图标贴地旋转角（度）
-  move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),  -- 移动图标是否显示标签（0/1）
-  move_start_sec REAL,  -- 移动图标出发时间（秒）
-  move_end_sec   REAL,  -- 移动图标到达时间（秒）
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
+  -- 形状都是静态的：动画族 / 移动图标只在路线（element_route）有，这里不留（同 element_shape）。
+  -- 也没有 fly_mode（飞行只在 renderLine 实现，只对 line 显示）。
   -- 没有 label_* 九列：形状三套面板（Multi/Two/Special）都没有标签入口，顶部 LABEL 栏对形状
   --   只写 name；运行时类型（PolygonElement / ArrowElement）里也**没有 label 字段**，
   --   所以写入端拿到的一直是 undefined。渲染端读 element.label 只出现在 renderPoint / renderLine。
@@ -783,7 +734,6 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   pulse_animation INTEGER CHECK (pulse_animation IS NULL OR pulse_animation IN (0,1)),  -- 是否脉冲动画（集结地，0/1）
   rotation       REAL,  -- 绕中心旋转角（度）
 
-  CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec),
   CHECK (radius IS NULL OR radius > 0),
   CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly'   OR rings_json IS NOT NULL),
   CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
@@ -1063,9 +1013,8 @@ CREATE INDEX IF NOT EXISTS ix_task_artifact ON task(artifact_id);
 -- ① 素材引用：asset 的孤儿回收 / 「是否被引用」查询由全表扫描变为索引查找
 CREATE INDEX IF NOT EXISTS ix_overlay_audio_asset  ON overlay(audio_asset_id);
 CREATE INDEX IF NOT EXISTS ix_narration_audio_asset ON narration_entry(audio_asset_id);
--- 元素「移动标记」素材引用（平铺自 move_icon_json）
+-- 元素「移动标记」素材引用（平铺自 move_icon_json；只有路线有移动标记）
 CREATE INDEX IF NOT EXISTS ix_route_move_icon_asset ON element_route(move_icon_asset_id);
-CREATE INDEX IF NOT EXISTS ix_shape_move_icon_asset ON element_shape(move_icon_asset_id);
 CREATE INDEX IF NOT EXISTS ix_music_audio_asset     ON music_track(audio_asset_id);
 -- 注：element_marker(asset_id) 的索引见 5.1（ix_marker_asset）
 

@@ -83,7 +83,7 @@ const TABLE_FRONTEND = {
   overlay: { role: '弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）', fe: '右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView' },
   overlay_block: { role: 'custom 类弹窗的内容块序列（逐块排序）', fe: '弹窗面板「自定义」类型的块编辑（FxPanelBody.tsx）' },
   person_block: { role: '人物卡片内容块（头像 / 姓名 / 简介 / 引言 / 对白 5 种）', fe: '弹窗面板「人物」类型的块编辑（FxPanelBody.tsx）' },
-  provider_template: { role: '接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）', fe: '⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）' },
+  provider_template: { role: '接口模板：一行一份完整模板（同步 / 异步 / 上传 / 克隆都在这行的 JSON 列里）', fe: '⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）' },
   provider: { role: '实例：用哪份模板 + 全部取值（密钥是声明成 secret 的普通参数，不占具名列）', fe: '⚙ 设置 · AI → 左侧文案 / 语音 / 图片（ProviderPanel.tsx，实例芯片 + 表单）' },
   voice: { role: '克隆音色账本：同实例 + 同参考音频 + 同目标模型只建一次（幂等键）', fe: '字幕生成弹窗内的「配音音色」区（VoiceField.tsx）' },
   task: { role: '异步任务：跨重启续跑（提交 / 查询 / 当场落素材 / 回填字幕）', fe: '字幕生成的逐条状态 + 顶栏在途任务浮层；调度在主进程扫库' },
@@ -112,34 +112,55 @@ function maskQuotes(s) {
   return out;
 }
 
-/** 从括号内的内容里切出顶层逗号分隔的项，并收集每项的 -- 注释 */
+/** 从括号内的内容里切出顶层逗号分隔的项，并收集每项的 -- 注释
+ *  归属规则：① 行尾注释属于**同一行结束**的那个条目（列或表级约束）；
+ *  ② 独占一行的注释归下一条，但与下一条之间夹着空行的（段落标题）丢弃。
+ *  早先的实现把注释攒给「下一个」条目，于是最后一列的行尾注释、以及收尾的散句
+ *  会错挂到第一条表级 CHECK 上（`CHECK (…)（旗面宽度（px））` 那种），同时
+ *  CHECK 自己的行尾注释也往后错一位。 */
 function splitItems(body) {
   const items = [];
   let buf = '';
+  let start = -1;
   let depth = 0;
-  let comments = [];
+  const comments = [];
   let inStr = false;
+  let line = 0;
   for (let i = 0; i < body.length; i++) {
     const c = body[i];
+    if (c === '\n') line++;
     if (c === "'") inStr = !inStr;
     if (!inStr && c === '-' && body[i + 1] === '-') {
       let j = body.indexOf('\n', i);
       if (j === -1) j = body.length;
-      comments.push(body.slice(i + 2, j).trim());
+      comments.push({ text: body.slice(i + 2, j).trim(), line, end: j });
+      if (j < body.length) line++; // 跳过的那枚换行补记，免得行号漂移
       i = j;
       continue;
     }
     if (!inStr && c === '(') depth++;
     if (!inStr && c === ')') depth--;
+    if (start === -1 && !/\s/.test(c)) start = i;
     if (!inStr && c === ',' && depth === 0) {
-      items.push({ raw: buf.trim(), comments: comments.filter(Boolean) });
+      items.push({ raw: buf.trim(), line, start, comments: [] });
       buf = '';
-      comments = [];
+      start = -1;
       continue;
     }
     buf += c;
   }
-  if (buf.trim() || comments.length) items.push({ raw: buf.trim(), comments: comments.filter(Boolean) });
+  if (buf.trim()) items.push({ raw: buf.trim(), line, start, comments: [] });
+  // 归属：① 与某条目同一行结束的注释 = 那条目的行尾注释；② 独占一行的注释归下一条，
+  // 但若它和下一条之间隔着空行（段落标题，例如已删列留下的 「-- xxx 专属」），丢弃。
+  for (const cm of comments) {
+    if (!cm.text) continue;
+    const trailing = items.find((it) => it.line === cm.line);
+    if (trailing) { trailing.comments.push(cm.text); continue; }
+    const next = items.find((it) => it.start > cm.end);
+    if (!next) continue;
+    if (/\n[ \t\r]*\n/.test(body.slice(cm.end, next.start))) continue;
+    next.comments.push(cm.text);
+  }
   return items;
 }
 

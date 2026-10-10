@@ -363,12 +363,20 @@ const MARKER_DEAD = ['visual_fit', 'visual_tintable', 'visual_fps', 'visual_loop
  *   · 移动图标标签四格（size/padding/radius/pos）—— MoveResourcePicker 只写 text/color/bg/offset。
  *   · ord —— 写死 0、读端无 ORDER BY（被命名索引引用，所以只能让位重建）。
  *   · fly_mode —— 飞行只在 renderLine 实现，面板的飞行开关也只对 type='line' 显示。
+ *   · 动画族与移动图标（anim_effect / show_icon / move_start_sec / move_end_sec / uniform_move /
+ *     point_times_json / move_icon_*）—— 形状是静态的，这些「沿路径走」的列只属于路线；
+ *     路线弹窗的燕尾/行军箭头已改建成 line（进 element_route），形状表里再没有生产者。
  * 这份表同时驱动两处：写入端的 omit()（run() 多给一个 SQL 里没有的键会直接报错）与让位重建的判据列。
  */
 const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_position', 'label_offset_x',
   'label_offset_y', 'label_bg_color', 'label_bg_padding', 'label_bg_radius',
   'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos',
-  'fly_mode', 'ord'];
+  'fly_mode', 'ord',
+  'anim_effect', 'show_icon', 'move_start_sec', 'move_end_sec', 'uniform_move', 'point_times_json',
+  'move_icon_shape', 'move_icon_color', 'move_icon_emoji', 'move_icon_scale', 'move_icon_label_text',
+  'move_icon_label_color', 'move_icon_label_bg', 'move_icon_label_offset_x', 'move_icon_label_offset_y',
+  'move_icon_flag_text', 'move_icon_flag_color', 'move_icon_builtin_id', 'move_icon_asset_id',
+  'move_icon_icon_lib', 'move_icon_icon_name', 'move_icon_orientation', 'move_icon_rotation', 'move_icon_show_label'];
 
 /** route 表已删的列：标签的位置/偏移（renderLine 不读、面板只写 text）、
  *  移动图标标签那四格（同上，渲染只回退默认值）、ord。 */
@@ -807,8 +815,8 @@ export function saveProjectV2(db, project) {
 function saveElementV2(db, chapterId, layerId, el, f2s) {
   const cat = ELEMENT_CATEGORY[el.type] || 'marker';
   // 公共块只放**所有类别都用得上**的列。动画族（anim_effect / fly_mode / show_icon /
-  // move_* / point_times_json）只属于有路径的 route 与 shape，由那两条分支各自带上 ——
-  // 放进公共块就是「marker 也写、marker 读不回来」的死列。
+  // move_* / point_times_json）只属于**会走动的路线**，由 route 分支带上 ——
+  // 放进公共块就是「别的类别也写、读不回来」的死列。
   // keyframes_json / ord / label_font_size 是 marker 表**没有**的列（marker 没有关键帧编辑器、
   // 顺序由 layer.elements 决定、点位标签字号由 scale 算），所以 marker 分支用 omit() 摘掉。
   // 注意 run() 多给一个 SQL 里没有的 @name 会直接报 Unknown named parameter —— 不能只靠「多写没事」。
@@ -844,12 +852,12 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
     return;
   }
   if (cat === 'route') {
-    // 动画族列在这里显式带上：只有 route / shape 有路径可走
+    // 动画族列在这里显式带上：只有路线（line / moving_point）会走动
     db.prepare(`INSERT INTO element_route (
       element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
       label_text,label_font_size,label_color,label_bg_color,label_bg_padding,label_bg_radius,
-      keyframes_json, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_type, line_arrow,
+      keyframes_json, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_type, line_arrow, arrow_type,
       route_dot_enabled, route_dot_count, route_dot_width, route_dot_color, route_dot_frame_step,
       flow_speed, plain_path, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
@@ -857,7 +865,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_bg_color,@label_bg_padding,@label_bg_radius,
-      @keyframes_json,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_type,@line_arrow,
+      @keyframes_json,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_type,@line_arrow,@arrow_type,
       @route_dot_enabled,@route_dot_count,@route_dot_width,@route_dot_color,@route_dot_frame_step,
       @flow_speed,@plain_path,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
       @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
@@ -871,7 +879,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       coords_json: j(el.coordinates || el.path),
       line_width: n(el.lineWidth), line_color: n(el.lineColor),
       line_dash_on: el.lineDashArray?.[0] ?? null, line_dash_off: el.lineDashArray?.[1] ?? null,
-      line_type: n(el.lineType), line_arrow: b(el.lineArrow),
+      line_type: n(el.lineType), line_arrow: b(el.lineArrow), arrow_type: n(el.arrowType),
       route_dot_enabled: el.routeEffect ? b(el.routeEffect.enabled) : null,
       route_dot_count: n(el.routeEffect?.dotCount), route_dot_width: n(el.routeEffect?.spotWidth),
       route_dot_color: n(el.routeEffect?.spotColor), route_dot_frame_step: n(el.routeEffect?.frameStep),
@@ -885,33 +893,23 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   if (cat === 'shape') {
     const cMeta = el.circleMeta || el.starMeta;
     db.prepare(`INSERT INTO element_shape (
-      element_id, project_id, layer_id, type, name, start_sec, end_sec, anim_effect,
-      show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
+      element_id, project_id, layer_id, type, name, start_sec, end_sec,
       keyframes_json, rings_json, fill_color, fill_opacity, stroke_color, stroke_width, shape_kind,
       rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
       poly_curve, defense_tooth_length, defense_tooth_gap, defense_tooth_angle, defense_side,
       from_lng, from_lat, to_lng, to_lat, path_json, arrow_type, width, color,
       points_json, center_lng, center_lat, radius, pulse_animation, rotation,
-      coords_json, line_type, line_arrow, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
-      move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
+      coords_json, line_type, line_arrow, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
     ) VALUES (
-      @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,@anim_effect,
-      @show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
+      @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,
       @keyframes_json,@rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,@shape_kind,
       @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
       @poly_curve,@defense_tooth_length,@defense_tooth_gap,@defense_tooth_angle,@defense_side,
       @from_lng,@from_lat,@to_lng,@to_lat,@path_json,@arrow_type,@width,@color,
       @points_json,@center_lng,@center_lat,@radius,@pulse_animation,@rotation,
-      @coords_json,@line_type,@line_arrow,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
-      @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
+      @coords_json,@line_type,@line_arrow,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side)`).run({
       ...omit(common, SHAPE_DEAD),
-      // 动画效果：面板（RouteSettings 的「动画效果」）会写、renderArrow 也读，之前这里漏传 → 永远 NULL
-      anim_effect: n(el.animEffect),
-      show_icon: el.showIcon ? 1 : 0,
-      move_start_sec: el.moveStartFrame == null ? null : f2s(el.moveStartFrame),
-      move_end_sec: el.moveEndFrame == null ? null : f2s(el.moveEndFrame),
-      uniform_move: n(el.uniformMove) == null ? null : b(el.uniformMove),
-      point_times_json: el.pointTimes ? JSON.stringify(el.pointTimes.map(f2s)) : null,
+      // 形状无动画族 / 移动图标（列已删）—— 这些「沿路径走 / 显示移动标记」的字段只属于路线
       rings_json: el.coordinates ? JSON.stringify(el.coordinates) : null,
       fill_color: n(el.fillColor), fill_opacity: n(el.fillOpacity), stroke_color: n(el.strokeColor), stroke_width: n(el.strokeWidth),
       shape_kind: n(el.shapeKind),
@@ -929,7 +927,6 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       center_lat: cMeta ? n(cMeta.center[1]) : n(el.center?.[1]),
       radius: cMeta ? n(cMeta.radius) : n(el.radius),
       pulse_animation: n(el.pulseAnimation) == null ? null : b(el.pulseAnimation), rotation: n(el.rotation),
-      ...omit(moveIconCols(el.moveIcon), SHAPE_DEAD),
     });
     return;
   }
@@ -1112,8 +1109,8 @@ function readElementsV2(db, chapterId, s2f) {
   const out = [];
   const kfOf = (r) => jsonToKfs(r.keyframes_json, s2f);
   // base 只给**所有类别共用**的字段。动画族（animEffect / flyMode / showIcon /
-  // moveStart·End / uniformMove / pointTimes / moveIcon）只在 route 与 shape 的表里有列，
-  // 由那两条分支经 anim() 显式带上 —— 不在这里「按 type 猜有没有列」。
+  // moveStart·End / uniformMove / pointTimes / moveIcon）**只有路线有列**，
+  // 由 route 分支经 anim() 显式带上 —— 形状是静态的，不在这里「按 type 猜有没有列」。
   const base = (r) => ({
     id: r.element_id, type: r.type, name: r.name,
     layerId: r.layer_id ?? undefined,
@@ -1158,6 +1155,7 @@ function readElementsV2(db, chapterId, s2f) {
         lineWidth: r.line_width ?? 8, lineColor: r.line_color ?? '#FF0000',
         lineDashArray: r.line_dash_on != null ? [r.line_dash_on, r.line_dash_off ?? 0] : undefined,
         lineType: r.line_type ?? undefined, lineArrow: r.line_arrow == null ? undefined : bit(r.line_arrow),
+        ...(r.arrow_type ? { arrowType: r.arrow_type } : {}),
         routeEffect: r.route_dot_enabled == null ? undefined : { enabled: bit(r.route_dot_enabled), spotColor: r.route_dot_color ?? '#FFE066', spotWidth: r.route_dot_width ?? 6, frameStep: r.route_dot_frame_step ?? 10, dotCount: r.route_dot_count ?? 1 },
         flowSpeed: r.flow_speed ?? undefined, plainPath: r.plain_path == null ? undefined : bit(r.plain_path),
         frontStyle: r.front_tooth_length == null && r.front_side == null ? undefined : { toothLength: r.front_tooth_length ?? undefined, toothGap: r.front_tooth_gap ?? undefined, toothAngle: r.front_tooth_angle ?? undefined, side: r.front_side ?? undefined },
@@ -1166,15 +1164,15 @@ function readElementsV2(db, chapterId, s2f) {
   }
   for (const r of db.prepare('SELECT * FROM element_shape WHERE project_id = ?').all(chapterId)) {
     const k = kfOf(r);
-    // shape 表带动画族列（箭头沿线走 + 沿线图标），所以这里整表都读
+    // 形状是静态的：没有动画族 / 移动图标（那些列只属于路线）
     if (r.type === 'arrow') {
       const from = [r.from_lng, r.from_lat]; const to = [r.to_lng, r.to_lat];
       const path = J(r.path_json, null);
-      out.push({ ...base(r), ...anim(r), type: 'arrow', from, to, path: path ?? undefined, arrowType: r.arrow_type, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: k.progress, drawZoom: undefined });
+      out.push({ ...base(r), type: 'arrow', from, to, path: path ?? undefined, arrowType: r.arrow_type, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: k.progress, drawZoom: undefined });
     } else if (r.type === 'double_arrow') {
-      out.push({ ...base(r), ...anim(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: k.progress });
+      out.push({ ...base(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: k.progress });
     } else if (r.type === 'gathering' || r.type === 'encirclement') {
-      out.push({ ...base(r), ...anim(r), type: r.type, center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, pulseAnimation: r.pulse_animation == null ? undefined : bit(r.pulse_animation), rotation: r.rotation ?? undefined });
+      out.push({ ...base(r), type: r.type, center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, pulseAnimation: r.pulse_animation == null ? undefined : bit(r.pulse_animation), rotation: r.rotation ?? undefined });
     } else if (r.type === 'polyline') {
       out.push({
         ...base(r), type: 'polyline', coordinates: J(r.coords_json, []),
@@ -1184,7 +1182,7 @@ function readElementsV2(db, chapterId, s2f) {
       });
     } else {
       const poly = {
-        ...base(r), ...anim(r), type: 'polygon', coordinates: J(r.rings_json, []), fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
+        ...base(r), type: 'polygon', coordinates: J(r.rings_json, []), fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
         strokeColor: r.stroke_color ?? '#E23B3B', strokeWidth: r.stroke_width ?? 2, shapeKind: r.shape_kind ?? undefined,
         polyCurve: r.poly_curve == null ? undefined : bit(r.poly_curve), rotation: r.rotation ?? undefined,
         defenseStyle: r.defense_tooth_length == null && r.defense_side == null ? undefined : { toothLength: r.defense_tooth_length ?? undefined, toothGap: r.defense_tooth_gap ?? undefined, toothAngle: r.defense_tooth_angle ?? undefined, side: r.defense_side ?? undefined },

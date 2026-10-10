@@ -250,6 +250,29 @@ function staticCacheFor(map: maplibregl.Map): Map<string, { el: MapElement; epoc
   return m;
 }
 
+/** 渲染签名：`line` 有没有戴箭头也算进去（arrowType 变了要整组重建图层，否则旧箭头层残留） */
+function renderKind(el: MapElement): string {
+  return el.type === 'line' && (el as LineElement).arrowType ? 'line#arrow' : el.type;
+}
+
+/** 路线箭头：把「带 arrowType 的 line」适配成 renderArrow 认的形状。
+ *  path=coordinates、width=lineWidth、color=lineColor —— 数据仍是路线（element_route），只是画成楔形箭头。 */
+function routeArrowFromLine(le: LineElement): ArrowElement {
+  const path = le.coordinates;
+  return {
+    ...(le as unknown as ArrowElement),
+    type: 'arrow',
+    from: path[0] ?? [0, 0],
+    to: path[path.length - 1] ?? [0, 0],
+    path,
+    arrowType: le.arrowType!,
+    width: le.lineWidth,
+    color: le.lineColor,
+    progress: [{ frame: 0, value: 1 }],
+    drawZoom: le.drawZoom,
+  };
+}
+
 /**
  * @param interactive 是否**编辑端**。编辑辅助图形（如移动点全程虚线引导）仅在此为
  *   true 时绘制，避免泄漏进导出画面。默认 false —— 新调用点默认面向导出更安全。
@@ -279,13 +302,13 @@ export function renderElements(
   const prevMeta = renderedTypeByMap.get(map) || new Map<string, string>();
   for (const el of elements) {
     const sig = prevMeta.get(el.id);
-    if (sig && sig !== el.type) {
+    if (sig && sig !== renderKind(el)) {
       removeElementLayers(map, el.id);
     }
   }
   renderedByMap.set(map, currentIds);
   const nextMeta = new Map<string, string>();
-  for (const el of elements) nextMeta.set(el.id, el.type);
+  for (const el of elements) nextMeta.set(el.id, renderKind(el));
   renderedTypeByMap.set(map, nextMeta);
 
   const hiddenEls = hiddenElByMap.get(map) || new Map<string, string>();
@@ -330,7 +353,13 @@ export function renderElements(
     switch (element.type) {
       case 'point': renderPoint(map, element, frame); break;
       case 'moving_point': renderMovingPoint(map, element, frame, interactive); break;
-      case 'line': renderLine(map, element, frame); break;
+      case 'line': {
+        const le = element as LineElement;
+        // 带 arrowType 的路线：整条线按楔形箭头渲染（燕尾 / 行军 …），几何与形状箭头同源
+        if (le.arrowType) renderArrow(map, routeArrowFromLine(le), frame);
+        else renderLine(map, element, frame);
+        break;
+      }
       case 'polyline': renderPolyline(map, element, frame); break;
       case 'polygon': renderPolygon(map, element, frame); break;
       case 'arrow': renderArrow(map, element, frame); break;

@@ -254,6 +254,11 @@ export interface LineElement extends MapElementBase {
   /** 直线 / 贝塞尔曲线（coordinates 为控制点）/ 大圆弧航线 */
   lineType?: 'straight' | 'bezier' | 'arc';
   lineArrow?: boolean;         // 线末端方向箭头（示意方向）
+  /** 路线箭头：设置后**整条线按楔形箭头渲染**（燕尾 / 行军等），渲染交 renderArrow。
+   *  与 lineArrow（线末端小三角）不同 —— 这里画的是完整的箭头面；落库走 element_route.arrow_type。 */
+  arrowType?: ArrowElement['arrowType'];
+  /** 绘制完成时的缩放级别：箭头按固定地理宽度换算（与 ArrowElement.drawZoom 同义） */
+  drawZoom?: number;
   /** 行军路线动画：光标/脉冲沿路径推进 */
   routeEffect?: {
     enabled: boolean;

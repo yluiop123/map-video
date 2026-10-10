@@ -25,12 +25,12 @@
 |---|---|---|---|
 | **P1** 必列化 | 身份、时间、引用关系 —— 需要检索、排序、约束 | 提升为独立列 | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image` 的公共列，及其 5 张公共副本表 |
 | **P2** 独立成表 | 自身有 id 或顺序语义，需被单独寻址或约束 | 1:N 子表 | `narration_entry`、`public_element_*` |
-| **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `display_json`、`countries_json` / `plots_json` / `events_json` 等 |
+| **P3** 留下 JSON | 固定形状、整体读写、不参与约束与检索的配置块 | JSON 列 + `json_valid()` | `countries_json` / `plots_json` / `events_json`、`payload_json`、`grid_json` 等 |
 | **P4** 外置存储 | 大体积二进制（图片、音频、视频、字体） | 独立 `asset` 表，业务表只留 `asset_id` | `asset` |
 
 #### 一句话理解 27 张表的构成
 
-- **5 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域 · 图片**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧也内联在各表的 `keyframes_json` 列；
+- **5 张**是「元素」，按**工具栏按钮**聚合：标记 · 路线 · 形状 · 疆域 · 图片**各一张宽表**，表内用 `type` 判别列区分该工具下的全部子类型（详见第三节、第五节）；动画关键帧内联在 route / shape 两类表的 `keyframes_json` 列（marker / territory / image 没有这一列）；
 - **6 张**是「公共图层库」：`public_layer` + 5 张与项目元素表**同构**的公共副本表（把某个图层连元素整体复制一份，供其它项目导入）；
 - **5 张**是「时间轴上的子集合」：镜头关键帧、屏幕特效、字幕档、字幕条目、配乐段落；
 - **1 张**是「弹窗」：`overlay` 本体（custom / person 内容块内联 `payload_json`，原 3 张内容块表已删除）；
@@ -56,8 +56,8 @@
 | `layers[]`（`Layer`：type/name/visible/startFrame/endFrame/elements[]） | `layer` + 各元素表的 `layer_id` | P2：**项目 ▸ 图层 ▸ 元素**；单类型图层（marker / route / shape / territory / image）；删图层连带删元素（CASCADE） |
 | （公共图层库：整层复制的副本） | `public_layer` + `public_element_marker` / `_route` / `_shape` / `_territory` / `_image`（5 张同构副本表） | P2：与项目侧一一对应的**独立副本**，`public_layer_id` 外键（删公共图层 CASCADE）；副本**必须自洽** —— `asset_id` 是弱引用，失效引用由启动体检清空（不造假素材行）；`element_id` 是全库主键，副本一律加后缀避免撞车 |
 | `project.elements[]`（`layers[].elements` 的派生镜像） | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image`（5 张类别宽表） | P1 公共字段 + 表内 `type` 判别子类型（取消基表）；镜像不入库，只存图层归属 |
-| `elements[].drawProgress` / `progress` / `pathProgress` / `morphKeyframes`（关键帧数组） | 类别表的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
-| `elements[].label`（`LabelConfig`） | 各元素表的 `label_json` 列 | P3 内联：1:1 且可选，跟随元素整体读写 |
+| `elements[].drawProgress` / `progress` / `pathProgress` / `morphKeyframes`（关键帧数组） | 有路径的两类表（`element_route` / `element_shape`）的 `keyframes_json`（P3 内联） | 运行时元素对象本就内联关键帧；同 property 同时刻由应用层去重 |
+| `elements[].label`（`LabelConfig`） | marker / route 两张表的 `label_*` 平铺列 | P3 → 平铺：面板上每个小项 = 一列；只有真会渲染文字的两类有（shape / territory / image 无标签入口） |
 | `camera[]`（项目级） | `camera_keyframe` | P2；`followRoute.routeElementId` 变成外键（删路线 → 退化为固定视角） |
 | `overlays[]`（项目级） | `overlay` | P2：本体一张；custom / person 的内容块内联在 `payload_json`（原两张中间表已删除） |
 | `fx[]`（`ScreenFxItem`） | `screen_fx` | P2：屏幕空间特效窗口，与地图元素区分 |
@@ -105,14 +105,15 @@
 
 ### 组 4 · 标记类元素 1 张 Pin 工具
 
-工具条「标记」按钮的产出：一键在当前地图中心放置。三种标记形态（点 / 旗标 / 军标）**合并进同一张宽表**，用 `type` 判别列区分；公共字段（图层归属、时间轴、层级、可见性、标签、移动图标）每行都有。
-属性面板：`PropertiesPanel.tsx` 标记设置区（9 种视觉形态 + 资源选择 + 标签）。
+工具条「标记」按钮的产出：一键在当前地图中心放置。两种标记类型（`point` / `flag`）**合并进同一张宽表**，用 `type` 判别列区分；军标不是独立类型，而是 `point` 的 10 种形态之一（SIDC 存 `builtin_id`）。公共字段（图层归属、出现/消失时间、标签、资源引用）每行都有。
+属性面板：`PropertiesPanel.tsx` 标记设置区（10 种视觉形态 + 资源选择 + 标签）。
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
 | `element_marker` | `point` | `element_id` | Pin 工具（一键放置） | 经纬度、**10 种形态**（圆点/文字/水滴针/气泡/表情 ＋ 图片/GIF/模型/图标库/军标）、缩放、朝向、贴地旋转、资源引用（asset_id / builtin_id / icon_lib+icon_name） |
 | `element_marker` | `flag` | `element_id` | 标记面板切到 Marker（原地改类型） | 位置、旗面文案（flag_text）、配色、字号、宽度 |
-| `element_marker` | `military_symbol` | `element_id` | **当前无入口**（导入 / 旧数据） | 军标 SIDC、位置、旋转、梯队、附加文字 |
+
+> 军标不是 `type`：它是 `point` 的一种 `shape`（`military_symbol`），SIDC 存在 `builtin_id`（`milsym:<SIDC>`）。`type` 只有 `point` / `flag` 两种。
 
 ### 组 5 · 路线类元素 1 张 Route 工具
 
@@ -121,17 +122,17 @@
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
-| `element_route` | `line` | `element_id` | Route 工具；Shape 下菜单里的直线/曲线/带箭头/战线/行军箭头也写这张表 | 路径数组（coords_json）、线型、线宽虚线、路线特效、流动速度、无样式路线、战线梳齿 |
+| `element_route` | `line` | `element_id` | Route 工具（直线/曲线/航线）；形状工具的直线/曲线/战线写 `element_shape` 的 `polyline`，不在这张表 | 路径数组（coords_json）、线型、线宽虚线、路线特效、流动速度、无样式路线、战线梳齿、**路线箭头（`arrow_type`：燕尾/行军整条线画成楔形箭头）** |
 | `element_route` | `moving_point` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 路径点数组、拖尾颜色/宽度/长度 |
 
 ### 组 6 · 形状类元素 1 张 Shape 工具
 
-「形状」按钮带下拉菜单，分三组共 19 项：多点绘制 / 两点绘制 / 特殊图形；五种形状**合并进同一张宽表**。**区域工具（Region）的行政区高亮也写这张表**——它的产物就是 `polygon`，因此不单列一组。
+「形状」按钮带下拉菜单，分三组共 19 项：多点绘制 / 两点绘制 / 特殊图形；六种形状（`polygon` / `polyline` / `arrow` / `double_arrow` / `gathering` / `encirclement`）**合并进同一张宽表**。**区域工具（Region）的行政区高亮也写这张表**——它的产物就是 `polygon`，因此不单列一组。
 属性面板：`PropertiesPanel.tsx` 形状设置区。
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
-| `element_shape` | `polygon` | `element_id` | Shape：多边形 / 曲线多边 / 直线·曲线防御圈 / 圆 / 矩形 / 五角星 ＋**Region 工具** | 环数组、填充描边、形状种类与各自元数据、曲线化、防御圈锯齿、渐变、旋转 |
+| `element_shape` | `polygon` | `element_id` | Shape：多边形 / 曲线多边 / 直线·曲线防御圈 / 圆 / 矩形 / 五角星 ＋**Region 工具** | 环数组、填充描边、形状种类与各自元数据、曲线化、防御圈锯齿、旋转 |
 | `element_shape` | `arrow` | `element_id` | Shape：带箭头直线/曲线、行军箭头、燕尾箭头、自定义燕尾、自定义箭头 | 起终点、弯曲控制点、箭头类型、宽度、填充透明度、绘制缩放 |
 | `element_shape` | `double_arrow` | `element_id` | Shape：钳形（4 点自动合成） | 4 个控制点（points_json）、颜色 |
 | `element_shape` | `gathering` | `element_id` | Shape：集结点（两点绘制） | 中心、半径、颜色、脉冲、旋转 |
@@ -162,11 +163,11 @@
 
 ### 组 10 · 应用配置（接口模板 / 实例 / 音色 / 任务）4 张
 
-「一家供应商怎么发请求」只有模板这一处真相（模板即数据，见 `docs/provider-engine.md`）：**模板行**一份装下同步 / 异步 / 桥接 / 克隆全部接法，**实例行**只留「选哪份模板 + 一组取值」，**音色**与**任务**是两本账本。协议列、代码里的 `switch`、以及「模板组」这一层表都一并删掉。
+「一家供应商怎么发请求」只有模板这一处真相（模板即数据，见 `docs/provider-engine.md`）：**模板行**一份装下同步 / 异步 / 上传 / 克隆全部接法，**实例行**只留「选哪份模板 + 一组取值」，**音色**与**任务**是两本账本。协议列、代码里的 `switch`、以及「模板组」这一层表都一并删掉。
 
 | 表 | 职责 | 主键 | 关键点 | 前端对应 |
 |---|---|---|---|---|
-| `provider_template` | **一行 = 一份完整模板**（这一家这个功能怎么发、返回从哪取、产物怎么变字节） | `tpl_id` | 六个接口槽各占一个 JSON 列（`sync` / `async` / `download` / `upload` / `clone` + 模板级 `headers`）；`outputs` 是**自由 map**（`{想要名字: 相对路径}`）不再是固定槽位；`category` **不写 CHECK**（TS 类型 + 保存前 `validateTemplate` 管）；`use_clone` / `upload` 两个开关决定界面上那两格显不显示 | ⚙ →「接口模板」（`TemplatesPane.tsx`，三栏） |
+| `provider_template` | **一行 = 一份完整模板**（这一家这个功能怎么发、返回从哪取、产物怎么变字节） | `tpl_id` | 四个接口槽各占一个 JSON 列（`sync_json` / `async_json` / `upload_json` / `clone_json`）；**请求头逐槽各配一份**（写在每个槽的 JSON 里，没有模板级共用）；`outputs` 分**固定项**（引擎写死名字，只能填路径）与**自定义变量**（只给下游 `${它}`）；`category` **不写 CHECK**（TS 类型 + 保存前 `validateTemplate` 管）；能力开关 `caps_json` 推导出界面该露哪几格 | ⚙ →「接口模板」（`TemplatesPane.tsx`，三栏） |
 | `provider` | 实例：引用哪份模板 + 同步异步 + 一组取值（**一个模板可配几套账号**） | `provider_id` | **只有五个业务列**：`tpl_id`（真外键，被引用时删不掉）· `name` · `sync` · `values_json{instance,requests}` · 时间戳；`baseUrl` / 密钥 / 模型 / 尺寸全是模板声明的参数，**密钥 = `valueType:'secret'` 的普通参数**；没有 `active`，调用处选实例 | ⚙ →「文案 / 语音 / 图片」（`ProviderPanel.tsx`） |
 | `voice` | 克隆音色账本：**同实例 + 同参考音频 + 同目标模型只建一次** | `voice_row_id` | 唯一键 `ux_voice_once(provider_id, source_hash, target_model)` —— voiceId 换模型即失效（实测 418）；`source_asset_id` 是 `RESTRICT`（原件被音色引用时删不掉，失效靠它重建）；`status` 就是抢占标志 | 字幕生成里的「配音音色」区（`VoiceField.tsx`） |
 | `task` | 在途异步任务：唯一价值是**跨重启续跑** | `task_id` | `batch_id` 一次动作一批；`project_id` / `entry_id` 是**弱引用**（保存项目 = 删了重写，挂成真外键会让每次自动保存 CASCADE 掉在途任务；删项目由 `removeProjectV2` 显式清）；`provider_id` 真外键 `CASCADE`；`artifact_id` `SET NULL`（产物当场落 `asset`）；`next_query_at` 给调度器错峰 | 逐条配音状态 + 顶栏在途任务浮层 |
@@ -192,7 +193,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 552 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，552 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 506 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，506 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -271,7 +272,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（同项目内排序）
+- `CHECK (end_sec >= start_sec)`
 
 ### 组 2 · 底图 / 高程图 / 素材
 
@@ -321,7 +322,7 @@
 
 **表级约束**
 
-- `CHECK ((storage = 'file' AND rel_path IS NOT NULL) OR (storage = 'blob' AND blob IS NOT NULL))`（入库时间（毫秒时间戳））
+- `CHECK ((storage = 'file' AND rel_path IS NOT NULL) OR (storage = 'blob' AND blob IS NOT NULL))`
 
 ### 组 3 · 时间轴
 
@@ -374,7 +375,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（同项目内排序）
+- `CHECK (end_sec >= start_sec)`
 - `CHECK ((kind = 'weather' AND weather_type IS NOT NULL) OR (kind = 'screen' AND effect_type IS NOT NULL))`
 
 #### narration
@@ -439,7 +440,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec IS NULL OR end_sec >= start_sec)`（同项目内排序）
+- `CHECK (end_sec IS NULL OR end_sec >= start_sec)`
 
 ### 组 4 · 标记类元素（Pin 工具）
 
@@ -489,12 +490,12 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（旗面宽度（px））
+- `CHECK (end_sec >= start_sec)`
 - `CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)`
 - `CHECK (type <> 'point' OR shape IS NULL OR shape IN ('circle','text','pin','bubble','emoji') OR asset_id IS NOT NULL OR builtin_id IS NOT NULL)`（媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin）
 - `CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL)`
-- `CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam')`（能力矩阵（与属性面板「隐藏不可用控件」一一对应））
-- `CHECK (type <> 'flag' OR flag_text IS NOT NULL)`（模型不能贴地）
+- `CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam')`（能力矩阵（与属性面板「隐藏不可用控件」一一对应）；模型不能贴地）
+- `CHECK (type <> 'flag' OR flag_text IS NOT NULL)`
 
 ### 组 5 · 路线类元素（Route 工具）
 
@@ -502,7 +503,7 @@
 
 **职责**：路线类元素：line / moving_point　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-57 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
+58 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -552,6 +553,7 @@
 | `line_dash_off` | REAL | — | 虚线空白长（原 line_dash_json[1]） |
 | `line_type` | TEXT | — | 线型：straight 直线 / bezier 贝塞尔 / arc 大圆弧航线 · `CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc'))` |
 | `line_arrow` | INTEGER | — | 线末端是否带方向箭头（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
+| `arrow_type` | TEXT | — | 楔形箭头类型：设置则整条线画成箭头（燕尾/行军…），NULL=普通线 · `CHECK (arrow_type IS NULL OR arrow_type IN ('swallowtail','simple','block','pincer','curved','curved-simple','attack','straight'))` |
 | `route_dot_enabled` | INTEGER | — | 行军光点动画是否开启（0/1） · `CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1))` |
 | `route_dot_count` | INTEGER | — | 同时存在的光点数量 |
 | `route_dot_width` | REAL | — | 光点宽度（px） |
@@ -566,7 +568,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（梳齿朝向侧：1 右 / -1 左；moving_point 专属（轨迹拖尾））
+- `CHECK (end_sec >= start_sec)`
 - `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (type <> 'line' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)`
@@ -577,7 +579,7 @@
 
 **职责**：形状类元素：polygon / polyline / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-68 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+44 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -588,30 +590,6 @@
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
-| `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
-| `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
-| `move_icon_shape` | TEXT | — | 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标 · `CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol'))` |
-| `move_icon_color` | TEXT | — | 移动图标主色 |
-| `move_icon_emoji` | TEXT | — | 移动图标表情字符（形态=emoji） |
-| `move_icon_scale` | REAL | — | 移动图标等比缩放 |
-| `move_icon_label_text` | TEXT | — | 移动图标标签文字 |
-| `move_icon_label_color` | TEXT | — | 移动图标标签文字颜色 |
-| `move_icon_label_bg` | TEXT | — | 移动图标标签背景色（默认透明） |
-| `move_icon_label_offset_x` | REAL | — | 移动图标标签水平像素偏移（0=居中，负左正右） |
-| `move_icon_label_offset_y` | REAL | — | 移动图标标签垂直像素偏移（0=居中，正值向上） |
-| `move_icon_flag_text` | TEXT | — | 移动图标为旗帜时的旗面文字 |
-| `move_icon_flag_color` | TEXT | — | 移动图标为旗帜时的旗面颜色 |
-| `move_icon_builtin_id` | TEXT | — | 移动图标内置资源 id（不入库资源） |
-| `move_icon_asset_id` | TEXT | `FK → asset SET NULL` | 移动图标上传素材 id（删素材置空） |
-| `move_icon_icon_lib` | TEXT | — | 移动图标图标库命名空间 |
-| `move_icon_icon_name` | TEXT | — | 移动图标图标名 |
-| `move_icon_orientation` | TEXT | — | 移动图标朝向：faceCam 面向镜头 / flat 贴地 · `CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat'))` |
-| `move_icon_rotation` | REAL | — | 移动图标贴地旋转角（度） |
-| `move_icon_show_label` | INTEGER | — | 移动图标是否显示标签（0/1） · `CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1))` |
-| `move_start_sec` | REAL | — | 移动图标出发时间（秒） |
-| `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
-| `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
-| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
 | `fill_color` | TEXT | — | 填充色 |
@@ -652,8 +630,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（绕中心旋转角（度））
-- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
+- `CHECK (end_sec >= start_sec)`
 - `CHECK (radius IS NULL OR radius > 0)`
 - `CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly' OR rings_json IS NOT NULL)`
 - `CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
@@ -697,7 +674,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（兼并事件数组：[{eventId,sec,toCountryId,preset,duration_sec,highlight,plotIds[],ord}]；时间与时长均为秒；toCountryId 同上）
+- `CHECK (end_sec >= start_sec)`
 
 ### 组 8 · 贴图类元素（Image 工具）
 
@@ -724,7 +701,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（不透明度（0–1））
+- `CHECK (end_sec >= start_sec)`
 
 ### 组 9 · 叠加层（弹窗）
 
@@ -761,13 +738,13 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（同项目内排序）
+- `CHECK (end_sec >= start_sec)`
 
 ### 组 10 · 应用配置（接口模板 / 实例 / 音色 / 任务）
 
 #### provider_template
 
-**职责**：接口模板：一行一份完整模板（同步 / 异步 / 桥接 / 上传 / 克隆都在这行的 JSON 列里）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）
+**职责**：接口模板：一行一份完整模板（同步 / 异步 / 上传 / 克隆都在这行的 JSON 列里）　**前端**：⚙ 设置 · AI → 左侧「接口模板」（TemplatesPane.tsx，三栏 + 每接口卡片）
 
 12 列 · 主键 `tpl_id`
 
@@ -872,7 +849,7 @@
 
 **表级约束**
 
-- `CHECK (end_sec >= start_sec)`（更新时间（毫秒时间戳））
+- `CHECK (end_sec >= start_sec)`
 
 #### public_element_marker
 
@@ -917,17 +894,17 @@
 
 **表级约束**
 
-- `CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)`（旗面宽度（px））
+- `CHECK (type <> 'point' OR shape IS NOT 'emoji' OR emoji IS NOT NULL)`
 - `CHECK (type <> 'point' OR shape IS NULL OR shape IN ('circle','text','pin','bubble','emoji') OR asset_id IS NOT NULL OR builtin_id IS NOT NULL)`（媒体形态（image/gif/model/icon）必须指明来源：用户上传 asset 或内置 builtin）
 - `CHECK (type <> 'point' OR shape IS NOT 'icon' OR icon_name IS NOT NULL)`
-- `CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam')`（能力矩阵（与属性面板「隐藏不可用控件」一一对应））
-- `CHECK (type <> 'flag' OR flag_text IS NOT NULL)`（模型不能贴地）
+- `CHECK (shape IS NOT 'model' OR orientation IS NULL OR orientation = 'faceCam')`（能力矩阵（与属性面板「隐藏不可用控件」一一对应）；模型不能贴地）
+- `CHECK (type <> 'flag' OR flag_text IS NOT NULL)`
 
 #### public_element_route
 
 **职责**：公共路线元素（public_layer 内副本；列 = element_route − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-54 列 · 主键 `element_id`
+55 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -974,6 +951,7 @@
 | `line_dash_off` | REAL | — | 虚线空白长（原 line_dash_json[1]） |
 | `line_type` | TEXT | — | 线型：straight 直线 / bezier 贝塞尔 / arc 大圆弧航线 · `CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc'))` |
 | `line_arrow` | INTEGER | — | 线末端是否带方向箭头（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
+| `arrow_type` | TEXT | — | 楔形箭头类型：设置则整条线画成箭头（燕尾/行军…），NULL=普通线 · `CHECK (arrow_type IS NULL OR arrow_type IN ('swallowtail','simple','block','pincer','curved','curved-simple','attack','straight'))` |
 | `route_dot_enabled` | INTEGER | — | 行军光点动画是否开启（0/1） · `CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1))` |
 | `route_dot_count` | INTEGER | — | 同时存在的光点数量 |
 | `route_dot_width` | REAL | — | 光点宽度（px） |
@@ -988,7 +966,7 @@
 
 **表级约束**
 
-- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`（梳齿朝向侧：1 右 / -1 左；moving_point 专属（轨迹拖尾））
+- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`
 - `CHECK (type <> 'line' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'moving_point' OR coords_json IS NOT NULL)`
 
@@ -996,7 +974,7 @@
 
 **职责**：公共形状元素（public_layer 内副本；列 = element_shape − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-65 列 · 主键 `element_id`
+41 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -1004,30 +982,6 @@
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / polyline 折线（形状工具的直线/曲线/战线） / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
-| `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
-| `show_icon` | INTEGER | `NOT NULL` | 是否显示移动图标 · 默认 `0` · `CHECK (show_icon IN (0,1))` |
-| `move_icon_shape` | TEXT | — | 移动图标形态：dot/pin/emoji/bubble/text/flag + 图片/动图/模型/图标库/军标 · `CHECK (move_icon_shape IS NULL OR move_icon_shape IN ('dot','pin','emoji','bubble','text','flag','image','gif','model','icon','military_symbol'))` |
-| `move_icon_color` | TEXT | — | 移动图标主色 |
-| `move_icon_emoji` | TEXT | — | 移动图标表情字符（形态=emoji） |
-| `move_icon_scale` | REAL | — | 移动图标等比缩放 |
-| `move_icon_label_text` | TEXT | — | 移动图标标签文字 |
-| `move_icon_label_color` | TEXT | — | 移动图标标签文字颜色 |
-| `move_icon_label_bg` | TEXT | — | 移动图标标签背景色（默认透明） |
-| `move_icon_label_offset_x` | REAL | — | 移动图标标签水平像素偏移（0=居中，负左正右） |
-| `move_icon_label_offset_y` | REAL | — | 移动图标标签垂直像素偏移（0=居中，正值向上） |
-| `move_icon_flag_text` | TEXT | — | 移动图标为旗帜时的旗面文字 |
-| `move_icon_flag_color` | TEXT | — | 移动图标为旗帜时的旗面颜色 |
-| `move_icon_builtin_id` | TEXT | — | 移动图标内置资源 id（不入库资源） |
-| `move_icon_asset_id` | TEXT | — | 移动图标上传素材 id（删素材置空） |
-| `move_icon_icon_lib` | TEXT | — | 移动图标图标库命名空间 |
-| `move_icon_icon_name` | TEXT | — | 移动图标图标名 |
-| `move_icon_orientation` | TEXT | — | 移动图标朝向：faceCam 面向镜头 / flat 贴地 · `CHECK (move_icon_orientation IS NULL OR move_icon_orientation IN ('faceCam','flat'))` |
-| `move_icon_rotation` | REAL | — | 移动图标贴地旋转角（度） |
-| `move_icon_show_label` | INTEGER | — | 移动图标是否显示标签（0/1） · `CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1))` |
-| `move_start_sec` | REAL | — | 移动图标出发时间（秒） |
-| `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
-| `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
-| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
 | `fill_color` | TEXT | — | 填充色 |
@@ -1068,7 +1022,6 @@
 
 **表级约束**
 
-- `CHECK (move_end_sec IS NULL OR move_start_sec IS NULL OR move_end_sec > move_start_sec)`（绕中心旋转角（度））
 - `CHECK (radius IS NULL OR radius > 0)`
 - `CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly' OR rings_json IS NOT NULL)`
 - `CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
@@ -1131,7 +1084,7 @@
 
 | 工具条按钮 | 交互方式 | 落到哪张表的哪个 type |
 |---|---|---|
-| **标记** Pin | 一键放到地图中心，之后在面板里改样式/换形态 | `element_marker`：`point`（圆点/水滴针/气泡/Emoji/文字） 切到 Marker → `flag`；军标导入/旧数据 → `military_symbol` |
+| **标记** Pin | 一键放到地图中心，之后在面板里改样式/换形态 | `element_marker`：`point`（圆点/水滴针/气泡/Emoji/文字） 切到 Marker → `flag`；军标是 `point` 的一种形态（`shape='military_symbol'`） |
 | **路线** Route | 进入绘制模式，采点成线 | `element_route`：`line`（线型与路线特效在右侧 Settings 切换） |
 | **形状** Shape | 下拉菜单三组共 19 项：多点绘制 / 两点绘制 / 特殊图形 | `element_shape`：`polygon`（多边形/曲线多边/防御圈/圆/矩形/五角星）、`polyline`（直线/曲线/战线）、`arrow`（带箭头/行军/燕尾/自定义）、`double_arrow`（钳形）、`gathering`（集结点） |
 | **区域** Region（形状下拉内） | 打开行政区选择器，点国家/地区 | `element_shape` 的 `polygon`（按边界自动生成可编辑高亮面，跨海国家拆多个面）——**与形状共用一张表** |
@@ -1153,7 +1106,7 @@
 | 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_* 三列（`auto_rotate`/`spin`/`stroke_width`） |
 | 旗帜 | `element_marker` | `flag` | flag_text、flag_color、flag_width |
 | 军标（APP-6） | `element_marker` | `point` + `shape='military_symbol'` | 无专属列：SIDC 存在 `builtin_id`（`milsym:<SIDC>`），渲染端从那里反解 |
-| 路线 / 飞线 | `element_route` | `line` | coords_json、line_type、route_dot_*、flow_speed、plain_path、front_tooth_* |
+| 路线 / 飞线 | `element_route` | `line` | coords_json、line_type、route_dot_*、flow_speed、plain_path、front_tooth_*、`arrow_type`（整条线画成楔形箭头：燕尾/行军） |
 | 折线（直线/曲线/战线） | `element_shape` | `polyline` | coords_json、line_type、line_arrow、front_tooth_*、描边走 stroke_color / stroke_width |
 | 移动点 | `element_route` | `moving_point` | coords_json、path_progress（走 keyframes_json） |
 | 区域（多边形/矩形/圆/五角星） | `element_shape` | `polygon` | shape_kind、rings_json、rect_c1/c2_lng/lat、center_lng/lat、radius、poly_curve |
@@ -1162,7 +1115,7 @@
 | 包围圈 / 集结点 | `element_shape` | `encirclement` / `gathering` | center_lng/lat、radius、pulse_animation |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_* 八列 ＋ countries_json / plots_json / events_json |
 
-动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只在 `element_route` 与 `element_shape` 里有**：它们描述「沿一条路径走」，而 marker / territory / image 没有路径 —— 早先宽表把 union 全给每张表，结果 marker 那张写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode` 更窄，**只有 `element_route`**：飞行（拱形航迹 + 3D 管）只在渲染端 `renderLine` 实现，面板的飞行开关也只对 `type='line'` 显示。
+动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只有 `element_route` 有**：它们描述「沿一条路径走 / 显示移动标记」，只有 line / moving_point 会走动，marker / shape / territory / image 一律没有 —— 早先宽表把 union 全给每张表，结果写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode` 同理：飞行（拱形航迹 + 3D 管）只在渲染端 `renderLine` 实现，面板的飞行开关也只对 `type='line'` 显示。
 
 同理，`label_*` 只留在**真正会渲染文字的两类**：marker（点位气泡）与 route（线上文字，只剩 text/fontSize/color/bg_*，位置固定沿线中点）；shape / territory 的面板没有标签入口、运行时类型里也没有 `label` 字段，九列已删。`ord` 是死列（写死 0、读端无 ORDER BY），**五张类别表连同各自的公共副本都已删**；`element_image.aspect`（只在创建时算默认网格）也已删。
 
@@ -1192,7 +1145,7 @@
 | 容易混的地方 | 区别 |
 |---|---|
 | `element_marker` / `element_route` / `element_shape` / `element_territory` / `element_image` vs 表内 `type` | 五张表按**工具栏**分（标记 / 路线 / 形状 / 疆域 / 图片）；表内的 `type` 才是具体元素类型（point / line / polygon…）。找元素先看它在哪个工具下，再用 `type` 区分 |
-| `label_json` vs `keyframes_json`（都是元素表内的一列） | 前者是**文字气泡内容**，后者是**动画曲线**（8 种属性的关键帧数组）—— 都作为一列 JSON 跟随元素一起读写，不再独立成表 |
+| `label_*`（平铺列） vs `keyframes_json`（JSON 列） | 前者是**文字气泡 / 线上文字**（marker / route 才有的平铺列），后者是**动画曲线**（关键帧数组，route / shape 才有）—— 都跟随元素一起读写，不再独立成表 |
 | `narration` vs `narration_entry` | 前者是「全片的配音档」（样式、总开关，与项目 1:1）；后者是「档里的一条条字幕」（1:N） |
 | `overlay` 的内容块 | custom 的内容块 / person 的人物块内联在 `overlay.payload_json`，不再单独建表；**唯一的例外是语音** —— 它的 id 从 payload 里摘出来落在 `audio_asset_id` 列上（真外键，删素材即置空） |
 | `layer` vs `public_layer`（字段几乎一样） | `layer` 属于某个项目（`project_id` 外键，删项目 CASCADE）；`public_layer` 是**跨项目图库里的独立副本**，没有项目归属，`element_id` 与源项目**无关**（整层复制时重新加后缀）。导入 = 从副本再复制一份进项目，之后两者互不影响 |
@@ -1240,6 +1193,7 @@
 | `v_element_index` | 读取便利 | 把 5 张类别表的公共列 UNION 成一张「元素总表」：取消基表后，轨道 / 列表 / 计数查这里，不用手写 5 表 UNION |
 | `v_check_dangling` | 一致性自检 | 查悬空引用：跟随机位指向已删除的路线元素；`element_image.asset_id` 与公共库副本的 `asset_id` 指向不存在的素材（这几列没有外键，只能靠视图）。写入端对应动作是启动体检 `repairAssetRefs`；正常应返回 0 行 |
 | `v_check_territory_ref` | 一致性自检 | 疆域 JSON 内部一致性：`plots_json` 的 `ownerId`、`events_json` 的 `toCountryId` 必须能在 `countries_json` 中命中（复合外键被 JSON 化后的补偿） |
+| `v_check_async_pairing` | 一致性自检 | 异步配对：实例选了异步、模板却没配查询（或查询没配成功值）时报警 —— 提交与查询必须成对（规则见 `docs/provider-engine.md`） |
 
 ### 为什么没有触发器（原 6 条已全部移除）
 
@@ -1257,7 +1211,7 @@
 | 副本元素 id 不得与既有行撞车 | 保存 / 导入两条路径统一给 `element_id` 加后缀（`:pb<pubId>` / `:im<layerId>`） |
 | 跟随机位只能引用同一项目内的路线元素 | 写入端校验（选择跟随机位时只列本项目路线）+ 外键 `SET NULL` 兜底 |
 
-数据库侧只保留 `v_check_dangling` / `v_check_territory_ref` 两个**自检视图**：它们不拦截写入，只把「数据已损坏」从隐性变成可检测。
+数据库侧只保留 `v_check_dangling` / `v_check_territory_ref` / `v_check_async_pairing` 三个**自检视图**：它们不拦截写入，只把「数据已损坏」从隐性变成可检测。
 
 MapVideo V2 表清单速查 · 由 `docs/db-schema-v2.sql` 与 `src/types/index.ts` 的实际定义整理，表名、主键、外键均取自 DDL 实测解析结果。
 

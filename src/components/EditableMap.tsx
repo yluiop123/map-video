@@ -957,17 +957,31 @@ export function EditableMap({ project }: EditableMapProps) {
       const rr = useInteractionStore.getState().pendingRouteStyle;
       const asRoute = rr?.mode === mode;
       if (asRoute) useInteractionStore.getState().clearPendingRouteStyle();
-      createElementAndSelect({
-        id: generateId(), type: 'arrow', name: '行军箭头', locked: false,
-        startFrame: 0, endFrame: project.endFrame,
-        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved-simple', path: pts,
-        width: 15, color: '#E23B3B',
-        progress: [{ frame: 0, value: 1 }],
-        showIcon: asRoute, uniformMove: true,
-        ...(asRoute ? { animEffect: 'move' as const, moveStartFrame: 0, moveEndFrame: project.endFrame } : {}),
-        drawZoom: map.getZoom(),
-        shapeCategory: asRoute ? 'route' : 'multi',
-      } as ArrowElement);
+      if (asRoute) {
+        // 路线弹窗的「行军箭头」= 路线（element_route）：带小三角的行进线 + 移动标记，
+        // 与形状弹窗那个静态的「行军箭头」（element_shape 的 arrow）逻辑彻底分开
+        createElementAndSelect({
+          id: generateId(), type: 'line', name: '行军箭头', locked: false,
+          startFrame: 0, endFrame: project.endFrame,
+          coordinates: pts,
+          drawProgress: [{ frame: 0, value: 1 }],
+          showIcon: true, uniformMove: true,
+          animEffect: 'move' as const, moveStartFrame: 0, moveEndFrame: project.endFrame,
+          lineWidth: 15, lineColor: '#E23B3B',
+          arrowType: 'curved-simple' as const, drawZoom: map.getZoom(),
+        } as LineElement);
+      } else {
+        createElementAndSelect({
+          id: generateId(), type: 'arrow', name: '行军箭头', locked: false,
+          startFrame: 0, endFrame: project.endFrame,
+          from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved-simple', path: pts,
+          width: 15, color: '#E23B3B',
+          progress: [{ frame: 0, value: 1 }],
+          showIcon: false, uniformMove: true,
+          drawZoom: map.getZoom(),
+          shapeCategory: 'multi',
+        } as ArrowElement);
+      }
     } else if (mode === 'add_shape_swallowtail') {
       if (pts.length < 2) return;
       createElementAndSelect({
@@ -1108,16 +1122,30 @@ export function EditableMap({ project }: EditableMapProps) {
       const rr = useInteractionStore.getState().pendingRouteStyle;
       const asRoute = rr?.mode === mode;
       if (asRoute) useInteractionStore.getState().clearPendingRouteStyle();
-      createElementAndSelect({
-        id: generateId(), type: 'arrow', name: asRoute ? '燕尾箭头' : '弯曲箭头', locked: false,
-        startFrame: 0, endFrame: project.endFrame,
-        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
-        width: 15, color: '#E23B3B',
-        progress: [{ frame: 0, value: 1 }],
-        ...(asRoute ? { showIcon: true, uniformMove: true, animEffect: 'move' as const, moveStartFrame: 0, moveEndFrame: project.endFrame } : {}),
-        drawZoom: map.getZoom(),
-        shapeCategory: asRoute ? 'route' : 'special',
-      } as ArrowElement);
+      if (asRoute) {
+        // 路线弹窗的「燕尾箭头」= 路线（element_route）：带小三角的曲线 + 移动标记，
+        // 与形状弹窗那个静态的「燕尾箭头」（element_shape 的 arrow）逻辑彻底分开
+        createElementAndSelect({
+          id: generateId(), type: 'line', name: '燕尾箭头', locked: false,
+          startFrame: 0, endFrame: project.endFrame,
+          coordinates: pts,
+          drawProgress: [{ frame: 0, value: 1 }],
+          showIcon: true, uniformMove: true,
+          animEffect: 'move' as const, moveStartFrame: 0, moveEndFrame: project.endFrame,
+          lineWidth: 15, lineColor: '#E23B3B',
+          arrowType: 'curved' as const, drawZoom: map.getZoom(),
+        } as LineElement);
+      } else {
+        createElementAndSelect({
+          id: generateId(), type: 'arrow', name: '弯曲箭头', locked: false,
+          startFrame: 0, endFrame: project.endFrame,
+          from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
+          width: 15, color: '#E23B3B',
+          progress: [{ frame: 0, value: 1 }],
+          drawZoom: map.getZoom(),
+          shapeCategory: 'special',
+        } as ArrowElement);
+      }
     }
 
     resetDraw();
