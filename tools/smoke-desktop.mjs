@@ -31,7 +31,7 @@ out.providers = await page.evaluate(async () => {
   const beforeP = await mv.providers.list();
   const beforeT = await mv.templates.list();
   const tplId = 'smoke-tpl';
-  const tpl = { id: tplId, name: '冒烟模板', category: 'llm', instanceParams: [], sync: { submit: { path: '${baseUrl}/x', method: 'POST', body: {} } } };
+  const tpl = { id: tplId, name: '冒烟模板', category: 'llm', caps: { modes: 'sync' }, instanceParams: [], sync: { submit: { path: '${baseUrl}/x', method: 'POST', body: {} } } };
   await mv.templates.save(tpl);
   const inst = (apiKey) => ({ id: 'smoke-prov', tplId, name: '冒烟实例', sync: true, values: { instance: { baseUrl: 'https://x', apiKey }, requests: {} } });
   await mv.providers.upsert(inst('sk-a'));
