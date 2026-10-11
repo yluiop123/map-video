@@ -471,35 +471,35 @@ export function EditableMap({ project }: EditableMapProps) {
       const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved', basePts);
-        rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
+        rings.forEach((r) => pushOutline(fc, r));
       }
     } else if (mode === 'add_shape_march' && (points.length > 0 || cursor)) {
       // 行军箭头（curved-simple）：跟随鼠标实时预览
       const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved-simple', basePts);
-        rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
+        rings.forEach((r) => pushOutline(fc, r));
       }
     } else if (mode === 'add_shape_swallowtail' && (points.length > 0 || cursor)) {
       // 燕尾箭头（curved）：跟随鼠标实时预览
       const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved', basePts);
-        rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
+        rings.forEach((r) => pushOutline(fc, r));
       }
     } else if (mode === 'add_special_swallow' && (points.length > 0 || cursor)) {
       // 自定义燕尾箭头（attack 算法，尾部燕尾）：跟随鼠标实时预览
       const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'attack', basePts);
-        rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
+        rings.forEach((r) => pushOutline(fc, r));
       }
     } else if (mode === 'add_attack' && (points.length > 0 || cursor)) {
       // 自定义箭头（attack）：跟随鼠标实时预览
       const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'attack', basePts);
-        rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
+        rings.forEach((r) => pushOutline(fc, r));
       }
     } else if (POLY_DRAW_MODES.has(mode as any) && cursor) {
       const coords = [...points, cursor];
@@ -517,16 +517,13 @@ export function EditableMap({ project }: EditableMapProps) {
       }
     } else if (mode === 'add_arrow' && points.length >= 1 && cursor) {
       const rings = buildArrowGeometry(points[0], cursor, arrowWidth, 'swallowtail');
-      rings.forEach((ring) => fc.push(turf.polygon([[...ring, ring[0]]])));
+      rings.forEach((ring) => pushOutline(fc, ring));
     } else if (mode === 'add_pincer' && points.length >= 2) {
       // 钳形攻势：≥3 点后用 buildDoubleArrow 显示真实形状（不画控制点引导线）
       const previewPts = cursor ? [...points, cursor] : points;
       if (previewPts.length >= 3) {
         const ring = buildDoubleArrowPreview(previewPts);
-        if (ring.length >= 3) {
-          fc.push(turf.polygon([[...ring, ring[0]]]));
-          fc.push(turf.lineString([...ring, ring[0]])); // 轮廓（虚线层现在只描线）
-        }
+        pushOutline(fc, ring);
       }
     } else if (mode === 'add_rect' && points.length >= 1 && cursor) {
       // 矩形预览：对角两点
@@ -572,8 +569,9 @@ export function EditableMap({ project }: EditableMapProps) {
     // 已采集顶点
     if (points.length > 0) fc.push(...points.map((p) => turf.point(p)));
 
-    // 线类模式不显示填充层，避免出现区域样式
-    const showFill = !LINE_PREVIEW_MODES.has(mode);
+    // 箭头类预览：虚线画「控制点折线」，箭身走**轮廓描线**（不走填充：逐帧 setData 下 fill
+    // 对细长凹多边形的三角化会溢出，把弦与箭身之间也填上）
+    const showFill = !LINE_PREVIEW_MODES.has(mode) && !ARROW_PREVIEW_MODES.has(mode) && mode !== 'add_pincer';
     setPreviewData(map, { type: 'FeatureCollection', features: fc } as any, showFill);
   }, [mode]);
 
@@ -2304,7 +2302,7 @@ function getAllElementLayers(map: maplibregl.Map): string[] {
     .map((l: any) => l.id as string)
     .filter((id) => {
       // 排除绘制预览、选中高亮、行军光点等非元素图层
-      if (id === 'draw-preview-fill' || id === 'draw-preview-line' || id === 'draw-preview-point') return false;
+      if (id === 'draw-preview-fill' || id === 'draw-preview-line' || id === 'draw-preview-outline' || id === 'draw-preview-point') return false;
       if (id === 'selection-line' || id === 'selection-fill' || id === 'selection-point') return false;
       if (id.startsWith('linespot-')) return false;
       // 移动点的「全程路径虚线引导」是编辑辅助：它覆盖整条路径，纳入命中区会让
@@ -2436,6 +2434,14 @@ function approxBezier(coords: [number, number][]): [number, number][] {
   }
 }
 
+/** 箭头预览的「轮廓」：把环作为闭合折线推给描线层。
+ *  **不走填充层** —— 预览源每帧 setData，fill 对「细长凹多边形」的三角化会溢出，
+ *  把弦与箭身之间的区域也填上（真机复现过：同一个源里的折线渲染是对的，多边形是错的）。
+ *  描线没有三角化这一步，稳。 */
+function pushOutline(fc: any[], ring: [number, number][]) {
+  if (ring.length >= 3) fc.push(turf.lineString([...ring, ring[0]], { k: 'outline' }));
+}
+
 /** 预览路径 = 已采集控制点 + 光标位置。
  *  光标与末点重合时**不重复追加**：单击后光标就停在刚落的那个点上，追加进去会让曲线
  *  末端出现零长度段（切向退化）—— 箭头环自交、「回头」，attack 还会算出 NaN。 */
@@ -2460,12 +2466,16 @@ function setPreviewData(map: maplibregl.Map, data: any, showFill: boolean = true
   const src = 'draw-preview';
   const fillId = 'draw-preview-fill';
   const lineId = 'draw-preview-line';
+  const outlineId = 'draw-preview-outline';
   const pointId = 'draw-preview-point';
+  const dashFilter = ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'k'], 'outline']] as any;
+  const outlineFilter = ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'k'], 'outline']] as any;
 
   if (map.getSource(src)) {
     putGeoJSON(map.getSource(src) as GeoJSONSource, data);
-    // 虚线层只描线（旧会话里已建好的层也要补上过滤，否则多边形轮廓仍被虚线描边）
-    if (map.getLayer(lineId)) map.setFilter(lineId, ['==', ['geometry-type'], 'LineString']);
+    // 虚线层只描「控制点折线」（旧会话里已建好的层也要补上过滤）
+    if (map.getLayer(lineId)) map.setFilter(lineId, dashFilter);
+    if (map.getLayer(outlineId)) map.setFilter(outlineId, outlineFilter);
     // 动态显示/隐藏填充层
     if (map.getLayer(fillId)) {
       map.setLayoutProperty(fillId, 'visibility', showFill ? 'visible' : 'none');
@@ -2478,11 +2488,15 @@ function setPreviewData(map: maplibregl.Map, data: any, showFill: boolean = true
     paint: { 'fill-color': '#00C853', 'fill-opacity': 0.15 },
     layout: { visibility: showFill ? 'visible' : 'none' },
   });
+  // 箭头轮廓：描线而不是填充（见 pushOutline 的注释）
+  map.addLayer({
+    id: outlineId, type: 'line', source: src,
+    filter: outlineFilter,
+    paint: { 'line-color': '#00C853', 'line-width': 1.5 },
+  });
   map.addLayer({
     id: lineId, type: 'line', source: src,
-    // 只描线：多边形（箭头 / 矩形 / 集结点 / 钳形的预览）不再被虚线层描边 ——
-    // 否则箭头轮廓会沿路径「出去又回来」，看起来像回头。
-    filter: ['==', ['geometry-type'], 'LineString'],
+    filter: dashFilter,
     paint: { 'line-color': '#00C853', 'line-width': 2.5, 'line-dasharray': [3, 2] },
   });
   map.addLayer({
@@ -2499,7 +2513,7 @@ function setPreviewData(map: maplibregl.Map, data: any, showFill: boolean = true
 
 function cleanupPreview(map: maplibregl.Map | null) {
   if (!map) return;
-  ['draw-preview-fill', 'draw-preview-line', 'draw-preview-point'].forEach((id) => {
+  ['draw-preview-fill', 'draw-preview-line', 'draw-preview-outline', 'draw-preview-point'].forEach((id) => {
     if (map.getLayer(id)) map.removeLayer(id);
   });
   if (map.getSource('draw-preview')) map.removeSource('draw-preview');
