@@ -314,6 +314,80 @@ const SHAPE_ARROW_SUBTYPES = new Set(['swallowtail', 'march', 'attack']);
 /** 多边形（环数组）：几何装 coords_json；更早那代行把它装在 rings_json 里 */
 const SHAPE_POLYGON_SUBTYPES = new Set(['polygon', 'poly-curve', 'poly-defend', 'poly-curve-defend']);
 
+// ---------- 两点定形的几何（矩形两角点 / 圆·集结点·包围圈的中心 + 圆周上一点）----------
+// 半径不再入库：写库时把「中心 + 半径 + 旋转角」编码成两个控制点，读库时由两点距离算回来。
+// 两个函数用同一套球面近似，保证写读互逆（差一步就是「半径每次保存都漂一点」）。
+
+/** 从 center 沿 bearingDeg 方向走 km 公里的落点 */
+function destPoint(center, km, bearingDeg) {
+  const R = 6371;
+  const br = (bearingDeg * Math.PI) / 180;
+  const lat1 = (center[1] * Math.PI) / 180;
+  const d = km / R;
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(br));
+  const lng2 = (center[0] * Math.PI) / 180
+    + Math.atan2(Math.sin(br) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+  return [(lng2 * 180) / Math.PI, (lat2 * 180) / Math.PI];
+}
+
+/** 两点大圆距离（km）—— 与 destPoint 同一套球面近似 */
+function geoKm(a, b) {
+  const R = 6371;
+  const dLat = ((b[1] - a[1]) * Math.PI) / 180;
+  const dLng = ((b[0] - a[0]) * Math.PI) / 180;
+  const s = Math.sin(dLat / 2) ** 2
+    + Math.cos((a[1] * Math.PI) / 180) * Math.cos((b[1] * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+/** 圆 / 集结点 / 包围圈的两个控制点：[中心, 圆周上一点]（圆周点的方向 = 旋转角，即半径手柄方向） */
+function twoPointCoordsOf(el) {
+  const cMeta = el.circleMeta;
+  const center = cMeta?.center ?? el.center;
+  const radius = cMeta?.radius ?? el.radius;
+  if (!center || radius == null) return null;
+  return [center, destPoint(center, radius, el.rotation ?? 0)];
+}
+
+/** 圆 / 集结点 / 包围圈的两个控制点 → { center, radius }（半径＝两点距离） */
+function twoPointsOf(r) {
+  const pts = J(r.coords_json, []);
+  const center = Array.isArray(pts[0]) ? pts[0] : [0, 0];
+  const radius = Array.isArray(pts[1]) ? geoKm(center, pts[1]) : 30;
+  return { center, radius };
+}
+
+/** 两点定形 → 运行时 coordinates（**派生镜像**：渲染端本来就按 meta 重算，这里只是让运行时对象与旧行为一致） */
+function circleRingOf(center, km, segs = 64) {
+  const ring = [];
+  for (let i = 0; i <= segs; i++) ring.push(destPoint(center, km, (i / segs) * 360));
+  return ring;
+}
+function rectRingOf(c1, c2, rotationDeg = 0) {
+  const ring = [[c1[0], c1[1]], [c2[0], c1[1]], [c2[0], c2[1]], [c1[0], c2[1]], [c1[0], c1[1]]];
+  if (!rotationDeg) return ring;
+  const cx = (c1[0] + c2[0]) / 2, cy = (c1[1] + c2[1]) / 2;
+  const r = (rotationDeg * Math.PI) / 180, cos = Math.cos(r), sin = Math.sin(r);
+  return ring.map(([x, y]) => {
+    const dx = x - cx, dy = y - cy;
+    return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
+  });
+}
+
+/** 形状表写库时的几何点数据（一个 coords_json 装全部，形状由 subtype 判别） */
+function shapeCoordsOf(el) {
+  if (el.type === 'polygon') {
+    if (el.shapeKind === 'rect') return el.rectMeta ? [el.rectMeta.c1, el.rectMeta.c2] : null;
+    if (el.shapeKind === 'circle') return twoPointCoordsOf(el);
+    return el.coordinates;                       // poly：环数组是输入
+  }
+  if (el.type === 'polyline') return el.coordinates;
+  if (el.type === 'arrow') return el.path;
+  if (el.type === 'double_arrow') return el.points;
+  if (el.type === 'gathering' || el.type === 'encirclement') return twoPointCoordsOf(el);
+  return null;
+}
+
 /**
  * 旧形状行（`type` = 几何、`subtype` = 子形态）→ 新形状行（`type` = 大类 multi/two/special、`subtype` = 具体形状项）。
  * 让位重建搬行时逐行调用（**不能在旧表上 UPDATE**：旧表的 CHECK 只认几何 type）。
@@ -481,6 +555,7 @@ const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_posit
   'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos',
   'fly_mode', 'ord', 'keyframes_json', 'from_lng', 'from_lat', 'to_lng', 'to_lat', 'shape_kind', 'arrow_type', 'line_type', 'poly_curve', 'rings_json',
   'defense_tooth_length', 'defense_tooth_gap', 'defense_tooth_angle', 'defense_side', 'pulse_animation', 'line_arrow', 'path_json', 'points_json',
+  'rect_c1_lng', 'rect_c1_lat', 'rect_c2_lng', 'rect_c2_lat', 'center_lng', 'center_lat', 'radius',
   'anim_effect', 'show_icon', 'move_start_sec', 'move_end_sec', 'uniform_move', 'point_times_json',
   'move_icon_shape', 'move_icon_color', 'move_icon_emoji', 'move_icon_scale', 'move_icon_label_text',
   'move_icon_label_color', 'move_icon_label_bg', 'move_icon_label_offset_x', 'move_icon_label_offset_y',
@@ -632,6 +707,16 @@ function restoreRebuiltRows(db, moved) {
           if (SHAPE_POLYGON_SUBTYPES.has(m.subtype)) vals.coords_json = r.rings_json ?? null;
           else if (m.subtype === 'pincer') vals.coords_json = r.points_json ?? null;
           else if (SHAPE_ARROW_SUBTYPES.has(m.subtype)) vals.coords_json = r.path_json ?? null;
+        }
+        // 两点定形：老行的几何装在 rect_* / center_* / radius 里（coords_json 里那份是派生环）→ 一律用控制点覆盖
+        if (list.includes('coords_json')) {
+          if (m.subtype === 'rect' && r.rect_c1_lng != null && r.rect_c2_lng != null) {
+            vals.coords_json = JSON.stringify([[r.rect_c1_lng, r.rect_c1_lat], [r.rect_c2_lng, r.rect_c2_lat]]);
+          } else if ((m.subtype === 'circle' || m.subtype === 'gathering' || m.subtype === 'encirclement')
+            && r.center_lng != null && r.center_lat != null && r.radius != null) {
+            const pts = twoPointCoordsOf({ center: [r.center_lng, r.center_lat], radius: r.radius, rotation: r.rotation ?? 0 });
+            if (pts) vals.coords_json = JSON.stringify(pts);
+          }
         }
         stmt.run(vals);
       }
@@ -1050,39 +1135,30 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
     return;
   }
   if (cat === 'shape') {
-    const cMeta = el.circleMeta;
     const so = shapeOf(el);
     db.prepare(`INSERT INTO element_shape (
       element_id, project_id, layer_id, type, subtype, name, start_sec, end_sec,
       fill_color, fill_opacity, stroke_color, stroke_width,
-      rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
       width, draw_zoom, color,
-      center_lng, center_lat, radius, rotation,
+      rotation,
       coords_json, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@subtype,@name,@start_sec,@end_sec,
       @fill_color,@fill_opacity,@stroke_color,@stroke_width,
-      @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
       @width,@draw_zoom,@color,
-      @center_lng,@center_lat,@radius,@rotation,
+      @rotation,
       @coords_json,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side)`).run({
       ...omit(common, SHAPE_DEAD),
       // 形状无动画族 / 移动图标（列已删）—— 这些「沿路径走 / 显示移动标记」的字段只属于路线
       type: so.group, subtype: so.subtype,
       fill_color: n(el.fillColor), fill_opacity: n(el.fillOpacity), stroke_color: n(el.strokeColor), stroke_width: n(el.strokeWidth),
-      rect_c1_lng: n(el.rectMeta?.c1?.[0]), rect_c1_lat: n(el.rectMeta?.c1?.[1]), rect_c2_lng: n(el.rectMeta?.c2?.[0]), rect_c2_lat: n(el.rectMeta?.c2?.[1]),
       width: n(el.width), draw_zoom: n(el.drawZoom), color: n(el.color),
-      // ★ 几何点数据只有 coords_json 这一列（嵌套由 subtype 判）：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点
-      coords_json: el.type === 'polygon' ? j(el.coordinates)
-        : el.type === 'polyline' ? j(el.coordinates)
-        : el.type === 'arrow' ? j(el.path)
-        : el.type === 'double_arrow' ? j(el.points) : null,
+      // ★ 几何点数据只有 coords_json 这一列（形状由 subtype 判）：
+      //   多边形＝环数组 / 折线·箭头＝路径 / 钳形＝4 控制点 / 矩形＝两个对角点 / 圆·集结点·包围圈＝[中心, 圆周上一点]
+      coords_json: j(shapeCoordsOf(el)),
       // 战线（开环）与防御圈（闭合环）共用这一套梳齿/锯齿列
       front_tooth_length: n(el.frontStyle?.toothLength ?? el.defenseStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap ?? el.defenseStyle?.toothGap),
       front_tooth_angle: n(el.frontStyle?.toothAngle ?? el.defenseStyle?.toothAngle), front_side: n(el.frontStyle?.side ?? el.defenseStyle?.side),
-      center_lng: cMeta ? n(cMeta.center[0]) : n(el.center?.[0]),
-      center_lat: cMeta ? n(cMeta.center[1]) : n(el.center?.[1]),
-      radius: cMeta ? n(cMeta.radius) : n(el.radius),
       rotation: n(el.rotation),
     });
     return;
@@ -1328,16 +1404,25 @@ function readElementsV2(db, chapterId, s2f) {
     const frontOf = () => (r.front_tooth_length == null && r.front_side == null ? undefined : { toothLength: r.front_tooth_length ?? undefined, toothGap: r.front_tooth_gap ?? undefined, toothAngle: r.front_tooth_angle ?? undefined, side: r.front_side ?? undefined });
     if (st === 'polygon' || st === 'poly-curve' || st === 'poly-defend' || st === 'poly-curve-defend' || st === 'circle' || st === 'rect') {
       const shapeKind = (st === 'circle' || st === 'rect') ? st : 'poly';
+      const pts = J(r.coords_json, []);
       const poly = {
-        ...base(r), type: 'polygon', coordinates: J(r.coords_json, []), fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
+        ...base(r), type: 'polygon', coordinates: shapeKind === 'poly' ? pts : [], fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
         strokeColor: r.stroke_color ?? '#E23B3B', strokeWidth: r.stroke_width ?? 2, shapeKind,
         polyCurve: (st === 'poly-curve' || st === 'poly-curve-defend') ? true : undefined,
         rotation: r.rotation ?? undefined,
         defenseStyle: (st === 'poly-defend' || st === 'poly-curve-defend') ? frontOf() : undefined,
         shapeCategory: group,
       };
-      if (shapeKind === 'rect') poly.rectMeta = { c1: [r.rect_c1_lng, r.rect_c1_lat], c2: [r.rect_c2_lng, r.rect_c2_lat] };
-      if (shapeKind === 'circle') poly.circleMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
+      // 两点定形：coords_json 存的是两个控制点，参数（角点 / 中心 + 半径）与 coordinates 都从它还原
+      if (shapeKind === 'rect' && Array.isArray(pts[0]) && Array.isArray(pts[1])) {
+        poly.rectMeta = { c1: pts[0], c2: pts[1] };
+        poly.coordinates = [rectRingOf(pts[0], pts[1], r.rotation ?? 0)];
+      }
+      if (shapeKind === 'circle' && Array.isArray(pts[0]) && Array.isArray(pts[1])) {
+        const radius = geoKm(pts[0], pts[1]);
+        poly.circleMeta = { center: pts[0], radius };
+        poly.coordinates = [circleRingOf(pts[0], radius)];
+      }
       out.push(poly);
     } else if (st === 'line' || st === 'line-arrow' || st === 'bezier' || st === 'bezier-arrow' || st === 'front-line' || st === 'front-curve') {
       const bez = st === 'bezier' || st === 'bezier-arrow' || st === 'front-curve';
@@ -1353,11 +1438,13 @@ function readElementsV2(db, chapterId, s2f) {
       const arrowType = st === 'swallowtail' ? 'curved' : st === 'march' ? 'curved-simple' : 'attack';
       out.push({ ...base(r), type: 'arrow', path: J(r.coords_json, []), arrowType, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], drawZoom: r.draw_zoom ?? undefined, shapeCategory: group });
     } else if (st === 'gathering') {
-      out.push({ ...base(r), type: 'gathering', center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, rotation: r.rotation ?? undefined, shapeCategory: group });
+      const tp = twoPointsOf(r);
+      out.push({ ...base(r), type: 'gathering', center: tp.center, radius: tp.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, rotation: r.rotation ?? undefined, shapeCategory: group });
     } else if (st === 'pincer') {
       out.push({ ...base(r), type: 'double_arrow', points: J(r.coords_json, []), color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], shapeCategory: group });
     } else if (st === 'encirclement') {
-      out.push({ ...base(r), type: 'encirclement', center: [r.center_lng, r.center_lat], radius: r.radius, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, shapeCategory: group });
+      const tp = twoPointsOf(r);
+      out.push({ ...base(r), type: 'encirclement', center: tp.center, radius: tp.radius, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, shapeCategory: group });
     }
     // 未知 subtype：跳过（老数据/容错），不让它退化成空形状落回写入端
   }

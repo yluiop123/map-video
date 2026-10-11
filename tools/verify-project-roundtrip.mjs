@@ -325,6 +325,38 @@ console.log('\n[9] 形状：line_arrow 折进 subtype（line / line-arrow / bezi
     const cols = db9.prepare('PRAGMA table_info(element_shape)').all().map((c) => c.name);
     return !cols.includes('rings_json') && !cols.includes('path_json') && !cols.includes('points_json') && !cols.includes('poly_curve');
   })());
+
+  // 两点定形：只存两个控制点，半径由两点距离算（rect_c1/c2、center_lng/lat、radius 三组列已删）
+  const rect = { id: 'r1', type: 'polygon', shapeKind: 'rect', rectMeta: { c1: [100, 30], c2: [101, 31] }, coordinates: [], fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2, rotation: 0 };
+  saveProjectV2(db9, polyLayer('s_rect', rect));
+  const rrow = db9.prepare("SELECT type, subtype, coords_json FROM element_shape WHERE element_id='r1'").get();
+  const rback = getProjectV2(db9, 's_rect').layers[0].elements[0];
+  check('9 rect：两个对角点落在 coords_json',
+    rrow?.type === 'two' && rrow?.subtype === 'rect' && JSON.stringify(JSON.parse(rrow.coords_json)) === JSON.stringify([[100, 30], [101, 31]]), JSON.stringify(rrow));
+  check('9 rect 读回 rectMeta 逐点相等', JSON.stringify(rback?.rectMeta) === JSON.stringify({ c1: [100, 30], c2: [101, 31] }), JSON.stringify(rback?.rectMeta));
+
+  const circle = { id: 'c1', type: 'polygon', shapeKind: 'circle', circleMeta: { center: [100, 30], radius: 50 }, coordinates: [], fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2 };
+  saveProjectV2(db9, polyLayer('s_circle', circle));
+  const crow = db9.prepare("SELECT subtype, coords_json FROM element_shape WHERE element_id='c1'").get();
+  const cback = getProjectV2(db9, 's_circle').layers[0].elements[0];
+  const cpts = JSON.parse(crow.coords_json);
+  check('9 circle：中心 + 圆周上一点（两个控制点）落在 coords_json',
+    crow?.subtype === 'circle' && cpts.length === 2 && JSON.stringify(cpts[0]) === JSON.stringify([100, 30]), JSON.stringify(crow));
+  check('9 circle 读回半径＝两点距离（≈50km，误差 < 0.5%）',
+    Math.abs((cback?.circleMeta?.radius ?? 0) - 50) / 50 < 0.005, cback?.circleMeta?.radius);
+
+  const gather = { id: 'g2', type: 'gathering', center: [101, 31], radius: 40, color: '#FF6600' };
+  saveProjectV2(db9, polyLayer('s_gather', gather));
+  const gw = db9.prepare("SELECT subtype, coords_json FROM element_shape WHERE element_id='g2'").get();
+  const gb = getProjectV2(db9, 's_gather').layers[0].elements[0];
+  check('9 gathering：两点落在 coords_json、读回中心与半径',
+    gw?.subtype === 'gathering' && JSON.stringify(JSON.parse(gw.coords_json)[0]) === JSON.stringify([101, 31])
+    && JSON.stringify(gb?.center) === JSON.stringify([101, 31]) && Math.abs((gb?.radius ?? 0) - 40) / 40 < 0.005,
+    JSON.stringify([gw, gb?.center, gb?.radius]));
+  check('9 形状表不再有 rect_* / center_* / radius 列', (() => {
+    const cols = db9.prepare('PRAGMA table_info(element_shape)').all().map((c) => c.name);
+    return !cols.some((c) => c.startsWith('rect_') || c.startsWith('center_') || c === 'radius');
+  })());
   db9.close();
 }
 
@@ -337,7 +369,8 @@ console.log('\n[9b] 旧行搬迁：line_arrow / poly_curve 折进 subtype、ring
     CREATE TABLE element_shape (
       element_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, layer_id TEXT NOT NULL,
       type TEXT NOT NULL, subtype TEXT, name TEXT NOT NULL, start_sec REAL, end_sec REAL,
-      rings_json TEXT, coords_json TEXT, line_arrow INTEGER, poly_curve INTEGER, path_json TEXT, points_json TEXT);`);
+      rings_json TEXT, coords_json TEXT, line_arrow INTEGER, poly_curve INTEGER, path_json TEXT, points_json TEXT,
+      rect_c1_lng REAL, rect_c1_lat REAL, rect_c2_lng REAL, rect_c2_lat REAL, center_lng REAL, center_lat REAL, radius REAL);`);
   legacy.prepare("INSERT INTO collection (collection_id,name,ord,created_at,updated_at) VALUES ('default','默认合集',-1,1,1)").run();
   legacy.prepare("INSERT INTO project (project_id,name,created_at,updated_at) VALUES ('p','旧项目',1,1)").run();
   legacy.prepare("INSERT INTO layer (layer_id,project_id,type,name,visible,ord) VALUES ('l','p','shape','形状 1',1,0)").run();
@@ -350,14 +383,26 @@ console.log('\n[9b] 旧行搬迁：line_arrow / poly_curve 折进 subtype、ring
   put.run('e4', 'p', 'l', 'special', 'swallowtail', '燕尾箭头', 0, 60, null, null, null, null, '[[0,0],[1,1],[2,2]]', null);
   put.run('e5', 'p', 'l', 'special', 'pincer', '钳形', 0, 60, null, null, null, null, null, '[[0,0],[1,0],[0,1],[1,1]]');
   put.run('e6', 'p', 'l', 'multi', 'polygon', '多边形', 0, 60, '[[[0,0],[1,0],[1,1],[0,0]]]', null, null, null, null, null);
+  // 两点定形：老行把几何装在 rect_* / center_* / radius（coords_json 里那份是派生环）→ 搬迁要换成控制点
+  const put2 = legacy.prepare(`INSERT INTO element_shape
+    (element_id,project_id,layer_id,type,subtype,name,start_sec,end_sec,rings_json,coords_json,
+     rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,center_lng,center_lat,radius)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  put2.run('e7', 'p', 'l', 'two', 'rect', '矩形', 0, 60, '[[100,30],[101,30],[101,31],[100,31],[100,30]]', '[[100,30],[101,30],[101,31],[100,31],[100,30]]',
+    100, 30, 101, 31, null, null, null);
+  put2.run('e8', 'p', 'l', 'two', 'circle', '圆', 0, 60, '[[100,30],[100.1,30]]', '[[100,30],[100.1,30]]',
+    null, null, null, null, 100, 30, 50);
+  put2.run('e9', 'p', 'l', 'two', 'gathering', '集结点', 0, 60, null, null,
+    null, null, null, null, 101, 31, 40);
   ensureV2Schema(legacy);
   const cols = legacy.prepare('PRAGMA table_info(element_shape)').all().map((c) => c.name);
   const rows = legacy.prepare('SELECT element_id, subtype, coords_json FROM element_shape ORDER BY element_id').all();
   const byId = Object.fromEntries(rows.map((r) => [r.element_id, r]));
-  check('9b.1 line_arrow / poly_curve / rings_json / path_json / points_json 五列都已删',
+  check('9b.1 line_arrow / poly_curve / rings_json / path_json / points_json / rect_* / center_* / radius 都已删',
     !cols.includes('line_arrow') && !cols.includes('poly_curve') && !cols.includes('rings_json')
-    && !cols.includes('path_json') && !cols.includes('points_json'), cols.join(','));
-  check('9b.2 搬迁一行不少（6 行都在）', rows.length === 6, JSON.stringify(rows.map((r) => r.element_id)));
+    && !cols.includes('path_json') && !cols.includes('points_json')
+    && !cols.some((c) => c.startsWith('rect_') || c.startsWith('center_') || c === 'radius'), cols.join(','));
+  check('9b.2 搬迁一行不少（9 行都在）', rows.length === 9, JSON.stringify(rows.map((r) => r.element_id)));
   check('9b.3 line_arrow=1 → line-arrow、没写 → bezier',
     byId.e1?.subtype === 'line-arrow' && byId.e2?.subtype === 'bezier', JSON.stringify([byId.e1, byId.e2]));
   check('9b.4 poly_curve=1 → poly-curve（曲线化折进子类）', byId.e3?.subtype === 'poly-curve', JSON.stringify(byId.e3));
@@ -365,6 +410,15 @@ console.log('\n[9b] 旧行搬迁：line_arrow / poly_curve 折进 subtype、ring
   check('9b.6 钳形 4 点从 points_json 搬进 coords_json', byId.e5?.coords_json === '[[0,0],[1,0],[0,1],[1,1]]', JSON.stringify(byId.e5));
   check('9b.7 多边形环数组从 rings_json 搬进 coords_json（poly-curve 行也搬，否则撞 CHECK 被吞）',
     byId.e6?.coords_json === '[[[0,0],[1,0],[1,1],[0,0]]]' && byId.e3?.coords_json === '[[[0,0],[1,0],[1,1]]]', JSON.stringify([byId.e6, byId.e3]));
+  const e8 = byId.e8?.coords_json ? JSON.parse(byId.e8.coords_json) : null;
+  check('9b.8 rect：从 rect_* 换成两个角点（不再留派生环）',
+    byId.e7?.coords_json === '[[100,30],[101,31]]', JSON.stringify(byId.e7));
+  check('9b.9 circle：从 center_*/radius 换成 [中心, 圆周上一点]',
+    byId.e8?.subtype === 'circle' && e8?.length === 2 && JSON.stringify(e8[0]) === JSON.stringify([100, 30]), JSON.stringify(byId.e8));
+  check('9b.10 gathering：同样换成两个控制点', (() => {
+    const p = byId.e9?.coords_json ? JSON.parse(byId.e9.coords_json) : null;
+    return byId.e9?.subtype === 'gathering' && p?.length === 2 && JSON.stringify(p[0]) === JSON.stringify([101, 31]);
+  })(), JSON.stringify(byId.e9));
   legacy.close();
 }
 

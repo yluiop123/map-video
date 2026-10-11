@@ -133,10 +133,10 @@
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
 | `element_shape` | `multi` | `element_id` | Shape：直线 / 曲线 / 带箭头直线·曲线 / 直线·弯曲战线 | 点数组（coords_json）、描边色宽、战线梳齿（front_tooth_*）；`subtype`＝line/line-arrow/bezier/bezier-arrow/front-line/front-curve |
-| `element_shape` | `multi`（多边形）/ `two`（矩形·圆） | `element_id` | Shape：多边形 / 曲线多边 / 直线·曲线防御圈 / 圆 / 矩形 ＋**Region 工具** | 环数组（coords_json）、填充描边、中心·半径·对角点、防御圈锯齿、旋转；`subtype`＝polygon/poly-curve/poly-defend/poly-curve-defend/circle/rect |
+| `element_shape` | `multi`（多边形）/ `two`（矩形·圆） | `element_id` | Shape：多边形 / 曲线多边 / 直线·曲线防御圈 / 圆 / 矩形 ＋**Region 工具** | 几何点数据全在 coords_json（多边形＝环数组 / 矩形＝两个对角点 / 圆＝[中心, 圆周上一点]）、填充描边、防御圈锯齿、旋转；`subtype`＝polygon/poly-curve/poly-defend/poly-curve-defend/circle/rect |
 | `element_shape` | `special` | `element_id` | Shape：燕尾箭头 / 行军箭头 / 自定义燕尾箭头 / 自定义箭头 / 钳形 | 点数组（coords_json：箭头路径 / 钳形 4 控制点）、箭头宽度、颜色；`subtype`＝swallowtail/march/attack/pincer |
-| `element_shape` | `two` | `element_id` | Shape：集结点（两点绘制） | 中心、半径、颜色、旋转；`subtype`＝gathering |
-| `element_shape` | `two` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 中心、半径、填充与描边色；`subtype`＝encirclement |
+| `element_shape` | `two` | `element_id` | Shape：集结点（两点绘制） | 两个控制点（coords_json：中心 + 圆周上一点，半径由两点距离算）、颜色、旋转；`subtype`＝gathering |
+| `element_shape` | `two` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 两个控制点（coords_json）、填充与描边色；`subtype`＝encirclement |
 
 ### 组 7 · 疆域类元素 1 张 Terr 工具
 
@@ -193,7 +193,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 474 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，474 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 460 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，460 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -579,7 +579,7 @@
 
 **职责**：形状类元素：大类 type（multi 多点 / two 两点 / special 特殊）+ 小类 subtype（具体形状项），几何由 subtype 推出（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-28 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+21 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -595,31 +595,20 @@
 | `fill_opacity` | REAL | — | 填充透明度（0–1） · `CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1)` |
 | `stroke_color` | TEXT | — | 描边色 |
 | `stroke_width` | REAL | — | 描边宽度（px） |
-| `rect_c1_lng` | REAL | — | 矩形对角点1经度 |
-| `rect_c1_lat` | REAL | — | 矩形对角点1纬度 |
-| `rect_c2_lng` | REAL | — | 矩形对角点2经度 |
-| `rect_c2_lat` | REAL | — | 矩形对角点2纬度 |
 | `width` | REAL | — | 箭头宽度（px） |
 | `draw_zoom` | REAL | — | 绘制时的地图缩放：把 width 的 px 换算成地理宽度的基准（读取端靠它保持绘制时的屏幕尺寸） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
-| `coords_json` | TEXT | — | 几何点数据：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点 · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
+| `coords_json` | TEXT | — | 几何点数据：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点，矩形＝两个对角点，圆/集结点/包围圈＝[中心, 圆周上一点] · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `front_tooth_length` | REAL | — | 梳齿/锯齿长度（px，战线与防御圈共用） |
 | `front_tooth_gap` | REAL | — | 梳齿/锯齿间距（px） |
 | `front_tooth_angle` | REAL | — | 梳齿/锯齿偏角（度） |
 | `front_side` | INTEGER | — | 梳齿/锯齿朝向侧：1 右 / -1 左 · `CHECK (front_side IS NULL OR front_side IN (-1,1))` |
-| `center_lng` | REAL | — | 中心经度（gathering / encirclement 必填） |
-| `center_lat` | REAL | — | 中心纬度 |
-| `radius` | REAL | — | 半径（米，gathering / encirclement 必填） |
 | `rotation` | REAL | — | 绕中心旋转角（度） |
 
 **表级约束**
 
 - `CHECK (end_sec >= start_sec)`
-- `CHECK (radius IS NULL OR radius > 0)`
-- `CHECK (subtype NOT IN ('circle') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
-- `CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend', 'line','line-arrow','bezier','bezier-arrow','front-line','front-curve', 'swallowtail','march','attack','pincer') OR coords_json IS NOT NULL)`
-- `CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend', 'line','line-arrow','bezier','bezier-arrow','front-line','front-curve', 'swallowtail','march','attack','pincer', 'rect','circle','gathering','encirclement') OR coords_json IS NOT NULL)`（每种形状都必须带几何：多边形环数组 / 折线·箭头路径 / 钳形 4 点 / 矩形两角点 / 圆·集结点·包围圈两点）
 
 ### 组 7 · 疆域类元素（Terr 工具）
 
@@ -952,7 +941,7 @@
 
 **职责**：公共形状元素（public_layer 内副本；列 = element_shape − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-25 列 · 主键 `element_id`
+18 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -965,30 +954,19 @@
 | `fill_opacity` | REAL | — | 填充透明度（0–1） · `CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1)` |
 | `stroke_color` | TEXT | — | 描边色 |
 | `stroke_width` | REAL | — | 描边宽度（px） |
-| `rect_c1_lng` | REAL | — | 矩形对角点1经度 |
-| `rect_c1_lat` | REAL | — | 矩形对角点1纬度 |
-| `rect_c2_lng` | REAL | — | 矩形对角点2经度 |
-| `rect_c2_lat` | REAL | — | 矩形对角点2纬度 |
 | `width` | REAL | — | 箭头宽度（px） |
 | `draw_zoom` | REAL | — | 绘制时的地图缩放：把 width 的 px 换算成地理宽度的基准（读取端靠它保持绘制时的屏幕尺寸） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
-| `coords_json` | TEXT | — | 几何点数据：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点 · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
+| `coords_json` | TEXT | — | 几何点数据：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点，矩形＝两个对角点，圆/集结点/包围圈＝[中心, 圆周上一点] · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `front_tooth_length` | REAL | — | 梳齿/锯齿长度（px，战线与防御圈共用） |
 | `front_tooth_gap` | REAL | — | 梳齿/锯齿间距（px） |
 | `front_tooth_angle` | REAL | — | 梳齿/锯齿偏角（度） |
 | `front_side` | INTEGER | — | 梳齿/锯齿朝向侧：1 右 / -1 左 · `CHECK (front_side IS NULL OR front_side IN (-1,1))` |
-| `center_lng` | REAL | — | 中心经度（gathering / encirclement 必填） |
-| `center_lat` | REAL | — | 中心纬度 |
-| `radius` | REAL | — | 半径（米，gathering / encirclement 必填） |
 | `rotation` | REAL | — | 绕中心旋转角（度） |
 
 **表级约束**
 
-- `CHECK (radius IS NULL OR radius > 0)`
-- `CHECK (subtype NOT IN ('circle') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
-- `CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend', 'line','line-arrow','bezier','bezier-arrow','front-line','front-curve', 'swallowtail','march','attack','pincer') OR coords_json IS NOT NULL)`
-- `CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend', 'line','line-arrow','bezier','bezier-arrow','front-line','front-curve', 'swallowtail','march','attack','pincer', 'rect','circle','gathering','encirclement') OR coords_json IS NOT NULL)`（每种形状都必须带几何：多边形环数组 / 折线·箭头路径 / 钳形 4 点 / 矩形两角点 / 圆·集结点·包围圈两点）
 
 #### public_element_territory — 公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构，但不带显隐与时间）
 
@@ -1065,10 +1043,10 @@
 | 路线 / 飞线 | `element_route` | `line` | coords_json、subtype（线型或楔形箭头）、draw_zoom（带 arrowType 时把 line_width 的 px 换算成地理宽度）、route_dot_*、flow_speed、plain_path、front_tooth_* |
 | 折线（直线/曲线/战线） | `element_shape` | `multi` | coords_json（路径点）、subtype（line/line-arrow/bezier/bezier-arrow/front-line/front-curve）、front_tooth_*、描边走 stroke_color / stroke_width |
 | 移动点 | `element_route` | `moving_point` | coords_json、path_progress（走 keyframes_json） |
-| 区域（多边形/矩形/圆） | `element_shape` | `multi`（多边形）/ `two`（矩形/圆） | subtype（polygon/poly-curve/poly-defend/poly-curve-defend/circle/rect）、coords_json（多边形＝环数组）、rect_c1/c2_lng/lat、center_lng/lat、radius |
+| 区域（多边形/矩形/圆） | `element_shape` | `multi`（多边形）/ `two`（矩形/圆） | subtype（polygon/poly-curve/poly-defend/poly-curve-defend/circle/rect）、coords_json（多边形＝环数组 / 矩形＝两个对角点 / 圆＝[中心, 圆周上一点]） |
 | 箭头（多种） | `element_shape` | `special` | subtype（swallowtail/march/attack）、coords_json（路径，起终点为首/末点）、width + draw_zoom（绘制缩放，用来把 px 宽度换算成地理宽度） |
 | 双箭头 / 钳形 | `element_shape` | `special` | subtype=pincer、coords_json（4 控制点，走 `buildDoubleArrow` 几何） |
-| 包围圈 / 集结点 | `element_shape` | `two` | subtype=encirclement / gathering、center_lng/lat、radius |
+| 包围圈 / 集结点 | `element_shape` | `two` | subtype=encirclement / gathering、coords_json（[中心, 圆周上一点]，半径由两点距离算） |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_* 八列 ＋ countries_json / plots_json / events_json |
 
 动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只有 `element_route` 有**：它们描述「沿一条路径走 / 显示移动标记」，只有 line / moving_point 会走动，marker / shape / territory / image 一律没有 —— 早先宽表把 union 全给每张表，结果写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode` 同理：飞行（拱形航迹 + 3D 管）只在渲染端 `renderLine` 实现，面板的飞行开关也只对 `type='line'` 显示。
