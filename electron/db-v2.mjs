@@ -371,7 +371,7 @@ const MARKER_DEAD = ['visual_fit', 'visual_tintable', 'visual_fps', 'visual_loop
 const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_position', 'label_offset_x',
   'label_offset_y', 'label_bg_color', 'label_bg_padding', 'label_bg_radius',
   'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos',
-  'fly_mode', 'ord',
+  'fly_mode', 'ord', 'keyframes_json',
   'anim_effect', 'show_icon', 'move_start_sec', 'move_end_sec', 'uniform_move', 'point_times_json',
   'move_icon_shape', 'move_icon_color', 'move_icon_emoji', 'move_icon_scale', 'move_icon_label_text',
   'move_icon_label_color', 'move_icon_label_bg', 'move_icon_label_offset_x', 'move_icon_label_offset_y',
@@ -624,12 +624,13 @@ function colsToVisual(r) {
 }
 
 /**
- * 元素动画关键帧 → keyframes_json（帧→秒；标量走 value_json，morph 存坐标数组）。
+ * 元素动画关键帧 → keyframes_json（帧→秒；标量走 value_json）。
  * 只有**有生产者也有消费者**的几族：draw_progress（线增长）/ progress（箭头推进）/
- * path_progress（移动点）/ morph（形状变形，渲染端在 renderPolygon 消费）。
+ * path_progress（移动点）—— 它们只出现在 element_route（形状是静态的，没有 keyframes_json）。
  * 曾经还有 opacity / scale / rotation（`ElementStyle`）与 fill_progress 四族 ——
  * 全库既没有面板写它们（`style: {}` 从创建到删除都没人填过），渲染端也不读，
- * 属于「写进去、读不回来」的死分支，已随 `ElementStyle` 一起删掉。
+ * 属于「写进去、读不回来」的死分支，已随 `ElementStyle` 一起删掉；morph（形状变形）
+ * 同理，已随 element_shape 的 keyframes_json 一起删。
  */
 function kfsToJson(el, f2s) {
   const out = [];
@@ -637,11 +638,10 @@ function kfsToJson(el, f2s) {
   push('draw_progress', el.drawProgress);
   push('progress', el.progress);
   push('path_progress', el.pathProgress);
-  for (const m of el.morphKeyframes || []) out.push({ property: 'morph', sec: f2s(m.frame), easing: m.easing, value_json: m.coordinates });
   return out.length ? JSON.stringify(out) : null;
 }
 function jsonToKfs(json, s2f) {
-  const drawProgress = []; const progress = []; const pathProgress = []; const morphKeyframes = [];
+  const drawProgress = []; const progress = []; const pathProgress = [];
   for (const k of J(json, [])) {
     const frame = s2f(k.sec);
     const kf = { frame, value: k.value_json, easing: k.easing };
@@ -649,10 +649,9 @@ function jsonToKfs(json, s2f) {
       case 'draw_progress': drawProgress.push(kf); break;
       case 'progress': progress.push(kf); break;
       case 'path_progress': pathProgress.push(kf); break;
-      case 'morph': morphKeyframes.push({ frame, coordinates: k.value_json, easing: k.easing }); break;
     }
   }
-  return { drawProgress, progress, pathProgress, morphKeyframes };
+  return { drawProgress, progress, pathProgress };
 }
 
 // ---------- 弹窗语音：id 单独成列（真外键），payload 里只留标题 ----------
@@ -894,7 +893,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
     const cMeta = el.circleMeta || el.starMeta;
     db.prepare(`INSERT INTO element_shape (
       element_id, project_id, layer_id, type, name, start_sec, end_sec,
-      keyframes_json, rings_json, fill_color, fill_opacity, stroke_color, stroke_width, shape_kind,
+      rings_json, fill_color, fill_opacity, stroke_color, stroke_width, shape_kind,
       rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
       poly_curve, defense_tooth_length, defense_tooth_gap, defense_tooth_angle, defense_side,
       from_lng, from_lat, to_lng, to_lat, path_json, arrow_type, width, color,
@@ -902,7 +901,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       coords_json, line_type, line_arrow, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@name,@start_sec,@end_sec,
-      @keyframes_json,@rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,@shape_kind,
+      @rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,@shape_kind,
       @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
       @poly_curve,@defense_tooth_length,@defense_tooth_gap,@defense_tooth_angle,@defense_side,
       @from_lng,@from_lat,@to_lng,@to_lat,@path_json,@arrow_type,@width,@color,
@@ -1163,14 +1162,13 @@ function readElementsV2(db, chapterId, s2f) {
     }
   }
   for (const r of db.prepare('SELECT * FROM element_shape WHERE project_id = ?').all(chapterId)) {
-    const k = kfOf(r);
-    // 形状是静态的：没有动画族 / 移动图标（那些列只属于路线）
+    // 形状是静态的：没有动画族 / 移动图标 / 关键帧（那些列只属于路线）
     if (r.type === 'arrow') {
       const from = [r.from_lng, r.from_lat]; const to = [r.to_lng, r.to_lat];
       const path = J(r.path_json, null);
-      out.push({ ...base(r), type: 'arrow', from, to, path: path ?? undefined, arrowType: r.arrow_type, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: k.progress, drawZoom: undefined });
+      out.push({ ...base(r), type: 'arrow', from, to, path: path ?? undefined, arrowType: r.arrow_type, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], drawZoom: undefined });
     } else if (r.type === 'double_arrow') {
-      out.push({ ...base(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: k.progress });
+      out.push({ ...base(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }] });
     } else if (r.type === 'gathering' || r.type === 'encirclement') {
       out.push({ ...base(r), type: r.type, center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, pulseAnimation: r.pulse_animation == null ? undefined : bit(r.pulse_animation), rotation: r.rotation ?? undefined });
     } else if (r.type === 'polyline') {
@@ -1186,7 +1184,6 @@ function readElementsV2(db, chapterId, s2f) {
         strokeColor: r.stroke_color ?? '#E23B3B', strokeWidth: r.stroke_width ?? 2, shapeKind: r.shape_kind ?? undefined,
         polyCurve: r.poly_curve == null ? undefined : bit(r.poly_curve), rotation: r.rotation ?? undefined,
         defenseStyle: r.defense_tooth_length == null && r.defense_side == null ? undefined : { toothLength: r.defense_tooth_length ?? undefined, toothGap: r.defense_tooth_gap ?? undefined, toothAngle: r.defense_tooth_angle ?? undefined, side: r.defense_side ?? undefined },
-        morphKeyframes: k.morphKeyframes,
       };
       if (r.shape_kind === 'rect') poly.rectMeta = { c1: [r.rect_c1_lng, r.rect_c1_lat], c2: [r.rect_c2_lng, r.rect_c2_lat] };
       if (r.shape_kind === 'circle') poly.circleMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };

@@ -2045,20 +2045,15 @@ function renderPolyline(map: maplibregl.Map, element: PolylineElement, _frame: n
 
 // ========== 渲染：面 ==========
 
-function renderPolygon(map: maplibregl.Map, element: PolygonElement, frame: number) {
+function renderPolygon(map: maplibregl.Map, element: PolygonElement, _frame: number) {
   const sourceId = `polygon-${element.id}`;
   const fillLayerId = `polygon-fill-layer-${element.id}`;
   const strokeLayerId = `polygon-stroke-layer-${element.id}`;
   const defendSrcId = `polygon-defend-src-${element.id}`;
   const defendLayerId = `polygon-defend-${element.id}`;
 
-  let coordinates = element.coordinates;
-  if (element.morphKeyframes && element.morphKeyframes.length > 0) {
-    coordinates = interpolateMorph(element.morphKeyframes, frame);
-  } else {
-    // 形状元数据优先（矩形/圆/五角星），旋转绕中心生效
-    coordinates = compileShapeCoordinates(element);
-  }
+  // 形状元数据优先（矩形/圆/五角星），旋转绕中心生效（静态：不读 frame）
+  const coordinates = compileShapeCoordinates(element);
 
   const geojson = turf.featureCollection([turf.polygon(coordinates)]);
 
@@ -3683,32 +3678,3 @@ export function resolveOrbitCam(kf: CameraKeyframe, frame: number, fps: number):
 }
 
 // ========== 辅助 ==========
-
-function interpolateMorph(
-  morphKeyframes: { frame: number; coordinates: [number, number][][] }[],
-  frame: number
-): [number, number][][] {
-  if (morphKeyframes.length === 0) return [];
-  if (morphKeyframes.length === 1) return morphKeyframes[0].coordinates;
-
-  let prev = morphKeyframes[0];
-  let next = morphKeyframes[morphKeyframes.length - 1];
-
-  for (let i = 0; i < morphKeyframes.length - 1; i++) {
-    if (frame >= morphKeyframes[i].frame && frame <= morphKeyframes[i + 1].frame) {
-      prev = morphKeyframes[i];
-      next = morphKeyframes[i + 1];
-      break;
-    }
-  }
-
-  const range = next.frame - prev.frame;
-  const t = range === 0 ? 0 : (frame - prev.frame) / range;
-
-  return prev.coordinates.map((ring, i) =>
-    ring.map((coord, j) => {
-      const nc = next.coordinates[i]?.[j] || coord;
-      return [coord[0] + (nc[0] - coord[0]) * t, coord[1] + (nc[1] - coord[1]) * t] as [number, number];
-    })
-  );
-}

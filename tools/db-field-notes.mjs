@@ -278,7 +278,6 @@ const NOTES = {
     "name": "元素名（与属性面板首字段 LABEL 同步）",
     "start_sec": "出现时间（秒）",
     "end_sec": "消失时间（秒）",
-    "keyframes_json": "动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复",
     "rings_json": "多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填）",
     "fill_color": "填充色",
     "fill_opacity": "填充透明度（0–1）",

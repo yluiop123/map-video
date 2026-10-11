@@ -372,7 +372,7 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   -- 没有 label_* 九列：形状三套面板（Multi/Two/Special）都没有标签入口，顶部 LABEL 栏对形状
   --   只写 name；运行时类型（PolygonElement / ArrowElement）里也**没有 label 字段**，
   --   所以写入端拿到的一直是 undefined。渲染端读 element.label 只出现在 renderPoint / renderLine。
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
+  -- 也没有 keyframes_json：形状是静态的，绘制进度 / 变形关键帧没有生产者（§6.29「每一格都要有消费者」）。
 
   -- polygon 专属
   --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
@@ -681,7 +681,7 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   -- 没有 label_* 九列：形状三套面板（Multi/Two/Special）都没有标签入口，顶部 LABEL 栏对形状
   --   只写 name；运行时类型（PolygonElement / ArrowElement）里也**没有 label 字段**，
   --   所以写入端拿到的一直是 undefined。渲染端读 element.label 只出现在 renderPoint / renderLine。
-  keyframes_json TEXT CHECK (keyframes_json IS NULL OR json_valid(keyframes_json)),  -- 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复
+  -- 也没有 keyframes_json：形状是静态的，绘制进度 / 变形关键帧没有生产者（§6.29「每一格都要有消费者」）。
 
   -- polygon 专属
   --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
@@ -791,9 +791,10 @@ CREATE TABLE IF NOT EXISTS public_element_image (  -- 公共贴图元素：publi
 CREATE INDEX IF NOT EXISTS ix_public_element_image_layer ON public_element_image(public_layer_id);
 
 -- -----------------------------------------------------------------------------
--- 5. 元素动画关键帧：**已内联**进 4 张类别表的 keyframes_json（P3）
---    运行时元素对象本就内联关键帧数组（drawProgress / morphKeyframes 等），
+-- 5. 元素动画关键帧：**已内联**进 element_route 的 keyframes_json（P3）
+--    运行时元素对象本就内联关键帧数组（drawProgress / progress / pathProgress），
 --    独立成表反而需要「元素 ↔ 关键帧」的弱引用维护，故取消该表。
+--    （marker 从来没有这一列；shape / territory 的是死列，已删。）
 -- -----------------------------------------------------------------------------
 
 -- -----------------------------------------------------------------------------
@@ -1036,7 +1037,7 @@ CREATE INDEX IF NOT EXISTS ix_project_collection   ON project(collection_id);
 --   3) 清理逻辑与写入端重复，隐式行为干扰调试、导入与数据修复。
 --
 -- 因此把规则前移到唯一的写入路径（应用层），两端行为一致：
---   · 删除元素无需连带清理：动画关键帧已内联在类别表的 keyframes_json，随行生灭；
+--   · 删除元素无需连带清理：动画关键帧已内联在 element_route 的 keyframes_json，随行生灭；
 --     asset_id / follow_route_element_id 是真外键，SET NULL 由数据库负责
 --   · 剩余弱引用只有三处，全部由写入端保证：
 --       element_image.asset_id（贴图本体）、public_element_*.asset_id（公共库副本）、
@@ -1154,7 +1155,7 @@ SELECT p.provider_id AS ref_id,
 -- 1) 底图 / 高程图不入库：配置是代码内置常量，project 只存 id 字符串。
 --    理由：配置数量固定、无需用户自定义，入库只会多出两张表与两处外键（还曾形成循环）。
 -- 2) 【本版最大取舍】取消 element 基表后，跨表引用失去数据库级外键：
---    · element_keyframe 表已取消（关键帧内联进类别表 keyframes_json），随行生灭
+--    · element_keyframe 表已取消（关键帧内联进 element_route 的 keyframes_json），随行生灭
 --    · 曾存在的 connector.from/to 端点弱引用已随「连接线」整条下线（2026-09-19）：
 --      它没有工具入口、坐标解析器从未接上，属于不可达代码，保留只会让每条写入路径
 --      都背上「应用层清理 + 自检视图 + 索引 + 副本重映射」四件套。

@@ -316,7 +316,6 @@ export interface PolygonElement extends MapElementBase {
   fillOpacity: number;
   strokeColor: string;
   strokeWidth: number;
-  morphKeyframes?: MorphKeyframe[];
   /** 形状种类（Shape Settings 切换用）：普通多边形 / 矩形 / 圆 / 五角星 */
   shapeKind?: 'poly' | 'rect' | 'circle' | 'star';
   /** shapeKind==='circle' 时的可编辑参数 */
@@ -534,12 +533,6 @@ export type EasingType =
   | 'easeIn' | 'easeOut' | 'easeInOut'
   | 'cubicIn' | 'cubicOut' | 'cubicInOut'
   | 'spring' | 'bounce';
-
-export interface MorphKeyframe {
-  frame: number;
-  coordinates: [number, number][][];
-  easing?: EasingType;
-}
 
 // ========== 相机类型 ==========
 
