@@ -3356,7 +3356,7 @@ function renderEncirclement(map: maplibregl.Map, element: EncirclementElement, _
 
 // ========== 渲染：集结点 ==========
 
-function renderGathering(map: maplibregl.Map, element: GatheringElement, frame: number) {
+function renderGathering(map: maplibregl.Map, element: GatheringElement, _frame: number) {
   const sourceId = `gathering-${element.id}`;
   const layerId = `gathering-layer-${element.id}`;
   const strokeLayerId = `gathering-stroke-layer-${element.id}`;
@@ -3364,11 +3364,7 @@ function renderGathering(map: maplibregl.Map, element: GatheringElement, frame: 
   // 用 plot_ol GatheringPlace 算法：以 center 为基、radius 为尺寸生成平滑曲边集结地
   const c = element.center;
   const rDeg = element.radius / 111;
-  let scaleR = rDeg;
-  if (element.pulseAnimation) {
-    const phase = (frame % 50) / 50;
-    scaleR = rDeg * (0.96 + 0.06 * Math.sin(phase * Math.PI * 2));
-  }
+  const scaleR = rDeg;
 
   // 三个控制点：左、上、右，构成集结地的骨架
   const p0: [number, number] = [c[0] - scaleR * 1.1, c[1]];

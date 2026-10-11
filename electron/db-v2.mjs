@@ -68,6 +68,7 @@ export function ensureV2Schema(db) {
     // 时间不进图库 / marker 删死列：表级 CHECK 挡着 DROP COLUMN，只能让位重建
     backfillShapeArrowPaths(db);
     backfillSubtypeColumns(db);
+    mergeToothColumns(db);
     const rebuilt = rebuildTables(db);
     // 形状表 type 白名单加 'polyline' 也烧在表级 CHECK 里（补列补不出）→ 认表定义 SQL 文本这个正标志
     const rebuiltShape = rebuildShapeIfOldCheck(db);
@@ -305,6 +306,50 @@ function backfillSubtypeColumns(db) {
   }
 }
 
+/**
+ * 旧形状行（`type` = 几何、`subtype` = 子形态）→ 新形状行（`type` = 大类 multi/two/special、`subtype` = 具体形状项）。
+ * 让位重建搬行时逐行调用（**不能在旧表上 UPDATE**：旧表的 CHECK 只认几何 type）。
+ */
+function shapeRowOf(r) {
+  const t = r.type;
+  if (t === 'multi' || t === 'two' || t === 'special') return { group: t, subtype: r.subtype ?? null }; // 已是新形状
+  const kind = r.subtype ?? (t === 'polygon' ? r.shape_kind : t === 'polyline' ? r.line_type : t === 'arrow' ? r.arrow_type : null);
+  if (t === 'polygon') {
+    if (kind === 'circle' || kind === 'rect' || kind === 'star') return { group: 'two', subtype: kind };
+    const curve = r.poly_curve === 1, defend = r.defense_tooth_length != null || r.defense_side != null || r.front_tooth_length != null || r.front_side != null;
+    return { group: 'multi', subtype: defend ? (curve ? 'poly-curve-defend' : 'poly-defend') : (curve ? 'poly-curve' : 'polygon') };
+  }
+  if (t === 'polyline') {
+    const curve = kind === 'bezier', front = r.front_tooth_length != null || r.front_side != null;
+    return { group: 'multi', subtype: front ? (curve ? 'front-curve' : 'front-line') : (curve ? 'bezier' : 'line') };
+  }
+  if (t === 'arrow') return { group: 'special', subtype: kind === 'curved' ? 'swallowtail' : kind === 'curved-simple' ? 'march' : 'attack' };
+  if (t === 'gathering') return { group: 'two', subtype: 'gathering' };
+  if (t === 'double_arrow') return { group: 'special', subtype: 'pincer' };
+  if (t === 'encirclement') return { group: 'two', subtype: 'encirclement' };
+  return { group: 'multi', subtype: kind ?? null };
+}
+
+/** 战线梳齿与防御圈锯齿并成同一套列（front_tooth_*）。删 defense_tooth_* 前先把值搬过去（front 为空的才搬）。 */
+function mergeToothColumns(db) {
+  for (const t of ['element_shape', 'public_element_shape']) {
+    let cols;
+    try { cols = columnsOf(db, t); } catch { continue; }
+    if (!cols.includes('defense_tooth_length') || !cols.includes('front_tooth_length')) continue;
+    try {
+      const r = db.prepare(`UPDATE ${t} SET
+        front_tooth_length = COALESCE(front_tooth_length, defense_tooth_length),
+        front_tooth_gap = COALESCE(front_tooth_gap, defense_tooth_gap),
+        front_tooth_angle = COALESCE(front_tooth_angle, defense_tooth_angle),
+        front_side = COALESCE(front_side, defense_side)
+        WHERE defense_tooth_length IS NOT NULL OR defense_side IS NOT NULL`).run();
+      if (r.changes) console.log(`[db-v2] 梳齿/锯齿并列 ${t}（${r.changes} 行，defense_* → front_*）`);
+    } catch (e) {
+      console.warn(`[db-v2] 梳齿/锯齿并列失败 ${t}:`, e?.message || e);
+    }
+  }
+}
+
 function dropRetiredColumns(db) {
   for (const [table, col] of RETIRED_COLUMNS) {
     let have;
@@ -423,6 +468,7 @@ const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_posit
   'label_offset_y', 'label_bg_color', 'label_bg_padding', 'label_bg_radius',
   'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos',
   'fly_mode', 'ord', 'keyframes_json', 'from_lng', 'from_lat', 'to_lng', 'to_lat', 'shape_kind', 'arrow_type', 'line_type',
+  'defense_tooth_length', 'defense_tooth_gap', 'defense_tooth_angle', 'defense_side', 'pulse_animation',
   'anim_effect', 'show_icon', 'move_start_sec', 'move_end_sec', 'uniform_move', 'point_times_json',
   'move_icon_shape', 'move_icon_color', 'move_icon_emoji', 'move_icon_scale', 'move_icon_label_text',
   'move_icon_label_color', 'move_icon_label_bg', 'move_icon_label_offset_x', 'move_icon_label_offset_y',
@@ -502,9 +548,9 @@ function rebuildTables(db) {
 }
 
 /**
- * 形状表 type 白名单加了 'polyline'：白名单烧在表级 CHECK 里，补列补不出这种变化。
- * 认**表定义 SQL 文本**这个正标志（不含 'polyline' 即旧形状）：摘命名索引 → 改名让位 →
- * DDL 建新表 → 按共同列搬回（旧行不可能是 polyline，CHECK 当年就拦住了）。
+ * 形状表的 `type` 语义换过：从「几何」（polygon/polyline/arrow/…）改成「大类」（multi/two/special）。
+ * 白名单烧在表级 CHECK 里、补列补不出，认**表定义 SQL 文本**这个正标志（不含新白名单即旧形状）：
+ * 摘命名索引 → 改名让位 → DDL 建新表 → 按共同列搬回（行先由 migrateShapeTypeSubtype 换算好）。
  * 改名走 renameTableForRebuild（SQLite 3.49 的子表外键改写坑）。
  */
 function rebuildShapeIfOldCheck(db) {
@@ -513,7 +559,7 @@ function rebuildShapeIfOldCheck(db) {
     let row = null;
     try { row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?").get(table); } catch { continue; }
     if (!row) continue;
-    if (String(row.sql || '').includes("'polyline'")) continue;   // 已是新形状
+    if (String(row.sql || '').includes("type IN ('multi','two','special')")) continue;   // 已是新形状
     try {
       for (const r of db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ? AND sql IS NOT NULL").all(table)) {
         db.exec(`DROP INDEX IF EXISTS ${r.name}`);
@@ -524,7 +570,7 @@ function rebuildShapeIfOldCheck(db) {
       console.warn(`[db-v2] ${table} 让位失败:`, e?.message || e);
     }
   }
-  if (moved.length) console.log(`[db-v2] 形状表旧 CHECK（type 白名单无 polyline）已让位重建：${moved.join(' / ')}`);
+  if (moved.length) console.log(`[db-v2] 形状表 type 白名单换成大类（multi/two/special）已让位重建：${moved.join(' / ')}`);
   return moved;
 }
 
@@ -559,7 +605,19 @@ function restoreRebuiltRows(db, moved) {
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(stale)) continue;
     const keep = new Set(columnsOf(db, table));
     const list = columnsOf(db, stale).filter((c) => keep.has(c));
-    if (list.length) {
+    const isShape = table === 'element_shape' || table === 'public_element_shape';
+    if (isShape && list.length) {
+      // 形状表的 type/subtype 语义换代：逐行把 (type=几何, subtype=子形态) 换算成 (type=大类, subtype=具体形状项)
+      const stmt = db.prepare(`INSERT OR IGNORE INTO ${table} (${list.join(',')}) VALUES (${list.map((c) => '@' + c).join(',')})`);
+      for (const r of db.prepare(`SELECT * FROM ${stale}`).all()) {
+        const vals = {};
+        for (const c of list) vals[c] = r[c];
+        const m = shapeRowOf(r);
+        vals.type = m.group;
+        vals.subtype = m.subtype;
+        stmt.run(vals);
+      }
+    } else if (list.length) {
       db.prepare(`INSERT OR IGNORE INTO ${table} (${list.join(',')}) SELECT ${list.join(',')} FROM ${stale}`).run();
     }
     db.exec(`DROP TABLE ${stale}`);
@@ -611,15 +669,31 @@ const ELEMENT_CATEGORY = {
 /** 路线 line 的「楔形箭头」小类（渲染端据此交给 renderArrow）；'straight' 与线的直线冲突，归线型 */
 const ROUTE_ARROW_KINDS = new Set(['swallowtail', 'simple', 'block', 'pincer', 'curved', 'curved-simple', 'attack']);
 
-/** 运行时元素 → 落库的 subtype 小类（值域随大类变；line_arrow / plain_path 这类开关不进这里） */
-function subtypeOf(el) {
-  switch (el.type) {
-    case 'polygon': return n(el.shapeKind);
-    case 'polyline': return n(el.lineType);
-    case 'arrow': return n(el.arrowType);
-    case 'line': return n(el.arrowType) ?? n(el.lineType);
-    default: return null;
+/** 路线 line 的小类（线型或楔形箭头类型）；line_arrow / plain_path 开关不进这里 */
+function routeSubtypeOf(el) {
+  return n(el.arrowType) ?? n(el.lineType);
+}
+
+/** 形状：运行时几何 type + 子形态 → 落库的 (大类 type, 小类 subtype)。几何与子形态由 subtype 推出（见读取端）。 */
+function shapeOf(el) {
+  if (el.type === 'polygon') {
+    const sk = el.shapeKind ?? 'poly';
+    if (sk === 'circle' || sk === 'rect' || sk === 'star') return { group: 'two', subtype: sk };
+    const curve = !!el.polyCurve, defend = !!el.defenseStyle;
+    return { group: 'multi', subtype: defend ? (curve ? 'poly-curve-defend' : 'poly-defend') : (curve ? 'poly-curve' : 'polygon') };
   }
+  if (el.type === 'polyline') {
+    const curve = el.lineType === 'bezier';
+    return { group: 'multi', subtype: el.frontStyle ? (curve ? 'front-curve' : 'front-line') : (curve ? 'bezier' : 'line') };
+  }
+  if (el.type === 'arrow') {
+    const at = el.arrowType;
+    return { group: 'special', subtype: at === 'curved' ? 'swallowtail' : at === 'curved-simple' ? 'march' : 'attack' };
+  }
+  if (el.type === 'gathering') return { group: 'two', subtype: 'gathering' };
+  if (el.type === 'double_arrow') return { group: 'special', subtype: 'pincer' };
+  if (el.type === 'encirclement') return { group: 'two', subtype: 'encirclement' };
+  return { group: 'multi', subtype: null };
 }
 
 /** 标签 → 列（label_*）。**没有 fontWeight**：标签走 canvas 气泡位图，
@@ -934,7 +1008,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       @flow_speed,@plain_path,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
       @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
       ...omit(common, ROUTE_DEAD),
-      subtype: subtypeOf(el),
+      subtype: routeSubtypeOf(el),
       anim_effect: n(el.animEffect),
       fly_mode: el.flyMode ? 1 : 0, show_icon: el.showIcon ? 1 : 0,
       move_start_sec: el.moveStartFrame == null ? null : f2s(el.moveStartFrame),
@@ -957,40 +1031,40 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
   }
   if (cat === 'shape') {
     const cMeta = el.circleMeta || el.starMeta;
+    const so = shapeOf(el);
     db.prepare(`INSERT INTO element_shape (
       element_id, project_id, layer_id, type, subtype, name, start_sec, end_sec,
       rings_json, fill_color, fill_opacity, stroke_color, stroke_width,
       rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
-      poly_curve, defense_tooth_length, defense_tooth_gap, defense_tooth_angle, defense_side,
+      poly_curve,
       path_json, width, color,
-      points_json, center_lng, center_lat, radius, pulse_animation, rotation,
+      points_json, center_lng, center_lat, radius, rotation,
       coords_json, line_arrow, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@subtype,@name,@start_sec,@end_sec,
       @rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,
       @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
-      @poly_curve,@defense_tooth_length,@defense_tooth_gap,@defense_tooth_angle,@defense_side,
+      @poly_curve,
       @path_json,@width,@color,
-      @points_json,@center_lng,@center_lat,@radius,@pulse_animation,@rotation,
+      @points_json,@center_lng,@center_lat,@radius,@rotation,
       @coords_json,@line_arrow,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side)`).run({
       ...omit(common, SHAPE_DEAD),
       // 形状无动画族 / 移动图标（列已删）—— 这些「沿路径走 / 显示移动标记」的字段只属于路线
-      subtype: subtypeOf(el),
+      type: so.group, subtype: so.subtype,
       rings_json: el.coordinates ? JSON.stringify(el.coordinates) : null,
       fill_color: n(el.fillColor), fill_opacity: n(el.fillOpacity), stroke_color: n(el.strokeColor), stroke_width: n(el.strokeWidth),
       rect_c1_lng: n(el.rectMeta?.c1?.[0]), rect_c1_lat: n(el.rectMeta?.c1?.[1]), rect_c2_lng: n(el.rectMeta?.c2?.[0]), rect_c2_lat: n(el.rectMeta?.c2?.[1]),
       poly_curve: b(el.polyCurve),
-      defense_tooth_length: n(el.defenseStyle?.toothLength), defense_tooth_gap: n(el.defenseStyle?.toothGap),
-      defense_tooth_angle: n(el.defenseStyle?.toothAngle), defense_side: n(el.defenseStyle?.side),
       path_json: j(el.path), width: n(el.width), color: n(el.color),
       points_json: j(el.points),
       coords_json: el.type === 'polyline' ? j(el.coordinates) : null, line_arrow: el.lineArrow == null ? null : b(el.lineArrow),
-      front_tooth_length: n(el.frontStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap),
-      front_tooth_angle: n(el.frontStyle?.toothAngle), front_side: n(el.frontStyle?.side),
+      // 战线（开环）与防御圈（闭合环）共用这一套梳齿/锯齿列
+      front_tooth_length: n(el.frontStyle?.toothLength ?? el.defenseStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap ?? el.defenseStyle?.toothGap),
+      front_tooth_angle: n(el.frontStyle?.toothAngle ?? el.defenseStyle?.toothAngle), front_side: n(el.frontStyle?.side ?? el.defenseStyle?.side),
       center_lng: cMeta ? n(cMeta.center[0]) : n(el.center?.[0]),
       center_lat: cMeta ? n(cMeta.center[1]) : n(el.center?.[1]),
       radius: cMeta ? n(cMeta.radius) : n(el.radius),
-      pulse_animation: n(el.pulseAnimation) == null ? null : b(el.pulseAnimation), rotation: n(el.rotation),
+      rotation: n(el.rotation),
     });
     return;
   }
@@ -1228,33 +1302,45 @@ function readElementsV2(db, chapterId, s2f) {
     }
   }
   for (const r of db.prepare('SELECT * FROM element_shape WHERE project_id = ?').all(chapterId)) {
-    // 形状是静态的：没有动画族 / 移动图标 / 关键帧（那些列只属于路线）
-    if (r.type === 'arrow') {
-      // 起终点由 path 端点现推（from/to 列已删）
-      out.push({ ...base(r), type: 'arrow', path: J(r.path_json, []), arrowType: r.subtype, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], drawZoom: undefined });
-    } else if (r.type === 'double_arrow') {
-      out.push({ ...base(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }] });
-    } else if (r.type === 'gathering' || r.type === 'encirclement') {
-      out.push({ ...base(r), type: r.type, center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, pulseAnimation: r.pulse_animation == null ? undefined : bit(r.pulse_animation), rotation: r.rotation ?? undefined });
-    } else if (r.type === 'polyline') {
-      out.push({
-        ...base(r), type: 'polyline', coordinates: J(r.coords_json, []),
-        lineType: r.subtype ?? undefined, lineArrow: r.line_arrow == null ? undefined : bit(r.line_arrow),
-        strokeColor: r.stroke_color ?? '#FF0000', strokeWidth: r.stroke_width ?? 8,
-        frontStyle: r.front_tooth_length == null && r.front_side == null ? undefined : { toothLength: r.front_tooth_length ?? undefined, toothGap: r.front_tooth_gap ?? undefined, toothAngle: r.front_tooth_angle ?? undefined, side: r.front_side ?? undefined },
-      });
-    } else {
+    // 形状是静态的：没有动画族 / 移动图标 / 关键帧（那些列只属于路线）。
+    // 落库的是大类 r.type（multi/two/special）+ 小类 r.subtype（具体形状项）；几何与子形态由 subtype 推出。
+    const st = r.subtype;
+    const group = r.type; // 大类 → 面板
+    const frontOf = () => (r.front_tooth_length == null && r.front_side == null ? undefined : { toothLength: r.front_tooth_length ?? undefined, toothGap: r.front_tooth_gap ?? undefined, toothAngle: r.front_tooth_angle ?? undefined, side: r.front_side ?? undefined });
+    if (st === 'polygon' || st === 'poly-curve' || st === 'poly-defend' || st === 'poly-curve-defend' || st === 'circle' || st === 'rect' || st === 'star') {
+      const shapeKind = (st === 'circle' || st === 'rect' || st === 'star') ? st : 'poly';
       const poly = {
         ...base(r), type: 'polygon', coordinates: J(r.rings_json, []), fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
-        strokeColor: r.stroke_color ?? '#E23B3B', strokeWidth: r.stroke_width ?? 2, shapeKind: r.subtype ?? undefined,
-        polyCurve: r.poly_curve == null ? undefined : bit(r.poly_curve), rotation: r.rotation ?? undefined,
-        defenseStyle: r.defense_tooth_length == null && r.defense_side == null ? undefined : { toothLength: r.defense_tooth_length ?? undefined, toothGap: r.defense_tooth_gap ?? undefined, toothAngle: r.defense_tooth_angle ?? undefined, side: r.defense_side ?? undefined },
+        strokeColor: r.stroke_color ?? '#E23B3B', strokeWidth: r.stroke_width ?? 2, shapeKind,
+        polyCurve: (st === 'poly-curve' || st === 'poly-curve-defend') ? true : undefined,
+        rotation: r.rotation ?? undefined,
+        defenseStyle: (st === 'poly-defend' || st === 'poly-curve-defend') ? frontOf() : undefined,
+        shapeCategory: group,
       };
-      if (r.subtype === 'rect') poly.rectMeta = { c1: [r.rect_c1_lng, r.rect_c1_lat], c2: [r.rect_c2_lng, r.rect_c2_lat] };
-      if (r.subtype === 'circle') poly.circleMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
-      if (r.subtype === 'star') poly.starMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
+      if (shapeKind === 'rect') poly.rectMeta = { c1: [r.rect_c1_lng, r.rect_c1_lat], c2: [r.rect_c2_lng, r.rect_c2_lat] };
+      if (shapeKind === 'circle') poly.circleMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
+      if (shapeKind === 'star') poly.starMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
       out.push(poly);
+    } else if (st === 'line' || st === 'bezier' || st === 'front-line' || st === 'front-curve') {
+      out.push({
+        ...base(r), type: 'polyline', coordinates: J(r.coords_json, []),
+        lineType: (st === 'bezier' || st === 'front-curve') ? 'bezier' : 'straight',
+        lineArrow: r.line_arrow == null ? undefined : bit(r.line_arrow),
+        strokeColor: r.stroke_color ?? '#FF0000', strokeWidth: r.stroke_width ?? 8,
+        frontStyle: (st === 'front-line' || st === 'front-curve') ? frontOf() : undefined,
+        shapeCategory: group,
+      });
+    } else if (st === 'swallowtail' || st === 'march' || st === 'attack') {
+      const arrowType = st === 'swallowtail' ? 'curved' : st === 'march' ? 'curved-simple' : 'attack';
+      out.push({ ...base(r), type: 'arrow', path: J(r.path_json, []), arrowType, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], drawZoom: undefined, shapeCategory: group });
+    } else if (st === 'gathering') {
+      out.push({ ...base(r), type: 'gathering', center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, rotation: r.rotation ?? undefined, shapeCategory: group });
+    } else if (st === 'pincer') {
+      out.push({ ...base(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], shapeCategory: group });
+    } else if (st === 'encirclement') {
+      out.push({ ...base(r), type: 'encirclement', center: [r.center_lng, r.center_lat], radius: r.radius, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, shapeCategory: group });
     }
+    // 未知 subtype：跳过（老数据/容错），不让它退化成空形状落回写入端
   }
   for (const r of db.prepare('SELECT * FROM element_territory WHERE project_id = ?').all(chapterId)) {
     out.push({

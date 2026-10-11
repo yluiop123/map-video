@@ -709,7 +709,7 @@ export function EditableMap({ project }: EditableMapProps) {
           createElementAndSelect({
             id: generateId(), type: 'gathering', name: '集结点', locked: false,
             startFrame: 0, endFrame: project.endFrame,
-            center: d.points[0], radius, color: '#FF6600', pulseAnimation: true,
+            center: d.points[0], radius, color: '#FF6600',
             shapeCategory: 'two',
           } as GatheringElement);
         } else if (mode === 'add_shape_circle') {

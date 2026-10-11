@@ -66,7 +66,7 @@ erDiagram
   ELEMENT_SHAPE {
     text element_id PK
     text project_id FK
-    text type "polygon|polyline|arrow|double_arrow|gathering|encirclement"
+    text type "multi|two|special（大类：多点/两点/特殊）"
     text rings_json "坐标集合（poly）"
     text coords_json "折线（polyline）"
     text subtype "小类（poly/rect/circle/star 或箭头类型）"
@@ -186,7 +186,7 @@ erDiagram
   PUBLIC_ELEMENT_SHAPE {
     text element_id PK
     text public_layer_id FK
-    text type "polygon|polyline|arrow|double_arrow|gathering|encirclement"
+    text type "multi|two|special（大类：多点/两点/特殊）"
   }
   PUBLIC_ELEMENT_TERRITORY {
     text element_id PK

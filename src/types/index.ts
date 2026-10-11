@@ -376,7 +376,6 @@ export interface GatheringElement extends MapElementBase {
   center: [number, number];
   radius: number;
   color: string;
-  pulseAnimation?: boolean;
   /** 旋转角（度，绕中心） */
   rotation?: number;
 }

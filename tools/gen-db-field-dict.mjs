@@ -77,7 +77,7 @@ const TABLE_FRONTEND = {
   music_track: { role: '项目级背景音乐：单轨多段（绝对时间、循环、淡入淡出）', fe: '时间轴「音乐」轨道（TimelineEditor.tsx）+ 音乐面板（内置/导入）' },
   element_marker: { role: '标记类元素：Pin 工具产出，3 种 type 合并一张宽表', fe: '工具条「标记」按钮 + 标记属性面板（PropertiesPanel，10 种视觉形态）' },
   element_route: { role: '路线类元素：line / moving_point', fe: '工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）' },
-  element_shape: { role: '形状类元素：polygon / polyline / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）', fe: '工具条「形状」下拉 + 形状属性面板' },
+  element_shape: { role: '形状类元素：大类 type（multi 多点 / two 两点 / special 特殊）+ 小类 subtype（具体形状项），几何由 subtype 推出（Region 行政区也写此表）', fe: '工具条「形状」下拉 + 形状属性面板' },
   element_territory: { role: '疆域元素：势力 / 地块 / 兼并事件 JSON 内联，自包含', fe: '工具条「疆域」下拉（TerritoryImportDialog.tsx 导入 + 疆域属性面板）' },
   element_image: { role: '贴图元素：地理配准图片（控制点网格），图片存全局素材库、本表只存配准参数', fe: '工具条「图片」（导入/素材库插入）+ 贴图属性面板（PropertiesPanel GeoImageSettings）' },
   overlay: { role: '弹窗本体（10 类内容：文本 / 图片 / 图表 / 人物 / 对话…）', fe: '右侧「弹窗」面板（FxPanelBody.tsx）+ 画面渲染 fx/FxRender.tsx OverlayContentView' },

@@ -1923,7 +1923,6 @@ function TwoShapeSettings({ element, patch }: { element: MapElement; patch: (c: 
     } else {
       patch({
         type: 'gathering', center: gather ? gather.center : centroid(), radius: radiusKm(), color: fill,
-        pulseAnimation: gather ? !!gather.pulseAnimation : true,
         shapeCategory: 'two',
       } as Partial<MapElement>);
     }
@@ -2043,7 +2042,6 @@ function TwoShapeSettings({ element, patch }: { element: MapElement; patch: (c: 
               onChange={(e) => patch({ radius: parseFloat(e.target.value) || 30 })} />
           </Field>
           <RotationField value={gather.rotation ?? 0} onChange={(deg) => patch({ rotation: deg })} />
-          <Toggle checked={!!gather.pulseAnimation} label="脉冲动画" onChange={(v) => patch({ pulseAnimation: v })} />
           <Appearance color={gather.color} onChange={(c) => patch({ color: c })} />
         </Section>
       )}

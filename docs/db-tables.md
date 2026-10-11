@@ -135,7 +135,7 @@
 | `element_shape` | `polygon` | `element_id` | Shape：多边形 / 曲线多边 / 直线·曲线防御圈 / 圆 / 矩形 / 五角星 ＋**Region 工具** | 环数组、填充描边、形状种类与各自元数据、曲线化、防御圈锯齿、旋转 |
 | `element_shape` | `arrow` | `element_id` | Shape：带箭头直线/曲线、行军箭头、燕尾箭头、自定义燕尾、自定义箭头 | 起终点、弯曲控制点、箭头类型、宽度、填充透明度、绘制缩放 |
 | `element_shape` | `double_arrow` | `element_id` | Shape：钳形（4 点自动合成） | 4 个控制点（points_json）、颜色 |
-| `element_shape` | `gathering` | `element_id` | Shape：集结点（两点绘制） | 中心、半径、颜色、脉冲、旋转 |
+| `element_shape` | `gathering` | `element_id` | Shape：集结点（两点绘制） | 中心、半径、颜色、旋转 |
 | `element_shape` | `encirclement` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 中心、半径、填充与描边色 |
 
 ### 组 7 · 疆域类元素 1 张 Terr 工具
@@ -193,7 +193,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 490 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，490 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 480 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，480 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -574,19 +574,19 @@
 
 ### 组 6 · 形状类元素（Shape 工具）
 
-#### element_shape — 形状类元素（Shape 工具）：polygon / polyline / arrow / double_arrow / gathering / encirclement；Region 行政区也写此表
+#### element_shape — 形状类元素（Shape 工具）：大类 type（multi/two/special）+ 小类 subtype（具体形状项）；几何由 subtype 推出；Region 行政区也写此表
 
-**职责**：形状类元素：polygon / polyline / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
+**职责**：形状类元素：大类 type（multi 多点 / two 两点 / special 特殊）+ 小类 subtype（具体形状项），几何由 subtype 推出（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-37 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+32 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
-| `type` | TEXT | `NOT NULL` | 大类判别列：polygon 多边形 / polyline 折线 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
-| `subtype` | TEXT | — | 小类（值域随 type 变）：polygon→poly/rect/circle/star；polyline→straight/bezier；arrow→箭头类型（swallowtail/curved/curved-simple/…） |
+| `type` | TEXT | `NOT NULL` | 大类（工具栏分组）：multi 多点绘制 / two 两点绘制 / special 特殊图形 · `CHECK (type IN ('multi','two','special'))` |
+| `subtype` | TEXT | — | 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/bezier/front-line/front-curve；two→circle/rect/gathering/star；special→swallowtail/march/attack/pincer |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
@@ -600,40 +600,32 @@
 | `rect_c2_lng` | REAL | — | 矩形对角点2经度 |
 | `rect_c2_lat` | REAL | — | 矩形对角点2纬度 |
 | `poly_curve` | INTEGER | — | 各边曲线化（闭合贝塞尔拟合，0/1） · `CHECK (poly_curve IS NULL OR poly_curve IN (0,1))` |
-| `defense_tooth_length` | REAL | — | 防御圈锯齿长度（px） |
-| `defense_tooth_gap` | REAL | — | 防御圈锯齿间距（px） |
-| `defense_tooth_angle` | REAL | — | 防御圈锯齿偏角（度） |
-| `defense_side` | INTEGER | — | 防御圈锯齿朝向侧：1 右 / -1 左 · `CHECK (defense_side IS NULL OR defense_side IN (-1,1))` |
 | `path_json` | TEXT | — | 路径点（≥2）：起终点为首/末点（type=arrow 时必填） · `CHECK (path_json IS NULL OR json_valid(path_json))` |
 | `width` | REAL | — | 箭头宽度（px） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
 | `points_json` | TEXT | — | 4 个控制点（type=double_arrow 钳形攻势时必填） · `CHECK (points_json IS NULL OR json_valid(points_json))` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]（type=polyline 时必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_arrow` | INTEGER | — | 开关：线末端是否带方向小三角（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
-| `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
-| `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
-| `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
-| `front_side` | INTEGER | — | 梳齿朝向侧：1 右 / -1 左 · `CHECK (front_side IS NULL OR front_side IN (-1,1))` |
+| `front_tooth_length` | REAL | — | 梳齿/锯齿长度（px，战线与防御圈共用） |
+| `front_tooth_gap` | REAL | — | 梳齿/锯齿间距（px） |
+| `front_tooth_angle` | REAL | — | 梳齿/锯齿偏角（度） |
+| `front_side` | INTEGER | — | 梳齿/锯齿朝向侧：1 右 / -1 左 · `CHECK (front_side IS NULL OR front_side IN (-1,1))` |
 | `center_lng` | REAL | — | 中心经度（gathering / encirclement 必填） |
 | `center_lat` | REAL | — | 中心纬度 |
 | `radius` | REAL | — | 半径（米，gathering / encirclement 必填） |
-| `pulse_animation` | INTEGER | — | 是否脉冲动画（集结地，0/1） · `CHECK (pulse_animation IS NULL OR pulse_animation IN (0,1))` |
 | `rotation` | REAL | — | 绕中心旋转角（度） |
 
 **表级约束**
 
 - `CHECK (end_sec >= start_sec)`
 - `CHECK (radius IS NULL OR radius > 0)`
-- `CHECK (type <> 'polygon' OR subtype IS NOT 'poly' OR rings_json IS NOT NULL)`
-- `CHECK (type <> 'polygon' OR subtype IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'polygon' OR subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
-- `CHECK (type <> 'polygon' OR subtype IS NOT 'star' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'arrow' OR subtype IS NOT NULL)`
-- `CHECK (type <> 'arrow' OR path_json IS NOT NULL)`
-- `CHECK (type <> 'double_arrow' OR points_json IS NOT NULL)`
-- `CHECK (type <> 'polyline' OR coords_json IS NOT NULL)`
-- `CHECK (type <> 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend') OR rings_json IS NOT NULL)`
+- `CHECK (subtype NOT IN ('circle','star') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
+- `CHECK (subtype NOT IN ('line','bezier','front-line','front-curve') OR coords_json IS NOT NULL)`
+- `CHECK (subtype NOT IN ('swallowtail','march','attack') OR path_json IS NOT NULL)`
+- `CHECK (subtype IS NOT 'pincer' OR points_json IS NOT NULL)`
+- `CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 
 ### 组 7 · 疆域类元素（Terr 工具）
 
@@ -965,14 +957,14 @@
 
 **职责**：公共形状元素（public_layer 内副本；列 = element_shape − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-34 列 · 主键 `element_id`
+29 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
-| `type` | TEXT | `NOT NULL` | 大类判别列：polygon 多边形 / polyline 折线 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
-| `subtype` | TEXT | — | 小类（值域随 type 变）：polygon→poly/rect/circle/star；polyline→straight/bezier；arrow→箭头类型（swallowtail/curved/curved-simple/…） |
+| `type` | TEXT | `NOT NULL` | 大类（工具栏分组）：multi 多点绘制 / two 两点绘制 / special 特殊图形 · `CHECK (type IN ('multi','two','special'))` |
+| `subtype` | TEXT | — | 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/bezier/front-line/front-curve；two→circle/rect/gathering/star；special→swallowtail/march/attack/pincer |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
 | `fill_color` | TEXT | — | 填充色 |
@@ -984,39 +976,31 @@
 | `rect_c2_lng` | REAL | — | 矩形对角点2经度 |
 | `rect_c2_lat` | REAL | — | 矩形对角点2纬度 |
 | `poly_curve` | INTEGER | — | 各边曲线化（闭合贝塞尔拟合，0/1） · `CHECK (poly_curve IS NULL OR poly_curve IN (0,1))` |
-| `defense_tooth_length` | REAL | — | 防御圈锯齿长度（px） |
-| `defense_tooth_gap` | REAL | — | 防御圈锯齿间距（px） |
-| `defense_tooth_angle` | REAL | — | 防御圈锯齿偏角（度） |
-| `defense_side` | INTEGER | — | 防御圈锯齿朝向侧：1 右 / -1 左 · `CHECK (defense_side IS NULL OR defense_side IN (-1,1))` |
 | `path_json` | TEXT | — | 路径点（≥2）：起终点为首/末点（type=arrow 时必填） · `CHECK (path_json IS NULL OR json_valid(path_json))` |
 | `width` | REAL | — | 箭头宽度（px） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
 | `points_json` | TEXT | — | 4 个控制点（type=double_arrow 钳形攻势时必填） · `CHECK (points_json IS NULL OR json_valid(points_json))` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]（type=polyline 时必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_arrow` | INTEGER | — | 开关：线末端是否带方向小三角（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
-| `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
-| `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
-| `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
-| `front_side` | INTEGER | — | 梳齿朝向侧：1 右 / -1 左 · `CHECK (front_side IS NULL OR front_side IN (-1,1))` |
+| `front_tooth_length` | REAL | — | 梳齿/锯齿长度（px，战线与防御圈共用） |
+| `front_tooth_gap` | REAL | — | 梳齿/锯齿间距（px） |
+| `front_tooth_angle` | REAL | — | 梳齿/锯齿偏角（度） |
+| `front_side` | INTEGER | — | 梳齿/锯齿朝向侧：1 右 / -1 左 · `CHECK (front_side IS NULL OR front_side IN (-1,1))` |
 | `center_lng` | REAL | — | 中心经度（gathering / encirclement 必填） |
 | `center_lat` | REAL | — | 中心纬度 |
 | `radius` | REAL | — | 半径（米，gathering / encirclement 必填） |
-| `pulse_animation` | INTEGER | — | 是否脉冲动画（集结地，0/1） · `CHECK (pulse_animation IS NULL OR pulse_animation IN (0,1))` |
 | `rotation` | REAL | — | 绕中心旋转角（度） |
 
 **表级约束**
 
 - `CHECK (radius IS NULL OR radius > 0)`
-- `CHECK (type <> 'polygon' OR subtype IS NOT 'poly' OR rings_json IS NOT NULL)`
-- `CHECK (type <> 'polygon' OR subtype IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'polygon' OR subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
-- `CHECK (type <> 'polygon' OR subtype IS NOT 'star' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'arrow' OR subtype IS NOT NULL)`
-- `CHECK (type <> 'arrow' OR path_json IS NOT NULL)`
-- `CHECK (type <> 'double_arrow' OR points_json IS NOT NULL)`
-- `CHECK (type <> 'polyline' OR coords_json IS NOT NULL)`
-- `CHECK (type <> 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'encirclement' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend') OR rings_json IS NOT NULL)`
+- `CHECK (subtype NOT IN ('circle','star') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
+- `CHECK (subtype NOT IN ('line','bezier','front-line','front-curve') OR coords_json IS NOT NULL)`
+- `CHECK (subtype NOT IN ('swallowtail','march','attack') OR path_json IS NOT NULL)`
+- `CHECK (subtype IS NOT 'pincer' OR points_json IS NOT NULL)`
+- `CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
 
 #### public_element_territory — 公共疆域元素：public_layer 内的疆域副本（与 element_territory 同构，但不带显隐与时间）
 
@@ -1096,7 +1080,7 @@
 | 区域（多边形/矩形/圆/五角星） | `element_shape` | `polygon` | subtype（poly/rect/circle/star）、rings_json、rect_c1/c2_lng/lat、center_lng/lat、radius、poly_curve |
 | 箭头（多种） | `element_shape` | `arrow` | subtype（箭头类型）、path_json（起终点为首/末点） |
 | 双箭头 / 钳形 | `element_shape` | `double_arrow` | points_json（走 `buildDoubleArrow` 几何） |
-| 包围圈 / 集结点 | `element_shape` | `encirclement` / `gathering` | center_lng/lat、radius、pulse_animation |
+| 包围圈 / 集结点 | `element_shape` | `encirclement` / `gathering` | center_lng/lat、radius |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_* 八列 ＋ countries_json / plots_json / events_json |
 
 动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只有 `element_route` 有**：它们描述「沿一条路径走 / 显示移动标记」，只有 line / moving_point 会走动，marker / shape / territory / image 一律没有 —— 早先宽表把 union 全给每张表，结果写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode` 同理：飞行（拱形航迹 + 3D 管）只在渲染端 `renderLine` 实现，面板的飞行开关也只对 `type='line'` 显示。
