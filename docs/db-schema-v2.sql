@@ -392,18 +392,14 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   rect_c1_lat        REAL,  -- 矩形对角点1纬度
   rect_c2_lng        REAL,  -- 矩形对角点2经度
   rect_c2_lat        REAL,  -- 矩形对角点2纬度
-  poly_curve         INTEGER CHECK (poly_curve IS NULL OR poly_curve IN (0,1)),  -- 各边曲线化（闭合贝塞尔拟合，0/1）
 
-  -- arrow 专属：起终点就是 path_json 的首/末点，不再单独存 from/to 四列
-  path_json      TEXT CHECK (path_json IS NULL OR json_valid(path_json)),  -- 路径点（≥2）：起终点为首/末点（type=arrow 时必填）
+  -- arrow 专属：起终点就是 coords_json 的首/末点，不再单独存 from/to 四列
   width          REAL,  -- 箭头宽度（px）
   color          TEXT,  -- 颜色（箭头 / 集结地 / 钳形共用）
 
-  -- double_arrow 专属（钳形攻势）
-  points_json    TEXT CHECK (points_json IS NULL OR json_valid(points_json)),  -- 4 个控制点（type=double_arrow 钳形攻势时必填）
-
-  -- polyline 专属（形状工具的直线 / 曲线 / 战线：开环路径，静态显示）
-  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]（type=polyline 时必填）
+  -- ★ 点数组只有这一列：折线（直线 / 曲线 / 战线，开环）、箭头（燕尾 / 行军 / 进攻）、
+  --   钳形（4 个控制点）都装在这里 —— 是哪种由 subtype 判别，不为每种几何各开一列。
+  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]：折线路径 / 箭头路径 / 钳形 4 控制点共用
   -- 梳齿 / 锯齿（原 front_style_json 平铺）：**战线（开环）与防御圈（闭合环）共用这一套**
   front_tooth_length REAL,  -- 梳齿/锯齿长度（px，战线与防御圈共用）
   front_tooth_gap    REAL,  -- 梳齿/锯齿间距（px）
@@ -421,9 +417,8 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend') OR rings_json IS NOT NULL),
   CHECK (subtype NOT IN ('circle','star') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL)),
-  CHECK (subtype NOT IN ('line','line-arrow','bezier','bezier-arrow','front-line','front-curve') OR coords_json IS NOT NULL),
-  CHECK (subtype NOT IN ('swallowtail','march','attack') OR path_json IS NOT NULL),
-  CHECK (subtype IS NOT 'pincer' OR points_json IS NOT NULL),
+  CHECK (subtype NOT IN ('line','line-arrow','bezier','bezier-arrow','front-line','front-curve',
+                         'swallowtail','march','attack','pincer') OR coords_json IS NOT NULL),
   CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
 );
 -- 索引只按 project_id：ord 是死列（写死 0、读端无 ORDER BY），不能留在索引里 ——
@@ -688,18 +683,14 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   rect_c1_lat        REAL,  -- 矩形对角点1纬度
   rect_c2_lng        REAL,  -- 矩形对角点2经度
   rect_c2_lat        REAL,  -- 矩形对角点2纬度
-  poly_curve         INTEGER CHECK (poly_curve IS NULL OR poly_curve IN (0,1)),  -- 各边曲线化（闭合贝塞尔拟合，0/1）
 
-  -- arrow 专属：起终点就是 path_json 的首/末点，不再单独存 from/to 四列
-  path_json      TEXT CHECK (path_json IS NULL OR json_valid(path_json)),  -- 路径点（≥2）：起终点为首/末点（type=arrow 时必填）
+  -- arrow 专属：起终点就是 coords_json 的首/末点，不再单独存 from/to 四列
   width          REAL,  -- 箭头宽度（px）
   color          TEXT,  -- 颜色（箭头 / 集结地 / 钳形共用）
 
-  -- double_arrow 专属（钳形攻势）
-  points_json    TEXT CHECK (points_json IS NULL OR json_valid(points_json)),  -- 4 个控制点（type=double_arrow 钳形攻势时必填）
-
-  -- polyline 专属（形状工具的直线 / 曲线 / 战线：开环路径，静态显示）
-  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]（type=polyline 时必填）
+  -- ★ 点数组只有这一列：折线（直线 / 曲线 / 战线，开环）、箭头（燕尾 / 行军 / 进攻）、
+  --   钳形（4 个控制点）都装在这里 —— 是哪种由 subtype 判别，不为每种几何各开一列。
+  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]：折线路径 / 箭头路径 / 钳形 4 控制点共用
   -- 梳齿 / 锯齿（原 front_style_json 平铺）：**战线（开环）与防御圈（闭合环）共用这一套**
   front_tooth_length REAL,  -- 梳齿/锯齿长度（px，战线与防御圈共用）
   front_tooth_gap    REAL,  -- 梳齿/锯齿间距（px）
@@ -716,9 +707,8 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend') OR rings_json IS NOT NULL),
   CHECK (subtype NOT IN ('circle','star') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL)),
-  CHECK (subtype NOT IN ('line','line-arrow','bezier','bezier-arrow','front-line','front-curve') OR coords_json IS NOT NULL),
-  CHECK (subtype NOT IN ('swallowtail','march','attack') OR path_json IS NOT NULL),
-  CHECK (subtype IS NOT 'pincer' OR points_json IS NOT NULL),
+  CHECK (subtype NOT IN ('line','line-arrow','bezier','bezier-arrow','front-line','front-curve',
+                         'swallowtail','march','attack','pincer') OR coords_json IS NOT NULL),
   CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS ix_public_element_shape_layer ON public_element_shape(public_layer_id);

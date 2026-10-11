@@ -258,20 +258,23 @@ const RETIRED_COLUMNS = [
   ['public_element_territory', 'label_font_weight'],
 ];
 /**
- * element_shape / public_element_shape 的箭头起终点改由 `path_json` 端点现推（from/to 四列删除）。
- * 老库里两点箭头没有 path_json（那时用 from/to 画），删列前先按 from/to 回填成 [from, to]，
- * 否则这些箭头会失去几何。一次性、幂等（path_json 非空的跳过）。
+ * element_shape / public_element_shape 的箭头起终点改由 `coords_json` 端点现推（from/to 四列删除）。
+ * 老库里两点箭头没有点数组（那时用 from/to 画），删列前先按 from/to 回填成 [from, to]，
+ * 否则这些箭头会失去几何。一次性、幂等（点数组非空的跳过）。
+ * 目标列取当下存在的那一列（coords_json 优先，更早那代只有 path_json）。
  */
 function backfillShapeArrowPaths(db) {
   for (const t of ['element_shape', 'public_element_shape']) {
     let cols;
     try { cols = columnsOf(db, t); } catch { continue; }
-    if (!cols.includes('from_lng') || !cols.includes('path_json')) continue;
+    if (!cols.includes('from_lng')) continue;
+    const target = cols.includes('coords_json') ? 'coords_json' : cols.includes('path_json') ? 'path_json' : null;
+    if (!target) continue;
     try {
-      const r = db.prepare(`UPDATE ${t} SET path_json = json_array(json_array(from_lng, from_lat), json_array(to_lng, to_lat))
-        WHERE type = 'arrow' AND path_json IS NULL
+      const r = db.prepare(`UPDATE ${t} SET ${target} = json_array(json_array(from_lng, from_lat), json_array(to_lng, to_lat))
+        WHERE type = 'arrow' AND ${target} IS NULL
           AND from_lng IS NOT NULL AND from_lat IS NOT NULL AND to_lng IS NOT NULL AND to_lat IS NOT NULL`).run();
-      if (r.changes) console.log(`[db-v2] 回填 ${t} 的箭头 path_json（${r.changes} 行，由 from/to 推导）`);
+      if (r.changes) console.log(`[db-v2] 回填 ${t} 的箭头路径（${r.changes} 行，由 from/to 推导 → ${target}）`);
     } catch (e) {
       console.warn(`[db-v2] 回填 ${t} 箭头路径失败:`, e?.message || e);
     }
@@ -306,6 +309,9 @@ function backfillSubtypeColumns(db) {
   }
 }
 
+/** 形状箭头（燕尾 / 行军 / 进攻）：几何装 coords_json；更早那代行把它装在 path_json 里 */
+const SHAPE_ARROW_SUBTYPES = new Set(['swallowtail', 'march', 'attack']);
+
 /**
  * 旧形状行（`type` = 几何、`subtype` = 子形态）→ 新形状行（`type` = 大类 multi/two/special、`subtype` = 具体形状项）。
  * 让位重建搬行时逐行调用（**不能在旧表上 UPDATE**：旧表的 CHECK 只认几何 type）。
@@ -314,7 +320,9 @@ function shapeRowOf(r) {
   const t = r.type;
   // polyline 的「带箭头」折进 subtype（老行还带着 line_arrow 列）
   const foldArrow = (st) => (r.line_arrow === 1 && (st === 'line' || st === 'bezier')) ? (st === 'bezier' ? 'bezier-arrow' : 'line-arrow') : st;
-  if (t === 'multi' || t === 'two' || t === 'special') return { group: t, subtype: foldArrow(r.subtype ?? null) }; // 已是新形状
+  // 多边形的「各边曲线化」折进 subtype（老行还带着 poly_curve 列）
+  const foldCurve = (st) => (r.poly_curve === 1 && (st === 'polygon' || st === 'poly-defend')) ? (st === 'poly-defend' ? 'poly-curve-defend' : 'poly-curve') : st;
+  if (t === 'multi' || t === 'two' || t === 'special') return { group: t, subtype: foldCurve(foldArrow(r.subtype ?? null)) }; // 已是新形状
   const kind = r.subtype ?? (t === 'polygon' ? r.shape_kind : t === 'polyline' ? r.line_type : t === 'arrow' ? r.arrow_type : null);
   if (t === 'polygon') {
     if (kind === 'circle' || kind === 'rect' || kind === 'star') return { group: 'two', subtype: kind };
@@ -469,8 +477,8 @@ const MARKER_DEAD = ['visual_fit', 'visual_tintable', 'visual_fps', 'visual_loop
 const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_position', 'label_offset_x',
   'label_offset_y', 'label_bg_color', 'label_bg_padding', 'label_bg_radius',
   'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos',
-  'fly_mode', 'ord', 'keyframes_json', 'from_lng', 'from_lat', 'to_lng', 'to_lat', 'shape_kind', 'arrow_type', 'line_type',
-  'defense_tooth_length', 'defense_tooth_gap', 'defense_tooth_angle', 'defense_side', 'pulse_animation', 'line_arrow',
+  'fly_mode', 'ord', 'keyframes_json', 'from_lng', 'from_lat', 'to_lng', 'to_lat', 'shape_kind', 'arrow_type', 'line_type', 'poly_curve',
+  'defense_tooth_length', 'defense_tooth_gap', 'defense_tooth_angle', 'defense_side', 'pulse_animation', 'line_arrow', 'path_json', 'points_json',
   'anim_effect', 'show_icon', 'move_start_sec', 'move_end_sec', 'uniform_move', 'point_times_json',
   'move_icon_shape', 'move_icon_color', 'move_icon_emoji', 'move_icon_scale', 'move_icon_label_text',
   'move_icon_label_color', 'move_icon_label_bg', 'move_icon_label_offset_x', 'move_icon_label_offset_y',
@@ -617,6 +625,11 @@ function restoreRebuiltRows(db, moved) {
         const m = shapeRowOf(r);
         vals.type = m.group;
         vals.subtype = m.subtype;
+        // 点数组统一进 coords_json：老行把箭头路径 / 钳形 4 点分别装在 path_json / points_json 里
+        if (list.includes('coords_json') && vals.coords_json == null) {
+          if (m.subtype === 'pincer') vals.coords_json = r.points_json ?? null;
+          else if (SHAPE_ARROW_SUBTYPES.has(m.subtype)) vals.coords_json = r.path_json ?? null;
+        }
         stmt.run(vals);
       }
     } else if (list.length) {
@@ -1040,28 +1053,28 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       element_id, project_id, layer_id, type, subtype, name, start_sec, end_sec,
       rings_json, fill_color, fill_opacity, stroke_color, stroke_width,
       rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
-      poly_curve,
-      path_json, width, color,
-      points_json, center_lng, center_lat, radius, rotation,
+      width, color,
+      center_lng, center_lat, radius, rotation,
       coords_json, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@subtype,@name,@start_sec,@end_sec,
       @rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,
       @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
-      @poly_curve,
-      @path_json,@width,@color,
-      @points_json,@center_lng,@center_lat,@radius,@rotation,
+      @width,@color,
+      @center_lng,@center_lat,@radius,@rotation,
       @coords_json,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side)`).run({
       ...omit(common, SHAPE_DEAD),
       // 形状无动画族 / 移动图标（列已删）—— 这些「沿路径走 / 显示移动标记」的字段只属于路线
       type: so.group, subtype: so.subtype,
-      rings_json: el.coordinates ? JSON.stringify(el.coordinates) : null,
+      // rings_json 只属于多边形（环数组）；折线的路径走 coords_json —— 别把折线路径也塞进环里
+      rings_json: el.type === 'polygon' && el.coordinates ? JSON.stringify(el.coordinates) : null,
       fill_color: n(el.fillColor), fill_opacity: n(el.fillOpacity), stroke_color: n(el.strokeColor), stroke_width: n(el.strokeWidth),
       rect_c1_lng: n(el.rectMeta?.c1?.[0]), rect_c1_lat: n(el.rectMeta?.c1?.[1]), rect_c2_lng: n(el.rectMeta?.c2?.[0]), rect_c2_lat: n(el.rectMeta?.c2?.[1]),
-      poly_curve: b(el.polyCurve),
-      path_json: j(el.path), width: n(el.width), color: n(el.color),
-      points_json: j(el.points),
-      coords_json: el.type === 'polyline' ? j(el.coordinates) : null,
+      width: n(el.width), color: n(el.color),
+      // ★ 点数组只有 coords_json 这一列：折线路径 / 箭头路径 / 钳形 4 控制点都装它（子类判别）
+      coords_json: el.type === 'polyline' ? j(el.coordinates)
+        : el.type === 'arrow' ? j(el.path)
+        : el.type === 'double_arrow' ? j(el.points) : null,
       // 战线（开环）与防御圈（闭合环）共用这一套梳齿/锯齿列
       front_tooth_length: n(el.frontStyle?.toothLength ?? el.defenseStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap ?? el.defenseStyle?.toothGap),
       front_tooth_angle: n(el.frontStyle?.toothAngle ?? el.defenseStyle?.toothAngle), front_side: n(el.frontStyle?.side ?? el.defenseStyle?.side),
@@ -1337,11 +1350,11 @@ function readElementsV2(db, chapterId, s2f) {
       });
     } else if (st === 'swallowtail' || st === 'march' || st === 'attack') {
       const arrowType = st === 'swallowtail' ? 'curved' : st === 'march' ? 'curved-simple' : 'attack';
-      out.push({ ...base(r), type: 'arrow', path: J(r.path_json, []), arrowType, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], drawZoom: undefined, shapeCategory: group });
+      out.push({ ...base(r), type: 'arrow', path: J(r.coords_json, []), arrowType, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], drawZoom: undefined, shapeCategory: group });
     } else if (st === 'gathering') {
       out.push({ ...base(r), type: 'gathering', center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, rotation: r.rotation ?? undefined, shapeCategory: group });
     } else if (st === 'pincer') {
-      out.push({ ...base(r), type: 'double_arrow', points: J(r.points_json, []), color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], shapeCategory: group });
+      out.push({ ...base(r), type: 'double_arrow', points: J(r.coords_json, []), color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], shapeCategory: group });
     } else if (st === 'encirclement') {
       out.push({ ...base(r), type: 'encirclement', center: [r.center_lng, r.center_lat], radius: r.radius, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, shapeCategory: group });
     }
