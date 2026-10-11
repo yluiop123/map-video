@@ -362,11 +362,11 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   layer_id       TEXT REFERENCES layer(layer_id) ON DELETE CASCADE,  -- 所属图层（删图层连带删元素；元素可换图层）
   type           TEXT NOT NULL CHECK (type IN ('multi','two','special')),  -- 大类（工具栏分组）：multi 多点绘制 / two 两点绘制 / special 特殊图形
   -- 小类（具体形状项）：几何与子形态由它推出 ——
-  --   multi：polygon / poly-curve / poly-defend / poly-curve-defend / line / bezier / front-line / front-curve
+  --   multi：polygon / poly-curve / poly-defend / poly-curve-defend / line / line-arrow / bezier / bezier-arrow / front-line / front-curve
   --   two：circle / rect / gathering / star
   --   special：swallowtail / march / attack / pincer
   -- 不写 CHECK（值域随大类变），交给 TS 应用层。
-  subtype        TEXT,  -- 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/bezier/front-line/front-curve；two→circle/rect/gathering/star；special→swallowtail/march/attack/pincer
+  subtype        TEXT,  -- 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/line-arrow/bezier/bezier-arrow/front-line/front-curve；two→circle/rect/gathering/star；special→swallowtail/march/attack/pincer
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
@@ -404,7 +404,6 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
 
   -- polyline 专属（形状工具的直线 / 曲线 / 战线：开环路径，静态显示）
   coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]（type=polyline 时必填）
-  line_arrow         INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 开关：线末端是否带方向小三角（0/1）
   -- 梳齿 / 锯齿（原 front_style_json 平铺）：**战线（开环）与防御圈（闭合环）共用这一套**
   front_tooth_length REAL,  -- 梳齿/锯齿长度（px，战线与防御圈共用）
   front_tooth_gap    REAL,  -- 梳齿/锯齿间距（px）
@@ -422,7 +421,7 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend') OR rings_json IS NOT NULL),
   CHECK (subtype NOT IN ('circle','star') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL)),
-  CHECK (subtype NOT IN ('line','bezier','front-line','front-curve') OR coords_json IS NOT NULL),
+  CHECK (subtype NOT IN ('line','line-arrow','bezier','bezier-arrow','front-line','front-curve') OR coords_json IS NOT NULL),
   CHECK (subtype NOT IN ('swallowtail','march','attack') OR path_json IS NOT NULL),
   CHECK (subtype IS NOT 'pincer' OR points_json IS NOT NULL),
   CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
@@ -663,11 +662,11 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   public_layer_id TEXT NOT NULL REFERENCES public_layer(public_layer_id) ON DELETE CASCADE,  -- 所属公共图层（删公共图层连带删元素）
   type           TEXT NOT NULL CHECK (type IN ('multi','two','special')),  -- 大类（工具栏分组）：multi 多点绘制 / two 两点绘制 / special 特殊图形
   -- 小类（具体形状项）：几何与子形态由它推出 ——
-  --   multi：polygon / poly-curve / poly-defend / poly-curve-defend / line / bezier / front-line / front-curve
+  --   multi：polygon / poly-curve / poly-defend / poly-curve-defend / line / line-arrow / bezier / bezier-arrow / front-line / front-curve
   --   two：circle / rect / gathering / star
   --   special：swallowtail / march / attack / pincer
   -- 不写 CHECK（值域随大类变），交给 TS 应用层。
-  subtype        TEXT,  -- 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/bezier/front-line/front-curve；two→circle/rect/gathering/star；special→swallowtail/march/attack/pincer
+  subtype        TEXT,  -- 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/line-arrow/bezier/bezier-arrow/front-line/front-curve；two→circle/rect/gathering/star；special→swallowtail/march/attack/pincer
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   -- 形状都是静态的：动画族 / 移动图标只在路线（element_route）有，这里不留（同 element_shape）。
@@ -701,7 +700,6 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
 
   -- polyline 专属（形状工具的直线 / 曲线 / 战线：开环路径，静态显示）
   coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]（type=polyline 时必填）
-  line_arrow         INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 开关：线末端是否带方向小三角（0/1）
   -- 梳齿 / 锯齿（原 front_style_json 平铺）：**战线（开环）与防御圈（闭合环）共用这一套**
   front_tooth_length REAL,  -- 梳齿/锯齿长度（px，战线与防御圈共用）
   front_tooth_gap    REAL,  -- 梳齿/锯齿间距（px）
@@ -718,7 +716,7 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend') OR rings_json IS NOT NULL),
   CHECK (subtype NOT IN ('circle','star') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL)),
-  CHECK (subtype NOT IN ('line','bezier','front-line','front-curve') OR coords_json IS NOT NULL),
+  CHECK (subtype NOT IN ('line','line-arrow','bezier','bezier-arrow','front-line','front-curve') OR coords_json IS NOT NULL),
   CHECK (subtype NOT IN ('swallowtail','march','attack') OR path_json IS NOT NULL),
   CHECK (subtype IS NOT 'pincer' OR points_json IS NOT NULL),
   CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))

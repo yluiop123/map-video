@@ -312,7 +312,9 @@ function backfillSubtypeColumns(db) {
  */
 function shapeRowOf(r) {
   const t = r.type;
-  if (t === 'multi' || t === 'two' || t === 'special') return { group: t, subtype: r.subtype ?? null }; // 已是新形状
+  // polyline 的「带箭头」折进 subtype（老行还带着 line_arrow 列）
+  const foldArrow = (st) => (r.line_arrow === 1 && (st === 'line' || st === 'bezier')) ? (st === 'bezier' ? 'bezier-arrow' : 'line-arrow') : st;
+  if (t === 'multi' || t === 'two' || t === 'special') return { group: t, subtype: foldArrow(r.subtype ?? null) }; // 已是新形状
   const kind = r.subtype ?? (t === 'polygon' ? r.shape_kind : t === 'polyline' ? r.line_type : t === 'arrow' ? r.arrow_type : null);
   if (t === 'polygon') {
     if (kind === 'circle' || kind === 'rect' || kind === 'star') return { group: 'two', subtype: kind };
@@ -320,8 +322,8 @@ function shapeRowOf(r) {
     return { group: 'multi', subtype: defend ? (curve ? 'poly-curve-defend' : 'poly-defend') : (curve ? 'poly-curve' : 'polygon') };
   }
   if (t === 'polyline') {
-    const curve = kind === 'bezier', front = r.front_tooth_length != null || r.front_side != null;
-    return { group: 'multi', subtype: front ? (curve ? 'front-curve' : 'front-line') : (curve ? 'bezier' : 'line') };
+    const bez = kind === 'bezier', front = r.front_tooth_length != null || r.front_side != null;
+    return { group: 'multi', subtype: front ? (bez ? 'front-curve' : 'front-line') : foldArrow(bez ? 'bezier' : 'line') };
   }
   if (t === 'arrow') return { group: 'special', subtype: kind === 'curved' ? 'swallowtail' : kind === 'curved-simple' ? 'march' : 'attack' };
   if (t === 'gathering') return { group: 'two', subtype: 'gathering' };
@@ -468,7 +470,7 @@ const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_posit
   'label_offset_y', 'label_bg_color', 'label_bg_padding', 'label_bg_radius',
   'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos',
   'fly_mode', 'ord', 'keyframes_json', 'from_lng', 'from_lat', 'to_lng', 'to_lat', 'shape_kind', 'arrow_type', 'line_type',
-  'defense_tooth_length', 'defense_tooth_gap', 'defense_tooth_angle', 'defense_side', 'pulse_animation',
+  'defense_tooth_length', 'defense_tooth_gap', 'defense_tooth_angle', 'defense_side', 'pulse_animation', 'line_arrow',
   'anim_effect', 'show_icon', 'move_start_sec', 'move_end_sec', 'uniform_move', 'point_times_json',
   'move_icon_shape', 'move_icon_color', 'move_icon_emoji', 'move_icon_scale', 'move_icon_label_text',
   'move_icon_label_color', 'move_icon_label_bg', 'move_icon_label_offset_x', 'move_icon_label_offset_y',
@@ -683,8 +685,10 @@ function shapeOf(el) {
     return { group: 'multi', subtype: defend ? (curve ? 'poly-curve-defend' : 'poly-defend') : (curve ? 'poly-curve' : 'polygon') };
   }
   if (el.type === 'polyline') {
-    const curve = el.lineType === 'bezier';
-    return { group: 'multi', subtype: el.frontStyle ? (curve ? 'front-curve' : 'front-line') : (curve ? 'bezier' : 'line') };
+    const bez = el.lineType === 'bezier';
+    if (el.frontStyle) return { group: 'multi', subtype: bez ? 'front-curve' : 'front-line' };
+    if (el.lineArrow) return { group: 'multi', subtype: bez ? 'bezier-arrow' : 'line-arrow' };
+    return { group: 'multi', subtype: bez ? 'bezier' : 'line' };
   }
   if (el.type === 'arrow') {
     const at = el.arrowType;
@@ -1039,7 +1043,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       poly_curve,
       path_json, width, color,
       points_json, center_lng, center_lat, radius, rotation,
-      coords_json, line_arrow, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
+      coords_json, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@subtype,@name,@start_sec,@end_sec,
       @rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,
@@ -1047,7 +1051,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       @poly_curve,
       @path_json,@width,@color,
       @points_json,@center_lng,@center_lat,@radius,@rotation,
-      @coords_json,@line_arrow,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side)`).run({
+      @coords_json,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side)`).run({
       ...omit(common, SHAPE_DEAD),
       // 形状无动画族 / 移动图标（列已删）—— 这些「沿路径走 / 显示移动标记」的字段只属于路线
       type: so.group, subtype: so.subtype,
@@ -1057,7 +1061,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       poly_curve: b(el.polyCurve),
       path_json: j(el.path), width: n(el.width), color: n(el.color),
       points_json: j(el.points),
-      coords_json: el.type === 'polyline' ? j(el.coordinates) : null, line_arrow: el.lineArrow == null ? null : b(el.lineArrow),
+      coords_json: el.type === 'polyline' ? j(el.coordinates) : null,
       // 战线（开环）与防御圈（闭合环）共用这一套梳齿/锯齿列
       front_tooth_length: n(el.frontStyle?.toothLength ?? el.defenseStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap ?? el.defenseStyle?.toothGap),
       front_tooth_angle: n(el.frontStyle?.toothAngle ?? el.defenseStyle?.toothAngle), front_side: n(el.frontStyle?.side ?? el.defenseStyle?.side),
@@ -1321,11 +1325,12 @@ function readElementsV2(db, chapterId, s2f) {
       if (shapeKind === 'circle') poly.circleMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
       if (shapeKind === 'star') poly.starMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
       out.push(poly);
-    } else if (st === 'line' || st === 'bezier' || st === 'front-line' || st === 'front-curve') {
+    } else if (st === 'line' || st === 'line-arrow' || st === 'bezier' || st === 'bezier-arrow' || st === 'front-line' || st === 'front-curve') {
+      const bez = st === 'bezier' || st === 'bezier-arrow' || st === 'front-curve';
       out.push({
         ...base(r), type: 'polyline', coordinates: J(r.coords_json, []),
-        lineType: (st === 'bezier' || st === 'front-curve') ? 'bezier' : 'straight',
-        lineArrow: r.line_arrow == null ? undefined : bit(r.line_arrow),
+        lineType: bez ? 'bezier' : 'straight',
+        lineArrow: (st === 'line-arrow' || st === 'bezier-arrow') ? true : undefined,
         strokeColor: r.stroke_color ?? '#FF0000', strokeWidth: r.stroke_width ?? 8,
         frontStyle: (st === 'front-line' || st === 'front-curve') ? frontOf() : undefined,
         shapeCategory: group,

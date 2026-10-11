@@ -7,7 +7,10 @@
  *   2) **帧 ↔ 秒换算互逆**：写入端按当前 fps 除、读取端按同一 fps 乘回来，二次往返不得漂移。
  *      注意：全项目 fps 恒为 30（`defaultFPS` 只在新建项目时写入，没有任何 UI 改它），
  *      所以「改帧率后时长不变」目前不在保证范围内 —— 真要支持改 fps，需要的是
- *      「改 fps 时把全项目帧值按比例重算」，而不是只改这一个数。
+ *      「改 fps 时把全项目帧值按比例重算」，而不是只改这一个数；
+ *   3) **形状折线的子类折算**（[9]/[9b]）：polyline 的 `lineArrow` 折进 `subtype`
+ *      （line / line-arrow / bezier / bezier-arrow / front-*），写入端折、读取端还原，
+ *      老行搬迁时逐行换算且一行不丢（`INSERT OR IGNORE` 会静默吞掉撞 CHECK 的行）。
  * 运行：node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs
  * 退出码非 0 表示有失败项。
  */
@@ -260,6 +263,65 @@ console.log('\n[8] 旧库的「每项目一套目录」启动让位');
   ensureV2Schema(legacy);
   check('8.7 上一轮遗留的归档表也会被清掉',
     !legacy.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='base_map__scoped_stale'").get());
+}
+
+console.log('\n[9] 形状折线：line_arrow 折进 subtype（line / line-arrow / bezier / bezier-arrow / front-*）');
+{
+  const db9 = open();
+  const polyLayer = (pid, el) => ({
+    ...project(pid, FPS),
+    layers: [{ id: `${pid}:L`, type: 'shape', name: '形状 1', visible: true, startFrame: 0, endFrame: 900, elements: [el] }],
+  });
+  const poly = (id, extra) => ({ id, type: 'polyline', coordinates: [[0, 0], [1, 1]], strokeColor: '#FF0000', strokeWidth: 8, ...extra });
+  // [子类, 元素, 读回的 lineType, 读回的 lineArrow]
+  const cases = [
+    ['line', poly('p1', { lineType: 'straight' }), 'straight', false],
+    ['line-arrow', poly('p2', { lineType: 'straight', lineArrow: true }), 'straight', true],
+    ['bezier', poly('p3', { lineType: 'bezier' }), 'bezier', false],
+    ['bezier-arrow', poly('p4', { lineType: 'bezier', lineArrow: true }), 'bezier', true],
+    ['front-line', poly('p5', { lineType: 'straight', frontStyle: { toothLength: 12, side: 1 } }), 'straight', false],
+    ['front-curve', poly('p6', { lineType: 'bezier', frontStyle: { toothLength: 12, side: 1 } }), 'bezier', false],
+  ];
+  for (const [st, el, lineType, arrow] of cases) {
+    const pid = `s_${st}`;
+    saveProjectV2(db9, polyLayer(pid, el));
+    const row = db9.prepare('SELECT type, subtype FROM element_shape WHERE element_id = ?').get(el.id);
+    const back = getProjectV2(db9, pid).layers[0].elements[0];
+    check(`9 ${st}：落库 type=multi / subtype=${st}`, row?.type === 'multi' && row?.subtype === st, JSON.stringify(row));
+    check(`9 ${st}：读回 lineType=${lineType} · lineArrow=${arrow}`,
+      back?.lineType === lineType && !!back?.lineArrow === arrow, `lineType=${back?.lineType} lineArrow=${back?.lineArrow}`);
+  }
+  saveProjectV2(db9, polyLayer('s_false', poly('p7', { lineType: 'straight', lineArrow: false })));
+  check('9 lineArrow:false 与没这一格都落回 line（不是第三条子类）',
+    db9.prepare("SELECT subtype FROM element_shape WHERE element_id='p7'").get()?.subtype === 'line');
+  db9.close();
+}
+
+console.log('\n[9b] 旧行搬迁：line_arrow 列折进 subtype（让位重建逐行换算，一行不丢）');
+{
+  const legacy = new DatabaseSync(':memory:');
+  legacy.exec(`CREATE TABLE collection (collection_id TEXT PRIMARY KEY, name TEXT, ord INTEGER, created_at INTEGER, updated_at INTEGER);
+    CREATE TABLE project (project_id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE layer (layer_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, type TEXT, name TEXT, visible INTEGER, start_sec REAL, end_sec REAL, ord INTEGER);
+    CREATE TABLE element_shape (
+      element_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, layer_id TEXT NOT NULL,
+      type TEXT NOT NULL, subtype TEXT, name TEXT NOT NULL, start_sec REAL, end_sec REAL,
+      coords_json TEXT, line_arrow INTEGER);`);
+  legacy.prepare("INSERT INTO collection (collection_id,name,ord,created_at,updated_at) VALUES ('default','默认合集',-1,1,1)").run();
+  legacy.prepare("INSERT INTO project (project_id,name,created_at,updated_at) VALUES ('p','旧项目',1,1)").run();
+  legacy.prepare("INSERT INTO layer (layer_id,project_id,type,name,visible,ord) VALUES ('l','p','shape','形状 1',1,0)").run();
+  const put = legacy.prepare(`INSERT INTO element_shape
+    (element_id,project_id,layer_id,type,subtype,name,start_sec,end_sec,coords_json,line_arrow)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  put.run('e1', 'p', 'l', 'multi', 'line', '带箭头直线', 0, 60, '[[0,0],[1,1]]', 1);
+  put.run('e2', 'p', 'l', 'multi', 'bezier', '曲线', 0, 60, '[[0,0],[1,1]]', null);
+  ensureV2Schema(legacy);
+  const cols = legacy.prepare('PRAGMA table_info(element_shape)').all().map((c) => c.name);
+  const rows = legacy.prepare('SELECT element_id, subtype FROM element_shape ORDER BY element_id').all();
+  check('9b.1 line_arrow 列已删（折进 subtype 了）', !cols.includes('line_arrow'), cols.join(','));
+  check('9b.2 搬迁一行不少，line_arrow=1 → line-arrow、没写 → bezier',
+    rows.length === 2 && rows[0].subtype === 'line-arrow' && rows[1].subtype === 'bezier', JSON.stringify(rows));
+  legacy.close();
 }
 
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);
