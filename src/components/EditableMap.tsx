@@ -36,6 +36,9 @@ const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bez
 const POLY_DRAW_MODES = new Set(['add_polygon', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot']);
 const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line', 'add_moving_bezier', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_front_line', 'add_shape_front_curve', 'terr_split']);
 
+/** 箭头类绘制模式：预览画「控制点折线」（虚线）+ 箭头填充，不画多边形轮廓（轮廓会沿路径出去又回来） */
+const ARROW_PREVIEW_MODES = new Set(['add_curved', 'add_shape_march', 'add_shape_swallowtail', 'add_special_swallow', 'add_attack', 'add_arrow']);
+
 /** 分割地块模式的光标：剪刀（白描边 + 黑线，保证深浅底图上都清晰） */
 const SCISSORS_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#ffffff" stroke-width="5"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></g><g stroke="#111111" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></g></svg>`;
 const SCISSORS_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(SCISSORS_SVG)}") 8 8, crosshair`;
@@ -520,7 +523,10 @@ export function EditableMap({ project }: EditableMapProps) {
       const previewPts = cursor ? [...points, cursor] : points;
       if (previewPts.length >= 3) {
         const ring = buildDoubleArrowPreview(previewPts);
-        if (ring.length >= 3) fc.push(turf.polygon([[...ring, ring[0]]]));
+        if (ring.length >= 3) {
+          fc.push(turf.polygon([[...ring, ring[0]]]));
+          fc.push(turf.lineString([...ring, ring[0]])); // 轮廓（虚线层现在只描线）
+        }
       }
     } else if (mode === 'add_rect' && points.length >= 1 && cursor) {
       // 矩形预览：对角两点
@@ -528,6 +534,7 @@ export function EditableMap({ project }: EditableMapProps) {
       const [x2, y2] = cursor;
       const ring: [number, number][] = [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]];
       fc.push(turf.polygon([ring]));
+      fc.push(turf.lineString(ring)); // 轮廓（虚线层现在只描线）
     } else if ((mode === 'add_encirclement') && points.length >= 1 && cursor) {
       // 包围圈：虚线圆环
       const r = Math.max(0.5, turf.distance(points[0], cursor, { units: 'kilometers' }));
@@ -543,7 +550,10 @@ export function EditableMap({ project }: EditableMapProps) {
       const p1: [number, number] = [c[0], c[1] + rDeg * 1.5];
       const p2: [number, number] = [c[0] + rDeg * 1.1, c[1]];
       const shape = buildGatheringPlace([p0, p1, p2] as any) as [number, number][];
-      if (shape.length >= 3) fc.push(turf.polygon([[...shape, shape[0]]]));
+      if (shape.length >= 3) {
+        fc.push(turf.polygon([[...shape, shape[0]]]));
+        fc.push(turf.lineString([...shape, shape[0]])); // 轮廓（虚线层现在只描线）
+      }
       fc.push(turf.point(points[0]));
     } else if (mode === 'add_shape_circle' && points.length >= 1 && cursor) {
       // 圆：第1点=圆心，移动调半径
@@ -551,6 +561,11 @@ export function EditableMap({ project }: EditableMapProps) {
       const ring = circleCoords(points[0], r);
       fc.push(turf.lineString([...ring, ring[0]]));
       fc.push(turf.point(points[0]));
+    }
+
+    // 箭头类预览：虚线只画「控制点折线」（开放、不回头），箭头本体走填充层
+    if (ARROW_PREVIEW_MODES.has(mode) && cursor && points.length > 0) {
+      fc.push(turf.lineString([...points, cursor]));
     }
 
     // 已采集顶点
@@ -2438,6 +2453,8 @@ function setPreviewData(map: maplibregl.Map, data: any, showFill: boolean = true
 
   if (map.getSource(src)) {
     putGeoJSON(map.getSource(src) as GeoJSONSource, data);
+    // 虚线层只描线（旧会话里已建好的层也要补上过滤，否则多边形轮廓仍被虚线描边）
+    if (map.getLayer(lineId)) map.setFilter(lineId, ['==', ['geometry-type'], 'LineString']);
     // 动态显示/隐藏填充层
     if (map.getLayer(fillId)) {
       map.setLayoutProperty(fillId, 'visibility', showFill ? 'visible' : 'none');
@@ -2452,6 +2469,9 @@ function setPreviewData(map: maplibregl.Map, data: any, showFill: boolean = true
   });
   map.addLayer({
     id: lineId, type: 'line', source: src,
+    // 只描线：多边形（箭头 / 矩形 / 集结点 / 钳形的预览）不再被虚线层描边 ——
+    // 否则箭头轮廓会沿路径「出去又回来」，看起来像回头。
+    filter: ['==', ['geometry-type'], 'LineString'],
     paint: { 'line-color': '#00C853', 'line-width': 2.5, 'line-dasharray': [3, 2] },
   });
   map.addLayer({
