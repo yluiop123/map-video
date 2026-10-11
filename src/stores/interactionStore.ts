@@ -24,7 +24,6 @@ export type InteractionMode =
   | 'add_shape_march'         // 行军箭头（多点，curved-simple）
   | 'add_shape_swallowtail'   // 燕尾箭头（多点，路线燕尾绘制方式 curved）
   | 'add_shape_circle'        // 圆（两点：圆心→半径）
-  | 'add_shape_star'          // 五角星（两点：圆心→外接半径）
   | 'add_special_swallow'     // 燕尾箭头（特殊图形：多点采集，curved 燕尾造型）
   | 'add_shape_front_line'    // 直线战线（多点采点，主线直连 + 一侧梳齿）
   | 'add_shape_front_curve'   // 弯曲战线（多点采点，主线贝塞尔 + 一侧梳齿）

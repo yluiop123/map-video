@@ -311,6 +311,8 @@ function backfillSubtypeColumns(db) {
 
 /** 形状箭头（燕尾 / 行军 / 进攻）：几何装 coords_json；更早那代行把它装在 path_json 里 */
 const SHAPE_ARROW_SUBTYPES = new Set(['swallowtail', 'march', 'attack']);
+/** 多边形（环数组）：几何装 coords_json；更早那代行把它装在 rings_json 里 */
+const SHAPE_POLYGON_SUBTYPES = new Set(['polygon', 'poly-curve', 'poly-defend', 'poly-curve-defend']);
 
 /**
  * 旧形状行（`type` = 几何、`subtype` = 子形态）→ 新形状行（`type` = 大类 multi/two/special、`subtype` = 具体形状项）。
@@ -325,7 +327,7 @@ function shapeRowOf(r) {
   if (t === 'multi' || t === 'two' || t === 'special') return { group: t, subtype: foldCurve(foldArrow(r.subtype ?? null)) }; // 已是新形状
   const kind = r.subtype ?? (t === 'polygon' ? r.shape_kind : t === 'polyline' ? r.line_type : t === 'arrow' ? r.arrow_type : null);
   if (t === 'polygon') {
-    if (kind === 'circle' || kind === 'rect' || kind === 'star') return { group: 'two', subtype: kind };
+    if (kind === 'circle' || kind === 'rect') return { group: 'two', subtype: kind };
     const curve = r.poly_curve === 1, defend = r.defense_tooth_length != null || r.defense_side != null || r.front_tooth_length != null || r.front_side != null;
     return { group: 'multi', subtype: defend ? (curve ? 'poly-curve-defend' : 'poly-defend') : (curve ? 'poly-curve' : 'polygon') };
   }
@@ -477,7 +479,7 @@ const MARKER_DEAD = ['visual_fit', 'visual_tintable', 'visual_fps', 'visual_loop
 const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_position', 'label_offset_x',
   'label_offset_y', 'label_bg_color', 'label_bg_padding', 'label_bg_radius',
   'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos',
-  'fly_mode', 'ord', 'keyframes_json', 'from_lng', 'from_lat', 'to_lng', 'to_lat', 'shape_kind', 'arrow_type', 'line_type', 'poly_curve',
+  'fly_mode', 'ord', 'keyframes_json', 'from_lng', 'from_lat', 'to_lng', 'to_lat', 'shape_kind', 'arrow_type', 'line_type', 'poly_curve', 'rings_json',
   'defense_tooth_length', 'defense_tooth_gap', 'defense_tooth_angle', 'defense_side', 'pulse_animation', 'line_arrow', 'path_json', 'points_json',
   'anim_effect', 'show_icon', 'move_start_sec', 'move_end_sec', 'uniform_move', 'point_times_json',
   'move_icon_shape', 'move_icon_color', 'move_icon_emoji', 'move_icon_scale', 'move_icon_label_text',
@@ -625,9 +627,10 @@ function restoreRebuiltRows(db, moved) {
         const m = shapeRowOf(r);
         vals.type = m.group;
         vals.subtype = m.subtype;
-        // 点数组统一进 coords_json：老行把箭头路径 / 钳形 4 点分别装在 path_json / points_json 里
+        // 几何点数据统一进 coords_json：老行把多边形环数组 / 箭头路径 / 钳形 4 点分别装在 rings_json / path_json / points_json 里
         if (list.includes('coords_json') && vals.coords_json == null) {
-          if (m.subtype === 'pincer') vals.coords_json = r.points_json ?? null;
+          if (SHAPE_POLYGON_SUBTYPES.has(m.subtype)) vals.coords_json = r.rings_json ?? null;
+          else if (m.subtype === 'pincer') vals.coords_json = r.points_json ?? null;
           else if (SHAPE_ARROW_SUBTYPES.has(m.subtype)) vals.coords_json = r.path_json ?? null;
         }
         stmt.run(vals);
@@ -693,7 +696,7 @@ function routeSubtypeOf(el) {
 function shapeOf(el) {
   if (el.type === 'polygon') {
     const sk = el.shapeKind ?? 'poly';
-    if (sk === 'circle' || sk === 'rect' || sk === 'star') return { group: 'two', subtype: sk };
+    if (sk === 'circle' || sk === 'rect') return { group: 'two', subtype: sk };
     const curve = !!el.polyCurve, defend = !!el.defenseStyle;
     return { group: 'multi', subtype: defend ? (curve ? 'poly-curve-defend' : 'poly-defend') : (curve ? 'poly-curve' : 'polygon') };
   }
@@ -1047,18 +1050,18 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
     return;
   }
   if (cat === 'shape') {
-    const cMeta = el.circleMeta || el.starMeta;
+    const cMeta = el.circleMeta;
     const so = shapeOf(el);
     db.prepare(`INSERT INTO element_shape (
       element_id, project_id, layer_id, type, subtype, name, start_sec, end_sec,
-      rings_json, fill_color, fill_opacity, stroke_color, stroke_width,
+      fill_color, fill_opacity, stroke_color, stroke_width,
       rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
       width, color,
       center_lng, center_lat, radius, rotation,
       coords_json, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@subtype,@name,@start_sec,@end_sec,
-      @rings_json,@fill_color,@fill_opacity,@stroke_color,@stroke_width,
+      @fill_color,@fill_opacity,@stroke_color,@stroke_width,
       @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
       @width,@color,
       @center_lng,@center_lat,@radius,@rotation,
@@ -1066,13 +1069,12 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       ...omit(common, SHAPE_DEAD),
       // 形状无动画族 / 移动图标（列已删）—— 这些「沿路径走 / 显示移动标记」的字段只属于路线
       type: so.group, subtype: so.subtype,
-      // rings_json 只属于多边形（环数组）；折线的路径走 coords_json —— 别把折线路径也塞进环里
-      rings_json: el.type === 'polygon' && el.coordinates ? JSON.stringify(el.coordinates) : null,
       fill_color: n(el.fillColor), fill_opacity: n(el.fillOpacity), stroke_color: n(el.strokeColor), stroke_width: n(el.strokeWidth),
       rect_c1_lng: n(el.rectMeta?.c1?.[0]), rect_c1_lat: n(el.rectMeta?.c1?.[1]), rect_c2_lng: n(el.rectMeta?.c2?.[0]), rect_c2_lat: n(el.rectMeta?.c2?.[1]),
       width: n(el.width), color: n(el.color),
-      // ★ 点数组只有 coords_json 这一列：折线路径 / 箭头路径 / 钳形 4 控制点都装它（子类判别）
-      coords_json: el.type === 'polyline' ? j(el.coordinates)
+      // ★ 几何点数据只有 coords_json 这一列（嵌套由 subtype 判）：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点
+      coords_json: el.type === 'polygon' ? j(el.coordinates)
+        : el.type === 'polyline' ? j(el.coordinates)
         : el.type === 'arrow' ? j(el.path)
         : el.type === 'double_arrow' ? j(el.points) : null,
       // 战线（开环）与防御圈（闭合环）共用这一套梳齿/锯齿列
@@ -1324,10 +1326,10 @@ function readElementsV2(db, chapterId, s2f) {
     const st = r.subtype;
     const group = r.type; // 大类 → 面板
     const frontOf = () => (r.front_tooth_length == null && r.front_side == null ? undefined : { toothLength: r.front_tooth_length ?? undefined, toothGap: r.front_tooth_gap ?? undefined, toothAngle: r.front_tooth_angle ?? undefined, side: r.front_side ?? undefined });
-    if (st === 'polygon' || st === 'poly-curve' || st === 'poly-defend' || st === 'poly-curve-defend' || st === 'circle' || st === 'rect' || st === 'star') {
-      const shapeKind = (st === 'circle' || st === 'rect' || st === 'star') ? st : 'poly';
+    if (st === 'polygon' || st === 'poly-curve' || st === 'poly-defend' || st === 'poly-curve-defend' || st === 'circle' || st === 'rect') {
+      const shapeKind = (st === 'circle' || st === 'rect') ? st : 'poly';
       const poly = {
-        ...base(r), type: 'polygon', coordinates: J(r.rings_json, []), fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
+        ...base(r), type: 'polygon', coordinates: J(r.coords_json, []), fillColor: r.fill_color ?? '#E23B3B', fillOpacity: r.fill_opacity ?? 0.25,
         strokeColor: r.stroke_color ?? '#E23B3B', strokeWidth: r.stroke_width ?? 2, shapeKind,
         polyCurve: (st === 'poly-curve' || st === 'poly-curve-defend') ? true : undefined,
         rotation: r.rotation ?? undefined,
@@ -1336,7 +1338,6 @@ function readElementsV2(db, chapterId, s2f) {
       };
       if (shapeKind === 'rect') poly.rectMeta = { c1: [r.rect_c1_lng, r.rect_c1_lat], c2: [r.rect_c2_lng, r.rect_c2_lat] };
       if (shapeKind === 'circle') poly.circleMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
-      if (shapeKind === 'star') poly.starMeta = { center: [r.center_lng, r.center_lat], radius: r.radius };
       out.push(poly);
     } else if (st === 'line' || st === 'line-arrow' || st === 'bezier' || st === 'bezier-arrow' || st === 'front-line' || st === 'front-curve') {
       const bez = st === 'bezier' || st === 'bezier-arrow' || st === 'front-curve';

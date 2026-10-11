@@ -31,7 +31,7 @@ interface EditableMapProps {
   project: MapVideoProject;
 }
 
-const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_shape_star', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot', 'terr_split', 'terr_annex'];
+const DRAW_MODES = ['add_moving_line', 'add_moving_bezier', 'add_line', 'add_bezier', 'add_line_arc', 'add_polygon', 'add_rect', 'add_arrow', 'add_curved', 'add_attack', 'add_pincer', 'add_encirclement', 'add_gathering', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_march', 'add_shape_swallowtail', 'add_shape_circle', 'add_special_swallow', 'add_shape_front_line', 'add_shape_front_curve', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot', 'terr_split', 'terr_annex'];
 
 const POLY_DRAW_MODES = new Set(['add_polygon', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend', 'add_terr_plot']);
 const LINE_PREVIEW_MODES = new Set(['add_line', 'add_bezier', 'add_moving_line', 'add_moving_bezier', 'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow', 'add_shape_front_line', 'add_shape_front_curve', 'terr_split']);
@@ -545,12 +545,10 @@ export function EditableMap({ project }: EditableMapProps) {
       const shape = buildGatheringPlace([p0, p1, p2] as any) as [number, number][];
       if (shape.length >= 3) fc.push(turf.polygon([[...shape, shape[0]]]));
       fc.push(turf.point(points[0]));
-    } else if ((mode === 'add_shape_circle' || mode === 'add_shape_star') && points.length >= 1 && cursor) {
-      // 圆 / 五角星：第1点=圆心,移动调半径
+    } else if (mode === 'add_shape_circle' && points.length >= 1 && cursor) {
+      // 圆：第1点=圆心，移动调半径
       const r = Math.max(0.5, turf.distance(points[0], cursor, { units: 'kilometers' }));
-      const ring = mode === 'add_shape_circle'
-        ? circleCoords(points[0], r)
-        : polyStarCoords(points[0], r);
+      const ring = circleCoords(points[0], r);
       fc.push(turf.lineString([...ring, ring[0]]));
       fc.push(turf.point(points[0]));
     }
@@ -691,7 +689,7 @@ export function EditableMap({ project }: EditableMapProps) {
       updatePreview();
       return;
     }
-    if (mode === 'add_encirclement' || mode === 'add_gathering' || mode === 'add_shape_circle' || mode === 'add_shape_star') {
+    if (mode === 'add_encirclement' || mode === 'add_gathering' || mode === 'add_shape_circle') {
       if (d.points.length === 0) {
         d.points = [lngLat];
         d.phase = 'radius';
@@ -720,16 +718,6 @@ export function EditableMap({ project }: EditableMapProps) {
             fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
             shapeKind: 'circle',
             circleMeta: { center: d.points[0], radius },
-            shapeCategory: 'two',
-          } as PolygonElement);
-        } else {
-          createElementAndSelect({
-            id: generateId(), type: 'polygon', name: '五角星', locked: false,
-            startFrame: 0, endFrame: project.endFrame,
-            coordinates: [polyStarCoords(d.points[0], radius)],
-            fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2,
-            shapeKind: 'star',
-            starMeta: { center: d.points[0], radius },
             shapeCategory: 'two',
           } as PolygonElement);
         }
@@ -1957,7 +1945,6 @@ function modeHint(mode: string): string {
     case 'add_shape_poly_defend': return '单击加顶点(≥3) · 双击完成直线防御圈(锯齿) · Esc取消';
     case 'add_shape_poly_curve_defend': return '单击加顶点(≥3) · 双击完成曲线防御圈(曲线+锯齿) · Esc取消';
     case 'add_shape_circle': return '第1击定圆心 → 移动调半径 → 第2击确认（不可旋转）';
-    case 'add_shape_star': return '第1击定中心 → 移动调半径 → 第2击确认五角星';
     case 'add_special_swallow': return '单击加控制点(≥2) · 双击完成自定义燕尾箭头 · Esc取消';
     case 'add_shape_front_line': return '单击加点 · 双击完成直线战线（一侧梳齿） · Esc取消';
     case 'add_shape_front_curve': return '单击加控制点(≥2) · 双击完成弯曲战线（一侧梳齿） · Esc取消';
@@ -1982,7 +1969,7 @@ function routePathOf(el: MapElement): [number, number][] | null {
   if (el.type === 'arrow') return (el.path?.length ?? 0) >= 2 ? el.path : null;
   if (el.type === 'double_arrow') return (el.points?.length ?? 0) >= 2 ? el.points : null;
   if (el.type === 'polygon') {
-    // 形状：rect=对角点（随 rotation 显示在旋转后位置）；circle/star=中心+半径顶点；poly=顶点（去闭合点）
+    // 形状：rect=对角点（随 rotation 显示在旋转后位置）；circle=中心+半径顶点；poly=顶点（去闭合点）
     if (el.shapeKind === 'rect' && el.rectMeta) {
       const cx = (el.rectMeta.c1[0] + el.rectMeta.c2[0]) / 2;
       const cy = (el.rectMeta.c1[1] + el.rectMeta.c2[1]) / 2;
@@ -1993,9 +1980,6 @@ function routePathOf(el: MapElement): [number, number][] | null {
     }
     if (el.shapeKind === 'circle' && el.circleMeta) {
       return [el.circleMeta.center, circleRadiusHandle(el.circleMeta.center, el.circleMeta.radius, el.rotation || 0)];
-    }
-    if (el.shapeKind === 'star' && el.starMeta) {
-      return [el.starMeta.center, starRadiusHandle(el.starMeta.center, el.starMeta.radius, el.rotation || 0)];
     }
     const ring = el.coordinates[0];
     if (!ring || ring.length < 3) return null;
@@ -2028,11 +2012,6 @@ function routePathOf(el: MapElement): [number, number][] | null {
 /** 圆/集结点等的半径手柄点（中心方向 rotatePt([r/111,0], rot)，即旋转后的东向点） */
 function circleRadiusHandle(center: [number, number], radiusKm: number, rotDeg = 0): [number, number] {
   return rotatePt([center[0] + radiusKm / 111, center[1]], center, rotDeg);
-}
-
-/** 五角星半径手柄点：旋转后的第一个外顶点（星形渲染的首个外顶点角度 = -90°） */
-function starRadiusHandle(center: [number, number], radiusKm: number, rotDeg = 0): [number, number] {
-  return rotatePt([center[0], center[1] - radiusKm / 111], center, rotDeg);
 }
 
 /** 顶点拖拽写回：按元素类型更新对应字段；返回是否已写。bbox=地图容器盒。 */
@@ -2078,21 +2057,17 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
       } as Partial<MapElement>);
       return true;
     }
-    if ((el.shapeKind === 'circle' && el.circleMeta) || (el.shapeKind === 'star' && el.starMeta)) {
-      const meta = el.shapeKind === 'circle' ? el.circleMeta! : el.starMeta!;
+    if (el.shapeKind === 'circle' && el.circleMeta) {
+      const meta = el.circleMeta;
       if (idx === 0) {
-        const patch = el.shapeKind === 'circle'
-          ? { circleMeta: { ...meta, center: pt } as PolygonElement['circleMeta'], coordinates: [circleCoords(pt, meta.radius)] }
-          : { starMeta: { ...meta, center: pt } as PolygonElement['starMeta'], coordinates: [polyStarCoords(pt, meta.radius)] };
-        useProjectStore.getState().updateElement(el.id, patch as Partial<MapElement>);
+        useProjectStore.getState().updateElement(el.id,
+          { circleMeta: { ...meta, center: pt }, coordinates: [circleCoords(pt, meta.radius)] } as Partial<MapElement>);
         return true;
       }
       if (idx === 1) {
         const rkm = Math.max(0.5, turf.distance(meta.center, pt, { units: 'kilometers' }));
-        const patch = el.shapeKind === 'circle'
-          ? { circleMeta: { ...meta, radius: rkm } as PolygonElement['circleMeta'], coordinates: [circleCoords(meta.center, rkm)] }
-          : { starMeta: { ...meta, radius: rkm } as PolygonElement['starMeta'], coordinates: [polyStarCoords(meta.center, rkm)] };
-        useProjectStore.getState().updateElement(el.id, patch as Partial<MapElement>);
+        useProjectStore.getState().updateElement(el.id,
+          { circleMeta: { ...meta, radius: rkm }, coordinates: [circleCoords(meta.center, rkm)] } as Partial<MapElement>);
         return true;
       }
       return false;
@@ -2372,8 +2347,6 @@ function moveElementTo(project: MapVideoProject, elementId: string, lngLat: [num
     const meta: Partial<MapElement> = { coordinates: rings };
     if (el.shapeKind === 'circle' && el.circleMeta) {
       meta.circleMeta = { center: [el.circleMeta.center[0] + dx, el.circleMeta.center[1] + dy], radius: el.circleMeta.radius };
-    } else if (el.shapeKind === 'star' && el.starMeta) {
-      meta.starMeta = { center: [el.starMeta.center[0] + dx, el.starMeta.center[1] + dy], radius: el.starMeta.radius };
     } else if (el.shapeKind === 'rect' && el.rectMeta) {
       meta.rectMeta = {
         c1: [el.rectMeta.c1[0] + dx, el.rectMeta.c1[1] + dy],
@@ -2423,20 +2396,6 @@ function circleCoords(center: [number, number], radiusKm: number): [number, numb
       center[1] + (radiusKm / 111) * Math.sin(a),
     ]);
   }
-  return pts;
-}
-
-/** 五角星外轮廓（outer 半径=radiusKm，inner=0.4×radiusKm），逆时针，闭合环 */
-function polyStarCoords(center: [number, number], radiusKm: number): [number, number][] {
-  const pts: [number, number][] = [];
-  const outer = radiusKm / 111;
-  const inner = outer * 0.4;
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 === 0 ? outer : inner;
-    const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
-    pts.push([center[0] + r * Math.cos(a), center[1] + r * Math.sin(a)]);
-  }
-  pts.push([pts[0][0], pts[0][1]]);
   return pts;
 }
 

@@ -56,7 +56,7 @@ const TERR_MODES: InteractionMode[] = ['add_terr_plot', 'terr_annex'];
 const SHAPE_MODES: InteractionMode[] = [
   'add_shape_line', 'add_shape_bezier', 'add_shape_line_arrow', 'add_shape_bezier_arrow',
   'add_shape_front_line', 'add_shape_front_curve',
-  'add_shape_march', 'add_shape_circle', 'add_shape_star', 'add_special_swallow',
+  'add_shape_march', 'add_shape_circle', 'add_special_swallow',
   'add_shape_swallowtail', 'add_shape_poly_curve', 'add_shape_poly_defend', 'add_shape_poly_curve_defend',
   'add_polygon', 'add_rect', 'add_gathering', 'add_pincer',
 ];
@@ -91,7 +91,6 @@ const SHAPE_GROUPS: { zh: string; en: string; items: ShapeItem[] }[] = [
       { mode: 'add_shape_circle', zh: '圆', en: 'Circle', glyph: '◯', hint: '不可旋转' },
       { mode: 'add_rect', zh: '矩形', en: 'Rectangle', glyph: '▭', hint: '可旋转' },
       { mode: 'add_gathering', zh: '集结点', en: 'Gathering', glyph: '⚙', hint: '可旋转' },
-      { mode: 'add_shape_star', zh: '五角星', en: 'Star', glyph: '⭐', hint: '可旋转' },
     ],
   },
   {

@@ -317,13 +317,11 @@ export interface PolygonElement extends MapElementBase {
   strokeColor: string;
   strokeWidth: number;
   /** 形状种类（Shape Settings 切换用）：普通多边形 / 矩形 / 圆 / 五角星 */
-  shapeKind?: 'poly' | 'rect' | 'circle' | 'star';
+  shapeKind?: 'poly' | 'rect' | 'circle';
   /** shapeKind==='circle' 时的可编辑参数 */
   circleMeta?: { center: [number, number]; radius: number };
   /** shapeKind==='rect' 时的对角点 */
   rectMeta?: { c1: [number, number]; c2: [number, number] };
-  /** shapeKind==='star' 时的参数 */
-  starMeta?: { center: [number, number]; radius: number };
   /** 曲线多边：多边形各边曲线化（闭合贝塞尔拟合） */
   polyCurve?: boolean;
   /** 防御圈锯齿（钢铁雄心防线风格，环绕一圈）：存在即有锯齿 */

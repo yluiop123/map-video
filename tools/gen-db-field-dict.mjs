@@ -52,7 +52,7 @@ const GROUPS = [
 const TOOL_ENTRY = {
   element_marker: 'Pin 工具（一键放置到地图中心）；标记面板切到 Marker（旗标）、导入/旧数据的军标也写这张表',
   element_route: 'Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表',
-  element_shape: 'Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表',
+  element_shape: 'Shape：多边形/曲线多边/防御圈/圆/矩形/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表',
   element_territory: 'Terr：新建疆域 / 绘制地块 / 兼并（势力、地块、事件 JSON 内联在本表）',
   element_image: 'Image 工具（工具栏「图片」）：导入图片做地理配准贴图（四角/网格变形），图片本体走全局素材库',
   element_keyframe: '跨类别（所有元素共用，按 element_id 弱引用）',

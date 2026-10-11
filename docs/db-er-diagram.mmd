@@ -67,9 +67,8 @@ erDiagram
     text element_id PK
     text project_id FK
     text type "multi|two|special（大类：多点/两点/特殊）"
-    text rings_json "坐标集合（poly）"
-    text coords_json "折线（polyline）"
-    text subtype "小类（poly/rect/circle/star 或箭头类型）"
+    text coords_json "几何点数据（嵌套由 subtype 判）：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点"
+    text subtype "小类（polygon/poly-curve/poly-defend/circle/rect/line/line-arrow/bezier/bezier-arrow/front-line/front-curve/swallowtail/march/attack/pincer）"
   }
   ELEMENT_TERRITORY {
     text element_id PK

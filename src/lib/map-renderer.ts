@@ -3250,21 +3250,6 @@ function circleRing(center: [number, number], radiusKm: number, segments = 72): 
   return pts;
 }
 
-/** 五角星外轮廓（outer=radiusKm, inner=0.4×，绕中心可旋 rotation 度；闭合环） */
-function starRing(center: [number, number], radiusKm: number, rotationDeg = 0): [number, number][] {
-  const outer = radiusKm / 111;
-  const inner = outer * 0.4;
-  const rot = ((rotationDeg || 0) * Math.PI) / 180;
-  const pts: [number, number][] = [];
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 === 0 ? outer : inner;
-    const a = (i / 10) * Math.PI * 2 - Math.PI / 2 + rot;
-    pts.push([center[0] + r * Math.cos(a), center[1] + r * Math.sin(a)]);
-  }
-  pts.push([pts[0][0], pts[0][1]]);
-  return pts;
-}
-
 /** 矩形环（对角点） */
 function rectRingCoords(c1: [number, number], c2: [number, number]): [number, number][] {
   return [[c1[0], c1[1]], [c2[0], c1[1]], [c2[0], c2[1]], [c1[0], c2[1]], [c1[0], c1[1]]];
@@ -3292,9 +3277,6 @@ function compileShapeCoordinates(element: PolygonElement): [number, number][][] 
   }
   if (element.shapeKind === 'circle' && element.circleMeta) {
     return [circleRing(element.circleMeta.center, element.circleMeta.radius)];
-  }
-  if (element.shapeKind === 'star' && element.starMeta) {
-    return [starRing(element.starMeta.center, element.starMeta.radius, element.rotation || 0)];
   }
   // 曲线多边：对闭合环做贝塞尔拟合（边曲线化）
   if (element.polyCurve) {

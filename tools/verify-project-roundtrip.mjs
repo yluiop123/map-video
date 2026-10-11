@@ -8,10 +8,11 @@
  *      注意：全项目 fps 恒为 30（`defaultFPS` 只在新建项目时写入，没有任何 UI 改它），
  *      所以「改帧率后时长不变」目前不在保证范围内 —— 真要支持改 fps，需要的是
  *      「改 fps 时把全项目帧值按比例重算」，而不是只改这一个数；
- *   3) **形状的子类折算与点数组归一**（[9]/[9b]）：`lineArrow` / `polyCurve` 折进 `subtype`
- *      （line / line-arrow / bezier / bezier-arrow / front-* / poly-curve…），折线路径 / 箭头路径 /
- *      钳形 4 点统一装 `coords_json`（不再有 path_json / points_json）；写入端折、读取端还原，
- *      老行搬迁时逐行换算且一行不丢（`INSERT OR IGNORE` 会静默吞掉撞 CHECK 的行）。
+ *   3) **形状的子类折算与几何归一**（[9]/[9b]）：`lineArrow` / `polyCurve` 折进 `subtype`
+ *      （line / line-arrow / bezier / bezier-arrow / front-* / poly-curve…），几何点数据只留
+ *      `coords_json` 一列（多边形＝环数组、折线/箭头＝路径、钳形＝4 控制点；不再有 rings_json /
+ *      path_json / points_json）；写入端折、读取端还原，老行搬迁时逐行换算且一行不丢
+ *      （`INSERT OR IGNORE` 会静默吞掉撞 CHECK 的行）。
  * 运行：node --experimental-strip-types --experimental-sqlite tools/verify-project-roundtrip.mjs
  * 退出码非 0 表示有失败项。
  */
@@ -311,16 +312,23 @@ console.log('\n[9] 形状：line_arrow 折进 subtype（line / line-arrow / bezi
   check('9 pincer：4 控制点也落在 coords_json',
     prow?.type === 'special' && prow?.subtype === 'pincer' && JSON.stringify(JSON.parse(prow.coords_json)) === JSON.stringify(pincer.points), JSON.stringify(prow));
   check('9 钳形读回 points 逐点相等', JSON.stringify(pback?.points) === JSON.stringify(pincer.points), JSON.stringify(pback?.points));
-  check('9 形状表只剩 coords_json：path_json / points_json / poly_curve 三列都没了', (() => {
+
+  // 多边形环数组也进 coords_json（一列几何，嵌套深度由 subtype 判）
+  const polygon = { id: 'g1', type: 'polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]], fillColor: '#E23B3B', fillOpacity: 0.25, strokeColor: '#E23B3B', strokeWidth: 2 };
+  saveProjectV2(db9, polyLayer('s_poly', polygon));
+  const grow = db9.prepare("SELECT type, subtype, coords_json FROM element_shape WHERE element_id='g1'").get();
+  const gback = getProjectV2(db9, 's_poly').layers[0].elements[0];
+  check('9 polygon：环数组落在 coords_json（不再是 rings_json）',
+    grow?.type === 'multi' && grow?.subtype === 'polygon' && JSON.stringify(JSON.parse(grow.coords_json)) === JSON.stringify(polygon.coordinates), JSON.stringify(grow));
+  check('9 多边形读回 coordinates（环数组）逐点相等', JSON.stringify(gback?.coordinates) === JSON.stringify(polygon.coordinates), JSON.stringify(gback?.coordinates));
+  check('9 形状表只剩 coords_json 一列几何：rings_json / path_json / points_json / poly_curve 都没了', (() => {
     const cols = db9.prepare('PRAGMA table_info(element_shape)').all().map((c) => c.name);
-    return !cols.includes('path_json') && !cols.includes('points_json') && !cols.includes('poly_curve');
+    return !cols.includes('rings_json') && !cols.includes('path_json') && !cols.includes('points_json') && !cols.includes('poly_curve');
   })());
-  check('9 折线不往 rings_json 里写（环数组只属于多边形）',
-    db9.prepare("SELECT rings_json FROM element_shape WHERE element_id='p1'").get()?.rings_json === null);
   db9.close();
 }
 
-console.log('\n[9b] 旧行搬迁：line_arrow / poly_curve 折进 subtype、path_json / points_json 并进 coords_json（一行不丢）');
+console.log('\n[9b] 旧行搬迁：line_arrow / poly_curve 折进 subtype、rings_json / path_json / points_json 并进 coords_json（一行不丢）');
 {
   const legacy = new DatabaseSync(':memory:');
   legacy.exec(`CREATE TABLE collection (collection_id TEXT PRIMARY KEY, name TEXT, ord INTEGER, created_at INTEGER, updated_at INTEGER);
@@ -341,18 +349,22 @@ console.log('\n[9b] 旧行搬迁：line_arrow / poly_curve 折进 subtype、path
   put.run('e3', 'p', 'l', 'multi', 'polygon', '曲线多边', 0, 60, '[[[0,0],[1,0],[1,1]]]', null, null, 1, null, null);
   put.run('e4', 'p', 'l', 'special', 'swallowtail', '燕尾箭头', 0, 60, null, null, null, null, '[[0,0],[1,1],[2,2]]', null);
   put.run('e5', 'p', 'l', 'special', 'pincer', '钳形', 0, 60, null, null, null, null, null, '[[0,0],[1,0],[0,1],[1,1]]');
+  put.run('e6', 'p', 'l', 'multi', 'polygon', '多边形', 0, 60, '[[[0,0],[1,0],[1,1],[0,0]]]', null, null, null, null, null);
   ensureV2Schema(legacy);
   const cols = legacy.prepare('PRAGMA table_info(element_shape)').all().map((c) => c.name);
   const rows = legacy.prepare('SELECT element_id, subtype, coords_json FROM element_shape ORDER BY element_id').all();
   const byId = Object.fromEntries(rows.map((r) => [r.element_id, r]));
-  check('9b.1 line_arrow / poly_curve / path_json / points_json 四列都已删',
-    !cols.includes('line_arrow') && !cols.includes('poly_curve') && !cols.includes('path_json') && !cols.includes('points_json'), cols.join(','));
-  check('9b.2 搬迁一行不少（5 行都在）', rows.length === 5, JSON.stringify(rows.map((r) => r.element_id)));
+  check('9b.1 line_arrow / poly_curve / rings_json / path_json / points_json 五列都已删',
+    !cols.includes('line_arrow') && !cols.includes('poly_curve') && !cols.includes('rings_json')
+    && !cols.includes('path_json') && !cols.includes('points_json'), cols.join(','));
+  check('9b.2 搬迁一行不少（6 行都在）', rows.length === 6, JSON.stringify(rows.map((r) => r.element_id)));
   check('9b.3 line_arrow=1 → line-arrow、没写 → bezier',
     byId.e1?.subtype === 'line-arrow' && byId.e2?.subtype === 'bezier', JSON.stringify([byId.e1, byId.e2]));
   check('9b.4 poly_curve=1 → poly-curve（曲线化折进子类）', byId.e3?.subtype === 'poly-curve', JSON.stringify(byId.e3));
   check('9b.5 箭头路径从 path_json 搬进 coords_json', byId.e4?.coords_json === '[[0,0],[1,1],[2,2]]', JSON.stringify(byId.e4));
   check('9b.6 钳形 4 点从 points_json 搬进 coords_json', byId.e5?.coords_json === '[[0,0],[1,0],[0,1],[1,1]]', JSON.stringify(byId.e5));
+  check('9b.7 多边形环数组从 rings_json 搬进 coords_json（poly-curve 行也搬，否则撞 CHECK 被吞）',
+    byId.e6?.coords_json === '[[[0,0],[1,0],[1,1],[0,0]]]' && byId.e3?.coords_json === '[[[0,0],[1,0],[1,1]]]', JSON.stringify([byId.e6, byId.e3]));
   legacy.close();
 }
 

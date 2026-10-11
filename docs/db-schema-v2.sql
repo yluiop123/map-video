@@ -363,10 +363,10 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   type           TEXT NOT NULL CHECK (type IN ('multi','two','special')),  -- 大类（工具栏分组）：multi 多点绘制 / two 两点绘制 / special 特殊图形
   -- 小类（具体形状项）：几何与子形态由它推出 ——
   --   multi：polygon / poly-curve / poly-defend / poly-curve-defend / line / line-arrow / bezier / bezier-arrow / front-line / front-curve
-  --   two：circle / rect / gathering / star
+  --   two：circle / rect / gathering
   --   special：swallowtail / march / attack / pincer
   -- 不写 CHECK（值域随大类变），交给 TS 应用层。
-  subtype        TEXT,  -- 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/line-arrow/bezier/bezier-arrow/front-line/front-curve；two→circle/rect/gathering/star；special→swallowtail/march/attack/pincer
+  subtype        TEXT,  -- 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/line-arrow/bezier/bezier-arrow/front-line/front-curve；two→circle/rect/gathering；special→swallowtail/march/attack/pincer
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
@@ -381,8 +381,8 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   -- 也没有 keyframes_json：形状是静态的，绘制进度 / 变形关键帧没有生产者（§6.29「每一格都要有消费者」）。
 
   -- polygon 专属
-  --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
-  rings_json         TEXT CHECK (rings_json IS NULL OR json_valid(rings_json)),  -- 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填）
+  --   poly：几何（环数组）是输入，装在 coords_json 里（见下面「几何点数据只有这一列」）；
+  --   circle / rect：几何由下面的参数算出（派生值不入库，coords_json 留空）
   fill_color         TEXT,  -- 填充色
   fill_opacity       REAL CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1),  -- 填充透明度（0–1）
   stroke_color       TEXT,  -- 描边色
@@ -397,16 +397,17 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
   width          REAL,  -- 箭头宽度（px）
   color          TEXT,  -- 颜色（箭头 / 集结地 / 钳形共用）
 
-  -- ★ 点数组只有这一列：折线（直线 / 曲线 / 战线，开环）、箭头（燕尾 / 行军 / 进攻）、
-  --   钳形（4 个控制点）都装在这里 —— 是哪种由 subtype 判别，不为每种几何各开一列。
-  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]：折线路径 / 箭头路径 / 钳形 4 控制点共用
+  -- ★ 几何点数据只有这一列，嵌套深度由 subtype 判别（不为每种几何各开一列）：
+  --   多边形 → 环数组 [[[lng,lat],…],…]（rings[0] 外环，其余为洞）；折线（直线 / 曲线 / 战线）与
+  --   箭头（燕尾 / 行军 / 进攻）→ 路径 [[lng,lat],…]；钳形 → 4 个控制点。
+  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 几何点数据：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点
   -- 梳齿 / 锯齿（原 front_style_json 平铺）：**战线（开环）与防御圈（闭合环）共用这一套**
   front_tooth_length REAL,  -- 梳齿/锯齿长度（px，战线与防御圈共用）
   front_tooth_gap    REAL,  -- 梳齿/锯齿间距（px）
   front_tooth_angle  REAL,  -- 梳齿/锯齿偏角（度）
   front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),  -- 梳齿/锯齿朝向侧：1 右 / -1 左
 
-  -- gathering / encirclement 专属（circle / star 也复用 center_lng / center_lat / radius）
+  -- gathering / encirclement 专属（circle 也复用 center_lng / center_lat / radius）
   center_lng     REAL,  -- 中心经度（gathering / encirclement 必填）
   center_lat     REAL,  -- 中心纬度
   radius         REAL,  -- 半径（米，gathering / encirclement 必填）
@@ -414,10 +415,10 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
 
   CHECK (end_sec >= start_sec),
   CHECK (radius IS NULL OR radius > 0),
-  CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend') OR rings_json IS NOT NULL),
-  CHECK (subtype NOT IN ('circle','star') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
+  CHECK (subtype NOT IN ('circle') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL)),
-  CHECK (subtype NOT IN ('line','line-arrow','bezier','bezier-arrow','front-line','front-curve',
+  CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend',
+                         'line','line-arrow','bezier','bezier-arrow','front-line','front-curve',
                          'swallowtail','march','attack','pincer') OR coords_json IS NOT NULL),
   CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
 );
@@ -658,10 +659,10 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   type           TEXT NOT NULL CHECK (type IN ('multi','two','special')),  -- 大类（工具栏分组）：multi 多点绘制 / two 两点绘制 / special 特殊图形
   -- 小类（具体形状项）：几何与子形态由它推出 ——
   --   multi：polygon / poly-curve / poly-defend / poly-curve-defend / line / line-arrow / bezier / bezier-arrow / front-line / front-curve
-  --   two：circle / rect / gathering / star
+  --   two：circle / rect / gathering
   --   special：swallowtail / march / attack / pincer
   -- 不写 CHECK（值域随大类变），交给 TS 应用层。
-  subtype        TEXT,  -- 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/line-arrow/bezier/bezier-arrow/front-line/front-curve；two→circle/rect/gathering/star；special→swallowtail/march/attack/pincer
+  subtype        TEXT,  -- 小类（具体形状项）：multi→polygon/poly-curve/poly-defend/poly-curve-defend/line/line-arrow/bezier/bezier-arrow/front-line/front-curve；two→circle/rect/gathering；special→swallowtail/march/attack/pincer
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   -- 形状都是静态的：动画族 / 移动图标只在路线（element_route）有，这里不留（同 element_shape）。
@@ -672,8 +673,8 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   -- 也没有 keyframes_json：形状是静态的，绘制进度 / 变形关键帧没有生产者（§6.29「每一格都要有消费者」）。
 
   -- polygon 专属
-  --   poly：rings_json 是输入；circle / rect / star：几何由下面的参数算出（派生值不入库，rings_json 留空）
-  rings_json         TEXT CHECK (rings_json IS NULL OR json_valid(rings_json)),  -- 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填）
+  --   poly：几何（环数组）是输入，装在 coords_json 里（见下面「几何点数据只有这一列」）；
+  --   circle / rect：几何由下面的参数算出（派生值不入库，coords_json 留空）
   fill_color         TEXT,  -- 填充色
   fill_opacity       REAL CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1),  -- 填充透明度（0–1）
   stroke_color       TEXT,  -- 描边色
@@ -688,26 +689,27 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
   width          REAL,  -- 箭头宽度（px）
   color          TEXT,  -- 颜色（箭头 / 集结地 / 钳形共用）
 
-  -- ★ 点数组只有这一列：折线（直线 / 曲线 / 战线，开环）、箭头（燕尾 / 行军 / 进攻）、
-  --   钳形（4 个控制点）都装在这里 —— 是哪种由 subtype 判别，不为每种几何各开一列。
-  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 路径点数组 [[lng,lat],…]：折线路径 / 箭头路径 / 钳形 4 控制点共用
+  -- ★ 几何点数据只有这一列，嵌套深度由 subtype 判别（不为每种几何各开一列）：
+  --   多边形 → 环数组 [[[lng,lat],…],…]（rings[0] 外环，其余为洞）；折线（直线 / 曲线 / 战线）与
+  --   箭头（燕尾 / 行军 / 进攻）→ 路径 [[lng,lat],…]；钳形 → 4 个控制点。
+  coords_json        TEXT CHECK (coords_json IS NULL OR json_valid(coords_json)),  -- 几何点数据：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点
   -- 梳齿 / 锯齿（原 front_style_json 平铺）：**战线（开环）与防御圈（闭合环）共用这一套**
   front_tooth_length REAL,  -- 梳齿/锯齿长度（px，战线与防御圈共用）
   front_tooth_gap    REAL,  -- 梳齿/锯齿间距（px）
   front_tooth_angle  REAL,  -- 梳齿/锯齿偏角（度）
   front_side         INTEGER CHECK (front_side IS NULL OR front_side IN (-1,1)),  -- 梳齿/锯齿朝向侧：1 右 / -1 左
 
-  -- gathering / encirclement 专属（circle / star 也复用 center_lng / center_lat / radius）
+  -- gathering / encirclement 专属（circle 也复用 center_lng / center_lat / radius）
   center_lng     REAL,  -- 中心经度（gathering / encirclement 必填）
   center_lat     REAL,  -- 中心纬度
   radius         REAL,  -- 半径（米，gathering / encirclement 必填）
   rotation       REAL,  -- 绕中心旋转角（度）
 
   CHECK (radius IS NULL OR radius > 0),
-  CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend') OR rings_json IS NOT NULL),
-  CHECK (subtype NOT IN ('circle','star') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
+  CHECK (subtype NOT IN ('circle') OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL)),
   CHECK (subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL)),
-  CHECK (subtype NOT IN ('line','line-arrow','bezier','bezier-arrow','front-line','front-curve',
+  CHECK (subtype NOT IN ('polygon','poly-curve','poly-defend','poly-curve-defend',
+                         'line','line-arrow','bezier','bezier-arrow','front-line','front-curve',
                          'swallowtail','march','attack','pincer') OR coords_json IS NOT NULL),
   CHECK (subtype IS NOT 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))
 );

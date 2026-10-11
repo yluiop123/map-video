@@ -1529,19 +1529,6 @@ function bboxOf(ring: [number, number][] | null): { c1: [number, number]; c2: [n
   for (const [x, y] of pts) { x1 = Math.min(x1, x); y1 = Math.min(y1, y); x2 = Math.max(x2, x); y2 = Math.max(y2, y); }
   return { c1: [x1, y1], c2: [x2, y2] };
 }
-function starRingR(c: [number, number], rKm: number, deg = 0): [number, number][] {
-  const outer = rKm / 111;
-  const inner = outer * 0.4;
-  const rot = ((deg || 0) * Math.PI) / 180;
-  const pts: [number, number][] = [];
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 === 0 ? outer : inner;
-    const a = (i / 10) * Math.PI * 2 - Math.PI / 2 + rot;
-    pts.push([c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]);
-  }
-  pts.push([pts[0][0], pts[0][1]]);
-  return pts;
-}
 function rotateRingR(ring: [number, number][], center: [number, number], deg: number): [number, number][] {
   if (!deg) return ring;
   const r = (deg * Math.PI) / 180;
@@ -1685,7 +1672,7 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
         polyCurve: isCurve || undefined,
         defenseStyle: isDefend ? { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 } : undefined,
         fillColor: colorOf, fillOpacity: 0.25, strokeColor: colorOf, strokeWidth: isDefend ? 8 : 2,
-        circleMeta: undefined, rectMeta: undefined, starMeta: undefined,
+        circleMeta: undefined, rectMeta: undefined,
         shapeCategory: 'multi',
       } as Partial<MapElement>);
     }
@@ -1908,7 +1895,7 @@ function TwoShapeSettings({ element, patch }: { element: MapElement; patch: (c: 
       const r = radiusKm();
       patch({
         type: 'polygon', coordinates: [circleRing(c, r)], shapeKind: 'circle',
-        circleMeta: { center: c, radius: r }, rectMeta: undefined, starMeta: undefined, rotation: 0,
+        circleMeta: { center: c, radius: r }, rectMeta: undefined, rotation: 0,
         fillColor: fill, fillOpacity: 0.25, strokeColor: fill, strokeWidth: 2,
         shapeCategory: 'two',
       } as Partial<MapElement>);
@@ -1916,7 +1903,7 @@ function TwoShapeSettings({ element, patch }: { element: MapElement; patch: (c: 
       const bb = bboxOf(ring);
       patch({
         type: 'polygon', coordinates: [rectRing(bb.c1, bb.c2)], shapeKind: 'rect',
-        circleMeta: undefined, rectMeta: bb, starMeta: undefined, rotation: (element as any).rotation ?? 0,
+        circleMeta: undefined, rectMeta: bb, rotation: (element as any).rotation ?? 0,
         fillColor: fill, fillOpacity: 0.25, strokeColor: fill, strokeWidth: 2,
         shapeCategory: 'two',
       } as Partial<MapElement>);
@@ -2053,7 +2040,6 @@ function TwoShapeSettings({ element, patch }: { element: MapElement; patch: (c: 
 
 function SpecialShapeSettings({ element, patch }: { element: MapElement; patch: (c: Partial<MapElement>) => void }) {
   const t = useT();
-  const poly = element.type === 'polygon' ? element as PolygonElement : null;
 
   // 各自独立的参数弹窗（不互转类型）
   if (element.type === 'double_arrow') {
@@ -2110,60 +2096,6 @@ function SpecialShapeSettings({ element, patch }: { element: MapElement; patch: 
           </Field>
           <Appearance color={el.strokeColor} onChange={(c) => patch({ strokeColor: c, fillColor: c })} />
         </Section>
-      </>
-    );
-  }
-
-  if (poly && poly.shapeKind === 'star' && poly.starMeta) {
-    return (
-      <>
-        <Section title={t('五角星参数', 'Star')}>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="中心经度">
-              <NumberInput step="0.00001" className="input" value={Number(poly.starMeta.center[0]).toFixed(5)}
-                onCommit={(v) => {
-                  const c: [number, number] = [v || 0, poly.starMeta!.center[1]];
-                  patch({ starMeta: { ...poly.starMeta!, center: c }, coordinates: [starRingR(c, poly.starMeta!.radius, poly.rotation || 0)] });
-                }} />
-            </Field>
-            <Field label="中心纬度">
-              <NumberInput step="0.00001" className="input" value={Number(poly.starMeta.center[1]).toFixed(5)}
-                onCommit={(v) => {
-                  const c: [number, number] = [poly.starMeta!.center[0], v || 0];
-                  patch({ starMeta: { ...poly.starMeta!, center: c }, coordinates: [starRingR(c, poly.starMeta!.radius, poly.rotation || 0)] });
-                }} />
-            </Field>
-          </div>
-          <Field label="半径 (km)">
-            <input type="number" min="0.1" className="input" value={poly.starMeta.radius}
-              onChange={(e) => {
-                const r = Math.max(0.1, parseFloat(e.target.value) || 1);
-                patch({ starMeta: { ...poly.starMeta!, radius: r }, coordinates: [starRingR(poly.starMeta!.center, r, poly.rotation || 0)] });
-              }} />
-          </Field>
-          <RotationField value={poly.rotation ?? 0} onChange={(deg) => {
-            patch({ rotation: deg, coordinates: [starRingR(poly.starMeta!.center, poly.starMeta!.radius, deg)] });
-          }} />
-        </Section>
-        <Section title="FILL / STROKE">
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="填充颜色">
-              <ColorPicker value={poly.fillColor} onChange={(c) => patch({ fillColor: c })} />
-            </Field>
-            <Field label="填充透明度">
-              <input type="range" min="0" max="1" step="0.05" value={poly.fillOpacity}
-                onChange={(e) => patch({ fillOpacity: parseFloat(e.target.value) })} className="w-full" />
-            </Field>
-            <Field label="边框颜色">
-              <ColorPicker value={poly.strokeColor} onChange={(c) => patch({ strokeColor: c })} />
-            </Field>
-            <Field label="边框宽度">
-              <input type="number" min="1" max="10" className="input" value={poly.strokeWidth}
-                onChange={(e) => patch({ strokeWidth: parseInt(e.target.value) || 2 })} />
-            </Field>
-          </div>
-        </Section>
-        <Appearance color={poly.fillColor} onChange={(c) => patch({ fillColor: c, strokeColor: c })} />
       </>
     );
   }
