@@ -468,35 +468,35 @@ export function EditableMap({ project }: EditableMapProps) {
       } else if (cursor) fc.push(turf.point(cursor));
     } else if (mode === 'add_curved' && (points.length > 0 || cursor)) {
       // 燕尾箭头（curved）：跟随鼠标实时预览
-      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
+      const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
     } else if (mode === 'add_shape_march' && (points.length > 0 || cursor)) {
       // 行军箭头（curved-simple）：跟随鼠标实时预览
-      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
+      const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved-simple', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
     } else if (mode === 'add_shape_swallowtail' && (points.length > 0 || cursor)) {
       // 燕尾箭头（curved）：跟随鼠标实时预览
-      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
+      const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'curved', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
     } else if (mode === 'add_special_swallow' && (points.length > 0 || cursor)) {
       // 自定义燕尾箭头（attack 算法，尾部燕尾）：跟随鼠标实时预览
-      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
+      const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'attack', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
       }
     } else if (mode === 'add_attack' && (points.length > 0 || cursor)) {
       // 自定义箭头（attack）：跟随鼠标实时预览
-      const basePts = cursor && points.length > 0 ? [...points, cursor] : points;
+      const basePts = previewPath(points, cursor);
       if (basePts.length >= 2) {
         const rings = buildArrowGeometry(basePts[0], basePts[basePts.length - 1], arrowWidth, 'attack', basePts);
         rings.forEach((r) => fc.push(turf.polygon([[...r, r[0]]])));
@@ -565,7 +565,8 @@ export function EditableMap({ project }: EditableMapProps) {
 
     // 箭头类预览：虚线只画「控制点折线」（开放、不回头），箭头本体走填充层
     if (ARROW_PREVIEW_MODES.has(mode) && cursor && points.length > 0) {
-      fc.push(turf.lineString([...points, cursor]));
+      const pl = previewPath(points, cursor);
+      if (pl.length >= 2) fc.push(turf.lineString(pl));
     }
 
     // 已采集顶点
@@ -2433,6 +2434,16 @@ function approxBezier(coords: [number, number][]): [number, number][] {
   } catch {
     return coords;
   }
+}
+
+/** 预览路径 = 已采集控制点 + 光标位置。
+ *  光标与末点重合时**不重复追加**：单击后光标就停在刚落的那个点上，追加进去会让曲线
+ *  末端出现零长度段（切向退化）—— 箭头环自交、「回头」，attack 还会算出 NaN。 */
+function previewPath(points: [number, number][], cursor: [number, number] | null): [number, number][] {
+  if (!cursor || points.length === 0) return points;
+  const last = points[points.length - 1];
+  if (Math.abs(last[0] - cursor[0]) < 1e-9 && Math.abs(last[1] - cursor[1]) < 1e-9) return points;
+  return [...points, cursor];
 }
 
 function buildDoubleArrowPreview(points: [number, number][]): [number, number][] {

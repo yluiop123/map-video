@@ -2575,6 +2575,13 @@ export function buildArrowGeometry(
   arrowType: 'swallowtail' | 'simple' | 'block' | 'pincer' | 'curved' | 'curved-simple' | 'attack' | 'straight',
   path?: [number, number][]
 ): [number, number][][] {
+  // 退化路径（所有点重合；典型来源：预览里单击后光标与末点重合）→ 没有可画的形状。
+  // 不拦的话 curved 会在末端拿到零切线、attack 直接算出 NaN 坐标。
+  if (path && path.length >= 2) {
+    let plen = 0;
+    for (let i = 1; i < path.length; i++) plen += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+    if (plen === 0) return [];
+  }
   // 钳形：两条燕尾相对中心
   if (arrowType === 'pincer') {
     return buildPincerGeometry(from, to, width);
@@ -2607,7 +2614,7 @@ export function buildArrowGeometry(
   const dx = to[0] - from[0];
   const dy = to[1] - from[1];
   const L = Math.hypot(dx, dy);
-  if (L === 0) return [[from, to, from]];
+  if (L === 0) return [];
 
   const ux = dx / L, uy = dy / L;
   const px = -uy, py = ux;
@@ -2703,16 +2710,10 @@ function buildCurvedSwallowtailWithOpts(
   if (pts.length < 2) return [];
 
   const u = width;
-  const half = u * 0.5;            // 杆半宽
-  const hw = u * 1.2;             // 头半宽
-  const hl = u * 2.4;             // 头长（沿切向）
-  const fl = u * 1.7;             // 燕尾长
-  const fw = u * 1.1;             // 燕尾半宽
-  const fn = u * 0.9;             // 燕尾内凹深度
 
   // 等弧长采样（含起点 0 与终点 1）
   const line = turf.lineString(pts);
-  const total = turf.length(line);
+  const total = turf.length(line);   // 公里（等弧长采样用）
   const segCount = 32;
   const samples: [number, number][] = [];
   for (let i = 0; i <= segCount; i++) {
@@ -2720,6 +2721,24 @@ function buildCurvedSwallowtailWithOpts(
     const pt = turf.along(line, Math.min(d, total));
     samples.push(pt.geometry.coordinates as [number, number]);
   }
+
+  // 比例用的路径长度必须与 u **同单位**：u 来自 pixelsToDegrees，是「度」（纬度度数）。
+  // 拿 turf.length 的公里数去比 u 的度数，永远判成「路径很长」→ 夹取静默失效（踩过）。
+  let totalDeg = 0;
+  for (let i = 1; i < samples.length; i++) {
+    totalDeg += Math.hypot(samples[i][0] - samples[i - 1][0], samples[i][1] - samples[i - 1][1]);
+  }
+
+  // 路径太短时按路径长度压一遍比例（与直线箭头同一口径：头部/尾部长度夹到 L 的 0.42/0.35，
+  // 宽度按 L/(u*5) 收缩）。不压的话头部 2.4×u、尾部 1.7×u 是**绝对尺寸** —— 路径比它们还短时
+  // 环会自交，填充三角化会把「不是箭头的区域」也填上，头部还会盖回箭身（看着像箭头回头）。
+  const shrink = totalDeg > 0 ? Math.min(1, totalDeg / (u * 5)) : 0;
+  const half = u * 0.5 * shrink;   // 杆半宽
+  const hw = u * 1.2 * shrink;     // 头半宽
+  const hl = Math.min(u * 2.4, totalDeg * 0.42);   // 头长（沿切向）
+  const fl = Math.min(u * 1.7, totalDeg * 0.35);   // 燕尾长
+  const fw = u * 1.1 * shrink;     // 燕尾半宽
+  const fn = u * 0.9 * shrink;     // 燕尾内凹深度
 
   // 切线：中间点用前后差分，端点用端点差分
   const tangent = (i: number): [number, number] => {
