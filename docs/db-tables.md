@@ -193,7 +193,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 470 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，470 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 474 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，474 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -503,7 +503,7 @@
 
 **职责**：路线类元素：line / moving_point　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-57 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
+58 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -549,6 +549,7 @@
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；subtype=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_width` | REAL | — | 线宽（px） |
+| `draw_zoom` | REAL | — | 绘制时的地图缩放：带 arrowType 的线按楔形箭头渲染时，把 line_width 的 px 换算成地理宽度的基准 |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
 | `line_dash_on` | REAL | — | 虚线段长（原 line_dash_json[0]） |
 | `line_dash_off` | REAL | — | 虚线空白长（原 line_dash_json[1]） |
@@ -578,7 +579,7 @@
 
 **职责**：形状类元素：大类 type（multi 多点 / two 两点 / special 特殊）+ 小类 subtype（具体形状项），几何由 subtype 推出（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-27 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+28 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -599,6 +600,7 @@
 | `rect_c2_lng` | REAL | — | 矩形对角点2经度 |
 | `rect_c2_lat` | REAL | — | 矩形对角点2纬度 |
 | `width` | REAL | — | 箭头宽度（px） |
+| `draw_zoom` | REAL | — | 绘制时的地图缩放：把 width 的 px 换算成地理宽度的基准（读取端靠它保持绘制时的屏幕尺寸） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
 | `coords_json` | TEXT | — | 几何点数据：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点 · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `front_tooth_length` | REAL | — | 梳齿/锯齿长度（px，战线与防御圈共用） |
@@ -880,7 +882,7 @@
 
 **职责**：公共路线元素（public_layer 内副本；列 = element_route − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-54 列 · 主键 `element_id`
+55 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -923,6 +925,7 @@
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；subtype=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_width` | REAL | — | 线宽（px） |
+| `draw_zoom` | REAL | — | 绘制时的地图缩放：带 arrowType 的线按楔形箭头渲染时，把 line_width 的 px 换算成地理宽度的基准 |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
 | `line_dash_on` | REAL | — | 虚线段长（原 line_dash_json[0]） |
 | `line_dash_off` | REAL | — | 虚线空白长（原 line_dash_json[1]） |
@@ -949,7 +952,7 @@
 
 **职责**：公共形状元素（public_layer 内副本；列 = element_shape − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-24 列 · 主键 `element_id`
+25 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -967,6 +970,7 @@
 | `rect_c2_lng` | REAL | — | 矩形对角点2经度 |
 | `rect_c2_lat` | REAL | — | 矩形对角点2纬度 |
 | `width` | REAL | — | 箭头宽度（px） |
+| `draw_zoom` | REAL | — | 绘制时的地图缩放：把 width 的 px 换算成地理宽度的基准（读取端靠它保持绘制时的屏幕尺寸） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
 | `coords_json` | TEXT | — | 几何点数据：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点 · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `front_tooth_length` | REAL | — | 梳齿/锯齿长度（px，战线与防御圈共用） |
@@ -1058,11 +1062,11 @@
 | 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_* 三列（`auto_rotate`/`spin`/`stroke_width`） |
 | 旗帜 | `element_marker` | `flag` | flag_text、flag_color、flag_width |
 | 军标（APP-6） | `element_marker` | `point` + `shape='military_symbol'` | 无专属列：SIDC 存在 `builtin_id`（`milsym:<SIDC>`），渲染端从那里反解 |
-| 路线 / 飞线 | `element_route` | `line` | coords_json、subtype（线型或楔形箭头）、route_dot_*、flow_speed、plain_path、front_tooth_* |
+| 路线 / 飞线 | `element_route` | `line` | coords_json、subtype（线型或楔形箭头）、draw_zoom（带 arrowType 时把 line_width 的 px 换算成地理宽度）、route_dot_*、flow_speed、plain_path、front_tooth_* |
 | 折线（直线/曲线/战线） | `element_shape` | `multi` | coords_json（路径点）、subtype（line/line-arrow/bezier/bezier-arrow/front-line/front-curve）、front_tooth_*、描边走 stroke_color / stroke_width |
 | 移动点 | `element_route` | `moving_point` | coords_json、path_progress（走 keyframes_json） |
 | 区域（多边形/矩形/圆） | `element_shape` | `multi`（多边形）/ `two`（矩形/圆） | subtype（polygon/poly-curve/poly-defend/poly-curve-defend/circle/rect）、coords_json（多边形＝环数组）、rect_c1/c2_lng/lat、center_lng/lat、radius |
-| 箭头（多种） | `element_shape` | `special` | subtype（swallowtail/march/attack）、coords_json（路径，起终点为首/末点） |
+| 箭头（多种） | `element_shape` | `special` | subtype（swallowtail/march/attack）、coords_json（路径，起终点为首/末点）、width + draw_zoom（绘制缩放，用来把 px 宽度换算成地理宽度） |
 | 双箭头 / 钳形 | `element_shape` | `special` | subtype=pincer、coords_json（4 控制点，走 `buildDoubleArrow` 几何） |
 | 包围圈 / 集结点 | `element_shape` | `two` | subtype=encirclement / gathering、center_lng/lat、radius |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_* 八列 ＋ countries_json / plots_json / events_json |

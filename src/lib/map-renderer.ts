@@ -2911,6 +2911,13 @@ function ribbonRing(coords: [number, number][], widthDeg: number): [number, numb
   return [...left, ...right.reverse(), left[0]];
 }
 
+/** 环 → polygon：坏环（NaN / 点太少）直接跳过 —— 一个坏几何不该让 turf.polygon 抛错中断整帧渲染 */
+function safePolygons(rings: [number, number][][]): any[] {
+  return (rings || [])
+    .filter((r) => Array.isArray(r) && r.length >= 3 && r.every((p) => Number.isFinite(p?.[0]) && Number.isFinite(p?.[1])))
+    .map((r) => turf.polygon([[...r, r[0]]]));
+}
+
 function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) {
   const sourceId = `arrow-${element.id}`;
   const layerId = `arrow-layer-${element.id}`;
@@ -2969,11 +2976,12 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     }
   }
 
-  // 固定地理宽度：用绘制时的 drawZoom 换算，箭头在地图中尺寸固定，随 zoom 缩放
+  // 固定地理宽度：用绘制时的 drawZoom 换算，箭头在地图中尺寸固定，随 zoom 缩放。
+  // 老行没有 draw_zoom（这一列是后加的）→ 退化为「按当前缩放的 15px」，至少不变成一条细线。
   const lat = (effFrom[1] + effTo[1]) / 2;
   const geoWidth = typeof element.drawZoom === 'number'
     ? pixelsToDegrees(element.width, element.drawZoom, lat)
-    : element.width / 111;
+    : pixelsToDegrees(element.width, map.getZoom(), lat);
 
   // 增长动画：curved/curved-simple 用弧长截取贝塞尔（平滑增长，与标记点同步，避免分段）
   let animPath = animPathOverride ?? element.path;
@@ -2996,7 +3004,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
 
   const rings = buildArrowGeometry(effFrom, effTo, geoWidth, element.arrowType, animPath);
   // 转成 MultiPolygon：每个 ring 是一个 polygon；飞行模式下几何不变，由函数末尾统一 paint 平移实现悬停
-  const polys = rings.map((ring) => turf.polygon([[...ring, ring[0]]]));
+  const polys = safePolygons(rings);
   const geojson = turf.featureCollection(polys);
 
   const fillColor = element.color || '#E23B3B';
@@ -3035,7 +3043,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     } else {
       const fullPath = element.path;
       const fullRings = buildArrowGeometry(from, to, geoWidth, element.arrowType, fullPath);
-      fullGeojson = turf.featureCollection(fullRings.map((ring) => turf.polygon([[...ring, ring[0]]])));
+      fullGeojson = turf.featureCollection(safePolygons(fullRings));
     }
     try {
       if (map.getSource(fillSrcId)) {

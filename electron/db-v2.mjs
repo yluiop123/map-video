@@ -1015,7 +1015,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       element_id, project_id, layer_id, type, subtype, name, start_sec, end_sec, anim_effect,
       fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
       label_text,label_font_size,label_color,label_bg_color,label_bg_padding,label_bg_radius,
-      keyframes_json, coords_json, line_width, line_color, line_dash_on, line_dash_off, line_arrow,
+      keyframes_json, coords_json, line_width, draw_zoom, line_color, line_dash_on, line_dash_off, line_arrow,
       route_dot_enabled, route_dot_count, route_dot_width, route_dot_color, route_dot_frame_step,
       flow_speed, plain_path, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
       move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
@@ -1023,7 +1023,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       @element_id,@project_id,@layer_id,@type,@subtype,@name,@start_sec,@end_sec,@anim_effect,
       @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_bg_color,@label_bg_padding,@label_bg_radius,
-      @keyframes_json,@coords_json,@line_width,@line_color,@line_dash_on,@line_dash_off,@line_arrow,
+      @keyframes_json,@coords_json,@line_width,@draw_zoom,@line_color,@line_dash_on,@line_dash_off,@line_arrow,
       @route_dot_enabled,@route_dot_count,@route_dot_width,@route_dot_color,@route_dot_frame_step,
       @flow_speed,@plain_path,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
       @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
@@ -1036,7 +1036,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       uniform_move: n(el.uniformMove) == null ? null : b(el.uniformMove),
       point_times_json: el.pointTimes ? JSON.stringify(el.pointTimes.map(f2s)) : null,
       coords_json: j(el.coordinates || el.path),
-      line_width: n(el.lineWidth), line_color: n(el.lineColor),
+      line_width: n(el.lineWidth), draw_zoom: n(el.drawZoom), line_color: n(el.lineColor),
       line_dash_on: el.lineDashArray?.[0] ?? null, line_dash_off: el.lineDashArray?.[1] ?? null,
       line_arrow: b(el.lineArrow),
       route_dot_enabled: el.routeEffect ? b(el.routeEffect.enabled) : null,
@@ -1056,14 +1056,14 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       element_id, project_id, layer_id, type, subtype, name, start_sec, end_sec,
       fill_color, fill_opacity, stroke_color, stroke_width,
       rect_c1_lng,rect_c1_lat,rect_c2_lng,rect_c2_lat,
-      width, color,
+      width, draw_zoom, color,
       center_lng, center_lat, radius, rotation,
       coords_json, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@subtype,@name,@start_sec,@end_sec,
       @fill_color,@fill_opacity,@stroke_color,@stroke_width,
       @rect_c1_lng,@rect_c1_lat,@rect_c2_lng,@rect_c2_lat,
-      @width,@color,
+      @width,@draw_zoom,@color,
       @center_lng,@center_lat,@radius,@rotation,
       @coords_json,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side)`).run({
       ...omit(common, SHAPE_DEAD),
@@ -1071,7 +1071,7 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
       type: so.group, subtype: so.subtype,
       fill_color: n(el.fillColor), fill_opacity: n(el.fillOpacity), stroke_color: n(el.strokeColor), stroke_width: n(el.strokeWidth),
       rect_c1_lng: n(el.rectMeta?.c1?.[0]), rect_c1_lat: n(el.rectMeta?.c1?.[1]), rect_c2_lng: n(el.rectMeta?.c2?.[0]), rect_c2_lat: n(el.rectMeta?.c2?.[1]),
-      width: n(el.width), color: n(el.color),
+      width: n(el.width), draw_zoom: n(el.drawZoom), color: n(el.color),
       // ★ 几何点数据只有 coords_json 这一列（嵌套由 subtype 判）：多边形＝环数组，折线/箭头＝路径，钳形＝4 控制点
       coords_json: el.type === 'polygon' ? j(el.coordinates)
         : el.type === 'polyline' ? j(el.coordinates)
@@ -1309,7 +1309,7 @@ function readElementsV2(db, chapterId, s2f) {
     } else {
       out.push({
         ...base(r), ...anim(r), type: 'line', coordinates: J(r.coords_json, []), drawProgress: k.drawProgress,
-        lineWidth: r.line_width ?? 8, lineColor: r.line_color ?? '#FF0000',
+        lineWidth: r.line_width ?? 8, lineColor: r.line_color ?? '#FF0000', drawZoom: r.draw_zoom ?? undefined,
         lineDashArray: r.line_dash_on != null ? [r.line_dash_on, r.line_dash_off ?? 0] : undefined,
         lineType: r.subtype && !ROUTE_ARROW_KINDS.has(r.subtype) ? r.subtype : undefined,
         lineArrow: r.line_arrow == null ? undefined : bit(r.line_arrow),
@@ -1351,7 +1351,7 @@ function readElementsV2(db, chapterId, s2f) {
       });
     } else if (st === 'swallowtail' || st === 'march' || st === 'attack') {
       const arrowType = st === 'swallowtail' ? 'curved' : st === 'march' ? 'curved-simple' : 'attack';
-      out.push({ ...base(r), type: 'arrow', path: J(r.coords_json, []), arrowType, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], drawZoom: undefined, shapeCategory: group });
+      out.push({ ...base(r), type: 'arrow', path: J(r.coords_json, []), arrowType, width: r.width ?? 15, color: r.color ?? '#E23B3B', progress: [{ frame: 0, value: 1 }], drawZoom: r.draw_zoom ?? undefined, shapeCategory: group });
     } else if (st === 'gathering') {
       out.push({ ...base(r), type: 'gathering', center: [r.center_lng, r.center_lat], radius: r.radius, color: r.color ?? undefined, fillColor: r.fill_color ?? undefined, strokeColor: r.stroke_color ?? undefined, rotation: r.rotation ?? undefined, shapeCategory: group });
     } else if (st === 'pincer') {

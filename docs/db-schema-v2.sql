@@ -325,6 +325,7 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
 
   -- line 专属
   line_width        REAL,  -- 线宽（px）
+  draw_zoom         REAL,  -- 绘制时的地图缩放：带 arrowType 的线按楔形箭头渲染时，把 line_width 的 px 换算成地理宽度的基准
   line_color        TEXT,  -- 线条颜色（moving_point 时为主色）
   line_dash_on      REAL,  -- 虚线段长（原 line_dash_json[0]）
   line_dash_off     REAL,  -- 虚线空白长（原 line_dash_json[1]）
@@ -395,6 +396,7 @@ CREATE TABLE IF NOT EXISTS element_shape (  -- 形状类元素（Shape 工具）
 
   -- arrow 专属：起终点就是 coords_json 的首/末点，不再单独存 from/to 四列
   width          REAL,  -- 箭头宽度（px）
+  draw_zoom      REAL,  -- 绘制时的地图缩放：把 width 的 px 换算成地理宽度的基准（读取端靠它保持绘制时的屏幕尺寸）
   color          TEXT,  -- 颜色（箭头 / 集结地 / 钳形共用）
 
   -- ★ 几何点数据只有这一列，嵌套深度由 subtype 判别（不为每种几何各开一列）：
@@ -626,6 +628,7 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
 
   -- line 专属
   line_width        REAL,  -- 线宽（px）
+  draw_zoom         REAL,  -- 绘制时的地图缩放：带 arrowType 的线按楔形箭头渲染时，把 line_width 的 px 换算成地理宽度的基准
   line_color        TEXT,  -- 线条颜色（moving_point 时为主色）
   line_dash_on      REAL,  -- 虚线段长（原 line_dash_json[0]）
   line_dash_off     REAL,  -- 虚线空白长（原 line_dash_json[1]）
@@ -687,6 +690,7 @@ CREATE TABLE IF NOT EXISTS public_element_shape (  -- 公共形状元素：publi
 
   -- arrow 专属：起终点就是 coords_json 的首/末点，不再单独存 from/to 四列
   width          REAL,  -- 箭头宽度（px）
+  draw_zoom      REAL,  -- 绘制时的地图缩放：把 width 的 px 换算成地理宽度的基准（读取端靠它保持绘制时的屏幕尺寸）
   color          TEXT,  -- 颜色（箭头 / 集结地 / 钳形共用）
 
   -- ★ 几何点数据只有这一列，嵌套深度由 subtype 判别（不为每种几何各开一列）：
