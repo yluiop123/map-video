@@ -122,7 +122,7 @@
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
-| `element_route` | `line` | `element_id` | Route 工具（直线/曲线/航线）；形状工具的直线/曲线/战线写 `element_shape` 的 `polyline`，不在这张表 | 路径数组（coords_json）、线型、线宽虚线、路线特效、流动速度、无样式路线、战线梳齿、**路线箭头（`arrow_type`：燕尾/行军整条线画成楔形箭头）** |
+| `element_route` | `line` | `element_id` | Route 工具（直线/曲线/航线）；形状工具的直线/曲线/战线写 `element_shape` 的 `polyline`，不在这张表 | 路径数组（coords_json）、线宽虚线、路线特效、流动速度、无样式路线、战线梳齿、**小类 `subtype`（线型 straight/bezier/arc，或楔形箭头 curved/curved-simple）** |
 | `element_route` | `moving_point` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 路径点数组、拖尾颜色/宽度/长度 |
 
 ### 组 6 · 形状类元素 1 张 Shape 工具
@@ -193,7 +193,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 504 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，504 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 490 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，490 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -503,14 +503,15 @@
 
 **职责**：路线类元素：line / moving_point　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-58 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
+57 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
-| `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
+| `type` | TEXT | `NOT NULL` | 大类判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
+| `subtype` | TEXT | — | 小类（值域随 type 变）：line→straight/bezier/arc，或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类 |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
@@ -546,21 +547,19 @@
 | `label_bg_padding` | REAL | — | 标签背景内边距 |
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
+| `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；subtype=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_width` | REAL | — | 线宽（px） |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
 | `line_dash_on` | REAL | — | 虚线段长（原 line_dash_json[0]） |
 | `line_dash_off` | REAL | — | 虚线空白长（原 line_dash_json[1]） |
-| `line_type` | TEXT | — | 线型：straight 直线 / bezier 贝塞尔 / arc 大圆弧航线 · `CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc'))` |
-| `line_arrow` | INTEGER | — | 线末端是否带方向箭头（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
-| `arrow_type` | TEXT | — | 楔形箭头类型：设置则整条线画成箭头（燕尾/行军…），NULL=普通线 · `CHECK (arrow_type IS NULL OR arrow_type IN ('swallowtail','simple','block','pincer','curved','curved-simple','attack','straight'))` |
+| `line_arrow` | INTEGER | — | 开关：线末端是否带方向箭头（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
 | `route_dot_enabled` | INTEGER | — | 行军光点动画是否开启（0/1） · `CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1))` |
 | `route_dot_count` | INTEGER | — | 同时存在的光点数量 |
 | `route_dot_width` | REAL | — | 光点宽度（px） |
 | `route_dot_color` | TEXT | — | 光点颜色 |
 | `route_dot_frame_step` | INTEGER | — | 每 N 帧光点前进一步 |
 | `flow_speed` | REAL | — | 流动速度（0 关闭；>0 每 N 帧相位前进一步，行军蚁效果） |
-| `plain_path` | INTEGER | — | 无样式路线：预览与导出不画线，仅显示移动图标 · `CHECK (plain_path IS NULL OR plain_path IN (0,1))` |
+| `plain_path` | INTEGER | — | 开关：无样式路线（不画线、仅显示移动图标） · `CHECK (plain_path IS NULL OR plain_path IN (0,1))` |
 | `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
 | `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
 | `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
@@ -579,14 +578,15 @@
 
 **职责**：形状类元素：polygon / polyline / arrow / double_arrow / gathering / encirclement（Region 行政区也写此表）　**前端**：工具条「形状」下拉 + 形状属性面板
 
-43 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
+37 列 · 主键 `element_id` · 工具入口：Shape：多边形/曲线多边/防御圈/圆/矩形/五角星/直线/曲线/战线/钳形/集结地/包围圈；Region 工具的行政区高亮也写这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
-| `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / polyline 折线（形状工具的直线/曲线/战线） / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
+| `type` | TEXT | `NOT NULL` | 大类判别列：polygon 多边形 / polyline 折线 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
+| `subtype` | TEXT | — | 小类（值域随 type 变）：polygon→poly/rect/circle/star；polyline→straight/bezier；arrow→箭头类型（swallowtail/curved/curved-simple/…） |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
@@ -595,7 +595,6 @@
 | `fill_opacity` | REAL | — | 填充透明度（0–1） · `CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1)` |
 | `stroke_color` | TEXT | — | 描边色 |
 | `stroke_width` | REAL | — | 描边宽度（px） |
-| `shape_kind` | TEXT | — | 多边形种类：poly 多边形 / rect 矩形 / circle 圆 / star 五角星 · `CHECK (shape_kind IS NULL OR shape_kind IN ('poly','rect','circle','star'))` |
 | `rect_c1_lng` | REAL | — | 矩形对角点1经度 |
 | `rect_c1_lat` | REAL | — | 矩形对角点1纬度 |
 | `rect_c2_lng` | REAL | — | 矩形对角点2经度 |
@@ -605,18 +604,12 @@
 | `defense_tooth_gap` | REAL | — | 防御圈锯齿间距（px） |
 | `defense_tooth_angle` | REAL | — | 防御圈锯齿偏角（度） |
 | `defense_side` | INTEGER | — | 防御圈锯齿朝向侧：1 右 / -1 左 · `CHECK (defense_side IS NULL OR defense_side IN (-1,1))` |
-| `from_lng` | REAL | — | 箭头起点经度（type=arrow 时必填） |
-| `from_lat` | REAL | — | 箭头起点纬度 |
-| `to_lng` | REAL | — | 箭头终点经度 |
-| `to_lat` | REAL | — | 箭头终点纬度 |
-| `path_json` | TEXT | — | 弯曲燕尾箭头的控制点（≥2 个时按贝塞尔渲染） · `CHECK (path_json IS NULL OR json_valid(path_json))` |
-| `arrow_type` | TEXT | — | 箭头类型（type=arrow 时必填）：swallowtail 燕尾 / simple / block / pincer 钳形 / curved / curved-simple / attack / straight · `CHECK (arrow_type IS NULL OR arrow_type IN ( 'swallowtail','simple','block','pincer','curved','curved-simple','attack','straight'))` |
+| `path_json` | TEXT | — | 路径点（≥2）：起终点为首/末点（type=arrow 时必填） · `CHECK (path_json IS NULL OR json_valid(path_json))` |
 | `width` | REAL | — | 箭头宽度（px） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
 | `points_json` | TEXT | — | 4 个控制点（type=double_arrow 钳形攻势时必填） · `CHECK (points_json IS NULL OR json_valid(points_json))` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]（type=polyline 时必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
-| `line_type` | TEXT | — | 线型：straight 直线 / bezier 贝塞尔（控制点拟合） · `CHECK (line_type IS NULL OR line_type IN ('straight','bezier'))` |
-| `line_arrow` | INTEGER | — | 线末端是否带方向小三角（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
+| `line_arrow` | INTEGER | — | 开关：线末端是否带方向小三角（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
 | `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
 | `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
 | `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
@@ -631,12 +624,12 @@
 
 - `CHECK (end_sec >= start_sec)`
 - `CHECK (radius IS NULL OR radius > 0)`
-- `CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly' OR rings_json IS NOT NULL)`
-- `CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'polygon' OR shape_kind IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
-- `CHECK (type <> 'polygon' OR shape_kind IS NOT 'star' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'arrow' OR arrow_type IS NOT NULL)`
-- `CHECK (type <> 'arrow' OR (from_lng IS NOT NULL AND from_lat IS NOT NULL AND to_lng IS NOT NULL AND to_lat IS NOT NULL))`
+- `CHECK (type <> 'polygon' OR subtype IS NOT 'poly' OR rings_json IS NOT NULL)`
+- `CHECK (type <> 'polygon' OR subtype IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (type <> 'polygon' OR subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
+- `CHECK (type <> 'polygon' OR subtype IS NOT 'star' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (type <> 'arrow' OR subtype IS NOT NULL)`
+- `CHECK (type <> 'arrow' OR path_json IS NOT NULL)`
 - `CHECK (type <> 'double_arrow' OR points_json IS NOT NULL)`
 - `CHECK (type <> 'polyline' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
@@ -903,13 +896,14 @@
 
 **职责**：公共路线元素（public_layer 内副本；列 = element_route − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-55 列 · 主键 `element_id`
+54 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
-| `type` | TEXT | `NOT NULL` | 子类型判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
+| `type` | TEXT | `NOT NULL` | 大类判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
+| `subtype` | TEXT | — | 小类（值域随 type 变）：line→straight/bezier/arc，或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类 |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式：路线与图标按高度剖面离地显示 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
@@ -943,21 +937,19 @@
 | `label_bg_padding` | REAL | — | 标签背景内边距 |
 | `label_bg_radius` | REAL | — | 标签背景圆角 |
 | `keyframes_json` | TEXT | — | 动画关键帧数组（原 element_keyframe 表内联）：[{property,sec,easing,value_num,value_json}]；同 property 同 sec 不得重复 · `CHECK (keyframes_json IS NULL OR json_valid(keyframes_json))` |
-| `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；line_type=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
+| `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]；subtype=bezier 时为控制点、arc 时为大圆弧端点（line / moving_point 必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
 | `line_width` | REAL | — | 线宽（px） |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
 | `line_dash_on` | REAL | — | 虚线段长（原 line_dash_json[0]） |
 | `line_dash_off` | REAL | — | 虚线空白长（原 line_dash_json[1]） |
-| `line_type` | TEXT | — | 线型：straight 直线 / bezier 贝塞尔 / arc 大圆弧航线 · `CHECK (line_type IS NULL OR line_type IN ('straight','bezier','arc'))` |
-| `line_arrow` | INTEGER | — | 线末端是否带方向箭头（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
-| `arrow_type` | TEXT | — | 楔形箭头类型：设置则整条线画成箭头（燕尾/行军…），NULL=普通线 · `CHECK (arrow_type IS NULL OR arrow_type IN ('swallowtail','simple','block','pincer','curved','curved-simple','attack','straight'))` |
+| `line_arrow` | INTEGER | — | 开关：线末端是否带方向箭头（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
 | `route_dot_enabled` | INTEGER | — | 行军光点动画是否开启（0/1） · `CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1))` |
 | `route_dot_count` | INTEGER | — | 同时存在的光点数量 |
 | `route_dot_width` | REAL | — | 光点宽度（px） |
 | `route_dot_color` | TEXT | — | 光点颜色 |
 | `route_dot_frame_step` | INTEGER | — | 每 N 帧光点前进一步 |
 | `flow_speed` | REAL | — | 流动速度（0 关闭；>0 每 N 帧相位前进一步，行军蚁效果） |
-| `plain_path` | INTEGER | — | 无样式路线：预览与导出不画线，仅显示移动图标 · `CHECK (plain_path IS NULL OR plain_path IN (0,1))` |
+| `plain_path` | INTEGER | — | 开关：无样式路线（不画线、仅显示移动图标） · `CHECK (plain_path IS NULL OR plain_path IN (0,1))` |
 | `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
 | `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
 | `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
@@ -973,20 +965,20 @@
 
 **职责**：公共形状元素（public_layer 内副本；列 = element_shape − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-40 列 · 主键 `element_id`
+34 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
-| `type` | TEXT | `NOT NULL` | 子类型判别列：polygon 多边形 / polyline 折线（形状工具的直线/曲线/战线） / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
+| `type` | TEXT | `NOT NULL` | 大类判别列：polygon 多边形 / polyline 折线 / arrow 箭头 / double_arrow 钳形 / gathering 集结地 / encirclement 包围圈（Shape 工具） · `CHECK (type IN ('polygon','polyline','arrow','double_arrow','gathering','encirclement'))` |
+| `subtype` | TEXT | — | 小类（值域随 type 变）：polygon→poly/rect/circle/star；polyline→straight/bezier；arrow→箭头类型（swallowtail/curved/curved-simple/…） |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `rings_json` | TEXT | — | 多边形环数组：rings[0] 为外环，其余为洞（type=polygon 时必填） · `CHECK (rings_json IS NULL OR json_valid(rings_json))` |
 | `fill_color` | TEXT | — | 填充色 |
 | `fill_opacity` | REAL | — | 填充透明度（0–1） · `CHECK (fill_opacity IS NULL OR fill_opacity BETWEEN 0 AND 1)` |
 | `stroke_color` | TEXT | — | 描边色 |
 | `stroke_width` | REAL | — | 描边宽度（px） |
-| `shape_kind` | TEXT | — | 多边形种类：poly 多边形 / rect 矩形 / circle 圆 / star 五角星 · `CHECK (shape_kind IS NULL OR shape_kind IN ('poly','rect','circle','star'))` |
 | `rect_c1_lng` | REAL | — | 矩形对角点1经度 |
 | `rect_c1_lat` | REAL | — | 矩形对角点1纬度 |
 | `rect_c2_lng` | REAL | — | 矩形对角点2经度 |
@@ -996,18 +988,12 @@
 | `defense_tooth_gap` | REAL | — | 防御圈锯齿间距（px） |
 | `defense_tooth_angle` | REAL | — | 防御圈锯齿偏角（度） |
 | `defense_side` | INTEGER | — | 防御圈锯齿朝向侧：1 右 / -1 左 · `CHECK (defense_side IS NULL OR defense_side IN (-1,1))` |
-| `from_lng` | REAL | — | 箭头起点经度（type=arrow 时必填） |
-| `from_lat` | REAL | — | 箭头起点纬度 |
-| `to_lng` | REAL | — | 箭头终点经度 |
-| `to_lat` | REAL | — | 箭头终点纬度 |
-| `path_json` | TEXT | — | 弯曲燕尾箭头的控制点（≥2 个时按贝塞尔渲染） · `CHECK (path_json IS NULL OR json_valid(path_json))` |
-| `arrow_type` | TEXT | — | 箭头类型（type=arrow 时必填）：swallowtail 燕尾 / simple / block / pincer 钳形 / curved / curved-simple / attack / straight · `CHECK (arrow_type IS NULL OR arrow_type IN ( 'swallowtail','simple','block','pincer','curved','curved-simple','attack','straight'))` |
+| `path_json` | TEXT | — | 路径点（≥2）：起终点为首/末点（type=arrow 时必填） · `CHECK (path_json IS NULL OR json_valid(path_json))` |
 | `width` | REAL | — | 箭头宽度（px） |
 | `color` | TEXT | — | 颜色（箭头 / 集结地 / 钳形共用） |
 | `points_json` | TEXT | — | 4 个控制点（type=double_arrow 钳形攻势时必填） · `CHECK (points_json IS NULL OR json_valid(points_json))` |
 | `coords_json` | TEXT | — | 路径点数组 [[lng,lat],…]（type=polyline 时必填） · `CHECK (coords_json IS NULL OR json_valid(coords_json))` |
-| `line_type` | TEXT | — | 线型：straight 直线 / bezier 贝塞尔（控制点拟合） · `CHECK (line_type IS NULL OR line_type IN ('straight','bezier'))` |
-| `line_arrow` | INTEGER | — | 线末端是否带方向小三角（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
+| `line_arrow` | INTEGER | — | 开关：线末端是否带方向小三角（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
 | `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
 | `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
 | `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
@@ -1021,12 +1007,12 @@
 **表级约束**
 
 - `CHECK (radius IS NULL OR radius > 0)`
-- `CHECK (type <> 'polygon' OR shape_kind IS NOT 'poly' OR rings_json IS NOT NULL)`
-- `CHECK (type <> 'polygon' OR shape_kind IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'polygon' OR shape_kind IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
-- `CHECK (type <> 'polygon' OR shape_kind IS NOT 'star' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
-- `CHECK (type <> 'arrow' OR arrow_type IS NOT NULL)`
-- `CHECK (type <> 'arrow' OR (from_lng IS NOT NULL AND from_lat IS NOT NULL AND to_lng IS NOT NULL AND to_lat IS NOT NULL))`
+- `CHECK (type <> 'polygon' OR subtype IS NOT 'poly' OR rings_json IS NOT NULL)`
+- `CHECK (type <> 'polygon' OR subtype IS NOT 'circle' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (type <> 'polygon' OR subtype IS NOT 'rect' OR (rect_c1_lng IS NOT NULL AND rect_c1_lat IS NOT NULL AND rect_c2_lng IS NOT NULL AND rect_c2_lat IS NOT NULL))`
+- `CHECK (type <> 'polygon' OR subtype IS NOT 'star' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
+- `CHECK (type <> 'arrow' OR subtype IS NOT NULL)`
+- `CHECK (type <> 'arrow' OR path_json IS NOT NULL)`
 - `CHECK (type <> 'double_arrow' OR points_json IS NOT NULL)`
 - `CHECK (type <> 'polyline' OR coords_json IS NOT NULL)`
 - `CHECK (type <> 'gathering' OR (center_lng IS NOT NULL AND center_lat IS NOT NULL AND radius IS NOT NULL))`
@@ -1104,11 +1090,11 @@
 | 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_* 三列（`auto_rotate`/`spin`/`stroke_width`） |
 | 旗帜 | `element_marker` | `flag` | flag_text、flag_color、flag_width |
 | 军标（APP-6） | `element_marker` | `point` + `shape='military_symbol'` | 无专属列：SIDC 存在 `builtin_id`（`milsym:<SIDC>`），渲染端从那里反解 |
-| 路线 / 飞线 | `element_route` | `line` | coords_json、line_type、route_dot_*、flow_speed、plain_path、front_tooth_*、`arrow_type`（整条线画成楔形箭头：燕尾/行军） |
-| 折线（直线/曲线/战线） | `element_shape` | `polyline` | coords_json、line_type、line_arrow、front_tooth_*、描边走 stroke_color / stroke_width |
+| 路线 / 飞线 | `element_route` | `line` | coords_json、subtype（线型或楔形箭头）、route_dot_*、flow_speed、plain_path、front_tooth_* |
+| 折线（直线/曲线/战线） | `element_shape` | `polyline` | coords_json、subtype（straight/bezier）、line_arrow、front_tooth_*、描边走 stroke_color / stroke_width |
 | 移动点 | `element_route` | `moving_point` | coords_json、path_progress（走 keyframes_json） |
-| 区域（多边形/矩形/圆/五角星） | `element_shape` | `polygon` | shape_kind、rings_json、rect_c1/c2_lng/lat、center_lng/lat、radius、poly_curve |
-| 箭头（多种） | `element_shape` | `arrow` | arrow_type、from/to_lng/lat、path_json、anim_effect |
+| 区域（多边形/矩形/圆/五角星） | `element_shape` | `polygon` | subtype（poly/rect/circle/star）、rings_json、rect_c1/c2_lng/lat、center_lng/lat、radius、poly_curve |
+| 箭头（多种） | `element_shape` | `arrow` | subtype（箭头类型）、path_json（起终点为首/末点） |
 | 双箭头 / 钳形 | `element_shape` | `double_arrow` | points_json（走 `buildDoubleArrow` 几何） |
 | 包围圈 / 集结点 | `element_shape` | `encirclement` / `gathering` | center_lng/lat、radius、pulse_animation |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_* 八列 ＋ countries_json / plots_json / events_json |

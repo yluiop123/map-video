@@ -61,7 +61,7 @@ erDiagram
     text type "line|moving_point"
     text coords_json "坐标集合（唯一保留 JSON 的几何）"
     text move_icon_shape
-    text arrow_type "设置则整条线画成楔形箭头（燕尾/行军）"
+    text subtype "小类：线型（straight/bezier/arc）或楔形箭头（燕尾/行军）"
   }
   ELEMENT_SHAPE {
     text element_id PK
@@ -69,6 +69,7 @@ erDiagram
     text type "polygon|polyline|arrow|double_arrow|gathering|encirclement"
     text rings_json "坐标集合（poly）"
     text coords_json "折线（polyline）"
+    text subtype "小类（poly/rect/circle/star 或箭头类型）"
   }
   ELEMENT_TERRITORY {
     text element_id PK

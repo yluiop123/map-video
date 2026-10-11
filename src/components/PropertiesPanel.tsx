@@ -1132,7 +1132,7 @@ function routeCoords(el: MapElement): [number, number][] {
   switch (el.type) {
     case 'line': return el.coordinates;
     case 'moving_point': return el.path;
-    case 'arrow': return el.path && el.path.length >= 2 ? el.path : [el.from, el.to];
+    case 'arrow': return el.path && el.path.length >= 2 ? el.path : [];
     case 'double_arrow': return el.points;
     default: return [];
   }
@@ -1581,11 +1581,7 @@ type MultiPointStyle = 'line' | 'bezier' | 'line-arrow' | 'bezier-arrow' | 'swal
 function shapeCoords(el: MapElement): [number, number][] {
   const t = el.type;
   if (t === 'line' || t === 'polyline') return (el.coordinates || []).slice();
-  if (t === 'arrow') {
-    const ar = el as ArrowElement;
-    if (ar.path && ar.path.length >= 2) return ar.path;
-    return ar.from && ar.to ? [ar.from, ar.to] : [];
-  }
+  if (t === 'arrow') return ((el as ArrowElement).path || []).slice();
   if (t === 'moving_point') return (el.path || []).slice();
   if (t === 'polygon') {
     const ring = (el as PolygonElement).coordinates[0] || [];
@@ -1643,6 +1639,7 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
         type: 'polyline', coordinates: pts, lineType: s === 'front-curve' ? 'bezier' : 'straight',
         strokeWidth: 8, strokeColor: colorOf,
         frontStyle: { toothLength: 14, toothGap: 24, toothAngle: 0, side: 1 },
+        lineArrow: false,
         shapeCategory: 'multi',
       } as Partial<MapElement>);
       return;
@@ -1655,6 +1652,7 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
       patch({
         type: 'polyline', coordinates: pts, lineType: s,
         strokeWidth: 8, strokeColor: colorOf,
+        lineArrow: false,
         shapeCategory: 'multi',
       } as Partial<MapElement>);
     } else if (s === 'line-arrow' || s === 'bezier-arrow') {
@@ -1665,14 +1663,14 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
       } as Partial<MapElement>);
     } else if (s === 'swallowtail') {
       patch({
-        type: 'arrow', from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], path: pts.map(p => [p[0], p[1]]),
+        type: 'arrow', path: pts.map(p => [p[0], p[1]]),
         arrowType: 'curved', width: 15, color: colorOf,
         progress: [{ frame: start, value: 1 }], drawZoom: undefined,
         shapeCategory: 'multi',
       } as Partial<MapElement>);
     } else if (s === 'march') {
       patch({
-        type: 'arrow', from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], path: pts.map(p => [p[0], p[1]]),
+        type: 'arrow', path: pts.map(p => [p[0], p[1]]),
         arrowType: 'curved-simple', width: 15, color: colorOf,
         progress: [{ frame: start, value: 1 }], drawZoom: undefined,
         shapeCategory: 'multi',
@@ -1707,8 +1705,6 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
             { value: 'bezier-arrow', label: t('➤ 带箭头曲线', '➤ Arrow Curve') },
             { value: 'front-line', label: t('▮─ 直线战线', '▮─ Front Line') },
             { value: 'front-curve', label: t('ㅤ〰 弯曲战线', 'ㅤ〰 Curved Front') },
-            { value: 'swallowtail', label: t('🏹 燕尾箭头', '🏹 Swallowtail') },
-            { value: 'march', label: t('⚔️ 行军箭头', '⚔️ March Arrow') },
             { value: 'poly', label: '⬛ 多边形' },
             { value: 'poly-curve', label: '🌀 曲线多边' },
             { value: 'poly-defend', label: t('▮⬛ 直线防御圈', '▮⬛ Straight Defense') },
@@ -1778,15 +1774,9 @@ function MultiShapeSettings({ element, patch }: { element: MapElement; patch: (c
           <Field label={t('填充透明度', 'Fill Opacity')}>
             <RangeInput value={element.fillOpacity} min={0} max={1} step={0.05} onChange={(v) => patch({ fillOpacity: v })} />
           </Field>
-          {element.defenseStyle ? (
-            <Field label={t('大小', 'Size')}>
-              <SizeSlider base={8} value={element.strokeWidth} onChange={(v) => patch({ strokeWidth: Math.max(1, v) })} />
-            </Field>
-          ) : (
-            <Field label={t('边框宽度', 'Stroke Width')}>
-              <RangeInput value={element.strokeWidth} min={1} max={10} step={1} suffix="px" onChange={(v) => patch({ strokeWidth: Math.max(1, v) })} />
-            </Field>
-          )}
+          <Field label={t('大小', 'Size')}>
+            <SizeSlider base={8} value={element.strokeWidth} onChange={(v) => patch({ strokeWidth: Math.max(1, v) })} />
+          </Field>
         </Section>
       )}
 
@@ -2085,10 +2075,9 @@ function SpecialShapeSettings({ element, patch }: { element: MapElement; patch: 
 
   if (element.type === 'arrow') {
     const ar = element as ArrowElement;
-    const isSwallowtail = ar.arrowType === 'curved' || element.name.includes('燕尾');
     return (
       <>
-        <Section title={isSwallowtail ? t('自定义燕尾箭头', 'Custom Swallowtail') : t('自定义箭头', 'Custom Arrow')}>
+        <Section title={element.name || t('箭头', 'Arrow')}>
           <Field label={t('大小', 'Size')}>
             <SizeSlider base={15} minPct={25} maxPct={400} value={ar.width ?? 15} onChange={(v) => patch({ width: v } as Partial<MapElement>)} />
           </Field>

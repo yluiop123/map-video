@@ -343,10 +343,8 @@ export interface PolygonElement extends MapElementBase {
 
 export interface ArrowElement extends MapElementBase {
   type: 'arrow';
-  from: [number, number];
-  to: [number, number];
-  /** 弯曲燕尾箭头的控制点（≥2 时使用贝塞尔曲线渲染） */
-  path?: [number, number][];
+  /** 路径点（≥2）：**起终点就是首/末点** —— from/to 不再单独存列，由 path 端点现推 */
+  path: [number, number][];
   arrowType: 'swallowtail' | 'simple' | 'block' | 'pincer' | 'curved' | 'curved-simple' | 'attack' | 'straight';
   width: number;
   color: string;

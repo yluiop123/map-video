@@ -79,8 +79,6 @@ const SHAPE_GROUPS: { zh: string; en: string; items: ShapeItem[] }[] = [
       { mode: 'add_shape_bezier_arrow', zh: '带箭头曲线', en: 'Arrow Curve', glyph: '➤' },
       { mode: 'add_shape_front_line', zh: '直线战线', en: 'Front Line', glyph: '▮─' },
       { mode: 'add_shape_front_curve', zh: '弯曲战线', en: 'Curved Front', glyph: 'ㅤ〰' },
-      { mode: 'add_shape_march', zh: '行军箭头', en: 'March Arrow', glyph: '⚔️' },
-      { mode: 'add_shape_swallowtail', zh: '燕尾箭头', en: 'Swallowtail', glyph: '🏹' },
       { mode: 'add_polygon', zh: '多边形', en: 'Polygon', glyph: '⬛' },
       { mode: 'add_shape_poly_curve', zh: '曲线多边', en: 'Curved Poly', glyph: '🌀' },
       { mode: 'add_shape_poly_defend', zh: '直线防御圈', en: 'Straight Defense', glyph: '▮⬛' },
@@ -99,6 +97,8 @@ const SHAPE_GROUPS: { zh: string; en: string; items: ShapeItem[] }[] = [
   {
     zh: '特殊图形', en: 'Special',
     items: [
+      { mode: 'add_shape_swallowtail', zh: '燕尾箭头', en: 'Swallowtail', glyph: '🏹' },
+      { mode: 'add_shape_march', zh: '行军箭头', en: 'March Arrow', glyph: '⚔️' },
       { mode: 'add_special_swallow', zh: '自定义燕尾箭头', en: 'Custom Swallowtail', glyph: '🏹', hint: 'attack+燕尾' },
       { mode: 'add_attack', zh: '自定义箭头', en: 'Custom Arrow', glyph: '➹', hint: 'bent attack' },
       { mode: 'add_pincer', zh: '钳形', en: 'Pincer', glyph: '🩹', hint: '4点自动合成' },

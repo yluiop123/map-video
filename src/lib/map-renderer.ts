@@ -262,8 +262,6 @@ function routeArrowFromLine(le: LineElement): ArrowElement {
   return {
     ...(le as unknown as ArrowElement),
     type: 'arrow',
-    from: path[0] ?? [0, 0],
-    to: path[path.length - 1] ?? [0, 0],
     path,
     arrowType: le.arrowType!,
     width: le.lineWidth,
@@ -2885,7 +2883,7 @@ function cleanupLegacyFlyBands(map: maplibregl.Map): void {
 }
 /** 箭头飞行/行进的弧长轨道（curved 燕尾先贝塞尔加密） */
 function arrowRailOf(element: ArrowElement): [number, number][] {
-  const basePts = element.path && element.path.length > 2 ? element.path : [element.from, element.to];
+  const basePts = element.path && element.path.length >= 2 ? element.path : [];
   if (element.arrowType === 'curved' || element.arrowType === 'curved-simple') {
     try {
       return turf.bezierSpline(turf.lineString(basePts as any), { resolution: 4000, sharpness: 0.6 }).geometry.coordinates as [number, number][];
@@ -2918,6 +2916,10 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
   const layerId = `arrow-layer-${element.id}`;
   const strokeLayerId = `arrow-stroke-layer-${element.id}`;
 
+  // 起终点由 path 端点现推（from/to 不再是独立列 / 不再单存）
+  const from: [number, number] = element.path?.[0] ?? [0, 0];
+  const to: [number, number] = element.path?.[element.path.length - 1] ?? from;
+
   const animStart = (element as any).moveStartFrame ?? element.startFrame;
   const animEnd = (element as any).moveEndFrame ?? element.endFrame;
   // 箭头只认显式存下的 animEffect：shape / route 存储彻底分开，element_shape 的行默认静态；
@@ -2937,10 +2939,10 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
     ? nonUniformRatio(element as any, frame)
     : progress;
   let curTo: [number, number] = [
-    element.from[0] + (element.to[0] - element.from[0]) * growProgress,
-    element.from[1] + (element.to[1] - element.from[1]) * growProgress,
+    from[0] + (to[0] - from[0]) * growProgress,
+    from[1] + (to[1] - from[1]) * growProgress,
   ];
-  let effFrom = element.from;
+  let effFrom = from;
   let effTo = curTo;
   let animPathOverride: [number, number][] | null = null;
 
@@ -3032,7 +3034,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
       fullGeojson = turf.featureCollection(ring ? [turf.polygon([ring])] : []);
     } else {
       const fullPath = element.path;
-      const fullRings = buildArrowGeometry(element.from, element.to, geoWidth, element.arrowType, fullPath);
+      const fullRings = buildArrowGeometry(from, to, geoWidth, element.arrowType, fullPath);
       fullGeojson = turf.featureCollection(fullRings.map((ring) => turf.polygon([[...ring, ring[0]]])));
     }
     try {
@@ -3608,13 +3610,16 @@ export function buildSelectionFeature(element: MapElement): any | null {
       return turf.polygon([closed]);
     }
     case 'arrow': {
-      const lat = (element.from[1] + element.to[1]) / 2;
+      const path = element.path ?? [];
+      const from: [number, number] = path[0] ?? [0, 0];
+      const to: [number, number] = path[path.length - 1] ?? from;
+      const lat = (from[1] + to[1]) / 2;
       const w = typeof element.drawZoom === 'number'
         ? pixelsToDegrees(element.width, element.drawZoom, lat)
         : element.width / 111;
       return turf.feature({
         type: 'MultiPolygon',
-        coordinates: buildArrowGeometry(element.from, element.to, w, element.arrowType, element.path)
+        coordinates: buildArrowGeometry(from, to, w, element.arrowType, path)
           .map((r) => [[...r, r[0]]]),
       } as any);
     }
@@ -3638,7 +3643,7 @@ export function resolveFollowCam(elements: MapElement[], kf: CameraKeyframe, fra
   let path: [number, number][] | undefined;
   if (route.type === 'line') path = lineEffectiveCoordinates(route);
   else if (route.type === 'moving_point') path = route.path;
-  else if (route.type === 'arrow') path = route.path && route.path.length >= 2 ? route.path : [route.from, route.to];
+  else if (route.type === 'arrow') path = route.path;
   if (!path || path.length < 2) return null;
   const le = route as any;
   let ratio = 0;

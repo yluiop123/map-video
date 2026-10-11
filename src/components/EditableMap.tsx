@@ -628,7 +628,7 @@ export function EditableMap({ project }: EditableMapProps) {
         createElementAndSelect({
           id: generateId(), type: 'arrow', name: '箭头', locked: false,
           startFrame: 0, endFrame: project.endFrame,
-          from: d.points[0], to: lngLat, arrowType: 'swallowtail', width: 15, color: '#E23B3B',
+          path: [d.points[0], lngLat] as [number, number][], arrowType: 'swallowtail', width: 15, color: '#E23B3B',
           progress: [{ frame: 0, value: 1 }], drawZoom: map.getZoom(),
         } as ArrowElement);
         resetDraw();
@@ -875,7 +875,7 @@ export function EditableMap({ project }: EditableMapProps) {
       createElementAndSelect({
         id: generateId(), type: 'arrow', name: '自定义箭头', locked: false,
         startFrame: 0, endFrame: project.endFrame,
-        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
+        arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
         progress: [{ frame: 0, value: 1 }], drawZoom: map.getZoom(),
         shapeCategory: 'special',
@@ -974,12 +974,12 @@ export function EditableMap({ project }: EditableMapProps) {
         createElementAndSelect({
           id: generateId(), type: 'arrow', name: '行军箭头', locked: false,
           startFrame: 0, endFrame: project.endFrame,
-          from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved-simple', path: pts,
+          arrowType: 'curved-simple', path: pts,
           width: 15, color: '#E23B3B',
           progress: [{ frame: 0, value: 1 }],
           showIcon: false, uniformMove: true,
           drawZoom: map.getZoom(),
-          shapeCategory: 'multi',
+          shapeCategory: 'special',
         } as ArrowElement);
       }
     } else if (mode === 'add_shape_swallowtail') {
@@ -987,19 +987,19 @@ export function EditableMap({ project }: EditableMapProps) {
       createElementAndSelect({
         id: generateId(), type: 'arrow', name: '燕尾箭头', locked: false,
         startFrame: 0, endFrame: project.endFrame,
-        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
+        arrowType: 'curved', path: pts,
         width: 15, color: '#E23B3B',
         progress: [{ frame: 0, value: 1 }],
         showIcon: false, uniformMove: true,
         drawZoom: map.getZoom(),
-        shapeCategory: 'multi',
+        shapeCategory: 'special',
       } as ArrowElement);
     } else if (mode === 'add_special_swallow') {
       if (pts.length < 2) return;
       createElementAndSelect({
         id: generateId(), type: 'arrow', name: '自定义燕尾箭头', locked: false,
         startFrame: 0, endFrame: project.endFrame,
-        from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'attack', path: pts,
+        arrowType: 'attack', path: pts,
         width: 15, color: '#E23B3B',
         progress: [{ frame: 0, value: 1 }],
         showIcon: false, uniformMove: true,
@@ -1139,7 +1139,7 @@ export function EditableMap({ project }: EditableMapProps) {
         createElementAndSelect({
           id: generateId(), type: 'arrow', name: '弯曲箭头', locked: false,
           startFrame: 0, endFrame: project.endFrame,
-          from: pts[0] as [number, number], to: pts[pts.length - 1] as [number, number], arrowType: 'curved', path: pts,
+          arrowType: 'curved', path: pts,
           width: 15, color: '#E23B3B',
           progress: [{ frame: 0, value: 1 }],
           drawZoom: map.getZoom(),
@@ -1979,10 +1979,7 @@ function routePathOf(el: MapElement): [number, number][] | null {
   if (el.type === 'line') return (el.coordinates?.length ?? 0) >= 2 ? el.coordinates : null;
   if (el.type === 'polyline') return (el.coordinates?.length ?? 0) >= 2 ? el.coordinates : null;
   if (el.type === 'moving_point') return (el.path?.length ?? 0) >= 2 ? el.path : null;
-  if (el.type === 'arrow') {
-    if (el.path && el.path.length >= 2) return el.path;
-    return el.from && el.to ? [el.from, el.to] : null;
-  }
+  if (el.type === 'arrow') return (el.path?.length ?? 0) >= 2 ? el.path : null;
   if (el.type === 'double_arrow') return (el.points?.length ?? 0) >= 2 ? el.points : null;
   if (el.type === 'polygon') {
     // 形状：rect=对角点（随 rotation 显示在旋转后位置）；circle/star=中心+半径顶点；poly=顶点（去闭合点）
@@ -2044,7 +2041,7 @@ function patchElementVertex(el: MapElement, idx: number, clientX: number, client
   const pt: [number, number] = [lngLat.lng, lngLat.lat];
 
   if (el.type === 'moving_point' || el.type === 'arrow') {
-    const path = el.path && el.path.length >= 2 ? el.path : (el.type === 'arrow' && el.from ? [el.from, el.to!] : null);
+    const path = el.path && el.path.length >= 2 ? el.path : null;
     if (!path || idx >= path.length) return false;
     const c = path.map((p) => [p[0], p[1]] as [number, number]);
     c[idx] = pt;
