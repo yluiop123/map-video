@@ -560,17 +560,14 @@ export function EditableMap({ project }: EditableMapProps) {
       fc.push(turf.point(points[0]));
     }
 
-    // 箭头类预览：虚线只画「控制点折线」（开放、不回头），箭头本体走填充层
-    if (ARROW_PREVIEW_MODES.has(mode) && cursor && points.length > 0) {
-      const pl = previewPath(points, cursor);
-      if (pl.length >= 2) fc.push(turf.lineString(pl));
-    }
+    // 箭头类预览不再画「控制点折线」：轮廓已经画出真实形状，而控制点折线与曲线箭身不是同一条
+    // 线（样条会切角），两条并排容易被看成「被这条线围起来的一块区域」。线 / 曲线 / 战线 /
+    // 多边那几类的虚线本身就是形状预览，照旧保留（由 LINE_PREVIEW_MODES 那几支 push）。
 
     // 已采集顶点
     if (points.length > 0) fc.push(...points.map((p) => turf.point(p)));
 
-    // 箭头类预览：虚线画「控制点折线」，箭身走**轮廓描线**（不走填充：逐帧 setData 下 fill
-    // 对细长凹多边形的三角化会溢出，把弦与箭身之间也填上）
+    // 箭头类不显示填充层：逐帧 setData 下 fill 对细长凹多边形的三角化会溢出，箭身改走轮廓描线
     const showFill = !LINE_PREVIEW_MODES.has(mode) && !ARROW_PREVIEW_MODES.has(mode) && mode !== 'add_pincer';
     setPreviewData(map, { type: 'FeatureCollection', features: fc } as any, showFill);
   }, [mode]);
