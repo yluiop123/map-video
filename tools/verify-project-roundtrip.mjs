@@ -422,5 +422,77 @@ console.log('\n[9b] 旧行搬迁：line_arrow / poly_curve 折进 subtype、ring
   legacy.close();
 }
 
+console.log('\n[10] 路线表：带箭头 / 无样式开关折进 subtype、匀速由 pointTimes 推、死列已删');
+{
+  const db10 = open();
+  const routeLayer = (pid, el) => ({
+    ...project(pid, FPS),
+    layers: [{ id: `${pid}:L`, type: 'route', name: '路线 1', visible: true, startFrame: 0, endFrame: 1800, elements: [el] }],
+  });
+  const line = (id, extra) => ({
+    id, type: 'line', startFrame: 0, endFrame: 1800, coordinates: [[100, 30], [101, 31]],
+    drawProgress: [{ frame: 0, value: 1 }], lineWidth: 8, lineColor: '#FF0000', showIcon: false, ...extra,
+  });
+  const cases = [
+    ['straight', line('l1', { lineType: 'straight' }), (b) => b.lineType === 'straight' && !b.lineArrow && !b.plainPath],
+    ['straight-arrow', line('l2', { lineType: 'straight', lineArrow: true }), (b) => b.lineArrow === true && b.lineType === 'straight'],
+    ['plain-bezier', line('l3', { lineType: 'bezier', plainPath: true }), (b) => b.plainPath === true && b.lineType === 'bezier'],
+    ['curved-simple', line('l4', { arrowType: 'curved-simple' }), (b) => b.arrowType === 'curved-simple'],
+  ];
+  for (const [st, el, ok] of cases) {
+    const pid = `r_${st}`;
+    saveProjectV2(db10, routeLayer(pid, el));
+    const row = db10.prepare('SELECT type, subtype FROM element_route WHERE element_id = ?').get(el.id);
+    const back = getProjectV2(db10, pid).layers[0].elements[0];
+    check(`10 ${st}：落库 subtype=${st}`, row?.type === 'line' && row?.subtype === st, JSON.stringify(row));
+    check(`10 ${st}：读回线型/开关正确`, !!ok(back),
+      JSON.stringify({ lineType: back?.lineType, lineArrow: back?.lineArrow, plainPath: back?.plainPath, arrowType: back?.arrowType }));
+  }
+  saveProjectV2(db10, routeLayer('r_uniform', line('l5', { uniformMove: true })));
+  check('10 匀速：读回 uniformMove 不是 false（＝匀速）',
+    getProjectV2(db10, 'r_uniform').layers[0].elements[0]?.uniformMove !== false,
+    String(getProjectV2(db10, 'r_uniform').layers[0].elements[0]?.uniformMove));
+  saveProjectV2(db10, routeLayer('r_nonuniform', line('l6', { uniformMove: false, pointTimes: [0, 30, 60] })));
+  const nb = getProjectV2(db10, 'r_nonuniform').layers[0].elements[0];
+  check('10 非匀速：pointTimes 存得住、读回 uniformMove === false',
+    JSON.stringify(nb?.pointTimes) === JSON.stringify([0, 30, 60]) && nb?.uniformMove === false,
+    JSON.stringify({ pt: nb?.pointTimes, um: nb?.uniformMove }));
+  check('10 路线表不再有 line_arrow / plain_path / line_dash_on / line_dash_off / uniform_move / move_icon_flag_text', (() => {
+    const cols = db10.prepare('PRAGMA table_info(element_route)').all().map((c) => c.name);
+    return !['line_arrow', 'plain_path', 'line_dash_on', 'line_dash_off', 'uniform_move', 'move_icon_flag_text'].some((c) => cols.includes(c));
+  })());
+  db10.close();
+}
+
+console.log('\n[10b] 旧路线行搬迁：line_arrow / plain_path 折进 subtype');
+{
+  const legacy = new DatabaseSync(':memory:');
+  legacy.exec(`CREATE TABLE collection (collection_id TEXT PRIMARY KEY, name TEXT, ord INTEGER, created_at INTEGER, updated_at INTEGER);
+    CREATE TABLE project (project_id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE layer (layer_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, type TEXT, name TEXT, visible INTEGER, start_sec REAL, end_sec REAL, ord INTEGER);
+    CREATE TABLE element_route (
+      element_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, layer_id TEXT NOT NULL,
+      type TEXT NOT NULL, subtype TEXT, name TEXT NOT NULL, start_sec REAL, end_sec REAL,
+      coords_json TEXT, line_arrow INTEGER, plain_path INTEGER);`);
+  legacy.prepare("INSERT INTO collection (collection_id,name,ord,created_at,updated_at) VALUES ('default','默认合集',-1,1,1)").run();
+  legacy.prepare("INSERT INTO project (project_id,name,created_at,updated_at) VALUES ('p','旧项目',1,1)").run();
+  legacy.prepare("INSERT INTO layer (layer_id,project_id,type,name,visible,ord) VALUES ('l','p','route','路线 1',1,0)").run();
+  const put = legacy.prepare(`INSERT INTO element_route
+    (element_id,project_id,layer_id,type,subtype,name,start_sec,end_sec,coords_json,line_arrow,plain_path)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  put.run('r1', 'p', 'l', 'line', 'straight', '带箭头直线', 0, 60, '[[0,0],[1,1]]', 1, null);
+  put.run('r2', 'p', 'l', 'line', 'bezier', '无样式曲线', 0, 60, '[[0,0],[1,1]]', null, 1);
+  put.run('r3', 'p', 'l', 'line', 'curved-simple', '行军箭头', 0, 60, '[[0,0],[1,1]]', null, null);
+  ensureV2Schema(legacy);
+  const cols = legacy.prepare('PRAGMA table_info(element_route)').all().map((c) => c.name);
+  const rows = legacy.prepare('SELECT element_id, subtype FROM element_route ORDER BY element_id').all();
+  const byId = Object.fromEntries(rows.map((r) => [r.element_id, r.subtype]));
+  check('10b.1 两个开关列已删', !cols.includes('line_arrow') && !cols.includes('plain_path'), cols.join(','));
+  check('10b.2 搬迁一行不少（3 行）', rows.length === 3, JSON.stringify(rows.map((r) => r.element_id)));
+  check('10b.3 line_arrow=1 → straight-arrow、plain_path=1 → plain-bezier、楔形类型不动',
+    byId.r1 === 'straight-arrow' && byId.r2 === 'plain-bezier' && byId.r3 === 'curved-simple', JSON.stringify(byId));
+  legacy.close();
+}
+
 console.log(`\n===== ${failed ? `${failed} 项失败` : '全部通过'} =====`);
 process.exit(failed ? 1 : 0);

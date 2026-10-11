@@ -150,8 +150,6 @@ export interface MapElementBase {
     labelOffsetX?: number;
     /** 标签垂直偏移（像素，0 = 居中；**正值向上**，默认 40） */
     labelOffsetY?: number;
-    /** 旗帜文字 */
-    flagText?: string;
     flagColor?: string;
     /** 资源来源（与标记的 element.builtinId/assetId/iconLib+iconName 语义一致） */
     builtinId?: string;
@@ -250,7 +248,6 @@ export interface LineElement extends MapElementBase {
   drawProgress: Keyframe<number>[];
   lineWidth: number;
   lineColor: string;
-  lineDashArray?: [number, number];
   /** 直线 / 贝塞尔曲线（coordinates 为控制点）/ 大圆弧航线 */
   lineType?: 'straight' | 'bezier' | 'arc';
   lineArrow?: boolean;         // 线末端方向箭头（示意方向）

@@ -1310,11 +1310,6 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
     if (map.getLayer(layerId)) {
       map.setPaintProperty(layerId, 'line-color', element.lineColor || '#FF0000');
       map.setPaintProperty(layerId, 'line-width', element.lineWidth || 8);
-      if (element.lineDashArray) {
-        map.setPaintProperty(layerId, 'line-dasharray', element.lineDashArray);
-      } else {
-        try { map.setPaintProperty(layerId, 'line-dasharray', undefined); } catch { /* 重置失败忽略 */ }
-      }
     }
   } else {
     map.addSource(sourceId, { type: 'geojson', data });
@@ -1334,7 +1329,6 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       paint: {
         'line-color': element.lineColor || '#FF0000',
         'line-width': element.lineWidth || 8,
-        ...(element.lineDashArray ? { 'line-dasharray': element.lineDashArray } : {}),
       },
       layout: { 'line-cap': 'round', 'line-join': 'round' },
     });
@@ -1380,7 +1374,6 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       color: element.lineColor || '#FF0000',
       widthPx: element.lineWidth || 8,
       opacity: 1,
-      dash: element.lineDashArray,
       heightM: flyHeightM,
       // 带箭头路线：飞行模式下头部由 3D 锥体几何生成（与管同一光照/深度测试，真立体，
       // 随拱形浮在空中），不再使用 symbol 层的平面三角贴图。
@@ -1431,7 +1424,6 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
             'line-color': fillColor,
             'line-width': element.lineWidth || 8,
             'line-opacity': 0.35,
-            ...(element.lineDashArray ? { 'line-dasharray': element.lineDashArray } : {}),
           },
           layout: { 'line-cap': 'round', 'line-join': 'round' },
         });
@@ -1461,7 +1453,6 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
         // 与主线同为 3D 管（同一光照/深度）。不透明度不宜过低——太透会盖掉管的明暗，
         // 立体感消失（看起来像平面线）；0.55 既与深色主线区分，又保留体积感。
         opacity: 0.55,
-        dash: element.lineDashArray,
         heightM: flyHeightM,
       });
     } else {
@@ -1501,7 +1492,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       : mShape === 'text'
         ? `pt-mtxt-${hashStr(mLabelText + mLabelColor + mScale + 13)}`
         : mShape === 'flag'
-          ? `pt-mflag-${hashStr((mi?.labelText || mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
+          ? `pt-mflag-${hashStr((mi?.labelText || '旗') + (mi?.flagColor || mColor) + mScale)}`
           : (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon' || mShape === 'military_symbol')
             ? `pt-mvis-${hashStr(mShape + (mi?.builtinId || '') + (mi?.assetId || '') + (mi?.iconLib || '') + (mi?.iconName || '') + mColor)}`
             : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
@@ -1540,7 +1531,7 @@ function renderLine(map: maplibregl.Map, element: LineElement, frame: number) {
       else if (mShape === 'emoji') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeEmojiImageData(mEmoji)));
       else if (mShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, 12 * mScale, 6, 8, false)));
       else if (mShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, 13 * mScale, 3, 4, false)));
-      else if (mShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.labelText || mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
+      else if (mShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.labelText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
       else if (mShape === 'image' || mShape === 'gif' || mShape === 'model' || mShape === 'icon' || mShape === 'military_symbol') {
         // 资源形态：与标记共用资源管线（内置 / 上传素材 / 图标库）
         const vsrc = moveIconVisualSrc(mi);
@@ -3119,7 +3110,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
         : mEffShape === 'text'
           ? `pt-atxt-${hashStr(mLabelText + mLabelColor + mScale + 13)}`
           : mEffShape === 'flag'
-            ? `pt-aflag-${hashStr((mi?.labelText || mi?.flagText || '旗') + (mi?.flagColor || mColor) + mScale)}`
+            ? `pt-aflag-${hashStr((mi?.labelText || '旗') + (mi?.flagColor || mColor) + mScale)}`
             : (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon' || mEffShape === 'military_symbol')
               ? `pt-mvis-${hashStr(mEffShape + mVisKey + mColor)}`
               : (mShape === 'pin' ? `pt-pin-${mColor.replace('#', '')}` : `pt-dot-${mColor.replace('#', '')}`);
@@ -3128,7 +3119,7 @@ function renderArrow(map: maplibregl.Map, element: ArrowElement, frame: number) 
       else if (mEffShape === 'emoji') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeEmojiImageData(mi?.emoji || '📍')));
       else if (mEffShape === 'bubble') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, mLabelBg, mLabelColor, 12 * mScale, 6, 8, false)));
       else if (mEffShape === 'text') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeBubbleImageData(mLabelText, 'rgba(0,0,0,0)', mLabelColor, 13 * mScale, 3, 4, false)));
-      else if (mEffShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.labelText || mi?.flagText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
+      else if (mEffShape === 'flag') ensureShapeImage(map, mImgId, getCached(mImgId, () => makeFlagImageData({ text: mi?.labelText || '旗', flagColor: mi?.flagColor || mColor, textColor: mi?.labelColor || '#FFFFFF', fontSize: Math.round(16 * mScale), flagWidth: Math.round(72 * mScale), scale: 1 }) || makeDotImageData(mColor)));
       else if (mEffShape === 'image' || mEffShape === 'gif' || mEffShape === 'model' || mEffShape === 'icon' || mEffShape === 'military_symbol') {
         // 资源形态：与标记/路线共用资源管线
         const vsrc = moveIconVisualSrc(mi);

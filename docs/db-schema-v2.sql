@@ -276,7 +276,7 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point')),  -- 大类判别列：line 线 / moving_point 移动点（Route 工具）
   -- 小类：line→straight 直线 / bezier 贝塞尔 / arc 大圆弧航线，或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；
   --   moving_point 无小类。不写 CHECK（值域随大类/渲染模式变），交给 TS 应用层。
-  subtype        TEXT,  -- 小类（值域随 type 变）：line→straight/bezier/arc，或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类
+  subtype        TEXT,  -- 小类（值域随 type 变）：line→线型 straight/bezier/arc（带箭头后缀 -arrow、无样式前缀 plain-，如 straight-arrow / plain-bezier），或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   start_sec    REAL NOT NULL CHECK (start_sec >= 0),  -- 出现时间（秒）
@@ -296,7 +296,6 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   --   text/color/bg/offsetX/offsetY，那四格永远 NULL；渲染端只是回退默认值。
   move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
   move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
-  move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
   move_icon_flag_color     TEXT,  -- 移动图标为旗帜时的旗面颜色
   move_icon_builtin_id     TEXT,  -- 移动图标内置资源 id（不入库资源）
   move_icon_asset_id       TEXT REFERENCES asset(asset_id) ON DELETE SET NULL,  -- 移动图标上传素材 id（删素材置空）
@@ -307,8 +306,7 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),  -- 移动图标是否显示标签（0/1）
   move_start_sec REAL,  -- 移动图标出发时间（秒）
   move_end_sec   REAL,  -- 移动图标到达时间（秒）
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
+  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）：非空 = 非匀速（匀速由它推，不另存开关）
   -- 标签（原 label_json 平铺）
   --   没有 label_position / offset_x / offset_y：route 的渲染端（renderLine）只读文字的
   --   字号/颜色/背景，位置固定沿线中点，面板也只写 text —— 这三格既没人写也没人读。
@@ -327,9 +325,6 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   line_width        REAL,  -- 线宽（px）
   draw_zoom         REAL,  -- 绘制时的地图缩放：带 arrowType 的线按楔形箭头渲染时，把 line_width 的 px 换算成地理宽度的基准
   line_color        TEXT,  -- 线条颜色（moving_point 时为主色）
-  line_dash_on      REAL,  -- 虚线段长（原 line_dash_json[0]）
-  line_dash_off     REAL,  -- 虚线空白长（原 line_dash_json[1]）
-  line_arrow        INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 开关：线末端是否带方向箭头（0/1）
   -- 行军路线动画（原 route_effect_json 平铺）：光点颜色/宽度/步长/同时存在数量
   route_dot_enabled    INTEGER CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1)),  -- 行军光点动画是否开启（0/1）
   route_dot_count      INTEGER,  -- 同时存在的光点数量
@@ -337,7 +332,6 @@ CREATE TABLE IF NOT EXISTS element_route (  -- 路线类元素（Route 工具）
   route_dot_color      TEXT,  -- 光点颜色
   route_dot_frame_step INTEGER,  -- 每 N 帧光点前进一步
   flow_speed        REAL,  -- 流动速度（0 关闭；>0 每 N 帧相位前进一步，行军蚁效果）
-  plain_path        INTEGER CHECK (plain_path IS NULL OR plain_path IN (0,1)),  -- 开关：无样式路线（不画线、仅显示移动图标）
   -- 战线梳齿（原 front_style_json 平铺）
   front_tooth_length REAL,  -- 战线梳齿长度（px）
   front_tooth_gap    REAL,  -- 战线梳齿间距（px）
@@ -571,7 +565,7 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   type           TEXT NOT NULL CHECK (type IN ('line','moving_point')),  -- 大类判别列：line 线 / moving_point 移动点（Route 工具）
   -- 小类：line→straight 直线 / bezier 贝塞尔 / arc 大圆弧航线，或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；
   --   moving_point 无小类。不写 CHECK（值域随大类/渲染模式变），交给 TS 应用层。
-  subtype        TEXT,  -- 小类（值域随 type 变）：line→straight/bezier/arc，或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类
+  subtype        TEXT,  -- 小类（值域随 type 变）：line→线型 straight/bezier/arc（带箭头后缀 -arrow、无样式前缀 plain-，如 straight-arrow / plain-bezier），或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类
 
   name           TEXT NOT NULL DEFAULT '',  -- 元素名（与属性面板首字段 LABEL 同步）
   anim_effect    TEXT CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain')),  -- 动画效果：grow / move / fill / march / marchplain
@@ -589,7 +583,6 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   --   text/color/bg/offsetX/offsetY，那四格永远 NULL；渲染端只是回退默认值。
   move_icon_label_offset_x REAL,  -- 移动图标标签水平像素偏移（0=居中，负左正右）
   move_icon_label_offset_y REAL,  -- 移动图标标签垂直像素偏移（0=居中，正值向上）
-  move_icon_flag_text      TEXT,  -- 移动图标为旗帜时的旗面文字
   move_icon_flag_color     TEXT,  -- 移动图标为旗帜时的旗面颜色
   move_icon_builtin_id     TEXT,  -- 移动图标内置资源 id（不入库资源）
   move_icon_asset_id       TEXT,  -- 移动图标上传素材 id（删素材置空）
@@ -600,8 +593,7 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   move_icon_show_label     INTEGER CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1)),  -- 移动图标是否显示标签（0/1）
   move_start_sec REAL,  -- 移动图标出发时间（秒）
   move_end_sec   REAL,  -- 移动图标到达时间（秒）
-  uniform_move     INTEGER CHECK (uniform_move IS NULL OR uniform_move IN (0,1)),  -- 是否全程匀速（0 则按各路径点自定义到达时间）
-  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）
+  point_times_json TEXT CHECK (point_times_json IS NULL OR json_valid(point_times_json)),  -- 各路径点到达时间数组（秒）：非空 = 非匀速（匀速由它推，不另存开关）
   -- 标签（原 label_json 平铺）
   --   没有 label_position / offset_x / offset_y：route 的渲染端（renderLine）只读文字的
   --   字号/颜色/背景，位置固定沿线中点，面板也只写 text —— 这三格既没人写也没人读。
@@ -620,9 +612,6 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   line_width        REAL,  -- 线宽（px）
   draw_zoom         REAL,  -- 绘制时的地图缩放：带 arrowType 的线按楔形箭头渲染时，把 line_width 的 px 换算成地理宽度的基准
   line_color        TEXT,  -- 线条颜色（moving_point 时为主色）
-  line_dash_on      REAL,  -- 虚线段长（原 line_dash_json[0]）
-  line_dash_off     REAL,  -- 虚线空白长（原 line_dash_json[1]）
-  line_arrow        INTEGER CHECK (line_arrow IS NULL OR line_arrow IN (0,1)),  -- 开关：线末端是否带方向箭头（0/1）
   -- 行军路线动画（原 route_effect_json 平铺）：光点颜色/宽度/步长/同时存在数量
   route_dot_enabled    INTEGER CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1)),  -- 行军光点动画是否开启（0/1）
   route_dot_count      INTEGER,  -- 同时存在的光点数量
@@ -630,7 +619,6 @@ CREATE TABLE IF NOT EXISTS public_element_route (  -- 公共路线元素：publi
   route_dot_color      TEXT,  -- 光点颜色
   route_dot_frame_step INTEGER,  -- 每 N 帧光点前进一步
   flow_speed        REAL,  -- 流动速度（0 关闭；>0 每 N 帧相位前进一步，行军蚁效果）
-  plain_path        INTEGER CHECK (plain_path IS NULL OR plain_path IN (0,1)),  -- 开关：无样式路线（不画线、仅显示移动图标）
   -- 战线梳齿（原 front_style_json 平铺）
   front_tooth_length REAL,  -- 战线梳齿长度（px）
   front_tooth_gap    REAL,  -- 战线梳齿间距（px）

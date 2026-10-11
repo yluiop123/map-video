@@ -563,9 +563,12 @@ const SHAPE_DEAD = ['label_text', 'label_font_size', 'label_color', 'label_posit
   'move_icon_icon_lib', 'move_icon_icon_name', 'move_icon_orientation', 'move_icon_rotation', 'move_icon_show_label'];
 
 /** route 表已删的列：标签的位置/偏移（renderLine 不读、面板只写 text）、
- *  移动图标标签那四格（同上，渲染只回退默认值）、ord。 */
+ *  移动图标标签那四格（同上，渲染只回退默认值）、ord；
+ *  line_arrow / plain_path 折进 subtype；uniform_move 由 point_times_json 推；
+ *  line_dash_on/off 与 move_icon_flag_text 没有任何生产者（写了永远读不回来）。 */
 const ROUTE_DEAD = ['label_position', 'label_offset_x', 'label_offset_y', 'line_type', 'arrow_type',
-  'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos', 'ord'];
+  'move_icon_label_size', 'move_icon_label_padding', 'move_icon_label_radius', 'move_icon_label_pos', 'ord',
+  'line_arrow', 'plain_path', 'line_dash_on', 'line_dash_off', 'uniform_move', 'move_icon_flag_text'];
 
 /** territory 表已删的列：label_* 九列（面板只写 name、渲染用 display_* 与势力/地块名）、
  *  keyframes_json（没有关键帧编辑器）、ord。 */
@@ -693,6 +696,7 @@ function restoreRebuiltRows(db, moved) {
     const keep = new Set(columnsOf(db, table));
     const list = columnsOf(db, stale).filter((c) => keep.has(c));
     const isShape = table === 'element_shape' || table === 'public_element_shape';
+    const isRoute = table === 'element_route' || table === 'public_element_route';
     if (isShape && list.length) {
       // 形状表的 type/subtype 语义换代：逐行把 (type=几何, subtype=子形态) 换算成 (type=大类, subtype=具体形状项)
       const stmt = db.prepare(`INSERT OR IGNORE INTO ${table} (${list.join(',')}) VALUES (${list.map((c) => '@' + c).join(',')})`);
@@ -718,6 +722,16 @@ function restoreRebuiltRows(db, moved) {
             if (pts) vals.coords_json = JSON.stringify(pts);
           }
         }
+        stmt.run(vals);
+      }
+    } else if (isRoute && list.length) {
+      // 路线表的 subtype 换代：老行把「带箭头 / 无样式」两个开关存在 line_arrow / plain_path 列里，
+      // 现在折进 subtype（子类即变体），逐行换算 —— 不能在旧表上 UPDATE（旧表 CHECK 只认旧形状）。
+      const stmt = db.prepare(`INSERT OR IGNORE INTO ${table} (${list.join(',')}) VALUES (${list.map((c) => '@' + c).join(',')})`);
+      for (const r of db.prepare(`SELECT * FROM ${stale}`).all()) {
+        const vals = {};
+        for (const c of list) vals[c] = r[c];
+        vals.subtype = routeRowSubtypeOf(r);
         stmt.run(vals);
       }
     } else if (list.length) {
@@ -772,9 +786,38 @@ const ELEMENT_CATEGORY = {
 /** 路线 line 的「楔形箭头」小类（渲染端据此交给 renderArrow）；'straight' 与线的直线冲突，归线型 */
 const ROUTE_ARROW_KINDS = new Set(['swallowtail', 'simple', 'block', 'pincer', 'curved', 'curved-simple', 'attack']);
 
-/** 路线 line 的小类（线型或楔形箭头类型）；line_arrow / plain_path 开关不进这里 */
+/** 路线 line 的小类 = 线型（straight/bezier/arc）+ 两个开关折进来的写法：
+ *  带箭头 → `-arrow` 后缀；无样式 → `plain-` 前缀（straight-arrow / plain-bezier …）。
+ *  楔形箭头类型（燕尾 / 行军 …）也存这一列。 */
+const ROUTE_LINE_TYPES = ['straight', 'bezier', 'arc'];
 function routeSubtypeOf(el) {
-  return n(el.arrowType) ?? n(el.lineType);
+  if (n(el.arrowType)) return n(el.arrowType);
+  const lt = ROUTE_LINE_TYPES.includes(el.lineType) ? el.lineType : 'straight';
+  if (el.plainPath) return `plain-${lt}`;
+  if (el.lineArrow) return `${lt}-arrow`;
+  return lt;
+}
+
+/** 旧路线行（subtype 只存线型 / 楔形类型，两个开关还在 line_arrow / plain_path 列）→ 折进 subtype */function routeRowSubtypeOf(r) {
+  const st = r.subtype ?? null;
+  if (st == null) return null;
+  if (ROUTE_ARROW_KINDS.has(st)) return st;
+  const lt = ROUTE_LINE_TYPES.includes(st) ? st : 'straight';
+  if (r.plain_path === 1) return `plain-${lt}`;
+  if (r.line_arrow === 1) return `${lt}-arrow`;
+  return lt;
+}
+
+/** subtype → 线型（去掉 plain- 前缀 / -arrow 后缀）；楔形箭头类型不算线型 */
+function routeLineTypeOf(st) {
+  if (!st || ROUTE_ARROW_KINDS.has(st)) return undefined;
+  return st.replace(/^plain-/, '').replace(/-arrow$/, '');
+}
+function routeLineArrowOf(st) {
+  return !!st && st.endsWith('-arrow') && !st.startsWith('plain-') ? true : undefined;
+}
+function routePlainPathOf(st) {
+  return !!st && st.startsWith('plain-') ? true : undefined;
 }
 
 /** 形状：运行时几何 type + 子形态 → 落库的 (大类 type, 小类 subtype)。几何与子形态由 subtype 推出（见读取端）。 */
@@ -829,7 +872,7 @@ function moveIconCols(mi) {
     move_icon_shape: n(mi.shape), move_icon_color: n(mi.color), move_icon_emoji: n(mi.emoji), move_icon_scale: n(mi.scale),
     move_icon_label_text: n(mi.labelText), move_icon_label_color: n(mi.labelColor), move_icon_label_bg: n(mi.labelBg),
     move_icon_label_offset_x: n(mi.labelOffsetX), move_icon_label_offset_y: n(mi.labelOffsetY),
-    move_icon_flag_text: n(mi.flagText), move_icon_flag_color: n(mi.flagColor),
+    move_icon_flag_color: n(mi.flagColor),
     move_icon_builtin_id: n(mi.builtinId), move_icon_asset_id: n(mi.assetId),
     move_icon_icon_lib: n(mi.iconLib), move_icon_icon_name: n(mi.iconName),
     move_icon_orientation: n(mi.orientation), move_icon_rotation: n(mi.rotation), move_icon_show_label: b(mi.showLabel),
@@ -842,7 +885,7 @@ function colsToMoveIcon(r) {
     scale: r.move_icon_scale ?? undefined, labelText: r.move_icon_label_text ?? undefined, labelColor: r.move_icon_label_color ?? undefined,
     labelBg: r.move_icon_label_bg ?? undefined,
     labelOffsetX: r.move_icon_label_offset_x ?? undefined,
-    labelOffsetY: r.move_icon_label_offset_y ?? undefined, flagText: r.move_icon_flag_text ?? undefined,
+    labelOffsetY: r.move_icon_label_offset_y ?? undefined,
     flagColor: r.move_icon_flag_color ?? undefined, builtinId: r.move_icon_builtin_id ?? undefined,
     assetId: r.move_icon_asset_id ?? undefined, iconLib: r.move_icon_icon_lib ?? undefined,
     iconName: r.move_icon_icon_name ?? undefined, orientation: r.move_icon_orientation ?? undefined,
@@ -1098,36 +1141,33 @@ function saveElementV2(db, chapterId, layerId, el, f2s) {
     // 动画族列在这里显式带上：只有路线（line / moving_point）会走动
     db.prepare(`INSERT INTO element_route (
       element_id, project_id, layer_id, type, subtype, name, start_sec, end_sec, anim_effect,
-      fly_mode, show_icon, move_start_sec, move_end_sec, uniform_move, point_times_json,
+      fly_mode, show_icon, move_start_sec, move_end_sec, point_times_json,
       label_text,label_font_size,label_color,label_bg_color,label_bg_padding,label_bg_radius,
-      keyframes_json, coords_json, line_width, draw_zoom, line_color, line_dash_on, line_dash_off, line_arrow,
+      keyframes_json, coords_json, line_width, draw_zoom, line_color,
       route_dot_enabled, route_dot_count, route_dot_width, route_dot_color, route_dot_frame_step,
-      flow_speed, plain_path, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
-      move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_text,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
+      flow_speed, front_tooth_length, front_tooth_gap, front_tooth_angle, front_side,
+      move_icon_shape,move_icon_color,move_icon_emoji,move_icon_scale,move_icon_label_text,move_icon_label_color,move_icon_label_bg,move_icon_label_offset_x,move_icon_label_offset_y,move_icon_flag_color,move_icon_builtin_id,move_icon_asset_id,move_icon_icon_lib,move_icon_icon_name,move_icon_orientation,move_icon_rotation,move_icon_show_label
     ) VALUES (
       @element_id,@project_id,@layer_id,@type,@subtype,@name,@start_sec,@end_sec,@anim_effect,
-      @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@uniform_move,@point_times_json,
+      @fly_mode,@show_icon,@move_start_sec,@move_end_sec,@point_times_json,
       @label_text,@label_font_size,@label_color,@label_bg_color,@label_bg_padding,@label_bg_radius,
-      @keyframes_json,@coords_json,@line_width,@draw_zoom,@line_color,@line_dash_on,@line_dash_off,@line_arrow,
+      @keyframes_json,@coords_json,@line_width,@draw_zoom,@line_color,
       @route_dot_enabled,@route_dot_count,@route_dot_width,@route_dot_color,@route_dot_frame_step,
-      @flow_speed,@plain_path,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
-      @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_text,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
+      @flow_speed,@front_tooth_length,@front_tooth_gap,@front_tooth_angle,@front_side,
+      @move_icon_shape,@move_icon_color,@move_icon_emoji,@move_icon_scale,@move_icon_label_text,@move_icon_label_color,@move_icon_label_bg,@move_icon_label_offset_x,@move_icon_label_offset_y,@move_icon_flag_color,@move_icon_builtin_id,@move_icon_asset_id,@move_icon_icon_lib,@move_icon_icon_name,@move_icon_orientation,@move_icon_rotation,@move_icon_show_label)`).run({
       ...omit(common, ROUTE_DEAD),
       subtype: routeSubtypeOf(el),
       anim_effect: n(el.animEffect),
       fly_mode: el.flyMode ? 1 : 0, show_icon: el.showIcon ? 1 : 0,
       move_start_sec: el.moveStartFrame == null ? null : f2s(el.moveStartFrame),
       move_end_sec: el.moveEndFrame == null ? null : f2s(el.moveEndFrame),
-      uniform_move: n(el.uniformMove) == null ? null : b(el.uniformMove),
       point_times_json: el.pointTimes ? JSON.stringify(el.pointTimes.map(f2s)) : null,
       coords_json: j(el.coordinates || el.path),
       line_width: n(el.lineWidth), draw_zoom: n(el.drawZoom), line_color: n(el.lineColor),
-      line_dash_on: el.lineDashArray?.[0] ?? null, line_dash_off: el.lineDashArray?.[1] ?? null,
-      line_arrow: b(el.lineArrow),
       route_dot_enabled: el.routeEffect ? b(el.routeEffect.enabled) : null,
       route_dot_count: n(el.routeEffect?.dotCount), route_dot_width: n(el.routeEffect?.spotWidth),
       route_dot_color: n(el.routeEffect?.spotColor), route_dot_frame_step: n(el.routeEffect?.frameStep),
-      flow_speed: n(el.flowSpeed), plain_path: b(el.plainPath),
+      flow_speed: n(el.flowSpeed),
       front_tooth_length: n(el.frontStyle?.toothLength), front_tooth_gap: n(el.frontStyle?.toothGap),
       front_tooth_angle: n(el.frontStyle?.toothAngle), front_side: n(el.frontStyle?.side),
       ...omit(moveIconCols(el.moveIcon), ROUTE_DEAD),
@@ -1359,7 +1399,8 @@ function readElementsV2(db, chapterId, s2f) {
     showIcon: r.show_icon === 1,
     moveStartFrame: r.move_start_sec == null ? undefined : s2f(r.move_start_sec),
     moveEndFrame: r.move_end_sec == null ? undefined : s2f(r.move_end_sec),
-    uniformMove: r.uniform_move == null ? undefined : bit(r.uniform_move),
+    // 匀速开关由 point_times_json 推：有 ≥2 个到达时间 = 非匀速（不再单独存列）
+    ...(r.point_times_json && J(r.point_times_json, []).length >= 2 ? { uniformMove: false } : {}),
     moveIcon: colsToMoveIcon(r),
   });
   for (const r of db.prepare('SELECT * FROM element_marker WHERE project_id = ?').all(chapterId)) {
@@ -1386,12 +1427,12 @@ function readElementsV2(db, chapterId, s2f) {
       out.push({
         ...base(r), ...anim(r), type: 'line', coordinates: J(r.coords_json, []), drawProgress: k.drawProgress,
         lineWidth: r.line_width ?? 8, lineColor: r.line_color ?? '#FF0000', drawZoom: r.draw_zoom ?? undefined,
-        lineDashArray: r.line_dash_on != null ? [r.line_dash_on, r.line_dash_off ?? 0] : undefined,
-        lineType: r.subtype && !ROUTE_ARROW_KINDS.has(r.subtype) ? r.subtype : undefined,
-        lineArrow: r.line_arrow == null ? undefined : bit(r.line_arrow),
+        // subtype 一列装三种东西：线型（可带 -arrow 后缀 / plain- 前缀）、楔形箭头类型
+        lineType: routeLineTypeOf(r.subtype),
+        lineArrow: routeLineArrowOf(r.subtype),
         ...(r.subtype && ROUTE_ARROW_KINDS.has(r.subtype) ? { arrowType: r.subtype } : {}),
         routeEffect: r.route_dot_enabled == null ? undefined : { enabled: bit(r.route_dot_enabled), spotColor: r.route_dot_color ?? '#FFE066', spotWidth: r.route_dot_width ?? 6, frameStep: r.route_dot_frame_step ?? 10, dotCount: r.route_dot_count ?? 1 },
-        flowSpeed: r.flow_speed ?? undefined, plainPath: r.plain_path == null ? undefined : bit(r.plain_path),
+        flowSpeed: r.flow_speed ?? undefined, plainPath: routePlainPathOf(r.subtype),
         frontStyle: r.front_tooth_length == null && r.front_side == null ? undefined : { toothLength: r.front_tooth_length ?? undefined, toothGap: r.front_tooth_gap ?? undefined, toothAngle: r.front_tooth_angle ?? undefined, side: r.front_side ?? undefined },
       });
     }

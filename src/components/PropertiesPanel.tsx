@@ -1451,7 +1451,7 @@ function RouteSettings({ element, patch }: {
                 return (
                   <>
                     <Field label={t('标记标签', 'Marker Label')}>
-                      <input type="text" className="input" value={miNow.labelText ?? miNow.flagText ?? ''}
+                      <input type="text" className="input" value={miNow.labelText ?? ''}
                         onChange={(e) => setMI({ labelText: e.target.value })} />
                     </Field>
                     <Field label={t('标记文字颜色', 'Marker Text Color')}>

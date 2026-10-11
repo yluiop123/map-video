@@ -122,7 +122,7 @@
 
 | 表 | type 取值 | 主键 | 工具入口 | 存什么 |
 |---|---|---|---|---|
-| `element_route` | `line` | `element_id` | Route 工具（直线/曲线/航线）；形状工具的直线/曲线/战线写 `element_shape` 的 `polyline`，不在这张表 | 路径数组（coords_json）、线宽虚线、路线特效、流动速度、无样式路线、战线梳齿、**小类 `subtype`（线型 straight/bezier/arc，或楔形箭头 curved/curved-simple）** |
+| `element_route` | `line` | `element_id` | Route 工具（直线/曲线/航线）；形状工具的直线/曲线/战线写 `element_shape` 的 `polyline`，不在这张表 | 路径数组（coords_json）、线宽、路线特效、流动速度、战线梳齿、**小类 `subtype`（线型 straight/bezier/arc ＋ 两个开关后缀：带箭头 `-arrow`、无样式 `plain-`；或楔形箭头 curved/curved-simple）** |
 | `element_route` | `moving_point` | `element_id` | **当前无入口**（绘制模式已实现，工具条无按钮） | 路径点数组、拖尾颜色/宽度/长度 |
 
 ### 组 6 · 形状类元素 1 张 Shape 工具
@@ -193,7 +193,7 @@
 ## 四、每张表的字段（字段字典）
 
 <!-- FIELD-DICT:BEGIN -->
-> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 460 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，460 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
+> 本节由 DDL 自动生成（`tools/gen-db-field-dict.mjs`），共 **27 张表 / 448 个列，每列都有中文说明**。字段说明取自 `tools/db-field-notes.mjs`（人工词表，448 条），结构与约束取自 DDL；脚本会与 SQLite 实测结构交叉校验，并强制「每个字段必须有说明」，缺一条就报错。
 
 > 元素相关的 **5 张类别宽表按工具条分类**（标记 / 路线 / 形状 / 疆域 / 图片），每张表用 `type` 判别列承载该工具下的全部元素类型。工具条的完整对照见本文第五节。
 
@@ -503,7 +503,7 @@
 
 **职责**：路线类元素：line / moving_point　**前端**：工具条「路线」按钮 + 路线属性面板（含均匀移动与逐点到达时间）
 
-58 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
+52 列 · 主键 `element_id` · 工具入口：Route 工具（直线/曲线/航线/移动点）；形状工具的直线/曲线/战线写 element_shape 的 polyline，不在这张表
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
@@ -511,7 +511,7 @@
 | `project_id` | TEXT | `NOT NULL` `FK → project CASCADE` | 所属项目 |
 | `layer_id` | TEXT | `FK → layer CASCADE` | 所属图层（删图层连带删元素；元素可换图层） |
 | `type` | TEXT | `NOT NULL` | 大类判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
-| `subtype` | TEXT | — | 小类（值域随 type 变）：line→straight/bezier/arc，或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类 |
+| `subtype` | TEXT | — | 小类（值域随 type 变）：line→线型 straight/bezier/arc（带箭头后缀 -arrow、无样式前缀 plain-，如 straight-arrow / plain-bezier），或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类 |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `start_sec` | REAL | `NOT NULL` | 出现时间（秒） · `CHECK (start_sec >= 0)` |
 | `end_sec` | REAL | `NOT NULL` | 消失时间（秒） |
@@ -527,7 +527,6 @@
 | `move_icon_label_bg` | TEXT | — | 移动图标标签背景色（默认透明） |
 | `move_icon_label_offset_x` | REAL | — | 移动图标标签水平像素偏移（0=居中，负左正右） |
 | `move_icon_label_offset_y` | REAL | — | 移动图标标签垂直像素偏移（0=居中，正值向上） |
-| `move_icon_flag_text` | TEXT | — | 移动图标为旗帜时的旗面文字 |
 | `move_icon_flag_color` | TEXT | — | 移动图标为旗帜时的旗面颜色 |
 | `move_icon_builtin_id` | TEXT | — | 移动图标内置资源 id（不入库资源） |
 | `move_icon_asset_id` | TEXT | `FK → asset SET NULL` | 移动图标上传素材 id（删素材置空） |
@@ -538,8 +537,7 @@
 | `move_icon_show_label` | INTEGER | — | 移动图标是否显示标签（0/1） · `CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1))` |
 | `move_start_sec` | REAL | — | 移动图标出发时间（秒） |
 | `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
-| `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
-| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
+| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒）：非空 = 非匀速（匀速由它推，不另存开关） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
 | `label_font_size` | REAL | — | 标签字号 |
 | `label_color` | TEXT | — | 标签文字颜色 |
@@ -551,16 +549,12 @@
 | `line_width` | REAL | — | 线宽（px） |
 | `draw_zoom` | REAL | — | 绘制时的地图缩放：带 arrowType 的线按楔形箭头渲染时，把 line_width 的 px 换算成地理宽度的基准 |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
-| `line_dash_on` | REAL | — | 虚线段长（原 line_dash_json[0]） |
-| `line_dash_off` | REAL | — | 虚线空白长（原 line_dash_json[1]） |
-| `line_arrow` | INTEGER | — | 开关：线末端是否带方向箭头（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
 | `route_dot_enabled` | INTEGER | — | 行军光点动画是否开启（0/1） · `CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1))` |
 | `route_dot_count` | INTEGER | — | 同时存在的光点数量 |
 | `route_dot_width` | REAL | — | 光点宽度（px） |
 | `route_dot_color` | TEXT | — | 光点颜色 |
 | `route_dot_frame_step` | INTEGER | — | 每 N 帧光点前进一步 |
 | `flow_speed` | REAL | — | 流动速度（0 关闭；>0 每 N 帧相位前进一步，行军蚁效果） |
-| `plain_path` | INTEGER | — | 开关：无样式路线（不画线、仅显示移动图标） · `CHECK (plain_path IS NULL OR plain_path IN (0,1))` |
 | `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
 | `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
 | `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
@@ -871,14 +865,14 @@
 
 **职责**：公共路线元素（public_layer 内副本；列 = element_route − project_id/layer_id/start_sec/end_sec + public_layer_id，**删列必须成对**）　**前端**：同上
 
-55 列 · 主键 `element_id`
+49 列 · 主键 `element_id`
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `element_id` | TEXT | `PK` | 元素 id（全库唯一，5 张类别表共享同一 id 空间） |
 | `public_layer_id` | TEXT | `NOT NULL` `FK → public_layer CASCADE` | 所属公共图层（删公共图层连带删元素） |
 | `type` | TEXT | `NOT NULL` | 大类判别列：line 线 / moving_point 移动点（Route 工具） · `CHECK (type IN ('line','moving_point'))` |
-| `subtype` | TEXT | — | 小类（值域随 type 变）：line→straight/bezier/arc，或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类 |
+| `subtype` | TEXT | — | 小类（值域随 type 变）：line→线型 straight/bezier/arc（带箭头后缀 -arrow、无样式前缀 plain-，如 straight-arrow / plain-bezier），或楔形箭头类型（curved 燕尾 / curved-simple 行军 …）；moving_point 无小类 |
 | `name` | TEXT | `NOT NULL` | 元素名（与属性面板首字段 LABEL 同步） · 默认 `''` |
 | `anim_effect` | TEXT | — | 动画效果：grow / move / fill / march / marchplain · `CHECK (anim_effect IS NULL OR anim_effect IN ('grow','move','fill','march','marchplain'))` |
 | `fly_mode` | INTEGER | `NOT NULL` | 悬空飞行模式：路线与图标按高度剖面离地显示 · 默认 `0` · `CHECK (fly_mode IN (0,1))` |
@@ -892,7 +886,6 @@
 | `move_icon_label_bg` | TEXT | — | 移动图标标签背景色（默认透明） |
 | `move_icon_label_offset_x` | REAL | — | 移动图标标签水平像素偏移（0=居中，负左正右） |
 | `move_icon_label_offset_y` | REAL | — | 移动图标标签垂直像素偏移（0=居中，正值向上） |
-| `move_icon_flag_text` | TEXT | — | 移动图标为旗帜时的旗面文字 |
 | `move_icon_flag_color` | TEXT | — | 移动图标为旗帜时的旗面颜色 |
 | `move_icon_builtin_id` | TEXT | — | 移动图标内置资源 id（不入库资源） |
 | `move_icon_asset_id` | TEXT | — | 移动图标上传素材 id（删素材置空） |
@@ -903,8 +896,7 @@
 | `move_icon_show_label` | INTEGER | — | 移动图标是否显示标签（0/1） · `CHECK (move_icon_show_label IS NULL OR move_icon_show_label IN (0,1))` |
 | `move_start_sec` | REAL | — | 移动图标出发时间（秒） |
 | `move_end_sec` | REAL | — | 移动图标到达时间（秒） |
-| `uniform_move` | INTEGER | — | 是否全程匀速（0 则按各路径点自定义到达时间） · `CHECK (uniform_move IS NULL OR uniform_move IN (0,1))` |
-| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
+| `point_times_json` | TEXT | — | 各路径点到达时间数组（秒）：非空 = 非匀速（匀速由它推，不另存开关） · `CHECK (point_times_json IS NULL OR json_valid(point_times_json))` |
 | `label_text` | TEXT | — | 标签文字（与元素名同步） |
 | `label_font_size` | REAL | — | 标签字号 |
 | `label_color` | TEXT | — | 标签文字颜色 |
@@ -916,16 +908,12 @@
 | `line_width` | REAL | — | 线宽（px） |
 | `draw_zoom` | REAL | — | 绘制时的地图缩放：带 arrowType 的线按楔形箭头渲染时，把 line_width 的 px 换算成地理宽度的基准 |
 | `line_color` | TEXT | — | 线条颜色（moving_point 时为主色） |
-| `line_dash_on` | REAL | — | 虚线段长（原 line_dash_json[0]） |
-| `line_dash_off` | REAL | — | 虚线空白长（原 line_dash_json[1]） |
-| `line_arrow` | INTEGER | — | 开关：线末端是否带方向箭头（0/1） · `CHECK (line_arrow IS NULL OR line_arrow IN (0,1))` |
 | `route_dot_enabled` | INTEGER | — | 行军光点动画是否开启（0/1） · `CHECK (route_dot_enabled IS NULL OR route_dot_enabled IN (0,1))` |
 | `route_dot_count` | INTEGER | — | 同时存在的光点数量 |
 | `route_dot_width` | REAL | — | 光点宽度（px） |
 | `route_dot_color` | TEXT | — | 光点颜色 |
 | `route_dot_frame_step` | INTEGER | — | 每 N 帧光点前进一步 |
 | `flow_speed` | REAL | — | 流动速度（0 关闭；>0 每 N 帧相位前进一步，行军蚁效果） |
-| `plain_path` | INTEGER | — | 开关：无样式路线（不画线、仅显示移动图标） · `CHECK (plain_path IS NULL OR plain_path IN (0,1))` |
 | `front_tooth_length` | REAL | — | 战线梳齿长度（px） |
 | `front_tooth_gap` | REAL | — | 战线梳齿间距（px） |
 | `front_tooth_angle` | REAL | — | 梳齿偏角（度） |
@@ -1040,7 +1028,7 @@
 | 点标记 | `element_marker` | `point` | shape（10 种）、emoji、scale、orientation、rotation、color、asset_id / builtin_id / icon_lib+icon_name、visual_* 三列（`auto_rotate`/`spin`/`stroke_width`） |
 | 旗帜 | `element_marker` | `flag` | flag_text、flag_color、flag_width |
 | 军标（APP-6） | `element_marker` | `point` + `shape='military_symbol'` | 无专属列：SIDC 存在 `builtin_id`（`milsym:<SIDC>`），渲染端从那里反解 |
-| 路线 / 飞线 | `element_route` | `line` | coords_json、subtype（线型或楔形箭头）、draw_zoom（带 arrowType 时把 line_width 的 px 换算成地理宽度）、route_dot_*、flow_speed、plain_path、front_tooth_* |
+| 路线 / 飞线 | `element_route` | `line` | coords_json、subtype（线型 ＋ 带箭头 `-arrow` / 无样式 `plain-` 后缀；或楔形箭头类型）、draw_zoom（带 arrowType 时把 line_width 的 px 换算成地理宽度）、route_dot_*、flow_speed、front_tooth_* |
 | 折线（直线/曲线/战线） | `element_shape` | `multi` | coords_json（路径点）、subtype（line/line-arrow/bezier/bezier-arrow/front-line/front-curve）、front_tooth_*、描边走 stroke_color / stroke_width |
 | 移动点 | `element_route` | `moving_point` | coords_json、path_progress（走 keyframes_json） |
 | 区域（多边形/矩形/圆） | `element_shape` | `multi`（多边形）/ `two`（矩形/圆） | subtype（polygon/poly-curve/poly-defend/poly-curve-defend/circle/rect）、coords_json（多边形＝环数组 / 矩形＝两个对角点 / 圆＝[中心, 圆周上一点]） |
@@ -1049,7 +1037,7 @@
 | 包围圈 / 集结点 | `element_shape` | `two` | subtype=encirclement / gathering、coords_json（[中心, 圆周上一点]，半径由两点距离算） |
 | 疆域（势力/地块/兼并） | `element_territory` | `territory` | display_* 八列 ＋ countries_json / plots_json / events_json |
 
-动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `uniform_move` / `point_times_json` / `move_icon_*`）**只有 `element_route` 有**：它们描述「沿一条路径走 / 显示移动标记」，只有 line / moving_point 会走动，marker / shape / territory / image 一律没有 —— 早先宽表把 union 全给每张表，结果写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode` 同理：飞行（拱形航迹 + 3D 管）只在渲染端 `renderLine` 实现，面板的飞行开关也只对 `type='line'` 显示。
+动画族列（`anim_effect` / `show_icon` / `move_start_sec` / `move_end_sec` / `point_times_json` / `move_icon_*`；匀速开关由 `point_times_json` 非空推出，不另存列）**只有 `element_route` 有**：它们描述「沿一条路径走 / 显示移动标记」，只有 line / moving_point 会走动，marker / shape / territory / image 一律没有 —— 早先宽表把 union 全给每张表，结果写进去读不回来（§6.29「每一格都要有消费者」）。`fly_mode` 同理：飞行（拱形航迹 + 3D 管）只在渲染端 `renderLine` 实现，面板的飞行开关也只对 `type='line'` 显示。
 
 同理，`label_*` 只留在**真正会渲染文字的两类**：marker（点位气泡）与 route（线上文字，只剩 text/fontSize/color/bg_*，位置固定沿线中点）；shape / territory 的面板没有标签入口、运行时类型里也没有 `label` 字段，九列已删。`ord` 是死列（写死 0、读端无 ORDER BY），**五张类别表连同各自的公共副本都已删**；`element_image.aspect`（只在创建时算默认网格）也已删。
 
