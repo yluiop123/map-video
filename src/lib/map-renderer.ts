@@ -2594,17 +2594,28 @@ export function buildArrowGeometry(
   if (arrowType === 'curved-simple' && path && path.length >= 2) {
     return buildCurvedSwallowtailWithOpts(path, width, { simpleTail: true });
   }
-  // 进攻箭头（AttackArrow）：用 plot_ol 标准算法，path 为控制点（<3 点时退化直线箭头）
+  // 进攻箭头（AttackArrow）：plot_ol 的约定是 **[尾左, 尾右, 脊线点…]** —— 前两个点是尾部的两个角，
+  // 不是脊线。调用方给的是脊线（用户点的那串控制点），直接塞进去会把「前两点」当尾角 →
+  // 得到一个底边贴着**首尾弦**的大三角形（填充覆盖弦与箭身之间）。这里按脊线起点生成尾角。
   if (arrowType === 'attack' && path && path.length >= 2) {
-    if (path.length < 3) {
-      const a = path[0], b = path[path.length - 1];
-      // 构造中间辅助点，使 buildAttackArrow 能生成完整箭头
-      const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      const out = buildAttackArrow([a, mid, b]);
-      if (out.length >= 4) return [out as [number, number][]];
-      return [buildStraightArrow([a, b]) as [number, number][]];
-    }
-    return [buildAttackArrow(path) as [number, number][]];
+    const spine = path;
+    // 脊线长度（度空间）：进攻箭头是「宽体弯箭」，尾宽按脊线长度取，短箭再兜到标准 width
+    let spineLen = 0;
+    for (let i = 1; i < spine.length; i++) spineLen += Math.hypot(spine[i][0] - spine[i - 1][0], spine[i][1] - spine[i - 1][1]);
+    const tailW = Math.max(width, spineLen * 0.22);
+    const [sx, sy] = spine[0];
+    const nxt = spine[1] ?? spine[spine.length - 1];
+    let dx = nxt[0] - sx, dy = nxt[1] - sy;
+    const dl = Math.hypot(dx, dy) || 1;
+    dx /= dl; dy /= dl;
+    const h = tailW / 2;
+    const tailL: [number, number] = [sx - dy * h, sy + dx * h];
+    const tailR: [number, number] = [sx + dy * h, sy - dx * h];
+    // 尾角之后再接**脊线首点之后**的点：buildAttackArrow 自己会把尾角中点当成脊线第一点，
+    // 若再把脊线首点传进去，骨架上会出现两个重合点（求夹角时 0/0 → NaN 体点）。
+    const out = buildAttackArrow([tailL, tailR, ...spine.slice(1)]);
+    if (out.length >= 4) return [out as [number, number][]];
+    return [buildStraightArrow([from, to]) as [number, number][]];
   }
   // 直线箭头（StraightArrow）：两点
   if (arrowType === 'straight') {
