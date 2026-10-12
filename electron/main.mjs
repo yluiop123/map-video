@@ -51,6 +51,26 @@ function initDb() {
 // ---------- 通用 HTTP 转发 ----------
 // 主进程不再认识任何供应商：怎么发请求由渲染端的接口模板算好，这里只负责发出去、按 Content-Type 分类拿回来。
 // （原先这里是 5 条 `switch (cfg.protocol)`，与渲染端那份互为影子，改一家要改两处 —— 见 AGENTS §6.7 / §6.22）
+
+/** 把 fetch 失败时**被吞掉的底层原因**拼进 message。
+ *  Node 的 fetch 只给一句 "fetch failed"，真正的原因（DNS / ECONNREFUSED / TLS / 超时）在
+ *  `e.cause` 里；而 IPC 只搬 message + stack，cause 会丢。拼进来之后界面上能看到
+ *  「connect ECONNREFUSED 198.18.0.146:443 · https://…」这种能直接定位的信息
+ *  —— 踩过：本地代理 fake-ip 把域名指到 198.18.x 时，任务表里只有一句 fetch failed。 */
+function netErr(e, url, timeoutMs) {
+  const c = e?.cause;
+  const bits = [e?.message || String(e)];
+  if (c) bits.push([c.code, c.message, c.address ? `${c.address}:${c.port ?? ''}` : ''].filter(Boolean).join(' '));
+  if (Array.isArray(c?.errors) && c.errors.length) {
+    bits.push(c.errors.map((x) => [x.code, x.address ? `${x.address}:${x.port ?? ''}` : ''].filter(Boolean).join(' ')).join(' | '));
+  }
+  if (e?.name === 'TimeoutError' && timeoutMs) bits.push(`超过 ${timeoutMs}ms 未响应`);
+  if (url) bits.push(String(url));
+  const err = new Error(bits.filter(Boolean).join(' · '));
+  err.name = 'NetError';
+  return err;
+}
+
 async function httpRequest(req) {
   const headers = { ...(req.headers || {}) };
   let body;
@@ -73,9 +93,14 @@ async function httpRequest(req) {
     }
   }
   const init = { method: req.method || 'POST', headers, body };
-  const res = req.timeoutMs
-    ? await fetch(req.url, { ...init, signal: AbortSignal.timeout(req.timeoutMs) })
-    : await fetch(req.url, init);
+  let res;
+  try {
+    res = req.timeoutMs
+      ? await fetch(req.url, { ...init, signal: AbortSignal.timeout(req.timeoutMs) })
+      : await fetch(req.url, init);
+  } catch (e) {
+    throw netErr(e, req.url, req.timeoutMs);
+  }
   const ctype = res.headers.get('content-type') || '';
   const out = { status: res.status, contentType: ctype };
   if (ctype.includes('json')) out.json = await res.json().catch(() => undefined);
@@ -199,7 +224,7 @@ function registerIpc() {
       const ctype = res.headers.get('content-type') || undefined;
       return { bytes: new Uint8Array(await res.arrayBuffer()), contentType: ctype };
     } catch (err) {
-      return { error: err?.message || String(err) };
+      return { error: netErr(err, url).message };
     }
   });
 
@@ -211,7 +236,7 @@ function registerIpc() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return { text: await res.text() };
     } catch (err) {
-      return { error: err?.message || String(err) };
+      return { error: netErr(err, url).message };
     }
   });
 
